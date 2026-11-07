@@ -67,3 +67,15 @@ compile_commands.json
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Claude·Codex 로컬 하네스 (하위 폴더에도 적용)
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.codex/
+.agents/
+AGENTS.md
+AGENTS.override.md
+
+# 하네스 중간 산출물
+/_workspace/
