@@ -3,6 +3,7 @@
 | 폴더 | 내용 | 문서 |
 |---|---|---|
 | `architecture/` | 시스템 구성·좌표 변환·팀 역할·일정·평가 계획 | [프로젝트 계획](architecture/시스템_아키텍처_및_프로젝트_계획.md) |
+| `design/` | 담당별 모듈·인터페이스·검증 상세설계 | [A 담당 비전 상세설계](design/A담당_비전_상세설계.md) |
 | `protocol/` | TCP 메시지·상태 전이·서버 및 클라이언트 동작 | [TCP 규약](protocol/TCP_프로토콜_명세서.md) |
 
 통신 검증 자료: [요청 스키마](protocol/c2s.schema.json), [응답 스키마](protocol/s2c.schema.json), [시험 벡터](protocol/test_vectors.json).
