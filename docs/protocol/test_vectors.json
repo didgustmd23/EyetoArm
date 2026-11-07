@@ -443,6 +443,78 @@
       "note": "POSE_6D인데 theta_deg 있음·orientation 없음·위치 2개 → 형식 우선"
     },
     {
+      "id": "c2s-051",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0,1.0000005]}",
+      "expect": "reject",
+      "expect_code": "BAD_VALUE",
+      "layer": "schema",
+      "note": "‖q‖ − 1 = 5e-7로 크기 허용치 안이지만 w > 1 (성분 범위 [-1, 1] 위반, §4.2)"
+    },
+    {
+      "id": "c2s-052",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[1e400,0],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "parse",
+      "note": "실수 리터럴 1e400 → binary64 비유한 (§4.1 규칙 2)"
+    },
+    {
+      "id": "c2s-053",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[1e308,0,0,1]}",
+      "expect": "reject",
+      "expect_code": "BAD_VALUE",
+      "layer": "schema",
+      "note": "쿼터니언 성분 1e308: 유한하지만 성분 범위 위반, 예외 없이 거부 (§4.1 규칙 5)"
+    },
+    {
+      "id": "c2s-054",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":-1e400}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "parse",
+      "note": "theta_deg -1e400 → -inf (§4.1 규칙 2)"
+    },
+    {
+      "id": "c2s-055",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "parse",
+      "note": "실수 필드에 binary64 범위를 넘는 401자리 정수 (§4.1 규칙 3)"
+    },
+    {
+      "id": "c2s-056",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,1e400,1]}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "parse",
+      "note": "쿼터니언 성분 1e400 → inf (§4.1 규칙 2)"
+    },
+    {
+      "id": "c2s-057",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_VALUE",
+      "layer": "schema",
+      "note": "정수 필드 image_seq가 허용 최댓값 초과: 형식이 아니라 범위 위반 (§4.1 규칙 4)"
+    },
+    {
+      "id": "c2s-058",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1e0,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "parse",
+      "note": "정수 필드에 지수 표기 1e0 (§2.3·§4.1 규칙 4)"
+    },
+    {
       "id": "s2c-001",
       "direction": "s2c",
       "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011}",
@@ -737,6 +809,22 @@
       "expect": "reject",
       "layer": "schema",
       "note": "정의되지 않은 필드"
+    },
+    {
+      "id": "s2c-038",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"REACHED\",\"robot_ready\":false,\"not_ready_reasons\":[\"NOT_STOPPED\"],\"active_command_id\":null,\"server_time_ms\":5527310,\"reach_error\":{\"position_mm\":1e400,\"rotation_deg\":0.1}}",
+      "expect": "reject",
+      "layer": "parse",
+      "note": "응답 실수 필드 1e400 → 반영하지 않음 (§4.1 규칙 7, §8.8)"
+    },
+    {
+      "id": "s2c-039",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"REACHED\",\"robot_ready\":false,\"not_ready_reasons\":[\"NOT_STOPPED\"],\"active_command_id\":null,\"server_time_ms\":5527310,\"reach_error\":{\"position_mm\":10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,\"rotation_deg\":0.1}}",
+      "expect": "reject",
+      "layer": "parse",
+      "note": "응답 실수 필드에 401자리 정수 → 반영하지 않음 (§4.1 규칙 3·7)"
     }
   ],
   "dedupe": [

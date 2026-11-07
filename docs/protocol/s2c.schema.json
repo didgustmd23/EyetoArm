@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://project09.local/tcp/1.1/s2c.schema.json",
+  "$id": "https://eyetoarm.local/tcp/1.1/s2c.schema.json",
   "title": "EyetoArm TCP 1.1 — server to client",
   "description": "STATUS. 패킷 정의서 v1.0 §4.6·§4.7·§6. 종류 판별: state 있음 = 명령 상태, state 없고 code 있음 = 거부·형식 오류, 둘 다 없음 = 준비 응답.",
   "type": "object",

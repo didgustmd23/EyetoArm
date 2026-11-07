@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://project09.local/tcp/1.1/c2s.schema.json",
+  "$id": "https://eyetoarm.local/tcp/1.1/c2s.schema.json",
   "title": "EyetoArm TCP 1.1 — client to server",
   "description": "MOVE, GET_STATUS, CANCEL. 패킷 정의서 v1.0 §4. 이 스키마로 잡지 못하는 규칙(중복 키, NaN, 정수 리터럴, valid=false, 쿼터니언 정규성)은 정의서 §2.3·§4.2를 구현 코드에서 검사한다. 거부 코드는 위반 키워드로 정한다: minimum/maximum/exclusiveMaximum/minItems/maxItems → BAD_VALUE, 그 밖 → BAD_FORMAT, 둘 다 있으면 BAD_FORMAT (정의서 §7.2.1).",
   "type": "object",
