@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project09.local/tcp/1.1/s2c.schema.json",
+  "title": "EyetoArm TCP 1.1 — server to client",
+  "description": "STATUS. 패킷 정의서 v1.0 §4.6·§4.7·§6. 종류 판별: state 있음 = 명령 상태, state 없고 code 있음 = 거부·형식 오류, 둘 다 없음 = 준비 응답.",
+  "type": "object",
+  "required": ["version", "type", "robot_ready", "not_ready_reasons", "active_command_id", "server_time_ms"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": "1.1" },
+    "type": { "const": "STATUS" },
+    "command_id": { "$ref": "#/$defs/uuid_v4" },
+    "state": { "enum": ["ACK", "PLANNING", "MOVING", "REACHED", "FAILED"] },
+    "stage": { "enum": ["PLANNING", "EXECUTION", "REACH_CHECK", "RECOVERY"] },
+    "code": { "enum": [
+      "BAD_FORMAT", "BAD_VALUE", "OUT_OF_WORKSPACE", "ID_CONFLICT", "BUSY", "NOT_READY", "UNKNOWN_COMMAND",
+      "PLAN_FAILED", "EXEC_FAILED", "FEEDBACK_LOST", "REACH_TOLERANCE", "CANCELLED", "CANCEL_UNCONFIRMED", "SERVER_RESTARTED", "LOG_WRITE_FAILED"
+    ] },
+    "detail": { "type": "string", "maxLength": 256 },
+    "robot_ready": { "type": "boolean" },
+    "not_ready_reasons": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": [
+        "COMMAND_ACTIVE", "ROS_DISCONNECTED", "SIM_PAUSED", "CONTROLLER_INACTIVE", "TRAJECTORY_ACTIVE",
+        "ACTION_STATUS_UNKNOWN", "FEEDBACK_STALE", "NOT_STOPPED", "SCENE_NOT_READY", "RECOVERING", "RECOVERY_FAILED", "LOG_UNAVAILABLE"
+      ] }
+    },
+    "active_command_id": {
+      "anyOf": [ { "$ref": "#/$defs/uuid_v4" }, { "type": "null" } ]
+    },
+    "server_time_ms": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "reach_error": {
+      "type": "object",
+      "required": ["position_mm", "rotation_deg"],
+      "additionalProperties": false,
+      "properties": {
+        "position_mm": { "type": "number", "minimum": 0 },
+        "rotation_deg": { "type": "number", "minimum": 0 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "명령 상태에는 command_id가 반드시 있다",
+      "if": { "required": ["state"] },
+      "then": { "required": ["command_id"] }
+    },
+    {
+      "$comment": "command_id만 있고 state도 code도 없는 응답은 없다",
+      "if": { "required": ["command_id"], "not": { "required": ["state"] } },
+      "then": { "required": ["code"] }
+    },
+    {
+      "$comment": "FAILED에는 stage와 실패 코드가 있다. FAILED가 아니면 stage가 없다",
+      "if": { "required": ["state"], "properties": { "state": { "const": "FAILED" } } },
+      "then": {
+        "required": ["stage", "code"],
+        "properties": { "code": { "enum": [
+          "PLAN_FAILED", "EXEC_FAILED", "FEEDBACK_LOST", "REACH_TOLERANCE", "CANCELLED", "CANCEL_UNCONFIRMED", "SERVER_RESTARTED", "LOG_WRITE_FAILED"
+        ] } }
+      },
+      "else": { "not": { "required": ["stage"] } }
+    },
+    {
+      "$comment": "진행·도달 상태에는 code가 없다",
+      "if": { "required": ["state"], "properties": { "state": { "enum": ["ACK", "PLANNING", "MOVING", "REACHED"] } } },
+      "then": { "not": { "required": ["code"] } }
+    },
+    {
+      "$comment": "state가 없을 때 code는 거부·형식 오류 코드만",
+      "if": { "not": { "required": ["state"] }, "required": ["code"] },
+      "then": { "properties": { "code": { "enum": [
+        "BAD_FORMAT", "BAD_VALUE", "OUT_OF_WORKSPACE", "ID_CONFLICT", "BUSY", "NOT_READY", "UNKNOWN_COMMAND"
+      ] } } }
+    },
+    {
+      "$comment": "BAD_FORMAT 외의 거부에는 거부한 command_id가 있다",
+      "if": {
+        "not": { "required": ["state"] },
+        "required": ["code"],
+        "properties": { "code": { "not": { "const": "BAD_FORMAT" } } }
+      },
+      "then": { "required": ["command_id"] }
+    },
+    {
+      "$comment": "reach_error는 REACHED 또는 stage=REACH_CHECK일 때만, 그때는 필수",
+      "if": { "anyOf": [
+        { "required": ["state"], "properties": { "state": { "const": "REACHED" } } },
+        { "required": ["stage"], "properties": { "stage": { "const": "REACH_CHECK" } } }
+      ] },
+      "then": { "required": ["reach_error"] },
+      "else": { "not": { "required": ["reach_error"] } }
+    },
+    { "if": { "required": ["code"], "properties": { "code": { "const": "PLAN_FAILED" } } }, "then": { "properties": { "stage": { "const": "PLANNING" } } } },
+    { "if": { "required": ["code"], "properties": { "code": { "const": "CANCELLED" } } }, "then": { "properties": { "stage": { "enum": ["PLANNING", "EXECUTION"] } } } },
+    { "if": { "required": ["code"], "properties": { "code": { "enum": ["EXEC_FAILED", "FEEDBACK_LOST", "CANCEL_UNCONFIRMED"] } } }, "then": { "properties": { "stage": { "const": "EXECUTION" } } } },
+    { "if": { "required": ["code"], "properties": { "code": { "const": "REACH_TOLERANCE" } } }, "then": { "properties": { "stage": { "const": "REACH_CHECK" } } } },
+    { "if": { "required": ["code"], "properties": { "code": { "const": "SERVER_RESTARTED" } } }, "then": { "properties": { "stage": { "const": "RECOVERY" } } } },
+    { "if": { "required": ["code"], "properties": { "code": { "const": "LOG_WRITE_FAILED" } } }, "then": { "properties": { "stage": { "const": "PLANNING" } } } },
+    {
+      "$comment": "robot_ready=true이면 사유 없음, false이면 사유 1개 이상",
+      "if": { "properties": { "robot_ready": { "const": true } } },
+      "then": { "properties": { "not_ready_reasons": { "maxItems": 0 } } },
+      "else": { "properties": { "not_ready_reasons": { "minItems": 1 } } }
+    },
+    {
+      "$comment": "슬롯 점유 ⇔ COMMAND_ACTIVE",
+      "if": { "properties": { "active_command_id": { "type": "string" } } },
+      "then": { "properties": {
+        "robot_ready": { "const": false },
+        "not_ready_reasons": { "contains": { "const": "COMMAND_ACTIVE" } }
+      } },
+      "else": { "properties": { "not_ready_reasons": { "not": { "contains": { "const": "COMMAND_ACTIVE" } } } } }
+    },
+    {
+      "$comment": "NOT_READY 거부는 준비 상태가 아닐 때만, BUSY는 슬롯이 차 있을 때만",
+      "if": { "required": ["code"], "properties": { "code": { "const": "NOT_READY" } } },
+      "then": { "properties": { "robot_ready": { "const": false } } }
+    },
+    {
+      "if": { "required": ["code"], "properties": { "code": { "const": "BUSY" } } },
+      "then": { "properties": { "active_command_id": { "type": "string" } } }
+    }
+  ],
+  "$defs": {
+    "uuid_v4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    }
+  }
+}

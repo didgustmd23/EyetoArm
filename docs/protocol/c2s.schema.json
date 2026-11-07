@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project09.local/tcp/1.1/c2s.schema.json",
+  "title": "EyetoArm TCP 1.1 — client to server",
+  "description": "MOVE, GET_STATUS, CANCEL. 패킷 정의서 v1.0 §4. 이 스키마로 잡지 못하는 규칙(중복 키, NaN, 정수 리터럴, valid=false, 쿼터니언 정규성)은 정의서 §2.3·§4.2를 구현 코드에서 검사한다. 거부 코드는 위반 키워드로 정한다: minimum/maximum/exclusiveMaximum/minItems/maxItems → BAD_VALUE, 그 밖 → BAD_FORMAT, 둘 다 있으면 BAD_FORMAT (정의서 §7.2.1).",
+  "type": "object",
+  "required": ["version", "type"],
+  "properties": {
+    "version": { "const": "1.1" },
+    "type": { "enum": ["MOVE", "GET_STATUS", "CANCEL"] }
+  },
+  "allOf": [
+    { "if": { "properties": { "type": { "const": "MOVE" } } }, "then": { "$ref": "#/$defs/move" } },
+    { "if": { "properties": { "type": { "const": "GET_STATUS" } } }, "then": { "$ref": "#/$defs/get_status" } },
+    { "if": { "properties": { "type": { "const": "CANCEL" } } }, "then": { "$ref": "#/$defs/cancel" } }
+  ],
+  "$defs": {
+    "uuid_v4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "ident": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.-]+$"
+    },
+    "ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "move": {
+      "type": "object",
+      "required": [
+        "version", "type", "command_id", "mode", "frame", "source_id", "image_seq",
+        "timestamp_ms", "timestamp_base", "calibration_id", "valid", "position_mm"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "version": { "const": "1.1" },
+        "type": { "const": "MOVE" },
+        "command_id": { "$ref": "#/$defs/uuid_v4" },
+        "mode": { "enum": ["PLANAR", "POSE_6D"] },
+        "frame": { "const": "work" },
+        "source_id": { "$ref": "#/$defs/ident" },
+        "image_seq": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "timestamp_ms": { "$ref": "#/$defs/ms" },
+        "timestamp_base": { "enum": ["PC_RECEIVE", "PHONE_CAPTURE", "SIM_TIME", "VIDEO_POS"] },
+        "calibration_id": { "$ref": "#/$defs/ident" },
+        "valid": { "type": "boolean", "$comment": "false 여부는 의미 검사(BAD_VALUE). 정의서 §7.2.1" },
+        "position_mm": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 3
+        },
+        "theta_deg": { "type": "number", "minimum": 0, "exclusiveMaximum": 180 },
+        "orientation_xyzw": {
+          "type": "array",
+          "prefixItems": [
+            { "type": "number", "minimum": -1, "maximum": 1 },
+            { "type": "number", "minimum": -1, "maximum": 1 },
+            { "type": "number", "minimum": -1, "maximum": 1 },
+            { "type": "number", "minimum": 0, "maximum": 1 }
+          ],
+          "minItems": 4,
+          "maxItems": 4
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "PLANAR" } } },
+          "then": {
+            "required": ["theta_deg"],
+            "not": { "required": ["orientation_xyzw"] },
+            "properties": { "position_mm": { "minItems": 2, "maxItems": 2 } }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "POSE_6D" } } },
+          "then": {
+            "required": ["orientation_xyzw"],
+            "not": { "required": ["theta_deg"] },
+            "properties": { "position_mm": { "minItems": 3, "maxItems": 3 } }
+          }
+        }
+      ]
+    },
+    "get_status": {
+      "type": "object",
+      "required": ["version", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "version": { "const": "1.1" },
+        "type": { "const": "GET_STATUS" },
+        "command_id": { "$ref": "#/$defs/uuid_v4" }
+      }
+    },
+    "cancel": {
+      "type": "object",
+      "required": ["version", "type", "command_id"],
+      "additionalProperties": false,
+      "properties": {
+        "version": { "const": "1.1" },
+        "type": { "const": "CANCEL" },
+        "command_id": { "$ref": "#/$defs/uuid_v4" }
+      }
+    }
+  }
+}

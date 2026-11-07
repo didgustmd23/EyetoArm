@@ -1,0 +1,69 @@
+# Python 캐시·가상환경·패키징 결과
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+dist/
+
+# 검사 도구·노트북 캐시
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# ROS 2 / colcon / CMake 빌드 결과 (중첩 작업공간 포함)
+build/
+install/
+log/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+
+# ROS·Gazebo 로컬 실행 상태
+.ros/
+.gz/
+.ignition/
+
+# TCP 명령 로그·실행 결과
+/logs/
+/outputs/
+*.log
+
+# 대용량 촬영 원본·녹화·rosbag은 아래 로컬 폴더에 보관
+# 공유할 예제 영상·평가 자료·보정 파일·마커·로봇 모델은 별도 경로에서 관리
+/data/raw/*
+!/data/raw/README.md
+!/data/raw/.gitkeep
+/recordings/*
+!/recordings/README.md
+!/recordings/.gitkeep
+/rosbags/*
+!/rosbags/README.md
+!/rosbags/.gitkeep
+
+# 로컬 접속 정보·환경 변수 (공유 예제는 포함)
+.env
+.env.*
+!.env.example
+!.env.*.example
+/config/*.local.*
+.aws/
+
+# 개인 IDE 설정·임시 파일·OS 메타데이터
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,842 @@
+{
+  "protocol_version": "1.1",
+  "spec": "TCP_프로토콜_명세서.md §13",
+  "vectors": [
+    {
+      "id": "c2s-001",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "PLANAR 정상"
+    },
+    {
+      "id": "c2s-002",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0.3826834,0.9238795]}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "POSE_6D 정상 (Z축 45°)"
+    },
+    {
+      "id": "c2s-003",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"GET_STATUS\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "준비 상태 조회 (ID 없음)"
+    },
+    {
+      "id": "c2s-004",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"GET_STATUS\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "명령 상태 조회"
+    },
+    {
+      "id": "c2s-005",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"CANCEL\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "취소"
+    },
+    {
+      "id": "c2s-006",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":0}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "θ 하한 0 포함"
+    },
+    {
+      "id": "c2s-007",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":179.999}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "θ 상한 직전"
+    },
+    {
+      "id": "c2s-008",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[1,0,0,0]}",
+      "expect": "accept",
+      "layer": "semantic",
+      "note": "w = 0 (X축 180°), 정규화됨"
+    },
+    {
+      "id": "c2s-009",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"video.run-03\",\"image_seq\":1532,\"timestamp_ms\":0,\"timestamp_base\":\"VIDEO_POS\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "저장 영상, 재생 위치 0 ms, 식별 문자열에 . - 허용"
+    },
+    {
+      "id": "c2s-010",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"GET_STATUS\"",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "parse",
+      "note": "JSON이 닫히지 않음"
+    },
+    {
+      "id": "c2s-011",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2,\"theta_deg\":90}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "parse",
+      "note": "중복 키 theta_deg"
+    },
+    {
+      "id": "c2s-012",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[NaN,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "parse",
+      "note": "NaN 토큰 (Python json 기본 설정은 받아들임)"
+    },
+    {
+      "id": "c2s-013",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[Infinity,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "parse",
+      "note": "Infinity 토큰"
+    },
+    {
+      "id": "c2s-014",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532.0,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "parse",
+      "note": "정수 필드에 소수점 리터럴"
+    },
+    {
+      "id": "c2s-015",
+      "direction": "c2s",
+      "raw": "[{\"version\":\"1.1\",\"type\":\"GET_STATUS\"}]",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "최상위가 배열"
+    },
+    {
+      "id": "c2s-016",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.0\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "지원하지 않는 버전"
+    },
+    {
+      "id": "c2s-017",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "클라이언트가 보낼 수 없는 type"
+    },
+    {
+      "id": "c2s-018",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE_TO\"}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "알 수 없는 type"
+    },
+    {
+      "id": "c2s-019",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "필수 필드 누락"
+    },
+    {
+      "id": "c2s-020",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2,\"gripper\":\"open\"}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "정의되지 않은 필드"
+    },
+    {
+      "id": "c2s-021",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_degree\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "오타 필드 (theta_degree)"
+    },
+    {
+      "id": "c2s-022",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2,\"orientation_xyzw\":[0,0,0,1]}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "PLANAR에 orientation_xyzw"
+    },
+    {
+      "id": "c2s-023",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0.3826834,0.9238795],\"theta_deg\":10}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "POSE_6D에 theta_deg"
+    },
+    {
+      "id": "c2s-024",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5]}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "POSE_6D에 orientation_xyzw 없음"
+    },
+    {
+      "id": "c2s-025",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3F2B8C1E-6A4D-4E0B-9A51-2C7D9E0F1A23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "UUID 대문자"
+    },
+    {
+      "id": "c2s-026",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-1e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "UUID v1"
+    },
+    {
+      "id": "c2s-027",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":\"1532\",\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "정수 필드에 문자열"
+    },
+    {
+      "id": "c2s-028",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"base\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "frame은 work만"
+    },
+    {
+      "id": "c2s-029",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"planar\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "mode 소문자"
+    },
+    {
+      "id": "c2s-030",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"UTC\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "정의되지 않은 시간 기준"
+    },
+    {
+      "id": "c2s-031",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone 0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "식별 문자열에 공백"
+    },
+    {
+      "id": "c2s-032",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":\"true\",\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "valid에 문자열"
+    },
+    {
+      "id": "c2s-033",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"CANCEL\"}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "CANCEL에 command_id 없음"
+    },
+    {
+      "id": "c2s-034",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"GET_STATUS\",\"verbose\":true}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "GET_STATUS에 정의되지 않은 필드"
+    },
+    {
+      "id": "c2s-035",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":180}",
+      "expect": "reject",
+      "expect_code": "BAD_VALUE",
+      "layer": "schema",
+      "note": "θ = 180 (상한 제외)"
+    },
+    {
+      "id": "c2s-036",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":-0.5}",
+      "expect": "reject",
+      "expect_code": "BAD_VALUE",
+      "layer": "schema",
+      "note": "θ 음수"
+    },
+    {
+      "id": "c2s-037",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":false,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_VALUE",
+      "layer": "semantic",
+      "note": "valid = false (의미 검사)"
+    },
+    {
+      "id": "c2s-038",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":-1,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_VALUE",
+      "layer": "schema",
+      "note": "image_seq 음수"
+    },
+    {
+      "id": "c2s-039",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80,10],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_VALUE",
+      "layer": "schema",
+      "note": "PLANAR 위치 3개"
+    },
+    {
+      "id": "c2s-040",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60],\"orientation_xyzw\":[0,0,0.3826834,0.9238795]}",
+      "expect": "reject",
+      "expect_code": "BAD_VALUE",
+      "layer": "schema",
+      "note": "POSE_6D 위치 2개"
+    },
+    {
+      "id": "c2s-041",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,-0.3826834,-0.9238795]}",
+      "expect": "reject",
+      "expect_code": "BAD_VALUE",
+      "layer": "schema",
+      "note": "쿼터니언 w < 0 (부호 통일 위반)"
+    },
+    {
+      "id": "c2s-042",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0.3,0.8]}",
+      "expect": "reject",
+      "expect_code": "BAD_VALUE",
+      "layer": "semantic",
+      "note": "쿼터니언 비정규 (‖q‖ ≈ 0.854)"
+    },
+    {
+      "id": "c2s-043",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0.3827,0.9239]}",
+      "expect": "reject",
+      "expect_code": "BAD_VALUE",
+      "layer": "semantic",
+      "note": "소수 4자리로 반올림해 ‖q‖ − 1 ≈ 2.5e-5 (허용 1e-6 초과)"
+    },
+    {
+      "id": "c2s-044",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0,0.9999995]}",
+      "expect": "accept",
+      "layer": "semantic",
+      "note": "‖q‖ − 1 = −5e-7, 허용 범위 안"
+    },
+    {
+      "id": "c2s-045",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0.3826834,0.9238795,0]}",
+      "expect": "reject",
+      "expect_code": "BAD_VALUE",
+      "layer": "schema",
+      "note": "orientation_xyzw 성분 5개 (maxItems)"
+    },
+    {
+      "id": "c2s-046",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,1]}",
+      "expect": "reject",
+      "expect_code": "BAD_VALUE",
+      "layer": "schema",
+      "note": "orientation_xyzw 성분 3개 (minItems)"
+    },
+    {
+      "id": "c2s-047",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":180,\"gripper\":\"open\"}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "값 위반 + 형식 위반 → 형식 우선"
+    },
+    {
+      "id": "c2s-048",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":false,\"position_mm\":[120,80],\"theta_deg\":180}",
+      "expect": "reject",
+      "expect_code": "BAD_VALUE",
+      "layer": "schema",
+      "note": "값 위반 두 개 (스키마 + 의미)"
+    },
+    {
+      "id": "c2s-049",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0.3,0.8],\"note\":\"x\"}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "쿼터니언 비정규 + 정의되지 않은 필드 → 형식 우선"
+    },
+    {
+      "id": "c2s-050",
+      "direction": "c2s",
+      "raw": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "reject",
+      "expect_code": "BAD_FORMAT",
+      "layer": "schema",
+      "note": "POSE_6D인데 theta_deg 있음·orientation 없음·위치 2개 → 형식 우선"
+    },
+    {
+      "id": "s2c-001",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "준비 응답 — 준비됨"
+    },
+    {
+      "id": "s2c-002",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"RECOVERING\"],\"active_command_id\":null,\"server_time_ms\":5523011}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "준비 응답 — 재시작 복구 중"
+    },
+    {
+      "id": "s2c-003",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"COMMAND_ACTIVE\"],\"active_command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"server_time_ms\":5523040,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"ACK\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "ACK"
+    },
+    {
+      "id": "s2c-004",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"COMMAND_ACTIVE\"],\"active_command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"MOVING\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "MOVING 알림"
+    },
+    {
+      "id": "s2c-005",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"NOT_STOPPED\"],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"REACHED\",\"reach_error\":{\"position_mm\":0.42,\"rotation_deg\":0.11}}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "REACHED, 슬롯 해제, 정지 확인 전"
+    },
+    {
+      "id": "s2c-006",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"FAILED\",\"stage\":\"PLANNING\",\"code\":\"CANCELLED\",\"detail\":\"cancelled before trajectory dispatch\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "계획 중 취소"
+    },
+    {
+      "id": "s2c-007",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"NOT_STOPPED\"],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"FAILED\",\"stage\":\"REACH_CHECK\",\"code\":\"REACH_TOLERANCE\",\"reach_error\":{\"position_mm\":3.1,\"rotation_deg\":0.4}}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "끝단 도달 허용치 초과"
+    },
+    {
+      "id": "s2c-008",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"TRAJECTORY_ACTIVE\",\"NOT_STOPPED\"],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"FAILED\",\"stage\":\"EXECUTION\",\"code\":\"CANCEL_UNCONFIRMED\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "취소 후 정지 미확인"
+    },
+    {
+      "id": "s2c-009",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"FAILED\",\"stage\":\"RECOVERY\",\"code\":\"SERVER_RESTARTED\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "재시작 복구 후 이전 명령"
+    },
+    {
+      "id": "s2c-010",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"COMMAND_ACTIVE\"],\"active_command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"server_time_ms\":5523011,\"command_id\":\"7e0a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b\",\"code\":\"BUSY\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "BUSY 거부 — 다른 명령 Y"
+    },
+    {
+      "id": "s2c-011",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"FEEDBACK_STALE\"],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"7e0a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b\",\"code\":\"NOT_READY\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "NOT_READY 거부"
+    },
+    {
+      "id": "s2c-012",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"7e0a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b\",\"code\":\"UNKNOWN_COMMAND\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "UNKNOWN_COMMAND"
+    },
+    {
+      "id": "s2c-013",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011,\"code\":\"BAD_FORMAT\",\"detail\":\"invalid JSON\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "형식 오류 — ID 읽을 수 없음"
+    },
+    {
+      "id": "s2c-014",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"7e0a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b\",\"code\":\"BAD_FORMAT\",\"detail\":\"unknown field: gripper\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "형식 오류 — ID 읽을 수 있음"
+    },
+    {
+      "id": "s2c-015",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"FAILED\",\"stage\":\"PLANNING\",\"code\":\"LOG_WRITE_FAILED\",\"detail\":\"MOVING record failed; trajectory not dispatched\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "궤적 전송 전 기록 실패 — 종료 기록이 써진 뒤의 알림"
+    },
+    {
+      "id": "s2c-016",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"COMMAND_ACTIVE\",\"LOG_UNAVAILABLE\"],\"active_command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"MOVING\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "종료 기록 대기 중 — 마지막으로 알린 MOVING 유지, 슬롯 점유"
+    },
+    {
+      "id": "s2c-017",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"COMMAND_ACTIVE\",\"LOG_UNAVAILABLE\"],\"active_command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"server_time_ms\":5523011,\"command_id\":\"7e0a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b\",\"code\":\"BUSY\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "종료 기록 대기 중 새 ID → BUSY"
+    },
+    {
+      "id": "s2c-018",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"LOG_UNAVAILABLE\"],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"7e0a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b\",\"code\":\"NOT_READY\"}",
+      "expect": "accept",
+      "layer": "schema",
+      "note": "등록 기록 실패 → ACK 없이 NOT_READY"
+    },
+    {
+      "id": "s2c-019",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"LOG_UNAVAILABLE\"],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"FAILED\",\"stage\":\"EXECUTION\",\"code\":\"LOG_WRITE_FAILED\"}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "LOG_WRITE_FAILED는 PLANNING 단계만"
+    },
+    {
+      "id": "s2c-020",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"LOG_UNAVAILABLE\"],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"7e0a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b\",\"code\":\"LOG_WRITE_FAILED\"}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "state 없이 실패 코드 LOG_WRITE_FAILED"
+    },
+    {
+      "id": "s2c-021",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"COMMAND_ACTIVE\"],\"active_command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"server_time_ms\":5523011,\"state\":\"ACK\"}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "명령 상태에 command_id 없음"
+    },
+    {
+      "id": "s2c-022",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"FAILED\",\"code\":\"PLAN_FAILED\"}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "FAILED에 stage 없음"
+    },
+    {
+      "id": "s2c-023",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"COMMAND_ACTIVE\"],\"active_command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"ACK\",\"code\":\"BUSY\"}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "ACK에 code"
+    },
+    {
+      "id": "s2c-024",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"COMMAND_ACTIVE\"],\"active_command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"server_time_ms\":5523011,\"code\":\"BUSY\"}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "BUSY에 command_id 없음 — 준비 응답과 구분 불가"
+    },
+    {
+      "id": "s2c-025",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\"}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "command_id만 있고 state·code 없음"
+    },
+    {
+      "id": "s2c-026",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[\"NOT_STOPPED\"],\"active_command_id\":null,\"server_time_ms\":5523011}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "robot_ready=true인데 사유 있음"
+    },
+    {
+      "id": "s2c-027",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "robot_ready=false인데 사유 없음"
+    },
+    {
+      "id": "s2c-028",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"server_time_ms\":5523011}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "슬롯 점유 중인데 robot_ready=true"
+    },
+    {
+      "id": "s2c-029",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"COMMAND_ACTIVE\"],\"active_command_id\":null,\"server_time_ms\":5523011}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "COMMAND_ACTIVE인데 active_command_id 없음"
+    },
+    {
+      "id": "s2c-030",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"NOT_STOPPED\"],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"REACHED\"}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "REACHED에 reach_error 없음"
+    },
+    {
+      "id": "s2c-031",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":false,\"not_ready_reasons\":[\"COMMAND_ACTIVE\"],\"active_command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"MOVING\",\"reach_error\":{\"position_mm\":1,\"rotation_deg\":1}}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "MOVING에 reach_error"
+    },
+    {
+      "id": "s2c-032",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"FAILED\",\"stage\":\"VALIDATION\",\"code\":\"BAD_VALUE\"}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "폐지된 stage VALIDATION, 검증 거부를 FAILED로 표현"
+    },
+    {
+      "id": "s2c-033",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"state\":\"FAILED\",\"stage\":\"EXECUTION\",\"code\":\"REACH_TOLERANCE\",\"reach_error\":{\"position_mm\":3,\"rotation_deg\":0}}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "code와 stage 조합 불일치"
+    },
+    {
+      "id": "s2c-034",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"7e0a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b\",\"code\":\"PLAN_FAILED\"}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "state 없이 실패 코드"
+    },
+    {
+      "id": "s2c-035",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011,\"command_id\":\"7e0a1b2c-3d4e-4f50-8a6b-7c8d9e0f1a2b\",\"code\":\"NOT_READY\"}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "NOT_READY인데 robot_ready=true"
+    },
+    {
+      "id": "s2c-036",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "server_time_ms 없음"
+    },
+    {
+      "id": "s2c-037",
+      "direction": "s2c",
+      "raw": "{\"version\":\"1.1\",\"type\":\"STATUS\",\"robot_ready\":true,\"not_ready_reasons\":[],\"active_command_id\":null,\"server_time_ms\":5523011,\"seq\":1}",
+      "expect": "reject",
+      "layer": "schema",
+      "note": "정의되지 않은 필드"
+    }
+  ],
+  "dedupe": [
+    {
+      "id": "dedupe-001",
+      "a": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "b": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "same",
+      "note": "완전히 같은 바이트"
+    },
+    {
+      "id": "dedupe-002",
+      "a": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "b": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120.005,80],\"theta_deg\":35.2}",
+      "expect": "same",
+      "note": "위치 차이 0.005 mm"
+    },
+    {
+      "id": "dedupe-003",
+      "a": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "b": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120.02,80],\"theta_deg\":35.2}",
+      "expect": "conflict",
+      "note": "위치 차이 0.02 mm"
+    },
+    {
+      "id": "dedupe-004",
+      "a": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":179.998}",
+      "b": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":0.001}",
+      "expect": "same",
+      "note": "θ 180° 주기 차이 0.003°"
+    },
+    {
+      "id": "dedupe-005",
+      "a": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "b": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.25}",
+      "expect": "conflict",
+      "note": "θ 차이 0.05°"
+    },
+    {
+      "id": "dedupe-006",
+      "a": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "b": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1533,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "conflict",
+      "note": "image_seq 다름"
+    },
+    {
+      "id": "dedupe-007",
+      "a": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "b": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v4\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "conflict",
+      "note": "calibration_id 다름"
+    },
+    {
+      "id": "dedupe-008",
+      "a": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "b": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"3f2b8c1e-6a4d-4e0b-9a51-2c7d9e0f1a23\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PHONE_CAPTURE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "expect": "conflict",
+      "note": "timestamp_base 다름"
+    },
+    {
+      "id": "dedupe-009",
+      "a": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0,0.9999995]}",
+      "b": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0,0.9999995]}",
+      "expect": "same",
+      "note": "비단위 쿼터니언을 자기 자신과 비교 — 정규화 없으면 약 0.162°로 오판"
+    },
+    {
+      "id": "dedupe-010",
+      "a": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0,0.9999995]}",
+      "b": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0,1]}",
+      "expect": "same",
+      "note": "정규화하면 같은 회전"
+    },
+    {
+      "id": "dedupe-011",
+      "a": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[1,0,0,0]}",
+      "b": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[-1,0,0,0]}",
+      "expect": "same",
+      "note": "w = 0에서 q와 −q"
+    },
+    {
+      "id": "dedupe-012",
+      "a": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0.3826834323650898,0.9238795325112867]}",
+      "b": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0.3827237438501246,0.9238628339171049]}",
+      "expect": "same",
+      "note": "Z축 회전 차이 0.005°"
+    },
+    {
+      "id": "dedupe-013",
+      "a": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0.3826834323650898,0.9238795325112867]}",
+      "b": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0.38284467393301025,0.9238127275812599]}",
+      "expect": "conflict",
+      "note": "Z축 회전 차이 0.02°"
+    },
+    {
+      "id": "dedupe-014",
+      "a": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"PLANAR\",\"frame\":\"work\",\"source_id\":\"phone0\",\"image_seq\":1532,\"timestamp_ms\":8412337,\"timestamp_base\":\"PC_RECEIVE\",\"calibration_id\":\"phone0_1080p_v3\",\"valid\":true,\"position_mm\":[120,80],\"theta_deg\":35.2}",
+      "b": "{\"version\":\"1.1\",\"type\":\"MOVE\",\"command_id\":\"9c1d7a52-0b3e-4f8a-a6d2-5e4b3c2a1f00\",\"mode\":\"POSE_6D\",\"frame\":\"work\",\"source_id\":\"gz_cam0\",\"image_seq\":88,\"timestamp_ms\":125400,\"timestamp_base\":\"SIM_TIME\",\"calibration_id\":\"gz_cam0_v2\",\"valid\":true,\"position_mm\":[150,60,42.5],\"orientation_xyzw\":[0,0,0.3826834,0.9238795]}",
+      "expect": "conflict",
+      "note": "같은 ID, 모드 다름"
+    }
+  ]
+}
