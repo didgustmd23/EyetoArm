@@ -115,6 +115,8 @@ EyetoArm/
 
 - [시스템 아키텍처와 5주 계획](docs/architecture/시스템_아키텍처_및_프로젝트_계획.md)
 - [A 담당 비전 상세설계](docs/design/A담당_비전_상세설계.md)
+- [C 담당 비전 상세설계](docs/design/C담당_로봇서버_상세설계.md)
+- [D 담당 비전 상세설계](docs/design/D담당_GUI_TCP_상세설계.md)
 - [TCP 패킷 정의서](docs/protocol/TCP_프로토콜_명세서.md), [요청·응답 JSON 스키마와 시험 벡터](docs/protocol/)
 
 메시지 필드, 응답 구분, 재전송·취소·복구의 세부 규칙은 TCP 패킷 정의서를 기준으로 합니다.
