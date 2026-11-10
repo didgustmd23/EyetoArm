@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <!-- ISO 4762 M6 hex socket head cap screw. 원점=머리 윗면 아래 6 mm(머리·축 경계), +Z가 머리 쪽 -->
+  <model name="bolt_m6x12">
+    <link name="link">
+      <inertial>
+        <pose>0 0 -0.0030 0 0 0</pose>
+        <mass>0.006363</mass>
+        <inertia><ixx>1.972e-07</ixx><iyy>1.972e-07</iyy><izz>5.090e-08</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
+      </inertial>
+      <collision name="head"><pose>0 0 0.003 0 0 0</pose>
+        <geometry><cylinder><radius>0.005</radius><length>0.006</length></cylinder></geometry></collision>
+      <collision name="shank"><pose>0 0 -0.0060 0 0 0</pose>
+        <geometry><cylinder><radius>0.003</radius><length>0.012</length></cylinder></geometry></collision>
+      <visual name="visual">
+        <geometry><mesh><uri>model://bolt_m6x12/meshes/bolt_m6x12.stl</uri><scale>0.001 0.001 0.001</scale></mesh></geometry>
+        <material>
+          <ambient>0.468 0.480 0.504 1</ambient>
+          <diffuse>0.78 0.8 0.84 1</diffuse>
+          <specular>0.3 0.3 0.3 1</specular>
+          <pbr><metal><metalness>0.35</metalness><roughness>0.35</roughness></metal></pbr>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>
