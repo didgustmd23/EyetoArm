@@ -1,0 +1,39 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 500  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    gripper_controller:
+      type: parallel_gripper_action_controller/GripperActionController
+
+joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+    command_interfaces: [position]
+    state_interfaces: [position, velocity]
+    state_publish_rate: 100.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    constraints:
+      stopped_velocity_tolerance: 0.2
+      goal_time: 0.0
+
+# 그리퍼·로봇 실행 상세설계 §7.2의 1안. 2F-85 구동 관절 0.0(열림) ~ 0.8 rad(닫힘)
+gripper_controller:
+  ros__parameters:
+    joint: robotiq_85_left_knuckle_joint
+    goal_tolerance: 0.01
+    allow_stalling: true
+    stall_timeout: 1.0
+    max_effort: 50.0
