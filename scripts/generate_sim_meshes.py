@@ -3,7 +3,7 @@
 
 치수는 B가 확정하기 전의 임시값이다(D 상세설계 §A.11.1 5). 값이 바뀌면 이 파일의
 상수만 고치고 다시 실행한다:
-    python3 src/generate_meshes.py            # 패키지 루트에서
+    python3 scripts/generate_sim_meshes.py    # 저장소 루트에서
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import math
 import struct
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent / "models"
+ROOT = Path(__file__).resolve().parent.parent / "simulation" / "models"
 
 # 컨베이어(임시값, m). 벨트는 X축 방향으로 진행한다
 BELT_LENGTH = 1.20       # 롤러 중심 사이

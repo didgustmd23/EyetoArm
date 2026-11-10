@@ -1,8 +1,8 @@
 # 제3자 자산·오픈소스 라이선스 고지
 
-확인일 2026-11-10. 라이선스는 각 원본의 `package.xml`·`LICENSE`·README와 GitHub API로 확인했다. 이 패키지는 법률 검토를 거치지 않았으므로, 외부 공개·배포 전에 원문 조건을 다시 확인한다.
+확인일 2026-11-10. 라이선스는 각 원본의 `package.xml`·`LICENSE`·README와 GitHub API로 확인했다. 이 고지는 법률 검토를 거치지 않았으므로, 외부 공개·배포 전에 원문 조건을 다시 확인한다.
 
-## 1. 이 패키지 안에 포함(복사)한 자산
+## 1. 저장소 안에 포함(복사)한 자산
 
 | 파일 | 원본 | 저작자 | 라이선스 | 수정 |
 |---|---|---|---|---|
@@ -14,11 +14,11 @@ FreeCAD-library README 원문: "All Parts in this repository are licensed under 
 
 CC-BY 3.0 표기: 위 세 메시는 각 저작자의 작품이며 CC-BY 3.0으로 이용한다. 원본에서 파일명만 바꾸었다.
 
-## 2. 실행 시 참조만 하는 패키지(이 패키지에 복사하지 않음)
+## 2. 실행 시 참조만 하는 패키지(저장소에 복사하지 않음)
 
 | 패키지 | 버전(설치 확인) | 쓰는 것 | 라이선스 |
 |---|---|---|---|
-| `ur_description` ([Universal_Robots_ROS2_Description](https://github.com/UniversalRobots/Universal_Robots_ROS2_Description)) | 3.5.1 | UR5e xacro 매크로·메시·재질 | BSD-3-Clause. 단 ur8long·ur15·ur18·ur20·ur30 메시는 "Universal Robots A/S’ Terms and Conditions for Use of Graphical Documentation"(이 패키지는 UR5e만 사용) |
+| `ur_description` ([Universal_Robots_ROS2_Description](https://github.com/UniversalRobots/Universal_Robots_ROS2_Description)) | 3.5.1 | UR5e xacro 매크로·메시·재질 | BSD-3-Clause. 단 ur8long·ur15·ur18·ur20·ur30 메시는 "Universal Robots A/S’ Terms and Conditions for Use of Graphical Documentation"(이 저장소는 UR5e만 사용) |
 | `robotiq_description` ([ros2_robotiq_gripper](https://github.com/PickNikRobotics/ros2_robotiq_gripper)) | 0.0.1-3noble (apt) | 2F-85 xacro 매크로·메시·재질, UR–Robotiq 어댑터(`ur_to_robotiq_adapter`) 메시 | BSD-3-Clause (GitHub 저장소 `LICENSE`, `package.xml`) |
 | `ros_gz_sim`, `ros_gz_bridge` | 1.0.24 | Gazebo 기동·로봇 생성·`/clock` 연결 | Apache-2.0 |
 | `gz_ros2_control` | 1.2.20 | Gazebo ↔ ros2_control | Apache-2.0 |
@@ -28,11 +28,11 @@ CC-BY 3.0 표기: 위 세 메시는 각 저작자의 작품이며 CC-BY 3.0으�
 | `xacro` | 2.1.1 | URDF 생성 | BSD |
 | Gazebo Harmonic (gz-sim 8) | 8.x | 시뮬레이터 | Apache-2.0 |
 
-이 패키지는 위 패키지의 파일을 복사·수정하지 않고 설치 경로에서 그대로 불러온다. 배포물에 이들의 파일을 함께 넣게 되면 각 라이선스 고지문을 같이 포함한다.
+이 저장소는 위 패키지의 파일을 복사·수정하지 않고 설치 경로에서 그대로 불러온다. 배포물에 이들의 파일을 함께 넣게 되면 각 라이선스 고지문을 같이 포함한다.
 
-## 3. 이 패키지가 직접 만든 파일
+## 3. 직접 만든 파일
 
-`src/generate_meshes.py`로 만든 `models/conveyor_belt/meshes/*.stl`, `models/sort_bin/meshes/bin.stl`과 모든 `model.sdf`·`model.config`·`worlds/`·`urdf/`·`launch/`·`config/` 파일은 EyetoArm D가 작성했다. 라이선스는 팀 저장소에 라이선스가 정해지지 않아 미정이다(`package.xml`의 `TBD`).
+`scripts/generate_sim_meshes.py`로 만든 `models/conveyor_belt/meshes/*.stl`, `models/sort_bin/meshes/bin.stl`, 모든 `model.sdf`·`model.config`, `worlds/sort_cell.sdf`, `models/ur5e_2f85/`, `scripts/sim_*.launch.py`·`scripts/*_sim_*.py`는 EyetoArm D가 작성했다. 라이선스는 팀 저장소에 라이선스가 정해지지 않아 미정이다.
 
 ## 4. 후속 후보 모델(아직 사용·포함하지 않음)
 

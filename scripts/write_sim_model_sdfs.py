@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""models/*/model.config, model.sdf 생성(색상·재질·충돌·관성). 실행: python3 src/write_model_sdfs.py"""
+"""models/*/model.config, model.sdf 생성(색상·재질·충돌·관성). 실행: python3 scripts/write_sim_model_sdfs.py"""
 import math
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent / "models"
+ROOT = Path(__file__).resolve().parent.parent / "simulation" / "models"
 
 MAT = {  # (diffuse rgb, metalness, roughness)
     "zinc_bolt": ((0.78, 0.80, 0.84), 0.35, 0.35),
