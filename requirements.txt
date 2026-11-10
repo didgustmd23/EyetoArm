@@ -1,0 +1,35 @@
+# EyetoArm Python 의존성 (pip 설치 대상)
+#
+# 기준: 프로젝트 계획 §2.5(Ubuntu 기본 Python + ROS·시스템 패키지 접근), A 1일차 단계 2 환경 확인 결과.
+# 이 파일은 pip로 설치할 항목만 적습니다. 아래 시스템 선행조건은 pip 대상이 아닙니다.
+#
+# ── 시스템 선행조건 (apt / ROS, pip 대상 아님) ─────────────────────────────
+# - Ubuntu 24.04 기본 Python 3.12 (/usr/bin/python3)
+# - OpenCV: apt python3-opencv 4.6.0 사용(단계 2 확인 버전).
+#   pip opencv-python 계열을 추가로 설치하지 않습니다(설치 경로 중복 방지).
+# - ROS 2 Jazzy 시스템 패키지: rclpy, cv_bridge (/opt/ros/jazzy, setup 스크립트를 먼저 불러옴)
+# - pip와 venv 모듈: 단계 2 시점 이 PC에는 pip가 없었으므로, 아래 사용 예 전에
+#   python3-venv·python3-pip 등 사전 준비가 필요합니다(설치 방식은 팀 공통 합의, D-05).
+#
+# ── 사용 예 (예시이며 실행하지 않았음) ──────────────────────────────────────
+#   source /opt/ros/jazzy/setup.bash
+#   python3 -m venv --system-site-packages .venv
+#   source .venv/bin/activate
+#   python -m pip install -r requirements.txt
+# --system-site-packages로 apt OpenCV·NumPy와 ROS 패키지에 접근합니다.
+# 기본 시스템 Python에 직접 pip로 설치하지 않습니다.
+
+# 수치 계산. 단계 2에서 확인한 버전(apt python3-numpy 1.26.4)과 맞춤.
+numpy==1.26.4
+
+# GUI: 프로젝트 운영 GUI(D 담당)의 의존성입니다. A의 저장 입력·검출 작업은 GUI 없이
+# 진행하므로 그 필수 선행조건이 아닙니다. 설치 버전은 아직 검증하지 않아 정확한 버전을 고정하지 않았습니다.
+# 팀 공통 버전이 정해지면 고정합니다.
+PySide6
+
+# ── 후속 구성 (기본 설치 항목 아님, 버전·라이선스·장치 미확정) ─────────────────
+# - AI 볼트/너트 분할: ultralytics(YOLO11n-seg 후보), torch — 2주차 전 결정
+# - 사람 자세 모델: mediapipe(Pose Landmarker 후보) — 4주차 전 결정
+#
+# ── 개발 시험 의존성 ─────────────────────────────────────────────────────
+# - pytest: 시험을 실행할 때 필요하면 같은 가상환경에서 따로 설치합니다.
