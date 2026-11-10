@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <!-- ISO 4032 M6 hex nut. 원점=아랫면 중심, 두께 5.2 mm, 맞변 10 mm -->
+  <model name="nut_m6">
+    <link name="link">
+      <inertial>
+        <pose>0 0 0.0026 0 0 0</pose>
+        <mass>0.002381</mass>
+        <inertia><ixx>2.337e-08</ixx><iyy>2.337e-08</iyy><izz>3.601e-08</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
+      </inertial>
+      <collision name="collision"><pose>0 0 0.0026 0 0 0</pose>
+        <geometry><cylinder><radius>0.0053</radius><length>0.0052</length></cylinder></geometry></collision>
+      <visual name="visual">
+        <geometry><mesh><uri>model://nut_m6/meshes/nut_m6.stl</uri><scale>0.001 0.001 0.001</scale></mesh></geometry>
+        <material>
+          <ambient>0.516 0.492 0.396 1</ambient>
+          <diffuse>0.86 0.82 0.66 1</diffuse>
+          <specular>0.3 0.3 0.3 1</specular>
+          <pbr><metal><metalness>0.35</metalness><roughness>0.35</roughness></metal></pbr>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

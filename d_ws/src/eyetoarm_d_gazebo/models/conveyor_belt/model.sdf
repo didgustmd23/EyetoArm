@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <!-- 원점=바닥 중심, 진행 방향 +X, 벨트 윗면 Z 0.100 m(임시값). 구동 없음(외형 전용) -->
+  <model name="conveyor_belt">
+    <static>true</static>
+    <link name="link">
+      <collision name="belt_top"><pose>0 0 0.090 0 0 0</pose>
+        <geometry><box><size>1.26 0.20 0.020</size></box></geometry></collision>
+      <visual name="frame">
+        <geometry><mesh><uri>model://conveyor_belt/meshes/frame.stl</uri></mesh></geometry>
+        <material>
+          <ambient>0.444 0.456 0.474 1</ambient>
+          <diffuse>0.74 0.76 0.79 1</diffuse>
+          <specular>0.3 0.3 0.3 1</specular>
+          <pbr><metal><metalness>0.3</metalness><roughness>0.5</roughness></metal></pbr>
+        </material>
+      </visual>
+      <visual name="rollers">
+        <geometry><mesh><uri>model://conveyor_belt/meshes/rollers.stl</uri></mesh></geometry>
+        <material>
+          <ambient>0.360 0.366 0.378 1</ambient>
+          <diffuse>0.6 0.61 0.63 1</diffuse>
+          <specular>0.3 0.3 0.3 1</specular>
+          <pbr><metal><metalness>0.4</metalness><roughness>0.4</roughness></metal></pbr>
+        </material>
+      </visual>
+      <visual name="belt">
+        <geometry><mesh><uri>model://conveyor_belt/meshes/belt.stl</uri></mesh></geometry>
+        <material>
+          <ambient>0.072 0.078 0.084 1</ambient>
+          <diffuse>0.12 0.13 0.14 1</diffuse>
+          <specular>0.3 0.3 0.3 1</specular>
+          <pbr><metal><metalness>0.0</metalness><roughness>0.9</roughness></metal></pbr>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

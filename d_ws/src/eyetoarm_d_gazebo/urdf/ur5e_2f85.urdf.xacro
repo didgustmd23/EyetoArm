@@ -1,0 +1,64 @@
+<?xml version="1.0"?>
+<!--
+  UR5e + Robotiq 2F-85 (Gazebo Sim, gz_ros2_control). D 외형 확인·데모용.
+  - 팔 외형: ur_description 공식 메시·재질 그대로 (BSD-3-Clause, THIRD_PARTY_NOTICES.md).
+  - 그리퍼 외형: robotiq_description 공식 2F-85 메시·재질 그대로 (BSD-3-Clause).
+    tool0 → 공식 ur_to_robotiq 어댑터(11 mm) → 2F-85 순서로 장착.
+  - 팔과 그리퍼를 ros2_control 하나로 묶는다. 그리퍼는 구동 관절 하나만 명령하고
+    나머지는 URDF mimic으로 Gazebo가 따라 움직인다(robotiq_description 2f_85.ros2_control.xacro와 같은 방식).
+-->
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="ur5e_2f85">
+  <xacro:arg name="simulation_controllers" default=""/>
+  <xacro:arg name="gripper_initial" default="0.0"/>
+
+  <xacro:property name="ur_type" value="ur5e"/>
+  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+  <xacro:include filename="$(find ur_description)/urdf/inc/ur_joint_control.xacro"/>
+  <xacro:include filename="$(find robotiq_description)/urdf/robotiq_2f_85_macro.urdf.xacro"/>
+  <xacro:include filename="$(find robotiq_description)/urdf/ur_to_robotiq_adapter.urdf.xacro"/>
+
+  <link name="world"/>
+
+  <xacro:ur_robot
+    name="ur"
+    tf_prefix=""
+    parent="world"
+    joint_limits_parameters_file="$(find ur_description)/config/${ur_type}/joint_limits.yaml"
+    kinematics_parameters_file="$(find ur_description)/config/${ur_type}/default_kinematics.yaml"
+    physical_parameters_file="$(find ur_description)/config/${ur_type}/physical_parameters.yaml"
+    visual_parameters_file="$(find ur_description)/config/${ur_type}/visual_parameters.yaml"
+    force_abs_paths="true">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:ur_robot>
+
+  <xacro:ur_to_robotiq prefix="" connected_to="tool0"/>
+
+  <xacro:robotiq_gripper name="robotiq_gripper" prefix="" parent="gripper_mount_link" include_ros2_control="false">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:robotiq_gripper>
+
+  <ros2_control name="ur5e_2f85" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+    <xacro:ur_joint_control_description
+      tf_prefix=""
+      initial_positions="${dict(shoulder_pan_joint=0.0,shoulder_lift_joint=-1.57,elbow_joint=1.57,wrist_1_joint=-1.57,wrist_2_joint=-1.57,wrist_3_joint=0.0)}"/>
+    <joint name="robotiq_85_left_knuckle_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value">$(arg gripper_initial)</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="robotiq_85_right_knuckle_joint"/>
+    <joint name="robotiq_85_left_inner_knuckle_joint"/>
+    <joint name="robotiq_85_right_inner_knuckle_joint"/>
+    <joint name="robotiq_85_left_finger_tip_joint"/>
+    <joint name="robotiq_85_right_finger_tip_joint"/>
+  </ros2_control>
+
+  <gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(arg simulation_controllers)</parameters>
+    </plugin>
+  </gazebo>
+</robot>

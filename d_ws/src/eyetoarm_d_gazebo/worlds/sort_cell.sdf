@@ -1,0 +1,76 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <!--
+    EyetoArm 분류 셀 외형 확인용 월드(D 데모, C 실행 구성의 대역).
+    배치·치수는 B 확정 전 임시값이다. 로봇은 launch에서 원점에 생성한다.
+    벨트는 외형 전용 정적 모델이며 구동하지 않는다(벨트 제어기는 C 소유).
+  -->
+  <world name="sort_cell">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.85 0.88 0.92 1</background>
+      <grid>false</grid>
+    </scene>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 3 0 0 0</pose>
+      <diffuse>0.9 0.9 0.9 1</diffuse>
+      <specular>0.3 0.3 0.3 1</specular>
+      <direction>-0.4 0.3 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision"><geometry><plane><normal>0 0 1</normal><size>6 6</size></plane></geometry></collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>6 6</size></plane></geometry>
+          <material><ambient>0.45 0.46 0.48 1</ambient><diffuse>0.62 0.63 0.65 1</diffuse><specular>0.1 0.1 0.1 1</specular></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 컨베이어: Y 방향 진행(-Y → +Y), 중심 (0.55, 0), 벨트 윗면 Z 0.100 m -->
+    <include>
+      <uri>model://conveyor_belt</uri>
+      <name>conveyor</name>
+      <pose>0.55 0 0 0 0 1.5708</pose>
+    </include>
+
+    <!-- 볼트 규격별 상자(로봇 작업 범위 안), 너트 상자(벨트 끝) -->
+    <include><uri>model://sort_bin_bolt_a</uri><name>bin_bolt_a</name><pose>0.12 0.45 0 0 0 0</pose></include>
+    <include><uri>model://sort_bin_bolt_b</uri><name>bin_bolt_b</name><pose>0.32 0.45 0 0 0 0</pose></include>
+    <include><uri>model://sort_bin_nut</uri><name>bin_nut</name><pose>0.55 0.76 0 0 0 1.5708</pose></include>
+
+    <!-- 외형 확인용 부품(벨트 위). 볼트는 옆으로 눕힌 자세(축이 X) -->
+    <include><uri>model://bolt_m6x12</uri><name>part_00</name><pose>0.55 -0.30 0.105 0 1.5708 0</pose></include>
+    <include><uri>model://bolt_m6x40</uri><name>part_01</name><pose>0.55 -0.15 0.105 0 1.5708 0</pose></include>
+    <include><uri>model://nut_m6</uri><name>part_02</name><pose>0.55 0.00 0.1005 0 0 0</pose></include>
+
+    <!-- 외형 확인 전용 카메라(D 검증용). 운영 카메라·센서 설정은 A 소유 -->
+    <model name="appearance_check_cam">
+      <static>true</static>
+      <pose>1.35 -0.75 0.85 0 0.50 2.55</pose>
+      <link name="link">
+        <sensor name="camera" type="camera">
+          <camera><horizontal_fov>1.0</horizontal_fov><image><width>1280</width><height>720</height></image>
+            <clip><near>0.05</near><far>10</far></clip></camera>
+          <always_on>1</always_on><update_rate>2</update_rate>
+          <topic>appearance_check/image</topic>
+        </sensor>
+      </link>
+    </model>
+  </world>
+</sdf>
