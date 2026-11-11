@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "status": "provisional_display_only",
+  "roi": null,
+  "resize_wh": null,
+  "resize_interpolation": "INTER_AREA",
+  "gaussian_blur_ksize": 0,
+  "polarity": "dark",
+  "threshold_method": "otsu",
+  "fixed_threshold": null,
+  "morph_open_ksize": 0,
+  "contour_retrieval": "RETR_EXTERNAL",
+  "contour_approximation": "CHAIN_APPROX_SIMPLE",
+  "min_area_source_px2": 100,
+  "max_area_source_px2": null,
+  "border_margin_processed_px": 2
+}
