@@ -93,11 +93,15 @@ sequenceDiagram
 
 ## 4. 내부 구성과 배치 제안
 
-기존 ROS 패키지와 저장소 실행 규칙을 우선 확인하고, 아래처럼 책임 경계를 코드 모듈로 나눕니다. 파일 분리는 제안이며 패키지/노드 배치는 A·C가 1주차에 확정합니다. 상세 상태 전이와 확장 명령 필드는 §14의 기능별 기준 문서를 따릅니다.
+ROS 2 패키지명은 `robot_server_package`로 정합니다. 저장소 실행 규칙을 확인한 뒤 아래처럼 책임 경계를 코드 모듈로 나눕니다. 파일 분리는 제안이며 launch·노드 배치는 A·C가 1주차에 확정합니다. 상세 상태 전이와 확장 명령 필드는 §14의 기능별 기준 문서를 따릅니다.
 
 ```text
-robot_ws/src/<robot_server_package>/
-├── <package>/
+robot_ws/src/robot_server_package/
+├── package.xml
+├── setup.py
+├── setup.cfg
+├── resource/robot_server_package
+├── robot_server_package/
 │   ├── tcp_server.py          # TCP 1.1 연결·LF 프레이밍·직접 응답
 │   ├── protocol.py            # TCP 1.1 및 확장 명령 검증·변환
 │   ├── command_manager.py     # TCP command_id·중복·기록 상태
@@ -285,7 +289,7 @@ TCP 명세 §7.5~§7.8을 구현합니다.
 | 항목 | 결정·확인 담당 | 시점 |
 |---|---|---|
 | TCP 명세서 1.1 승인 여부 및 C 승인 항목 | C, D, A | 서버 프로토콜 구현 전 |
-| 패키지명·launch·실행 구성·브랜치/파일 소유 방식 | A·C | 1주차 시작 |
+| launch·실행 구성·브랜치/파일 소유 방식 | A·C | 1주차 시작 |
 | UR5e planning group/frame, 관절·끝단 링크, controller 실제 이름 | C | 1주차 환경 확인 |
 | `T_S_W`, `T_R_S`, 접근 오프셋 `T_O_E_goal`, 프레임 방향 | B·C | 1주차 인터페이스 합의, 4주차 6D 전 갱신 |
 | Gazebo 상판·카메라대 collision 및 Planning Scene 등록 | A·C | 1~2주차 통합 전 |
