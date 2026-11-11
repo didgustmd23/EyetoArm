@@ -7,21 +7,21 @@
 ## 파일 구성
 
 ```text
-test/
+tests/tcp/
 ├── README.md
 ├── protocol.py     # 요청을 해석하고 STATUS 응답을 만듦
 ├── tcp_server.py   # TCP 연결을 받아 요청을 전달하고 응답을 보냄
 └── test.py         # GET_STATUS를 보내고 응답을 출력함
 ```
 
-`tcp_server.py`와 `protocol.py`는 같은 폴더에 있어야 합니다. `test.py`도 같은 폴더에 두면 아래 명령을 그대로 사용할 수 있습니다.
+`tcp_server.py`와 `protocol.py`는 같은 폴더에 있어야 합니다. 아래 명령은 저장소 체크아웃의 `tests/tcp/` 폴더에서 실행합니다(예: 저장소가 `~/EyetoArm`이면 `~/EyetoArm/tests/tcp`). 다른 폴더로 복사해 쓰는 경우 세 파일을 함께 복사하고 그 폴더에서 실행합니다.
 
 ## 1. 서버 실행하기
 
 첫 번째 Ubuntu 터미널에서 다음을 실행합니다.
 
 ```bash
-cd ~/test
+cd ~/EyetoArm/tests/tcp   # 저장소 위치에 맞게 바꿈
 python3 tcp_server.py
 ```
 
@@ -38,7 +38,7 @@ TCP 서버 대기 중: 127.0.0.1:47090
 새 Ubuntu 터미널을 열고 다음을 실행합니다.
 
 ```bash
-cd ~/test
+cd ~/EyetoArm/tests/tcp   # 저장소 위치에 맞게 바꿈
 python3 test.py
 ```
 
@@ -78,7 +78,7 @@ python3 test.py
 
 ### `ModuleNotFoundError: No module named 'protocol'`
 
-`protocol.py`가 `tcp_server.py`와 같은 폴더에 있는지 확인하고, `~/test` 폴더에서 서버를 실행하세요.
+`protocol.py`가 `tcp_server.py`와 같은 폴더에 있는지 확인하고, `tests/tcp/` 폴더(또는 세 파일을 함께 복사한 폴더)에서 서버를 실행하세요.
 
 ### 응답 대기 시간 초과
 
