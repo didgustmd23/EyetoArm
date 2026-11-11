@@ -84,4 +84,4 @@ class ClientSession:
             if action in ("stop", "estop"):  # 정지는 TCP 1.1 CANCEL 로도 보낸다
                 message = await self.client.cancel()
         self.notify()
-        return message or self.pendant.message
+        return message  # TCP 1.1 로 나간 조작(START·STOP)의 결과만 돌려준다. 조그 안내는 펜던트 화면이 직접 보여 준다
