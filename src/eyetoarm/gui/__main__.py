@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 import time
 from pathlib import Path
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from eyetoarm.tcp.client import ClientConfig
@@ -48,9 +50,29 @@ def main() -> int:
         window.open_pendant()
     if args.connect:
         bridge.call("connect")
+
+    # Ctrl+C·종료 신호: Qt 이벤트 루프는 파이썬 신호 처리기를 스스로 돌리지 않는다.
+    # 짧은 타이머로 파이썬에 차례를 주고, 신호가 오면 창을 닫아 정상 종료한다(연결 정리 포함).
+    def on_signal(*_args) -> None:
+        print("종료 신호를 받아 창을 닫습니다", flush=True)
+        window.close()
+        app.quit()
+
+    signal.signal(signal.SIGINT, on_signal)
+    signal.signal(signal.SIGTERM, on_signal)
+    wake = QTimer()
+    wake.timeout.connect(lambda: None)
+    wake.start(200)
     code = app.exec()
+    wake.stop()
     bridge.stop()
-    del window, bridge  # 창과 연결 객체를 QApplication 보다 먼저 지운다
+    # 창과 연결 객체를 QApplication 보다 먼저, 정해진 순서로 지운다(종료 때 정리 순서 문제로 죽지 않게)
+    for thing in (window.pendant_window, window, bridge):
+        if thing is not None:
+            thing.deleteLater()
+    del window, bridge
+    app.sendPostedEvents(None, 0)
+    app.processEvents()
     return code
 
 

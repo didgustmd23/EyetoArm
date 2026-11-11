@@ -132,10 +132,28 @@ class DashboardTests(GuiCase):
 
 class PendantTests(GuiCase):
     def test_keys_do_nothing_until_enabled(self):
+        self.assertIn("먼저 인에이블을 켜세요", self.pendant.message.text())
         self.press(Qt.Key.Key_W)
-        self.assertTrue(until(lambda: self.pendant.message.text() == "인에이블 꺼짐"))
+        self.assertTrue(until(lambda: "인에이블 꺼짐" in self.pendant.message.text()))
+        self.assertIsNotNone(self.pendant.overlays._toast)  # 왜 안 움직이는지 바로 안내한다
+        self.pendant.jog_buttons[0][1].click()  # 버튼도 눌리지만 신호는 만들지 않는다
+        self.pendant.start.click()
+        time.sleep(0.05)
+        self.assertTrue(until(lambda: "START 불가" in self.pendant.message.text()))
         self.assertNotIn("PENDANT JOG", self.kinds())
-        self.assertFalse(self.pendant.start.isEnabled())
+        self.assertNotIn("MOVE", self.kinds())
+        self.assertEqual(self.pendant.enable.text().splitlines()[0], "인에이블 켜기")
+
+    def test_buttons_jog_after_enable_click(self):
+        self.pendant.enable.click()
+        self.assertTrue(until(lambda: self.pendant.state["pendant"]["enabled"]))
+        self.assertEqual(self.pendant.enable.text().splitlines()[0], "인에이블 끄기")
+        self.pendant.jog_buttons[0][1].click()   # X +
+        self.pendant.jog_buttons[1][0].click()   # Y −
+        self.pendant.grip_close.click()
+        cart = self.bridge.session.pendant.cart
+        self.assertTrue(until(lambda: (cart["X"], cart["Y"], self.bridge.session.pendant.grip_mm) == (475.0, 155.0, 80.0)))
+        self.assertTrue(until(lambda: self.pendant.axis_values[0].text() == "475.0 mm"))
 
     def test_wasd_arrows_jog_and_show_composed_signal(self):
         self.press(Qt.Key.Key_E)

@@ -15,7 +15,7 @@ from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from .bridge import Bridge
-from .motion import Overlays
+from .motion import Overlays, spring
 from .theme import mono
 
 CART, JOINT = ("X", "Y", "Z", "RZ"), ("J1", "J2", "J3", "J4", "J5", "J6")
@@ -229,6 +229,8 @@ class PendantWindow(QWidget):
             button = self._key(text, hint)
             button.clicked.connect(run)
             grid.addWidget(button, row, 0)
+            if text == "잠금 해제":
+                self.reset_key = button
         self.jog_buttons: list[tuple[QPushButton, QPushButton]] = []
         for row in range(6):
             minus, plus = self._key("", name="jog"), self._key("", name="jog")
@@ -242,7 +244,7 @@ class PendantWindow(QWidget):
         self.grip_open.clicked.connect(lambda: self.act("grip", open=True))
         grid.addWidget(self.grip_close, 6, 1)
         grid.addWidget(self.grip_open, 6, 2)
-        self.enable = self._key("인에이블", "E", "enable")
+        self.enable = self._key("인에이블 켜기", "E", "enable")
         self.enable.clicked.connect(lambda: self.act("enable", on=not self.state["pendant"]["enabled"]))
         self.start = self._key("START", "Enter · 수동 목표 MOVE", "start")
         self.start.clicked.connect(lambda: self.act("start"))
@@ -258,6 +260,15 @@ class PendantWindow(QWidget):
     # ── 조작 ───────────────────────────────────────────────────
 
     def act(self, action: str, **params: Any) -> None:
+        # 인에이블이 꺼져 있으면 왜 안 움직이는지 바로 알려 준다(버튼은 눌리게 두고 안내한다)
+        pendant = self.state["pendant"] if self.state else None
+        if pendant is not None and action in ("jog", "grip", "start", "home"):
+            if pendant["estop"]:
+                self.overlays.toast("정지 잠금 중입니다 · '잠금 해제'를 누른 뒤 인에이블(E)을 켜세요")
+                spring(self.reset_key)
+            elif not pendant["enabled"]:
+                self.overlays.toast("인에이블이 꺼져 있습니다 · E 키 또는 '인에이블 켜기'를 누르세요")
+                spring(self.enable)
         self.bridge.call("pendant_action", action, **params)
 
     def _axes(self) -> tuple[str, ...]:
@@ -396,9 +407,6 @@ class PendantWindow(QWidget):
             plus.setText(f"{axis} +")
             for button in (minus, plus):
                 _restyle(button, "sel", selected)
-                button.setEnabled(p["enabled"])
-        for button in (self.grip_close, self.grip_open, self.start):
-            button.setEnabled(p["enabled"])
         self.side["grip"].setText(f"{p['grip_mm']:.0f} mm")
         self.side["command"].setText(t["current"]["result"] if t["current"] else "명령 없음")
         last = self.last_signal
@@ -410,5 +418,6 @@ class PendantWindow(QWidget):
         _restyle(self.lamps["tcp"], "state", "on" if t["phase"] == "연결됨" else "" if t["phase"] == "연결 안 됨" else "wait")
         _restyle(self.lamps["ready"], "state", "on" if t["robot_ready"] else "wait" if t["robot_ready"] is False else "")
         _restyle(self.enable, "on", p["enabled"])
+        self.enable.setText("인에이블 끄기\nE" if p["enabled"] else "인에이블 켜기\nE")
         _restyle(self.estop, "locked", p["estop"])
         self.foot_note.setText("소프트웨어 정지 잠금 · 잠금 해제를 누르세요" if p["estop"] else "조그 신호는 작성·기록만 함 · 전송 경로 미합의")

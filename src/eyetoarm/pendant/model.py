@@ -38,7 +38,7 @@ class PendantModel:
     joint: dict[str, float] = field(default_factory=lambda: dict(HOME_JOINT))
     seq: int = 0
     target_seq: int = 0                # 수동 목표가 바뀔 때마다 증가(MOVE 의 image_seq 자리에 씀)
-    message: str = "인에이블을 켜면 조그할 수 있습니다"
+    message: str = "먼저 인에이블을 켜세요 (E 키 또는 '인에이블 켜기' 버튼) · 그다음 조그·그리퍼·START 가 동작합니다"
 
     @property
     def step(self) -> float:
@@ -55,9 +55,9 @@ class PendantModel:
 
     def _blocked(self) -> str | None:
         if self.estop:
-            return "정지 잠금 중 · 잠금 해제 후 조작"
+            return "정지 잠금 중 · '잠금 해제'를 누른 뒤 인에이블을 켜세요"
         if not self.enabled:
-            return "인에이블 꺼짐"
+            return "인에이블 꺼짐 · E 키 또는 '인에이블 켜기'를 누르세요"
         return None
 
     def act(self, action: str, **params: Any) -> dict[str, Any] | None:

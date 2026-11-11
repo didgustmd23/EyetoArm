@@ -104,7 +104,8 @@ class Pendant(unittest.TestCase):
     def test_no_jog_signal_without_enable(self):
         pendant = PendantModel()
         self.assertIsNone(pendant.act("jog", axis="X", sign=1))
-        self.assertEqual((pendant.cart["X"], pendant.message), (470.0, "인에이블 꺼짐"))
+        self.assertEqual(pendant.cart["X"], 470.0)
+        self.assertIn("인에이블 꺼짐", pendant.message)
 
     def test_jog_composes_draft_signal_and_moves_target(self):
         pendant = PendantModel()
