@@ -8,8 +8,9 @@
 # - OpenCV: apt python3-opencv 4.6.0 사용(단계 2 확인 버전).
 #   pip opencv-python 계열을 추가로 설치하지 않습니다(설치 경로 중복 방지).
 # - ROS 2 Jazzy 시스템 패키지: rclpy, cv_bridge (/opt/ros/jazzy, setup 스크립트를 먼저 불러옴)
-# - pip와 venv 모듈: 단계 2 시점 이 PC에는 pip가 없었으므로, pip 설치 전에
-#   python3-venv·python3-pip 등 사전 준비가 필요합니다(설치 방식은 팀 공통 합의, 계획서 §2.5).
+# - pip와 venv 모듈: 단계 2 시점 이 PC에는 pip가 없었으나, 2026-11-12 apt로 설치됨
+#   (python3-pip 24.0+dfsg-1ubuntu1.3, python3.12-venv 3.12.3-1ubuntu0.17; dpkg 확인).
+#   메타패키지 python3-venv는 설치되어 있지 않습니다(설치 방식은 팀 공통 합의, 계획서 §2.5).
 #
 # ── GUI 환경 (Windows, D 담당, 이 파일의 pip 대상 아님) ─────────────────────
 # 계획서 v1.6 §2.1·§2.5: D 운영 GUI(PySide6)와 TCP 클라이언트는 Windows 11에서 실행하고,
@@ -54,8 +55,12 @@
 # - python3 (Ubuntu 기본)                 3.12.3
 # - python3-opencv                        4.6.0
 # - python3-numpy                         1.26.4
-# - python3-pip                           24.0
-# - python3-venv                          3.12.3
+# - python3-pip                           24.0+dfsg-1ubuntu1.3
+# - python3.12-venv                       3.12.3-1ubuntu0.17  (메타패키지 python3-venv 아님)
+# - python3-pytest                        7.4.4    (단위시험 실행에 사용)
+# - python3-jsonschema                    4.10.3   (src/eyetoarm/tcp/protocol.py, tests/unit/test_d_protocol.py,
+#                                                   protocol-conformance 스크립트가 import)
+#   Windows conda 환경의 jsonschema 4.26.0과 두 버전 간 호환은 미확인(D-06 공용 코드).
 #
 # [WSL2 설정]
 # - GPU 렌더링: ~/.bashrc 에 export GALLIUM_DRIVER=d3d12, export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
@@ -68,8 +73,17 @@ numpy==1.26.4
 # - AI 볼트/너트 분할: ultralytics, torch(PyTorch). 비교 후보 3개 YOLOv8n-seg·YOLO11n-seg·YOLO26n-seg
 #   (사용자 확정 2026-11-12). 설치 승인 2026-11-12: 저장소 .venv(--system-site-packages)에 설치,
 #   apt OpenCV 4.6 유지·pip opencv-python 미설치(ultralytics는 의존성을 분리해 설치).
-#   버전은 설치 후 기록합니다. 이 파일의 pip 설치 대상 줄로는 아직 추가하지 않습니다.
+#   설치 완료 2026-11-12(reviewer 실행): torch 2.11.0+cu128, torchvision 0.26.0+cu128,
+#   ultralytics 8.4.211. NumPy 1.26.4·OpenCV 4.6.0은 apt 것 유지, GPU RTX 5080(cuda:0).
+#   설치 요지: torch·torchvision은 --index-url https://download.pytorch.org/whl/cu128,
+#   ultralytics는 --no-deps로 설치한 뒤 필요한 의존성(polars, ultralytics-thop,
+#   ultralytics-platform, nvidia-ml-py)을 따로 설치, numpy==1.26.4 제약 파일 적용.
+#   실행 시 YOLO_AUTOINSTALL=false 필수(자동 pip 설치로 opencv-python이 들어오는 것 방지).
+#   pip check의 "ultralytics requires opencv-python>=4.7.0"은 의도된 결과이며, 4.6.0에서는
+#   로드·추론만 확인했습니다(학습·증강 경로는 학습 시 확인).
+#   이 파일의 pip 설치 대상 줄로는 추가하지 않습니다(기본 설치 항목 아님).
 # - 사람 자세 모델: mediapipe(Pose Landmarker 후보) — 4주차 전 결정
 #
 # ── 개발 시험 의존성 ─────────────────────────────────────────────────────
-# - pytest: 시험을 실행할 때 필요하면 같은 가상환경에서 따로 설치합니다.
+# - pytest: apt python3-pytest 7.4.4를 사용합니다(2026-11-12 단위시험 186건을 이것으로 실행).
+#   pip로 따로 설치하지 않습니다. .venv(--system-site-packages)에서도 같은 apt 패키지를 씁니다.
