@@ -16,6 +16,8 @@ python `gz.transport13` 바인딩이 없어서 서비스는 CLI, 영상은 ROS �
 - `setsid`(start_new_session)로 띄우고 **자기 프로세스 그룹만** `os.killpg`로 종료. `pkill`·`killall`을 쓰지 않는다.
 - 시작 전 `MemAvailable`(기본 ≥ 6 GiB)과 GPU 사용 메모리(기본 ≤ 8000 MiB)를 확인해 기준 밖이면 시작 거부.
 - 다른 `gz sim` 프로세스가 있으면 경고만 출력하고 그대로 둔다.
+- 실행 중에는 표본마다 `MemAvailable`을 확인해 `--stop-mem-gib`(기본 2 GiB) 아래면 자기 그룹만 종료하고 멈춘다
+  (사용자 결정 2026-11-12: 실행 중 종료 조건은 메모리 하나).
 """
 from __future__ import annotations
 
@@ -83,6 +85,16 @@ def check_resources(mem_avail_kib: int, gpu_used_mib, min_mem_gib=DEFAULT_MIN_ME
     elif gpu_used_mib > max_gpu_used_mib:
         reasons.append(f"GPU 사용 {gpu_used_mib} MiB > {max_gpu_used_mib} MiB")
     return reasons
+
+
+def memory_low(mem_avail_kib: int, stop_mem_gib: float) -> bool:
+    """실행 중 종료 조건(사용자 결정: 메모리 하나)."""
+    return mem_avail_kib < stop_mem_gib * 1024 * 1024
+
+
+def reset_latest(latest: dict) -> None:
+    for k in latest:
+        latest[k] = None
 
 
 def other_gz_processes(ps_lines: list, own_pids: set) -> list:
@@ -251,11 +263,17 @@ def run(a) -> int:
     from sensor_msgs.msg import Image
 
     rclpy.init()
-    node = Node("gz_eval_capture")
     latest = {"rgb": None, "seg": None, "clock": None}
-    node.create_subscription(Image, RGB_TOPIC, lambda m: latest.__setitem__("rgb", m), 2)
-    node.create_subscription(Image, SEG_TOPIC, lambda m: latest.__setitem__("seg", m), 2)
-    node.create_subscription(Clock, "/clock", lambda m: latest.__setitem__("clock", m), 10)
+    node = None
+
+    def new_node(batch_no):
+        """묶음마다 구독 노드를 새로 만든다. 이전 묶음 브리지가 남긴 수신 큐의 메시지를 버리기 위해서다
+        (2026-11-13 본 수집: 이전 /clock이 큐에서 늦게 처리돼 기준 시각이 높아지는 문제)."""
+        n = Node(f"gz_eval_capture_b{batch_no:04d}")
+        n.create_subscription(Image, RGB_TOPIC, lambda m: latest.__setitem__("rgb", m), 2)
+        n.create_subscription(Image, SEG_TOPIC, lambda m: latest.__setitem__("seg", m), 2)
+        n.create_subscription(Clock, "/clock", lambda m: latest.__setitem__("clock", m), 10)
+        return n
 
     def stamp_s(msg):
         return msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
@@ -279,6 +297,12 @@ def run(a) -> int:
                                f"{SEG_TOPIC}@sensor_msgs/msg/Image[gz.msgs.Image",
                                "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock"], env,
                               out / "logs" / f"bridge_b{b['batch']:04d}.log")
+            # 묶음마다 수신 상태를 비운다(새 월드는 시뮬레이션 시각이 0부터 다시 시작한다).
+            # 비우지 않으면 이전 묶음의 /clock으로 시작 대기를 건너뛰고 기준 시각이 너무 높아진다(2026-11-13 본 수집 1차 실패).
+            if node is not None:
+                node.destroy_node()
+            reset_latest(latest)
+            node = new_node(b["batch"])
             try:
                 t_end = time.monotonic() + a.startup_timeout_s
                 while latest["clock"] is None and time.monotonic() < t_end:
@@ -287,6 +311,9 @@ def run(a) -> int:
                     print(f"[실패] 묶음 {b['batch']}: /clock 수신 없음", file=sys.stderr)
                     return 3
                 for s in b["samples"]:
+                    if memory_low(parse_meminfo_available_kib(Path("/proc/meminfo").read_text()), a.stop_mem_gib):
+                        print(f"[중지] MemAvailable < {a.stop_mem_gib} GiB — 자기 그룹만 종료", file=sys.stderr)
+                        return 6
                     req = pose_vector_request(s["parts"])
                     r = subprocess.run(set_pose_cmd(req), env=env, capture_output=True, text=True, timeout=30)
                     if "data: true" not in r.stdout:
@@ -301,12 +328,18 @@ def run(a) -> int:
                                 and stamp_s(latest["rgb"]) >= t0 and stamp_s(latest["seg"]) >= t0):
                             break
                     else:
-                        print(f"[실패] 묶음 {b['batch']} 표본 {s['index']}: 새 프레임 없음", file=sys.stderr)
+                        st = {k: (None if latest[k] is None else (stamp_s(latest[k]) if k != "clock" else
+                                  latest[k].clock.sec + latest[k].clock.nanosec * 1e-9)) for k in latest}
+                        print(f"[실패] 묶음 {b['batch']} 표본 {s['index']}: 새 프레임 없음 (기준 {t0:.3f}, 마지막 {st})",
+                              file=sys.stderr)
                         return 5
                     rgb, seg = to_array(latest["rgb"]), to_array(latest["seg"])
                     sid = f"gz_b{b['batch']:04d}_s{s['index']:03d}"
                     img = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR) if latest["rgb"].encoding == "rgb8" else rgb
                     cv2.imwrite(str(out / "images/test" / f"{sid}.png"), img)
+                    if a.save_seg:  # 확인용 원본 라벨 영상(무손실)
+                        (out / "seg_raw").mkdir(exist_ok=True)
+                        np.save(out / "seg_raw" / f"{sid}.npy", seg)
                     lines, infos, mode, unknown = labels_for_sample(seg, s["parts"], a.min_area_px)
                     (out / "labels/test" / f"{sid}.txt").write_text("".join(x + "\n" for x in lines), encoding="utf-8")
                     manifest.write(json.dumps({
@@ -321,7 +354,8 @@ def run(a) -> int:
                 stop_group(gz)
     finally:
         manifest.close()
-        node.destroy_node()
+        if node is not None:
+            node.destroy_node()
         rclpy.shutdown()
     return 0
 
@@ -340,6 +374,8 @@ def main(argv=None) -> int:
     p.add_argument("--startup-timeout-s", type=float, default=60.0)
     p.add_argument("--frame-timeout-s", type=float, default=20.0)
     p.add_argument("--min-area-px", type=float, default=4.0)
+    p.add_argument("--stop-mem-gib", type=float, default=2.0, help="실행 중 MemAvailable이 이보다 작으면 중지")
+    p.add_argument("--save-seg", action="store_true", help="원본 분할 라벨 영상을 seg_raw/*.npy로도 저장(확인용)")
     p.add_argument("--yes", action="store_true", help="사용자 확인 뒤에만 붙인다. 없으면 사전 점검만 한다")
     a = p.parse_args(argv)
     if not a.yes:

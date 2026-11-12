@@ -118,3 +118,13 @@ def test_label_channel_single_and_dataset_yaml():
     assert cap.label_channel(lab)[1] == "single"
     y = cap.dataset_yaml()
     assert "path:" not in y and "test: images/test" in y and "1: nut" in y
+
+
+def test_memory_low_threshold():
+    assert cap.memory_low(int(1.9 * 1048576), 2.0) and not cap.memory_low(int(2.1 * 1048576), 2.0)
+
+
+def test_reset_latest_clears_previous_batch_state():
+    latest = {"rgb": object(), "seg": object(), "clock": object()}
+    cap.reset_latest(latest)
+    assert latest == {"rgb": None, "seg": None, "clock": None}
