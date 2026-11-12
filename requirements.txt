@@ -8,24 +8,61 @@
 # - OpenCV: apt python3-opencv 4.6.0 사용(단계 2 확인 버전).
 #   pip opencv-python 계열을 추가로 설치하지 않습니다(설치 경로 중복 방지).
 # - ROS 2 Jazzy 시스템 패키지: rclpy, cv_bridge (/opt/ros/jazzy, setup 스크립트를 먼저 불러옴)
-# - pip와 venv 모듈: 단계 2 시점 이 PC에는 pip가 없었으므로, 아래 사용 예 전에
+# - pip와 venv 모듈: 단계 2 시점 이 PC에는 pip가 없었으므로, pip 설치 전에
 #   python3-venv·python3-pip 등 사전 준비가 필요합니다(설치 방식은 팀 공통 합의, D-05).
 #
-# ── 사용 예 (예시이며 실행하지 않았음) ──────────────────────────────────────
-#   source /opt/ros/jazzy/setup.bash
-#   python3 -m venv --system-site-packages .venv
-#   source .venv/bin/activate
-#   python -m pip install -r requirements.txt
-# --system-site-packages로 apt OpenCV·NumPy와 ROS 패키지에 접근합니다.
-# 기본 시스템 Python에 직접 pip로 설치하지 않습니다.
+# ── GUI 환경 (Windows, D 담당, 이 파일의 pip 대상 아님) ─────────────────────
+# 계획서 v1.6 §2.1·§2.5: D 운영 GUI(PySide6)와 TCP 클라이언트는 Windows 11에서 실행하고,
+# A·B·C는 WSL2에서 실행합니다. GUI 의존성은 WSL에 설치하지 않습니다(A 협업 요청 D-05).
+# - 배포: Anaconda3 conda 환경 `eyetoarm`
+#   정의 파일: src/eyetoarm/d_client/environment.yml (conda env create -f 로 생성)
+# - Python 3.12 (확인 3.12.16). WSL Python 3.12와 맞춤: A 통신 시험 도구가 D의 TCP 클라이언트를
+#   WSL에서 재사용하므로(계획서 §3, D-06) D 클라이언트 코드는 3.12에서 동작해야 합니다.
+# - PySide6-Essentials==6.12.0 (shiboken6 6.12.0), jsonschema==4.26.0 — conda 환경 안에서 pip 설치
+# - 저장소 체크아웃: Windows 로컬 드라이브(D PC 기준 C:\Users\user\WSL\EyetoArm)
+# - Windows → WSL C 서버 접속: 127.0.0.1:47090 확인(2026-11-12, WSL NAT 기본 localhost 전달)
+# 설치 기록·확인 결과: src/eyetoarm/d_client/README.md
+#
+# ── 설치 대상 목록 (계획서 §2.5 기준, 버전은 2026-11-12 D PC에서 확인한 값) ────────
+# [Windows 11 · D 운영 GUI]
+# - Git for Windows                       2.55.0
+# - Anaconda3                             conda 26.5.3
+# - conda 환경 eyetoarm                   Python 3.12.16  (conda env create -f src/eyetoarm/d_client/environment.yml)
+#   - PySide6-Essentials (pip)            6.12.0 (shiboken6 6.12.0)
+#   - jsonschema (pip)                    4.26.0
+# - VS Code                               (WSL 연결로 A·B·C 편집)
+# - WSL2 + Ubuntu 24.04                   WSL 3.0.5, Ubuntu 24.04.5 LTS  (wsl --install -d Ubuntu-24.04)
+#
+# [WSL2 Ubuntu 24.04 · ROS 2·시뮬레이션 (apt)]
+# - ros-jazzy-desktop                     0.11.0
+# - python3-rosdep                        0.27.0   (sudo rosdep init / rosdep update)
+# - python3-colcon-common-extensions      0.3.0
+# - ros-jazzy-ros-gz                      1.0.24   (Gazebo Harmonic, gz-sim 8.15.0 vendor 포함)
+# - ros-jazzy-ur-simulation-gz            2.5.0
+# - ros-jazzy-ur-description              3.5.1
+# - ros-jazzy-ur-moveit-config            3.9.0
+# - ros-jazzy-moveit                      2.12.4
+# - ros-jazzy-ros2-control                4.48.1
+# - ros-jazzy-ros2-controllers            4.42.1
+# - ros-jazzy-gz-ros2-control             1.2.20
+# - ros-jazzy-rviz2                       14.1.24
+# - ros-jazzy-cv-bridge                   4.1.0
+# - ros-jazzy-robotiq-description         0.0.1    (Robotiq 2F-85)
+# - ros-jazzy-parallel-gripper-controller 4.42.1
+#
+# [WSL2 Ubuntu 24.04 · Python·영상 (apt)]
+# - python3 (Ubuntu 기본)                 3.12.3
+# - python3-opencv                        4.6.0
+# - python3-numpy                         1.26.4
+# - python3-pip                           24.0
+# - python3-venv                          3.12.3
+#
+# [WSL2 설정]
+# - GPU 렌더링: ~/.bashrc 에 export GALLIUM_DRIVER=d3d12, export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
+#   (없으면 llvmpipe 소프트웨어 렌더링으로 Gazebo 카메라 Hz·RTF가 낮아짐)
 
 # 수치 계산. 단계 2에서 확인한 버전(apt python3-numpy 1.26.4)과 맞춤.
 numpy==1.26.4
-
-# GUI: 프로젝트 운영 GUI(D 담당)의 의존성입니다. A의 저장 입력·검출 작업은 GUI 없이
-# 진행하므로 그 필수 선행조건이 아닙니다. 설치 버전은 아직 검증하지 않아 정확한 버전을 고정하지 않았습니다.
-# 팀 공통 버전이 정해지면 고정합니다.
-PySide6
 
 # ── 후속 구성 (기본 설치 항목 아님, 버전·라이선스·장치 미확정) ─────────────────
 # - AI 볼트/너트 분할: ultralytics(YOLO11n-seg 후보), torch — 2주차 전 결정

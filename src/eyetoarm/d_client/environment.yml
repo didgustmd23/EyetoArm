@@ -1,0 +1,17 @@
+# D 운영 GUI·TCP 클라이언트(Windows) 실행 환경
+#
+# 만들기:  conda env create -f src/eyetoarm/d_client/environment.yml
+# 쓰기:    conda activate eyetoarm
+#
+# Python 3.12: WSL의 A·B·C(Ubuntu 기본 Python 3.12)와 맞춘다. A의 통신 시험 도구가
+# D의 TCP 클라이언트를 WSL에서 재사용하므로(계획서 §3, A 협업 요청 D-06) 3.12에서 돌아야 한다.
+# PySide6는 conda 채널이 아니라 pip로 설치해 정확한 버전(6.12.0)을 고정한다.
+name: eyetoarm
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - PySide6-Essentials==6.12.0
+      - jsonschema==4.26.0
