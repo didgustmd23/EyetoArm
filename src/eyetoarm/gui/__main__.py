@@ -34,7 +34,14 @@ def main() -> int:
     args = parser.parse_args()
 
     settings = json.loads(Path(args.config).read_text(encoding="utf-8")) if Path(args.config).is_file() else {}
-    config = ClientConfig(**settings.get("tcp", {}))
+    tcp_settings = settings.get("tcp", {})
+    if not isinstance(tcp_settings, dict):
+        parser.error("tcp 설정은 객체여야 합니다")
+    # client.json also contains C-server persistence settings. The D client
+    # consumes only fields declared by ClientConfig.
+    server_only = {"record_retention", "log_retry_ms", "command_log_retention", "command_log_path"}
+    client_settings = {key: value for key, value in tcp_settings.items() if key not in server_only}
+    config = ClientConfig(**client_settings)
     if args.tcp_host:
         config.host = args.tcp_host
     if args.tcp_port:
