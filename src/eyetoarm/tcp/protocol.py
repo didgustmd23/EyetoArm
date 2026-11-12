@@ -124,7 +124,7 @@ _REQUIRED = ("version", "type", "robot_ready", "not_ready_reasons", "active_comm
 
 
 def _core_check(message: dict[str, Any]) -> None:
-    """jsonschema 가 없을 때 쓰는 최소 검사. 스키마 전체를 대신하지는 못한다."""
+    """jsonschema 미설치 환경에서도 TCP 1.1 STATUS 핵심 스키마를 검사한다."""
     unknown = set(message) - _ALLOWED
     if unknown:
         raise ProtocolError(f"정의되지 않은 필드 {sorted(unknown)}")
@@ -135,15 +135,109 @@ def _core_check(message: dict[str, Any]) -> None:
         raise ProtocolError("version·type 불일치")
     if not isinstance(message["robot_ready"], bool) or not isinstance(message["not_ready_reasons"], list):
         raise ProtocolError("robot_ready·not_ready_reasons 형식 오류")
+    reason_values = {
+        "COMMAND_ACTIVE", "ROS_DISCONNECTED", "SIM_PAUSED", "CONTROLLER_INACTIVE",
+        "TRAJECTORY_ACTIVE", "ACTION_STATUS_UNKNOWN", "FEEDBACK_STALE", "NOT_STOPPED",
+        "SCENE_NOT_READY", "RECOVERING", "RECOVERY_FAILED", "LOG_UNAVAILABLE",
+    }
+    reasons = message["not_ready_reasons"]
+    if any(not isinstance(reason, str) or reason not in reason_values for reason in reasons):
+        raise ProtocolError("정의되지 않은 not_ready_reasons")
+    if len(set(reasons)) != len(reasons):
+        raise ProtocolError("not_ready_reasons 중복")
     if message["robot_ready"] == bool(message["not_ready_reasons"]):
         raise ProtocolError("robot_ready 와 not_ready_reasons 가 서로 맞지 않음")
     if isinstance(message["server_time_ms"], bool) or not isinstance(message["server_time_ms"], int):
         raise ProtocolError("server_time_ms 는 정수여야 함")
+    if not 0 <= message["server_time_ms"] <= MAX_SAFE_INT:
+        raise ProtocolError("server_time_ms 범위 오류")
+
+    command_id = message.get("command_id")
+    if command_id is not None:
+        try:
+            parsed_id = uuid.UUID(command_id) if isinstance(command_id, str) else None
+        except ValueError as error:
+            raise ProtocolError("command_id UUID 오류") from error
+        if parsed_id is None or parsed_id.version != 4 or str(parsed_id) != command_id:
+            raise ProtocolError("command_id UUID v4 형식 오류")
+    active_id = message["active_command_id"]
+    if active_id is not None:
+        try:
+            parsed_active_id = uuid.UUID(active_id) if isinstance(active_id, str) else None
+        except ValueError as error:
+            raise ProtocolError("active_command_id UUID 오류") from error
+        if parsed_active_id is None or parsed_active_id.version != 4 or str(parsed_active_id) != active_id:
+            raise ProtocolError("active_command_id UUID v4 형식 오류")
+
     state = message.get("state")
-    if state is not None and (state not in STATE_RANK or "command_id" not in message):
-        raise ProtocolError("명령 상태 형식 오류")
-    if state == "FAILED" and not ("stage" in message and "code" in message):
-        raise ProtocolError("FAILED 에는 stage 와 code 가 필요함")
+    stage = message.get("stage")
+    code = message.get("code")
+    if state is not None and not isinstance(state, str):
+        raise ProtocolError("state 형식 오류")
+    if stage is not None and not isinstance(stage, str):
+        raise ProtocolError("stage 형식 오류")
+    if code is not None and not isinstance(code, str):
+        raise ProtocolError("code 형식 오류")
+    if state is not None:
+        if state not in STATE_RANK or command_id is None:
+            raise ProtocolError("명령 상태 형식 오류")
+    if stage is not None and stage not in {"PLANNING", "EXECUTION", "REACH_CHECK", "RECOVERY"}:
+        raise ProtocolError("stage 형식 오류")
+    all_codes = {
+        "BAD_FORMAT", "BAD_VALUE", "OUT_OF_WORKSPACE", "ID_CONFLICT", "BUSY", "NOT_READY", "UNKNOWN_COMMAND",
+        "PLAN_FAILED", "EXEC_FAILED", "FEEDBACK_LOST", "REACH_TOLERANCE", "CANCELLED",
+        "CANCEL_UNCONFIRMED", "SERVER_RESTARTED", "LOG_WRITE_FAILED",
+    }
+    if code is not None and code not in all_codes:
+        raise ProtocolError("code 형식 오류")
+    if "detail" in message and (not isinstance(message["detail"], str) or len(message["detail"]) > 256):
+        raise ProtocolError("detail 형식 오류")
+    if command_id is not None and state is None and code is None:
+        raise ProtocolError("command_id 단독 응답에는 code가 필요함")
+    if state == "FAILED":
+        failed_stage = {
+            "PLAN_FAILED": {"PLANNING"},
+            "EXEC_FAILED": {"EXECUTION"},
+            "FEEDBACK_LOST": {"EXECUTION"},
+            "REACH_TOLERANCE": {"REACH_CHECK"},
+            "CANCELLED": {"PLANNING", "EXECUTION"},
+            "CANCEL_UNCONFIRMED": {"EXECUTION"},
+            "SERVER_RESTARTED": {"RECOVERY"},
+            "LOG_WRITE_FAILED": {"PLANNING"},
+        }
+        if code not in failed_stage or stage not in failed_stage[code]:
+            raise ProtocolError("FAILED의 stage/code 조합 오류")
+    elif state is not None and stage is not None:
+        raise ProtocolError("FAILED가 아닌 상태에는 stage를 넣을 수 없음")
+    if state in {"ACK", "PLANNING", "MOVING", "REACHED"} and code is not None:
+        raise ProtocolError("진행 상태에는 code를 넣을 수 없음")
+    if state is None and code is not None:
+        reject_codes = {"BAD_FORMAT", "BAD_VALUE", "OUT_OF_WORKSPACE", "ID_CONFLICT", "BUSY", "NOT_READY", "UNKNOWN_COMMAND"}
+        if code not in reject_codes:
+            raise ProtocolError("거부 응답에 실패 코드를 사용할 수 없음")
+        if code != "BAD_FORMAT" and command_id is None:
+            raise ProtocolError("BAD_FORMAT 외 거부에는 command_id가 필요함")
+    if code == "NOT_READY" and message["robot_ready"]:
+        raise ProtocolError("NOT_READY 응답은 robot_ready=false여야 함")
+    if code == "BUSY" and active_id is None:
+        raise ProtocolError("BUSY 응답에는 active_command_id가 필요함")
+
+    reach_error = message.get("reach_error")
+    needs_reach_error = state == "REACHED" or stage == "REACH_CHECK"
+    if needs_reach_error != (reach_error is not None):
+        raise ProtocolError("reach_error 필수 여부 오류")
+    if reach_error is not None:
+        if not isinstance(reach_error, dict) or set(reach_error) != {"position_mm", "rotation_deg"}:
+            raise ProtocolError("reach_error 필드 오류")
+        for value in reach_error.values():
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                raise ProtocolError("reach_error 값 범위 오류")
+
+    if active_id is not None:
+        if message["robot_ready"] or "COMMAND_ACTIVE" not in reasons:
+            raise ProtocolError("활성 명령과 준비 상태 필드 불일치")
+    elif "COMMAND_ACTIVE" in reasons:
+        raise ProtocolError("COMMAND_ACTIVE에 active_command_id가 없음")
 
 
 def parse_status(line: bytes) -> dict[str, Any]:
