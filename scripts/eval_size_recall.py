@@ -60,20 +60,27 @@ def mask_iou_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.where(union > 0, inter / np.maximum(union, 1e-9), 0.0)
 
 
-def match(gt_masks, gt_cls, pred_masks, pred_cls, pred_conf, iou_thr=0.5) -> np.ndarray:
-    """정답별 매칭 여부(bool, 길이 Ngt). 같은 클래스, IoU ≥ iou_thr, 신뢰도 높은 예측부터 일대일."""
+def match_full(gt_masks, gt_cls, pred_masks, pred_cls, pred_conf, iou_thr=0.5):
+    """(정답별 매칭 여부, 예측별 매칭 여부). 같은 클래스, IoU ≥ iou_thr, 신뢰도 높은 예측부터 일대일."""
     gt_cls = np.asarray(gt_cls)
     pred_cls = np.asarray(pred_cls)
     matched = np.zeros(len(gt_cls), bool)
+    pred_ok = np.zeros(len(pred_cls), bool)
     if len(gt_cls) == 0 or len(pred_cls) == 0:
-        return matched
+        return matched, pred_ok
     iou = mask_iou_matrix(np.asarray(pred_masks), np.asarray(gt_masks))
     for p in np.argsort(-np.asarray(pred_conf), kind="stable"):
         cand = np.flatnonzero((gt_cls == pred_cls[p]) & ~matched & (iou[p] >= iou_thr))
         if cand.size:
             g = cand[np.argmax(iou[p, cand])]
             matched[g] = True
-    return matched
+            pred_ok[p] = True
+    return matched, pred_ok
+
+
+def match(gt_masks, gt_cls, pred_masks, pred_cls, pred_conf, iou_thr=0.5) -> np.ndarray:
+    """정답별 매칭 여부(bool, 길이 Ngt)."""
+    return match_full(gt_masks, gt_cls, pred_masks, pred_cls, pred_conf, iou_thr)[0]
 
 
 def recall_table(sizes, classes, matched, edges) -> dict:
@@ -119,6 +126,8 @@ def evaluate(model, data_dir: Path, split: str, imgsz: int, conf: float, iou_thr
     img_dir = data_dir / "images" / split
     lbl_dir = data_dir / "labels" / split
     sizes, classes, matched_all = [], [], []
+    preds = {c: {"n": 0, "tp": 0} for c in range(len(CLASS_NAMES))}
+    per_gt = []
     names = sorted(os.listdir(img_dir))
     for name in names:
         img = cv2.imread(str(img_dir / name), cv2.IMREAD_COLOR)
@@ -136,7 +145,13 @@ def evaluate(model, data_dir: Path, split: str, imgsz: int, conf: float, iou_thr
             pf = res.boxes.conf.cpu().numpy()
         else:
             pm, pc, pf = np.zeros((0, h, w), bool), np.zeros(0, int), np.zeros(0)
-        m = match(gmasks, gcls, pm, pc, pf, iou_thr)
+        m, pok = match_full(gmasks, gcls, pm, pc, pf, iou_thr)
+        for c, ok in zip(pc, pok):
+            if int(c) in preds:
+                preds[int(c)]["n"] += 1
+                preds[int(c)]["tp"] += int(ok)
+        per_gt.append({"image": name, "matched": [bool(x) for x in m],
+                       "short_px": [round(short_side(p), 2) for p in gpolys]})
         sizes += [short_side(p) for p in gpolys]
         classes += gcls
         matched_all += list(m)
@@ -145,7 +160,11 @@ def evaluate(model, data_dir: Path, split: str, imgsz: int, conf: float, iou_thr
                               "tp": int(sum(1 for k, mm in zip(classes, matched_all) if k == c and mm))}
              for c in range(len(CLASS_NAMES))}
     return {"split": split, "images": len(names), "imgsz": imgsz, "conf": conf, "iou": iou_thr, "scale": scale,
-            "edges_px": list(edges), "by_size": table, "total": total}
+            "edges_px": list(edges), "by_size": table, "total": total,
+            "predictions": {CLASS_NAMES[c]: {"n": v["n"], "tp": v["tp"], "fp": v["n"] - v["tp"],
+                                             "precision": (v["tp"] / v["n"]) if v["n"] else None}
+                            for c, v in preds.items()},
+            "per_gt": per_gt}
 
 
 def main(argv=None) -> int:
