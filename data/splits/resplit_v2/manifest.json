@@ -1,0 +1,145 @@
+{
+  "annotation_sha256": {
+    "test/_annotations.coco.json": "33a5a0f9a7b1b4baf0fe4640bf5c9542c4d2647b1316009ebd7e17505029763f",
+    "train/_annotations.coco.json": "f19ab0046361c3fe53b167e565d709bb7e0432bbfd047b3362e03f838ead8877",
+    "valid/_annotations.coco.json": "8c9a671a8e6f8e655007110b45d6e0fd0d66b480448038720504923772c38bc7"
+  },
+  "args": {
+    "adj_k": 3,
+    "adj_min_sim": 0.85,
+    "big_frac": 0.25,
+    "dihedral": true,
+    "feature": "gray 32x32 INTER_AREA, zero-mean unit-norm",
+    "ratios_stems": [
+      0.8,
+      0.1,
+      0.1
+    ],
+    "seed": 20261112,
+    "size_edges_px": [
+      15.0,
+      25.0
+    ],
+    "threshold": 0.95,
+    "w_class": 1.0,
+    "w_size": 1.0,
+    "w_stems": 4.0
+  },
+  "groups": {
+    "count": 547,
+    "max_size_stems": 286,
+    "singletons": 458,
+    "top10_sizes": [
+      286,
+      150,
+      78,
+      71,
+      45,
+      44,
+      32,
+      23,
+      21,
+      18
+    ]
+  },
+  "notes": [
+    "Roboflow 전처리: 640x640 Stretch 리사이즈(원본 종횡비 손실). 화소 크기별 검출률 해석 시 원본 크기와 다름",
+    "동봉 README.roboflow.txt는 'No image augmentation'이라 적었으나 train 줄기당 최대 3사본(뒤집기·회전·잡음 등)이 있어 증강 사본으로 추정",
+    "형식 변환(YOLO 라벨)은 하지 않음"
+  ],
+  "rules": {
+    "size": "주석 다각형 minAreaRect 짧은 변(640x640 기준 px), 배정 균형은 대표 사본 기준",
+    "stem": "파일명 '.rf.' 앞",
+    "train": "줄기의 사본 모두",
+    "valid_test_one_per_stem": "rel_path 정렬 첫 사본"
+  },
+  "script_version": "resplit_dataset 1.1",
+  "source": "data/raw (Bolt nut segmentation v1, Roboflow, CC BY 4.0) — 원본 무수정, 목록만",
+  "source_counts": {
+    "images": 3436,
+    "stems": 1604
+  },
+  "splits": {
+    "test": {
+      "Bolt": 301,
+      "Nut": 84,
+      "groups": 82,
+      "images": 161,
+      "short_px_pct": {
+        "Bolt": {
+          "p10": 12.1,
+          "p5": 9.1,
+          "p50": 45.4
+        },
+        "Nut": {
+          "p10": 12.3,
+          "p5": 11.7,
+          "p50": 27.0
+        }
+      },
+      "size_bins": {
+        "Bolt:15-25": 35,
+        "Bolt:<15": 53,
+        "Bolt:>=25": 213,
+        "Nut:15-25": 22,
+        "Nut:<15": 17,
+        "Nut:>=25": 45
+      },
+      "stems": 161
+    },
+    "train": {
+      "Bolt": 5339,
+      "Nut": 1685,
+      "groups": 377,
+      "images": 2772,
+      "short_px_pct": {
+        "Bolt": {
+          "p10": 9.8,
+          "p5": 8.9,
+          "p50": 31.6
+        },
+        "Nut": {
+          "p10": 12.1,
+          "p5": 10.3,
+          "p50": 17.1
+        }
+      },
+      "size_bins": {
+        "Bolt:15-25": 895,
+        "Bolt:<15": 1552,
+        "Bolt:>=25": 2892,
+        "Nut:15-25": 724,
+        "Nut:<15": 503,
+        "Nut:>=25": 458
+      },
+      "stems": 1281
+    },
+    "valid": {
+      "Bolt": 262,
+      "Nut": 60,
+      "groups": 88,
+      "images": 162,
+      "short_px_pct": {
+        "Bolt": {
+          "p10": 20.3,
+          "p5": 14.9,
+          "p50": 44.7
+        },
+        "Nut": {
+          "p10": 20.1,
+          "p5": 15.3,
+          "p50": 43.0
+        }
+      },
+      "size_bins": {
+        "Bolt:15-25": 23,
+        "Bolt:<15": 14,
+        "Bolt:>=25": 225,
+        "Nut:15-25": 10,
+        "Nut:<15": 3,
+        "Nut:>=25": 47
+      },
+      "stems": 162
+    }
+  }
+}
