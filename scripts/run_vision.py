@@ -5,7 +5,7 @@
     ... [--detect-config <설정.json> [--overlay-dir <새 폴더>]]
 
 기본은 입력 재현과 기록만 한다. `--detect-config`를 주면 성공 프레임마다 `vision.planar.detect_planar`로
-표시용(raw) 윤곽을 추출해 기록한다(3일차 단계 4). GUI·ROS·TCP·로봇 명령·클래스·규격 판정은 없다.
+표시용(raw) 윤곽을 추출해 기록한다. GUI·ROS·TCP·로봇 명령·클래스·규격 판정은 없다.
 
 stdout에는 한 줄에 JSON 객체 하나를 쓴다(kind = start / frame / observation / event / end). 이 필드
 이름은 A 내부 실행 기록용 제안이며 공동 API나 TCP 규약이 아니다. 경고와 예상 밖 오류 설명은 stderr로 간다.
@@ -70,8 +70,10 @@ def _positive_int(text: str) -> int:
         value = int(text, 10)
     except ValueError:
         raise argparse.ArgumentTypeError(f"양의 정수가 아님: {text!r}")
+
     if value <= 0:
         raise argparse.ArgumentTypeError(f"양의 정수가 아님: {text!r}")
+
     return value
 
 
@@ -122,7 +124,7 @@ def _read_list(path: str) -> list[str]:
 def _frame_record(frame: FramePacket) -> dict:
     """성공 프레임 하나를 `kind=frame` 기록(dict)으로 만든다. 영상 배열은 넣지 않는다.
 
-    키 구성은 2일차 이후 그대로이며 검출 모드에서도 바뀌지 않는다.
+    키 구성은 검출 모드에서도 바뀌지 않는다.
     """
     return {
         "kind": "frame",
@@ -210,14 +212,18 @@ def _draw_overlay(image: np.ndarray, result: PlanarResult, config: PlanarConfig)
     canvas = image.copy()
     legend = ("display_only valid=false", f"cfg {result.config_sha256[:12]}",
               "green=eligible red=rejected/clipped")
+
     for i, text in enumerate(legend):
         cv2.putText(canvas, text, (2, 12 + 12 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.35, _LEGEND_BGR, 1)
+
     if config.roi is not None:
         x, y, w, h = config.roi
         cv2.rectangle(canvas, (x, y), (x + w - 1, y + h - 1), _ROI_BGR, 1)
+
     for c in result.candidates:
         pts = np.rint(c.points_source).astype(np.int32).reshape(-1, 1, 2)
         cv2.polylines(canvas, [pts], True, _ELIGIBLE_BGR if c.eligible else _REJECT_BGR, 1)
+
     return canvas
 
 
@@ -229,13 +235,16 @@ def _save_overlay(directory: str, image_seq: int, canvas: np.ndarray) -> str:
     """
     path = os.path.join(directory, f"overlay_{int(image_seq):06d}.png")
     ok, buf = cv2.imencode(".png", canvas)
+
     if not ok:
         raise RuntimeError(f"overlay encode failed: {path}")
+
     try:
         with open(path, "xb") as f:
             f.write(buf.tobytes())
     except OSError as exc:
         raise RuntimeError(f"overlay write failed: {path}: {exc}") from exc
+
     return path
 
 
@@ -253,6 +262,7 @@ def main(argv=None, *, source_factory=StoredImageSource, stdout=None, stderr=Non
     stderr = sys.stderr if stderr is None else stderr
     parser = _build_parser()
     args = parser.parse_args(argv)  # 옵션 오류는 argparse가 exit 2로 끝낸다
+
     if args.overlay_dir is not None and args.detect_config is None:
         parser.error("--overlay-dir는 --detect-config와 함께만 쓸 수 있음")  # exit 2
 
@@ -265,11 +275,13 @@ def main(argv=None, *, source_factory=StoredImageSource, stdout=None, stderr=Non
             parser.error(f"목록 파일을 읽을 수 없음: {args.image_list}: {exc}")  # exit 2
 
     config = None
+
     if args.detect_config is not None:
         try:
             config = load_config(args.detect_config)
         except (OSError, ValueError) as exc:
             parser.error(f"검출 설정을 읽을 수 없음: {args.detect_config}: {exc}")  # exit 2
+
         if args.overlay_dir is not None:
             try:
                 os.mkdir(args.overlay_dir)  # 이미 있으면(파일·폴더) FileExistsError
@@ -284,6 +296,7 @@ def main(argv=None, *, source_factory=StoredImageSource, stdout=None, stderr=Non
     run_id = new_run_id()
     issuer = FrameIdIssuer(run_id)
     source = source_factory(paths, source_id=args.source_id, issuer=issuer)
+
     try:
         start = {
             "kind": "start",
@@ -294,41 +307,55 @@ def main(argv=None, *, source_factory=StoredImageSource, stdout=None, stderr=Non
             "timestamp_base": "PC_RECEIVE",
             "time_note": TIME_NOTE,
         }
+
         if config is not None:
             start["config_sha256"] = config.config_sha256
             start["display_only"] = True
+
         emit(start)
         frames = 0
         failures = 0
         observations = 0
+
         while True:
             item = source.read()
+
             if isinstance(item, FramePacket):
                 emit(_frame_record(item))
                 frames += 1
+
                 if config is not None:
                     result = detect_planar(item, config)
                     overlay_path = None
+
                     if args.overlay_dir is not None:
                         overlay_path = _save_overlay(args.overlay_dir, item.image_seq,
                                                      _draw_overlay(item.image, result, config))
+
                     emit(_observation_record(result, overlay_path))
                     observations += 1
+
                 if args.max_frames is not None and frames >= args.max_frames:
                     reason = "max_frames"
                     break
+
                 continue
+
             emit(_event_record(item))
             if item.status is InputStatus.END_OF_STREAM:
                 reason = "end_of_stream"
                 break
+
             if item.status is InputStatus.SOURCE_UNAVAILABLE and item.detail == _DETAIL_EMPTY:
                 reason = "empty_list"
                 break
+
             if item.status is InputStatus.SOURCE_UNAVAILABLE and item.detail == _DETAIL_CLOSED:
                 reason = "closed"
                 break
+
             failures += 1
+
         end = {
             "kind": "end",
             "run_id": run_id,
@@ -337,8 +364,10 @@ def main(argv=None, *, source_factory=StoredImageSource, stdout=None, stderr=Non
             "failures": failures,
             "reason": reason,
         }
+
         if config is not None:
             end["observations"] = observations
+
         emit(end)
         return 0
     except Exception as exc:  # 예상하지 못한 오류는 성공으로 처리하지 않는다

@@ -1,8 +1,8 @@
 """저장 이미지·명시 순서 목록 입력 — A 내부 잠정안.
 
-공동 API 확정이 아니다. 자료형은 `inputs/base.py`(A 내부 잠정 자료형)를 쓰고,
+공동 API 확정이 아니다. 자료형은 `inputs/base.py`(공통 자료형의 A 확장)를 쓰고,
 항목 단위 실패 정책(실패한 항목을 소비하고 다음 항목으로 진행)은 A 제안이다.
-근거: A 상세설계 §5.1·§5.4, 2일차 단계 2 실행 명세.
+근거: A 상세설계 §5.1(공통 프레임)·§5.4(입력 상태)·§6(입력 소스별 동작의 「저장 이미지」 행).
 """
 from __future__ import annotations
 
@@ -53,6 +53,7 @@ class StoredImageSource:
     def __init__(self, paths: Sequence[str | os.PathLike], *, source_id: str,
                  issuer: FrameIdIssuer, capture_generation: int = 0,
                  clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
+        """경로 목록을 복사해 두고 발급기·세대·시계를 주입받는다. 파일은 `read()` 때 연다."""
         self._paths = [os.fspath(p) for p in paths]
         self._source_id = source_id
         self._issuer = issuer
@@ -63,10 +64,13 @@ class StoredImageSource:
         self._closed = False
 
     def read(self) -> FramePacket | InputStatusEvent:
+        """목록의 다음 항목을 읽어 `FramePacket`을, 읽지 못하면 `InputStatusEvent`를 돌려준다."""
         if self._closed:
             return self._event(InputStatus.SOURCE_UNAVAILABLE, "closed", None)
+
         if not self._paths:
             return self._event(InputStatus.SOURCE_UNAVAILABLE, "empty list", None)
+
         if self._next_index >= len(self._paths):
             return self._event(InputStatus.END_OF_STREAM, "end of list", None)
 
@@ -77,6 +81,7 @@ class StoredImageSource:
         if not os.path.isfile(path):
             return self._event(InputStatus.SOURCE_UNAVAILABLE,
                                "not a regular file or missing", path)
+
         if not os.access(path, os.R_OK):
             return self._event(InputStatus.SOURCE_UNAVAILABLE, "file not readable", path)
 
@@ -84,14 +89,18 @@ class StoredImageSource:
             image = cv2.imread(path, cv2.IMREAD_COLOR)
         except cv2.error as exc:
             return self._event(InputStatus.DECODE_FAILED, f"opencv decode error: {exc}", path)
+
         if image is None:
             return self._event(InputStatus.DECODE_FAILED, "imread returned None", path)
+
         if image.dtype != "uint8" or image.ndim != 3 or image.shape[2] != 3:
             return self._event(InputStatus.DECODE_FAILED,
                                f"unexpected array dtype={image.dtype} shape={image.shape}", path)
 
+        # 다른 버퍼를 빌려 쓰는 배열이면 복사해 프레임이 버퍼를 단독으로 갖게 한다.
         if not image.flags.owndata:
             image = image.copy()
+
         image.setflags(write=False)
 
         seq = self._issuer.next_seq()
@@ -118,14 +127,17 @@ class StoredImageSource:
         return frame
 
     def current(self) -> FramePacket | None:
+        """마지막 성공 프레임(같은 객체). 없으면 None."""
         return self._current
 
     def close(self) -> None:
+        """소스를 닫는다. 이후 `read()`는 `SOURCE_UNAVAILABLE`("closed")."""
         self._closed = True
         self._current = None
 
     def _event(self, status: InputStatus, detail: str,
                source_ref: str | None) -> InputStatusEvent:
+        """현재 프레임을 비우고, 시계를 한 번 읽어 입력 사건을 만든다."""
         self._current = None
         return InputStatusEvent(
             run_id=self._issuer.run_id,

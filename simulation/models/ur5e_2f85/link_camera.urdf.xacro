@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<!-- A 상세설계 §6.1. xyz/rpy는 호출자가 정하며, 센서는 링크 +X를 본다. -->
+<robot xmlns:xacro="http://wiki.ros.org/xacro">
+  <xacro:macro name="link_camera" params="parent xyz rpy">
+    <link name="link_cam_link">
+      <!-- 매립 시험: 외부 본체·장착대 없이 팔 표면에 얇은 렌즈면만 표시한다.
+           광학 중심은 링크 원점이며, +X 방향·센서 설정은 이전과 같다. -->
+      <visual>
+        <origin xyz="-0.0005 0 0" rpy="0 1.57079632679 0"/>
+        <geometry><cylinder radius="0.0042" length="0.001"/></geometry>
+        <material name="link_camera_lens"><color rgba="0.08 0.25 0.45 1"/></material>
+      </visual>
+      <inertial>
+        <mass value="0.05"/>
+        <inertia ixx="0.0000075" ixy="0" ixz="0" iyy="0.0000104167" iyz="0" izz="0.0000104167"/>
+      </inertial>
+    </link>
+    <joint name="link_cam_joint" type="fixed">
+      <parent link="${parent}"/><child link="link_cam_link"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+    </joint>
+    <link name="link_cam_optical_frame"/>
+    <joint name="link_cam_optical_joint" type="fixed">
+      <parent link="link_cam_link"/><child link="link_cam_optical_frame"/>
+      <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+    </joint>
+    <gazebo reference="link_cam_link">
+      <sensor name="link_cam" type="camera">
+        <always_on>1</always_on>
+        <update_rate>15</update_rate>
+        <topic>link_cam/image</topic>
+        <gz_frame_id>link_cam_optical_frame</gz_frame_id>
+        <camera>
+          <horizontal_fov>1.0</horizontal_fov>
+          <image><width>1280</width><height>720</height><format>R8G8B8</format></image>
+          <clip><near>0.05</near><far>5.0</far></clip>
+        </camera>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+</robot>

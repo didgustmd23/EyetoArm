@@ -1,7 +1,8 @@
 """OpenCV 전처리 설정 로더와 표시용(raw) 평면 윤곽 후보 추출 — A 내부 잠정안.
 
-근거: A 3일차 단계 1 결과(설정 필드 계약·처리 순서·식별자 정규화), 단계 2 실행 명세,
-A 상세설계 §5.1, `vision/pixel_map.py`(단순 스케일 복원 잠정 규약).
+근거: A 상세설계 §5.1(공통 프레임)·§7(평면 검출 처리 1~3단계, 설정 식별자),
+`vision/pixel_map.py`(단순 스케일 복원 잠정 규약). 설정 필드·처리 순서·식별자 정규화는
+A 내부 잠정안이며, 이 모듈의 `PlanarConfig`·`detect_planar`가 그 정본이다.
 
 - 결과는 표시용이다. `eligible`은 영상 필터(면적 범위·경계 미접촉) 통과라는 뜻일 뿐이며
   B 계산용 유효 판정·관측면·클래스·규격·보정 좌표가 아니다. 후보를 자동 선정하지 않는다.
@@ -49,18 +50,23 @@ _CLIP_ORDER = ("source_edge", "roi_edge")
 
 
 def _is_int(v) -> bool:
+    """bool을 뺀 정수인지 확인한다."""
     return isinstance(v, Integral) and not isinstance(v, bool)
 
 
 def _to_finite_float(v, name: str) -> float:
+    """bool이 아닌 유한 실수를 float로 바꾼다. 아니면 ValueError."""
     if not isinstance(v, Real) or isinstance(v, bool):
         raise ValueError(f"{name} must be a number: {v!r}")
+
     try:
         f = float(v)
     except OverflowError as exc:
         raise ValueError(f"{name} is out of float range") from exc
+
     if not math.isfinite(f):
         raise ValueError(f"{name} must be finite: {v!r}")
+
     return f
 
 
@@ -68,14 +74,18 @@ def _int_tuple(v, n: int, name: str, positive_from: int) -> tuple[int, ...]:
     """정수 n개 배열. 인덱스 `positive_from` 이후는 양수, 그 앞은 0 이상."""
     if not isinstance(v, (list, tuple)) or len(v) != n or not all(_is_int(x) for x in v):
         raise ValueError(f"{name} must be {n} integers: {v!r}")
+
     out = tuple(int(x) for x in v)
+
     for i, x in enumerate(out):
         if (i >= positive_from and x <= 0) or x < 0:
             raise ValueError(f"{name} has an out-of-range value: {v!r}")
+
     return out
 
 
 def _kernel(v, name: str) -> int:
+    """커널 크기는 0(사용 안 함)이거나 3 이상 홀수 정수여야 한다. 아니면 ValueError."""
     if not _is_int(v) or not (v == 0 or (v >= 3 and v % 2 == 1)):
         raise ValueError(f"{name} must be 0 or an odd integer >= 3: {v!r}")
     return int(v)
@@ -83,9 +93,9 @@ def _kernel(v, name: str) -> int:
 
 @dataclass(frozen=True)
 class PlanarConfig:
-    """검증한 전처리·필터 설정의 변경 불가 스냅샷(단계 1 §3 필드 계약).
+    """검증한 전처리·필터 설정의 변경 불가 스냅샷(A 상세설계 §7 「소스별 설정」).
 
-    생성자가 모든 값을 검증하고 정규화한다(직접 생성해도 검증을 우회하지 않는다).
+    생성자가 모든 값을 검증하고 정규화한다(직접 생성해도 검증을 우회하지 않는다). 잘못된 값은 ValueError.
     배열은 튜플, 실수 필드는 float로 보관한다. `config_sha256`은 정규화한 값에서 계산한다.
     값을 바꾸려면 새 설정을 로드하거나 새로 생성한다.
     """
@@ -108,49 +118,70 @@ class PlanarConfig:
     config_sha256: str = field(init=False)
 
     def __post_init__(self) -> None:
+        """모든 필드를 검증·정규화하고 `config_sha256`을 채운다. 잘못된 값은 ValueError."""
         put = lambda k, v: object.__setattr__(self, k, v)  # noqa: E731
+
         if not _is_int(self.format_version) or self.format_version != FORMAT_VERSION:
             raise ValueError(f"format_version must be {FORMAT_VERSION}: {self.format_version!r}")
+
         if self.status != STATUS:
             raise ValueError(f"status must be {STATUS!r}: {self.status!r}")
+
         for key, value in _FIXED.items():
             if getattr(self, key) != value:
                 raise ValueError(f"{key} must be {value!r}: {getattr(self, key)!r}")
+
         put("roi", None if self.roi is None else _int_tuple(self.roi, 4, "roi", 2))
         put("resize_wh", None if self.resize_wh is None else _int_tuple(self.resize_wh, 2, "resize_wh", 0))
         put("gaussian_blur_ksize", _kernel(self.gaussian_blur_ksize, "gaussian_blur_ksize"))
         put("morph_open_ksize", _kernel(self.morph_open_ksize, "morph_open_ksize"))
+
         if not isinstance(self.polarity, str) or self.polarity not in _POLARITY_FLAG:
             raise ValueError(f"polarity must be 'dark' or 'bright': {self.polarity!r}")
+
         if not isinstance(self.threshold_method, str) or self.threshold_method not in _THRESHOLD_METHODS:
             raise ValueError(f"threshold_method must be 'otsu' or 'fixed': {self.threshold_method!r}")
+
         if self.threshold_method == "otsu":
             if self.fixed_threshold is not None:
                 raise ValueError("fixed_threshold must be null when threshold_method is 'otsu'")
         else:
             if self.fixed_threshold is None:
                 raise ValueError("fixed_threshold is required when threshold_method is 'fixed'")
+
             t = _to_finite_float(self.fixed_threshold, "fixed_threshold")
+
             if not 0.0 <= t <= 255.0:
                 raise ValueError(f"fixed_threshold must be in [0, 255]: {self.fixed_threshold!r}")
+
             put("fixed_threshold", t)
+
         lo = _to_finite_float(self.min_area_source_px2, "min_area_source_px2")
+
         if lo <= 0.0:
             raise ValueError(f"min_area_source_px2 must be > 0: {self.min_area_source_px2!r}")
+
         put("min_area_source_px2", lo)
+
         if self.max_area_source_px2 is not None:
             hi = _to_finite_float(self.max_area_source_px2, "max_area_source_px2")
+
             if not hi > lo:
                 raise ValueError("max_area_source_px2 must be greater than min_area_source_px2")
+
             put("max_area_source_px2", hi)
+
         m = self.border_margin_processed_px
+
         if not _is_int(m) or m < 0:
             raise ValueError(f"border_margin_processed_px must be an integer >= 0: {m!r}")
+
         put("border_margin_processed_px", int(m))
         put("config_sha256", _canonical_sha256(self))
 
 
 def _config_keys() -> tuple[str, ...]:
+    """설정 파일에 쓰는 필드 이름(생성자 인자, `config_sha256` 제외)."""
     return tuple(f.name for f in PlanarConfig.__dataclass_fields__.values() if f.init)
 
 
@@ -162,22 +193,30 @@ def _canonical_sha256(c: PlanarConfig) -> str:
 
 
 def _reject_duplicates(pairs):
+    """JSON 객체의 중복 키를 거부한다(`object_pairs_hook`)."""
     out = {}
+
     for k, v in pairs:
         if k in out:
             raise ValueError(f"duplicate key: {k!r}")
+
         out[k] = v
+
     return out
 
 
 def _reject_constant(name):
+    """JSON 비표준 상수(NaN·Infinity)를 거부한다(`parse_constant`)."""
     raise ValueError(f"non-standard JSON constant: {name}")
 
 
 def _parse_float(text: str) -> float:
+    """JSON 실수를 float로 읽고 비유한 값(`1e400` 등)을 거부한다(`parse_float`)."""
     f = float(text)
+
     if not math.isfinite(f):
         raise ValueError(f"non-finite number: {text}")
+
     return f
 
 
@@ -188,17 +227,22 @@ def load_config(path: str | os.PathLike) -> PlanarConfig:
     """
     with open(path, encoding="utf-8") as f:
         text = f.read()
+
     try:
         doc = json.loads(text, object_pairs_hook=_reject_duplicates,
                          parse_constant=_reject_constant, parse_float=_parse_float)
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid JSON: {exc}") from exc
+
     if not isinstance(doc, dict):
         raise ValueError("config must be a JSON object")
+
     keys = set(_config_keys())
     missing, unknown = keys - doc.keys(), doc.keys() - keys
+
     if missing or unknown:
         raise ValueError(f"config keys mismatch: missing={sorted(missing)} unknown={sorted(unknown)}")
+
     return PlanarConfig(**doc)
 
 
@@ -252,26 +296,35 @@ class PlanarResult:
 
 
 def _check_frame(frame: FramePacket) -> np.ndarray:
+    """프레임 영상이 BGR uint8 (H, W, 3)이고 크기가 frame.width·height와 같은지 확인해 돌려준다."""
     img = frame.image
+
     if not isinstance(img, np.ndarray):
         raise ValueError(f"frame.image must be a numpy array: {type(img).__name__}")
+
     if img.dtype != np.uint8 or img.ndim != 3 or img.shape[2] != 3:
         raise ValueError(f"frame.image must be BGR uint8 (H, W, 3): {img.dtype} {img.shape}")
+
     h, w = img.shape[:2]
+
     if h == 0 or w == 0:
         raise ValueError("frame.image is empty")
+
     if frame.width != w or frame.height != h:
         raise ValueError(f"frame width/height {frame.width}x{frame.height} != image {w}x{h}")
+
     return img
 
 
 def detect_planar(frame: FramePacket, config: PlanarConfig) -> PlanarResult:
-    """단계 1 §3 처리 순서로 표시용 윤곽 후보를 추출한다. 입력 배열·메타데이터를 바꾸지 않는다.
+    """아래 1)~10) 순서로 표시용 윤곽 후보를 추출한다. 입력 배열·메타데이터를 바꾸지 않는다.
 
-    잘못된 프레임·원본 밖 ROI는 ValueError다(입력 사건이나 무검출로 바꾸지 않는다).
+    잘못된 프레임·원본 밖 ROI는 ValueError, `PlanarConfig`가 아닌 설정은 TypeError다
+    (입력 사건이나 무검출로 바꾸지 않는다).
     """
     if not isinstance(config, PlanarConfig):
         raise TypeError("config must be a PlanarConfig")
+
     t0 = time.monotonic_ns()
     img = _check_frame(frame)
     src_h, src_w = img.shape[:2]
@@ -282,49 +335,62 @@ def detect_planar(frame: FramePacket, config: PlanarConfig) -> PlanarResult:
     rx, ry, rw, rh = roi
     work = img[ry:ry + rh, rx:rx + rw]
     t_roi = roi_transform(roi, (src_w, src_h))
+
     # 2) 리사이즈(INTER_AREA)
     if config.resize_wh is not None:
         work = cv2.resize(work, config.resize_wh, interpolation=cv2.INTER_AREA)
         t_resize = resize_transform((rw, rh), config.resize_wh)
     else:
         t_resize = (1.0, 1.0, 0.0, 0.0)
+
     transform = compose(t_roi, t_resize)
+
     # 3) 회색
     gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
     ph, pw = gray.shape[:2]
+
     # 4) Gaussian blur
     if config.gaussian_blur_ksize:
         k = config.gaussian_blur_ksize
         gray = cv2.GaussianBlur(gray, (k, k), 0)
+
     # 5) 이진화
     flag = _POLARITY_FLAG[config.polarity]
+
     if config.threshold_method == "otsu":
         used, binary = cv2.threshold(gray, 0, 255, flag | cv2.THRESH_OTSU)
     else:
         used, binary = cv2.threshold(gray, config.fixed_threshold, 255, flag)
+
     # 6) morphology open
     if config.morph_open_ksize:
         k = config.morph_open_ksize
         binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, np.ones((k, k), np.uint8), iterations=1)
+
     # 7) 윤곽
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     m = config.border_margin_processed_px
     side_is_source = {"left": rx == 0, "top": ry == 0, "right": rx + rw == src_w, "bottom": ry + rh == src_h}
     candidates = []
+
     for i, cnt in enumerate(contours):
         p = cnt.reshape(-1, 2)
+
         # 8) 원본 좌표 복원
         pts = to_source(p, transform)
         pts.setflags(write=False)
+
         # 9) 원본 면적
         area = float(cv2.contourArea(pts))
+
         if area < config.min_area_source_px2:
             reject = "area_below_min"
         elif config.max_area_source_px2 is not None and area > config.max_area_source_px2:
             reject = "area_above_max"
         else:
             reject = None
+
         # 10) 처리 영상 경계 접촉(전체 점)
         touch = {
             "left": bool(np.any(p[:, 0] <= m)),

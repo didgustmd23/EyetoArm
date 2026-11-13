@@ -10,6 +10,16 @@
 <robot xmlns:xacro="http://wiki.ros.org/xacro" name="ur5e_2f85">
   <xacro:arg name="simulation_controllers" default=""/>
   <xacro:arg name="gripper_initial" default="0.0"/>
+  <!-- 사용자 정정: 흰색 세로 몸체(upper_arm_link) 상단 옆면에 부착.
+       초기 대기 자세에서 컨베이어 방향을 수평으로 봄. 관절 이동 시 시점도 이동. -->
+  <!-- 매립 시험: 해당 시선 방향을 유지하면서 팔 표면으로 광학 중심을 이동. -->
+  <xacro:arg name="link_camera_xyz" default="-0.3400051 -0.0594480 0.0964437"/>
+  <xacro:arg name="link_camera_rpy" default="1.5707963 0.6151567 -1.5715927"/>
+  <xacro:include filename="link_camera.urdf.xacro"/>
+  <!-- 그리퍼 앞면 중앙 매립형. 센서 +X를 그리퍼 +Z(손가락 전방)로 향하게 한다. -->
+  <xacro:arg name="gripper_camera_xyz" default="0 0 0.068"/>
+  <xacro:arg name="gripper_camera_rpy" default="0 -1.57079632679 0"/>
+  <xacro:include filename="gripper_rgbd_camera.urdf.xacro"/>
 
   <xacro:property name="ur_type" value="ur5e"/>
   <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
@@ -33,9 +43,14 @@
 
   <xacro:ur_to_robotiq prefix="" connected_to="tool0"/>
 
+  <xacro:link_camera parent="upper_arm_link" xyz="$(arg link_camera_xyz)" rpy="$(arg link_camera_rpy)"/>
+
   <xacro:robotiq_gripper name="robotiq_gripper" prefix="" parent="gripper_mount_link" include_ros2_control="false">
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </xacro:robotiq_gripper>
+
+  <xacro:gripper_rgbd_camera parent="robotiq_85_base_link"
+    xyz="$(arg gripper_camera_xyz)" rpy="$(arg gripper_camera_rpy)"/>
 
   <ros2_control name="ur5e_2f85" type="system">
     <hardware>

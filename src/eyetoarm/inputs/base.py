@@ -67,14 +67,17 @@ class FrameIdIssuer:
     """
 
     def __init__(self, run_id: str) -> None:
+        """`run_id` 실행의 발급기를 만든다. 첫 `next_seq()`는 0이다."""
         self._run_id = run_id
         self._next = 0
 
     @property
     def run_id(self) -> str:
+        """생성할 때 받은 실행 ID."""
         return self._run_id
 
     def next_seq(self) -> int:
+        """다음 `image_seq`를 돌려주고 1 늘린다(첫 호출은 0)."""
         seq = self._next
         self._next += 1
         return seq

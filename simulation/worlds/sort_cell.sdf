@@ -72,5 +72,13 @@
         </sensor>
       </link>
     </model>
+
+    <!-- 로봇 정면(+X) 위의 고정 CCTV. 조준점 약 (0.2, 0.1, 0.43)m.
+         Gazebo 영상만 발행하며 ROS 브리지·자동 뷰어 연결은 추가하지 않는다. -->
+    <include>
+      <uri>model://overview_camera</uri>
+      <name>overview_cam</name>
+      <pose>2.04 0.02 1.99 0 0.7027648944 3.0981417582</pose>
+    </include>
   </world>
 </sdf>

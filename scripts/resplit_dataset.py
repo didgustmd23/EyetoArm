@@ -44,6 +44,8 @@ _DIGITS_RE = re.compile(r"\d+")
 
 @dataclass
 class ImageRecord:
+    """원본 영상 한 장의 주석 요약(클래스별 개수·짧은 변)."""
+
     rel_path: str  # data/raw 기준 상대 경로 (예: "train/xxx.jpg")
     stem: str
     counts: dict  # {"Bolt": n, "Nut": n}
@@ -52,11 +54,14 @@ class ImageRecord:
 
 @dataclass
 class StemRecord:
+    """같은 원본 줄기에서 나온 사본들."""
+
     stem: str
     images: list = field(default_factory=list)  # ImageRecord, rel_path 정렬
 
     @property
     def representative(self) -> ImageRecord:
+        """valid·test에 넣는 대표 사본(rel_path 정렬 첫 사본)."""
         return self.images[0]
 
 
@@ -64,8 +69,10 @@ class StemRecord:
 def stem_of(file_name: str) -> str:
     """Roboflow 내보내기 파일명 `<원본>_<확장자>_jpg.rf.<해시>.jpg`의 원본 줄기."""
     name = Path(file_name).name
+
     if ".rf." in name:
         return name.split(".rf.", 1)[0]
+
     return Path(name).stem
 
 
@@ -80,38 +87,57 @@ def family_key(stem: str) -> tuple[str, tuple[int, ...]]:
 
 # ---------------------------------------------------------------- 자료 읽기
 def sha256_file(path: Path) -> str:
+    """파일 내용의 sha256 16진 문자열."""
     h = hashlib.sha256()
+
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
+
     return h.hexdigest()
 
 
 def load_records(raw_root: Path) -> tuple[list[ImageRecord], dict]:
+    """세 원본 분할의 COCO 주석을 읽어 (영상 기록 목록(rel_path 정렬), 주석 파일별 sha256)을 돌려준다.
+
+    주석·영상 파일이 없으면 FileNotFoundError.
+    """
     records: list[ImageRecord] = []
     ann_sha: dict = {}
+
     for split in SOURCE_SPLITS:
         ann_path = raw_root / split / ANNOTATION_FILE
+
         if not ann_path.is_file():
             raise FileNotFoundError(f"주석 파일 없음: {ann_path}")
+
         ann_sha[f"{split}/{ANNOTATION_FILE}"] = sha256_file(ann_path)
+
         with open(ann_path, encoding="utf-8") as f:
             coco = json.load(f)
+
         cat_name = {c["id"]: c["name"] for c in coco["categories"]}
         per_image: dict = {im["id"]: {n: 0 for n in CLASS_NAMES} for im in coco["images"]}
         per_short: dict = {im["id"]: {n: [] for n in CLASS_NAMES} for im in coco["images"]}
+
         for ann in coco["annotations"]:
             name = cat_name.get(ann["category_id"])
+
             if name in CLASS_NAMES:
                 per_image[ann["image_id"]][name] += 1
                 s = annotation_short_px(ann)
+
                 if s is not None:
                     per_short[ann["image_id"]][name].append(s)
+
         for im in coco["images"]:
             rel = f"{split}/{im['file_name']}"
+
             if not (raw_root / rel).is_file():
                 raise FileNotFoundError(f"영상 파일 없음: {raw_root / rel}")
+
             records.append(ImageRecord(rel, stem_of(im["file_name"]), per_image[im["id"]], per_short[im["id"]]))
+
     records.sort(key=lambda r: r.rel_path)
     return records, ann_sha
 
@@ -119,11 +145,15 @@ def load_records(raw_root: Path) -> tuple[list[ImageRecord], dict]:
 def annotation_short_px(ann: dict):
     """COCO 다각형 분할 주석의 최소 외접 사각형 짧은 변(px). 다각형이 없으면 None(RLE 등)."""
     seg = ann.get("segmentation")
+
     if not isinstance(seg, list):
         return None
+
     polys = [np.asarray(p, np.float32).reshape(-1, 2) for p in seg if len(p) >= 6]
+
     if not polys:
         return None
+
     (_, _), (w, h), _ = cv2.minAreaRect(np.concatenate(polys))
     return float(min(w, h))
 
@@ -131,24 +161,32 @@ def annotation_short_px(ann: dict):
 def size_bin_counts(short_px: dict, edges) -> list:
     """클래스별 크기 구간 개수를 [Bolt 구간..., Nut 구간...] 순서로."""
     out = []
+
     for name in CLASS_NAMES:
         idx = np.digitize(np.asarray(short_px.get(name, []), float), edges)
         out.extend(int((idx == b).sum()) for b in range(len(edges) + 1))
+
     return out
 
 
 def size_bin_labels(edges) -> list:
+    """`size_bin_counts`와 같은 순서의 구간 이름(예: "Bolt:<15")."""
     names = [f"<{edges[0]:g}"] + [f"{a:g}-{b:g}" for a, b in zip(edges[:-1], edges[1:])] + [f">={edges[-1]:g}"]
     return [f"{c}:{n}" for c in CLASS_NAMES for n in names]
 
 
 def group_stems(records: list[ImageRecord]) -> list[StemRecord]:
+    """영상 기록을 줄기별로 모은다(줄기 이름 정렬, 줄기 안은 rel_path 정렬)."""
     by_stem: dict = {}
+
     for r in records:
         by_stem.setdefault(r.stem, StemRecord(r.stem)).images.append(r)
+
     stems = [by_stem[k] for k in sorted(by_stem)]
+
     for s in stems:
         s.images.sort(key=lambda r: r.rel_path)
+
     return stems
 
 
@@ -176,24 +214,31 @@ def image_feature(img_bgr: np.ndarray) -> np.ndarray:
 def dihedral_features(img_bgr: np.ndarray) -> np.ndarray:
     """뒤집기·90° 회전 8가지 특징(8×1024). 0번이 원본.
 
-    32×32로 줄인 뒤 변형한다(정사각형 원본 640×640에서는 변형 후 축소와 같다)."""
+    32×32로 줄인 뒤 변형한다(정사각형 원본 640×640에서는 변형 후 축소와 같다).
+    """
     small = thumbnail(img_bgr)
     out = []
+
     for k in range(4):
         rot = np.rot90(small, k)
         out.append(normalize(rot))
         out.append(normalize(rot[:, ::-1]))
+
     return np.stack(out)
 
 
 def load_features(raw_root: Path, records: list[ImageRecord], dihedral: bool) -> np.ndarray:
     """(N, T, 1024). T = 8(dihedral) 또는 1."""
     feats = []
+
     for r in records:
         img = cv2.imread(str(raw_root / r.rel_path), cv2.IMREAD_COLOR)
+
         if img is None:
             raise ValueError(f"영상 해석 실패: {r.rel_path}")
+
         feats.append(dihedral_features(img) if dihedral else image_feature(img)[None, :])
+
     return np.stack(feats)
 
 
@@ -201,24 +246,33 @@ def max_similarity(feats_a: np.ndarray, feats_b: np.ndarray) -> np.ndarray:
     """A의 원본 특징과 B의 모든 변형 특징의 상관 최댓값 (Na, Nb)."""
     base = feats_a[:, 0, :]
     best = np.full((feats_a.shape[0], feats_b.shape[0]), -np.inf)
+
     for t in range(feats_b.shape[1]):
         np.maximum(best, base @ feats_b[:, t, :].T, out=best)
+
     return best
 
 
 # ---------------------------------------------------------------- 묶음
 class UnionFind:
+    """줄기 색인 묶음용 합집합-찾기. 대표는 묶음의 가장 작은 색인이다."""
+
     def __init__(self, n: int):
+        """색인 0..n-1을 각자 하나의 묶음으로 시작한다."""
         self.parent = list(range(n))
 
     def find(self, a: int) -> int:
+        """`a`가 속한 묶음의 대표 색인(경로 절반 압축)."""
         while self.parent[a] != a:
             self.parent[a] = self.parent[self.parent[a]]
             a = self.parent[a]
+
         return a
 
     def union(self, a: int, b: int) -> None:
+        """두 묶음을 합친다. 작은 대표를 남긴다."""
         ra, rb = self.find(a), self.find(b)
+
         if ra != rb:
             if ra < rb:
                 self.parent[rb] = ra
@@ -232,57 +286,77 @@ def build_groups(stems, records, feats, threshold, adj_k, adj_min_sim, block=512
     img_stem = np.array([stem_index[r.stem] for r in records])
     n_img = len(records)
     uf = UnionFind(len(stems))
+
     # 줄기 쌍 최대 상관(보조 결합용). 줄기 수가 작아 dense로 둔다.
     stem_sim = np.full((len(stems), len(stems)), -np.inf) if adj_k > 0 else None
+
     # records는 줄기 색인 순으로 정렬돼 있어야 한다(열 방향 reduceat).
     if np.any(np.diff(img_stem) < 0):
         raise ValueError("records must be ordered by stem index")
+
     starts = np.flatnonzero(np.r_[True, np.diff(img_stem) != 0])
+
     for a0 in range(0, n_img, block):
         sim = max_similarity(feats[a0:a0 + block], feats)
         rows, cols = np.nonzero(sim >= threshold)
+
         for i, j in zip(rows + a0, cols):
             if img_stem[i] != img_stem[j]:
                 uf.union(int(img_stem[i]), int(img_stem[j]))
+
         if stem_sim is not None:
             red = np.maximum.reduceat(sim, starts, axis=1)  # (block, 줄기 수)
             np.maximum.at(stem_sim, img_stem[a0:a0 + sim.shape[0]], red)
+
     if adj_k > 0:
         fam: dict = {}
+
         for i, s in enumerate(stems):
             pattern, numbers = family_key(s.stem)
             fam.setdefault(pattern, []).append((numbers, s.stem, i))
+
         for members in fam.values():
             members.sort()
+
             for a in range(len(members)):
                 for b in range(a + 1, min(a + adj_k, len(members) - 1) + 1):
                     i, j = members[a][2], members[b][2]
+
                     if max(stem_sim[i, j], stem_sim[j, i]) >= adj_min_sim:
                         uf.union(i, j)
+
     groups: dict = {}
+
     for i in range(len(stems)):
         groups.setdefault(uf.find(i), []).append(i)
+
     return sorted((sorted(g) for g in groups.values()), key=lambda g: g[0])
 
 
 # ---------------------------------------------------------------- 배정
 def assign_groups(groups, stems, ratios, seed, big_frac=0.25, size_edges=(15.0, 25.0),
                   w_stems=4.0, w_class=1.0, w_size=1.0):
-    """묶음 → 분할 이름. 줄기 수·Bolt·Nut·클래스별 크기 구간(대표 사본 기준)의 분할 몫 편차 제곱합에
-    가중치를 곱한 비용이 최소인 분할로 탐욕 배정.
+    """묶음마다 분할 이름을 정해 묶음 순서대로 목록으로 돌려준다(탐욕 배정).
+
+    비용은 줄기 수·Bolt·Nut·클래스별 크기 구간(대표 사본 기준)의 분할 몫 편차 제곱합에 가중치를
+    곱한 값이며, 비용이 가장 작은 분할을 고른다.
 
     가장 작은 분할 목표 줄기 수의 `big_frac`보다 큰 묶음은 먼저(큰 순) 배정하고, 나머지는 시드로 섞은
-    순서로 배정한다. 크기 순으로만 배정하면 valid·test가 한 장짜리 묶음으로만 채워진다."""
+    순서로 배정한다. 크기 순으로만 배정하면 valid·test가 한 장짜리 묶음으로만 채워진다.
+    """
     ratios = np.asarray(ratios, dtype=float)
     ratios = ratios / ratios.sum()
     rng = np.random.RandomState(seed)
     order = list(range(len(groups)))
     tie = rng.permutation(len(groups))
     vec = []
+
     for g in groups:
         reps = [stems[i].representative.counts for i in g]
         bins = np.sum([size_bin_counts(stems[i].representative.short_px, size_edges) for i in g], axis=0)
-        vec.append(np.concatenate([[len(g), sum(c["Bolt"] for c in reps), sum(c["Nut"] for c in reps)], bins]).astype(float))
+        head = [len(g), sum(c["Bolt"] for c in reps), sum(c["Nut"] for c in reps)]
+        vec.append(np.concatenate([head, bins]).astype(float))
+
     total = np.sum(vec, axis=0)
     total[total == 0] = 1.0
     big_limit = big_frac * float(ratios.min()) * float(total[0])
@@ -291,20 +365,26 @@ def assign_groups(groups, stems, ratios, seed, big_frac=0.25, size_edges=(15.0, 
     order = big + rest
     acc = np.zeros((len(OUT_SPLITS), len(vec[0])))
     assign = [None] * len(groups)
+
     for k in order:
         best, best_cost = None, None
+
         for s in range(len(OUT_SPLITS)):
             trial = acc.copy()
             trial[s] += vec[k]
             frac = trial / total  # 각 분할이 차지하는 몫
+
             # 줄기 수 편차를 가장 무겁게, 주석 비율 편차는 보조
             dev = frac - ratios[:, None]
             cost = (w_stems * np.sum(dev[:, 0] ** 2) + w_class * np.sum(dev[:, 1:3] ** 2)
                     + w_size * np.sum(dev[:, 3:] ** 2))
+
             if best_cost is None or cost < best_cost - 1e-15:
                 best, best_cost = s, cost
+
         acc[best] += vec[k]
         assign[k] = OUT_SPLITS[best]
+
     return assign
 
 
@@ -312,6 +392,10 @@ def assign_groups(groups, stems, ratios, seed, big_frac=0.25, size_edges=(15.0, 
 def resplit(raw_root: Path, out_dir: Path, *, threshold=0.95, dihedral=True, adj_k=3, adj_min_sim=0.85,
             ratios=(0.8, 0.1, 0.1), seed=20261112, big_frac=0.25, size_edges=(15.0, 25.0),
             w_stems=4.0, w_class=1.0, w_size=1.0, write=True) -> dict:
+    """원본을 읽어 묶음·배정을 계산하고, `write`면 `out_dir`에 분할 목록 3개와 manifest.json을 쓴다.
+
+    돌려주는 dict: manifest, lists(분할별 rel_path), groups, stems, records(줄기 순), feats.
+    """
     raw_root = Path(raw_root)
     records, ann_sha = load_records(raw_root)
     stems = group_stems(records)
@@ -325,32 +409,39 @@ def resplit(raw_root: Path, out_dir: Path, *, threshold=0.95, dihedral=True, adj
     lists = {s: [] for s in OUT_SPLITS}
     stats = {s: {"images": 0, "stems": 0, "groups": 0, "Bolt": 0, "Nut": 0} for s in OUT_SPLITS}
     shorts = {s: {n: [] for n in CLASS_NAMES} for s in OUT_SPLITS}
+
     for g, split in zip(groups, assign):
         stats[split]["groups"] += 1
+
         for i in g:
             st = stems[i]
             chosen = st.images if split == "train" else [st.representative]
             stats[split]["stems"] += 1
+
             for r in chosen:
                 lists[split].append(r.rel_path)
                 stats[split]["images"] += 1
                 stats[split]["Bolt"] += r.counts["Bolt"]
                 stats[split]["Nut"] += r.counts["Nut"]
+
                 for n in CLASS_NAMES:
                     shorts[split][n].extend(r.short_px.get(n, []))
+
     for s in OUT_SPLITS:
         lists[s].sort()
         stats[s]["size_bins"] = dict(zip(size_bin_labels(size_edges), size_bin_counts(shorts[s], size_edges)))
         stats[s]["short_px_pct"] = {
             n: ({f"p{q}": round(float(np.percentile(shorts[s][n], q)), 1) for q in (5, 10, 50)}
                 if shorts[s][n] else None) for n in CLASS_NAMES}
+
     sizes = sorted((len(g) for g in groups), reverse=True)
     manifest = {
         "script_version": SCRIPT_VERSION,
         "source": "data/raw (Bolt nut segmentation v1, Roboflow, CC BY 4.0) — 원본 무수정, 목록만",
         "args": {"threshold": threshold, "dihedral": dihedral, "adj_k": adj_k, "adj_min_sim": adj_min_sim,
                  "ratios_stems": list(ratios), "seed": seed, "big_frac": big_frac,
-                 "size_edges_px": list(size_edges), "w_stems": w_stems, "w_class": w_class, "w_size": w_size, "feature": "gray 32x32 INTER_AREA, zero-mean unit-norm"},
+                 "size_edges_px": list(size_edges), "w_stems": w_stems, "w_class": w_class, "w_size": w_size,
+                 "feature": "gray 32x32 INTER_AREA, zero-mean unit-norm"},
         "rules": {
             "stem": "파일명 '.rf.' 앞",
             "valid_test_one_per_stem": "rel_path 정렬 첫 사본",
@@ -368,13 +459,17 @@ def resplit(raw_root: Path, out_dir: Path, *, threshold=0.95, dihedral=True, adj
             "형식 변환(YOLO 라벨)은 하지 않음",
         ],
     }
+
     if write:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
+
         for s in OUT_SPLITS:
             (out_dir / f"{s}.txt").write_text("".join(p + "\n" for p in lists[s]), encoding="utf-8")
+
         (out_dir / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
     return {"manifest": manifest, "lists": lists, "groups": groups, "stems": stems,
             "records": rec_order, "feats": feats}
 
@@ -384,14 +479,17 @@ def cross_split_similarity(raw_root: Path, lists: dict, dihedral: bool) -> dict:
     out = {}
     feats = {s: load_features(Path(raw_root), [ImageRecord(p, "", {}) for p in lists[s]], dihedral)
              for s in OUT_SPLITS}
+
     for a, b in (("train", "valid"), ("train", "test"), ("valid", "test")):
         sim = np.maximum(max_similarity(feats[a], feats[b]), max_similarity(feats[b], feats[a]).T)
         out[f"{a}-{b}"] = {"max": float(sim.max()) if sim.size else None,
                            ">=0.98": int((sim >= 0.98).sum()), ">=0.95": int((sim >= 0.95).sum())}
+
     return out
 
 
 def main(argv=None) -> int:
+    """CLI 진입점. 통계(와 `--verify`면 분할 간 상관)를 stdout에 JSON으로 쓰고 0을 돌려준다."""
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--raw", default="data/raw")
     p.add_argument("--out", default="data/splits/resplit_v2")
@@ -411,14 +509,17 @@ def main(argv=None) -> int:
     p.add_argument("--verify", action="store_true", help="분할 간 상관 검사 출력")
     a = p.parse_args(argv)
     res = resplit(Path(a.raw), Path(a.out), threshold=a.threshold, dihedral=a.dihedral, adj_k=a.adj_k,
-                  adj_min_sim=a.adj_min_sim, ratios=tuple(a.ratios), seed=a.seed, big_frac=a.big_frac, size_edges=tuple(a.size_edges), w_stems=a.w_stems,
-                  w_class=a.w_class, w_size=a.w_size, write=not a.dry_run)
+                  adj_min_sim=a.adj_min_sim, ratios=tuple(a.ratios), seed=a.seed, big_frac=a.big_frac,
+                  size_edges=tuple(a.size_edges), w_stems=a.w_stems, w_class=a.w_class, w_size=a.w_size,
+                  write=not a.dry_run)
     m = res["manifest"]
     print(json.dumps({"groups": m["groups"], "splits": m["splits"]}, ensure_ascii=False))
+
     if a.verify:
         print(json.dumps({"cross_plain": cross_split_similarity(Path(a.raw), res["lists"], False),
                           "cross_dihedral": cross_split_similarity(Path(a.raw), res["lists"], True)},
                          ensure_ascii=False))
+
     return 0
 
 
