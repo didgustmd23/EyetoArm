@@ -45,7 +45,10 @@ def _make_packet(image_seq=7, **overrides):
 
 
 class EnumContractTest(unittest.TestCase):
+    """입력 열거형 값 집합 계약을 확인한다."""
+
     def test_enum_contracts(self):
+        """`TimestampBase`·`InputStatus` 값이 문서의 4개씩이고, 각 멤버는 이름과 값이 같은 문자열이다(TCP 명세서 §4.3, A 상세설계 §5.4)."""
         # TCP 명세서 §4.3, 공통 자료형 초안 §3.1
         self.assertEqual(
             {m.value for m in TimestampBase},
@@ -65,7 +68,10 @@ class EnumContractTest(unittest.TestCase):
 
 
 class FramePacketTest(unittest.TestCase):
+    """A `FramePacket`의 필드·순서·불변성을 확인한다(A 상세설계 §5.1)."""
+
     def test_frame_packet_metadata(self):
+        """넘긴 값이 모든 필드에 그대로 들어가고, 영상 배열은 복사 없이 같은 객체다."""
         image = np.zeros((4, 6, 3), dtype=np.uint8)
         packet = _make_packet(
             image=image,
@@ -92,6 +98,7 @@ class FramePacketTest(unittest.TestCase):
         self.assertEqual(packet.source_index, 2)
 
     def test_frame_packet_field_order_and_no_defaults(self):
+        """필드 순서는 공통 14개 뒤에 `source_ref`·`source_index`이고, 기본값이 하나도 없다."""
         expected = [
             "image", "run_id", "source_id", "image_seq", "timestamp_ms",
             "timestamp_base", "received_monotonic_ns", "width", "height", "crop",
@@ -107,6 +114,7 @@ class FramePacketTest(unittest.TestCase):
             self.assertIs(f.default_factory, dataclasses.MISSING, f.name)
 
     def test_frame_packet_reassignment_rejected(self):
+        """필드 재할당은 FrozenInstanceError이지만, 배열 내용의 쓰기 가능 여부는 자료형이 바꾸지 않는다."""
         packet = _make_packet()
 
         for name, value in (("image_seq", 8), ("timestamp_ms", 0), ("image", None)):
@@ -119,7 +127,10 @@ class FramePacketTest(unittest.TestCase):
 
 
 class InputStatusEventTest(unittest.TestCase):
+    """입력 사건 자료형을 확인한다(A 상세설계 §5.4)."""
+
     def test_status_event_is_frameless(self):
+        """입력 사건에는 `image_seq`·영상·시각 같은 프레임 필드가 없고, 모든 필드에 기본값이 없다."""
         event = InputStatusEvent(
             run_id="run-test",
             source_id="stored0",
@@ -148,12 +159,16 @@ class InputStatusEventTest(unittest.TestCase):
 
 
 class FrameIdIssuerTest(unittest.TestCase):
+    """`image_seq` 발급기와 `new_run_id`를 확인한다(A 상세설계 §5.1 「image_seq 수명」)."""
+
     def test_issuer_sequence(self):
+        """발급기는 0, 1, 2 순으로 내주고 생성 때 받은 `run_id`를 유지한다."""
         issuer = FrameIdIssuer("run-a")
         self.assertEqual([issuer.next_seq() for _ in range(3)], [0, 1, 2])
         self.assertEqual(issuer.run_id, "run-a")
 
     def test_issuer_run_id_read_only(self):
+        """발급기의 `run_id`는 읽기 전용이라 대입하면 AttributeError이고 값이 그대로다."""
         issuer = FrameIdIssuer("run-a")
 
         with self.assertRaises(AttributeError):
@@ -162,6 +177,7 @@ class FrameIdIssuerTest(unittest.TestCase):
         self.assertEqual(issuer.run_id, "run-a")
 
     def test_shared_issuer_between_consumers(self):
+        """두 소비자가 발급기 하나를 번갈아 쓰면 순번이 겹치지 않고 0~3으로 이어진다."""
         # 실제 소스가 아닌 가상 소비자 두 개가 같은 발급기를 교대로 쓴다(A §5.1 image_seq 수명).
         issuer = FrameIdIssuer("run-a")
         consumer_a = issuer
@@ -173,6 +189,7 @@ class FrameIdIssuerTest(unittest.TestCase):
         self.assertEqual(got, [0, 1, 2, 3])
 
     def test_reusing_packet_does_not_allocate(self):
+        """같은 프레임을 다시 쓰면 순번·시각·세대가 그대로이고, 발급기의 다음 순번도 소비되지 않는다."""
         # 정지 화면 재처리는 같은 FramePacket을 그대로 쓰고 새 순번을 받지 않는다(A §5.1·§5.4).
         issuer = FrameIdIssuer("run-a")
         packet = _make_packet(image_seq=issuer.next_seq())
@@ -188,6 +205,7 @@ class FrameIdIssuerTest(unittest.TestCase):
         self.assertEqual(issuer.next_seq(), 1)
 
     def test_new_run_id_format(self):
+        """`new_run_id()`는 하이픈 없는 32자리 UUID4 16진 문자열이고, 부를 때마다 다르다."""
         value = new_run_id()
 
         self.assertIsInstance(value, str)

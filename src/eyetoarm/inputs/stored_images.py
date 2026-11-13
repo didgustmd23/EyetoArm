@@ -53,6 +53,7 @@ class StoredImageSource:
     def __init__(self, paths: Sequence[str | os.PathLike], *, source_id: str,
                  issuer: FrameIdIssuer, capture_generation: int = 0,
                  clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
+        """경로 목록을 복사해 두고 발급기·세대·시계를 주입받는다. 파일은 `read()` 때 연다."""
         self._paths = [os.fspath(p) for p in paths]
         self._source_id = source_id
         self._issuer = issuer
@@ -136,6 +137,7 @@ class StoredImageSource:
 
     def _event(self, status: InputStatus, detail: str,
                source_ref: str | None) -> InputStatusEvent:
+        """현재 프레임을 비우고, 시계를 한 번 읽어 입력 사건을 만든다."""
         self._current = None
         return InputStatusEvent(
             run_id=self._issuer.run_id,

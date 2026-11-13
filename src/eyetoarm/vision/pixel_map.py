@@ -25,16 +25,19 @@ Transform = tuple[float, float, float, float]
 
 
 def _is_int(value) -> bool:
+    """bool을 뺀 정수인지 확인한다."""
     return isinstance(value, Integral) and not isinstance(value, bool)
 
 
 def _check_wh(wh, name: str) -> tuple[int, int]:
+    """(폭, 높이)가 양의 정수 두 개인지 확인해 int 튜플로 돌려준다."""
     if len(wh) != 2 or not all(_is_int(v) and v > 0 for v in wh):
         raise ValueError(f"{name} must be two positive integers (width, height): {wh!r}")
     return int(wh[0]), int(wh[1])
 
 
 def _check_transform(t) -> Transform:
+    """변환 (sx, sy, ox, oy)가 유한 실수이고 배율이 양수인지 확인한다."""
     if len(t) != 4 or not all(isinstance(v, Real) and not isinstance(v, bool) for v in t):
         raise ValueError(f"transform must be four real numbers: {t!r}")
 
@@ -50,6 +53,7 @@ def _check_transform(t) -> Transform:
 
 
 def _check_points(points) -> np.ndarray:
+    """점 배열이 (N, 2) 유한 실수인지 확인해 돌려준다."""
     arr = np.asarray(points)
 
     if arr.ndim != 2 or arr.shape[1] != 2:

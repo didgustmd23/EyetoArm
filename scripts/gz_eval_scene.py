@@ -152,6 +152,7 @@ def slot_table():
 
 
 def _sample_camera(rng):
+    """기준 카메라 위치·조준점 주변에서 카메라 위치와 조준점을 무작위로 뽑는다(높이는 0.40~0.65 m)."""
     bx, by, _ = CAM_BASE["xyz"]  # 높이는 기준값을 쓰지 않고 0.40~0.65 m에서 뽑는다
     cam = (bx + rng.uniform(-0.05, 0.05), by + rng.uniform(-0.05, 0.05), rng.uniform(0.40, 0.65))
     ax, ay, az = CAM_BASE["aim"]
@@ -214,6 +215,7 @@ def plan_batch(batch: int, samples_per_batch: int, max_parts=6, min_sep_m=0.035,
 
 # ---------------------------------------------------------------- 월드 사본
 def _camera_model_xml(cam_xyz, cam_rpy, width=IMG_W, height=IMG_H, hfov=HFOV):
+    """같은 링크·같은 pose에 RGB 카메라와 분할 카메라를 단 평가용 카메라 모델 SDF 조각."""
     pose = " ".join(f"{v:.6f}" for v in (*cam_xyz, *cam_rpy))
     cam = (f"<camera><horizontal_fov>{hfov}</horizontal_fov>"
            f"<image><width>{width}</width><height>{height}</height><format>R8G8B8</format></image>"
@@ -241,6 +243,7 @@ def _camera_model_xml(cam_xyz, cam_rpy, width=IMG_W, height=IMG_H, hfov=HFOV):
 
 
 def _slot_include_xml(slot, cls, label):
+    """슬롯 부품 모델을 대기 위치에 두고 분할 라벨을 붙이는 `<include>` SDF 조각."""
     model = CLASSES[cls][0]
     pose = " ".join(f"{v:.4f}" for v in (*PARK[:2], PARK[2], 0, 0, 0))
     return (f'\n    <include><uri>model://{model}</uri><name>{slot}</name><static>true</static>'

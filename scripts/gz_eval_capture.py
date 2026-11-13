@@ -272,6 +272,7 @@ def dataset_yaml() -> str:
 
 # ---------------------------------------------------------------- 실행
 def _gz_version(env) -> str:
+    """`gz sim --versions` 출력. 실패하면 "unknown (사유)"."""
     try:
         return subprocess.run(["gz", "sim", "--versions"], env=env, capture_output=True, text=True,
                               timeout=30).stdout.strip()
@@ -340,9 +341,11 @@ def run(a) -> int:
         return n
 
     def stamp_s(msg):
+        """ROS 메시지 header 시각을 초(float)로 바꾼다."""
         return msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
 
     def to_array(msg):
+        """ROS Image 메시지를 (H, W, 채널) uint8 배열로 바꾼다(rgb8·bgr8은 3채널, 그 밖은 1채널)."""
         ch = 3 if msg.encoding in ("rgb8", "bgr8") else 1
         return np.frombuffer(bytes(msg.data), np.uint8).reshape(msg.height, msg.width, ch)
 

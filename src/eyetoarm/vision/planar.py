@@ -50,10 +50,12 @@ _CLIP_ORDER = ("source_edge", "roi_edge")
 
 
 def _is_int(v) -> bool:
+    """bool을 뺀 정수인지 확인한다."""
     return isinstance(v, Integral) and not isinstance(v, bool)
 
 
 def _to_finite_float(v, name: str) -> float:
+    """bool이 아닌 유한 실수를 float로 바꾼다. 아니면 ValueError."""
     if not isinstance(v, Real) or isinstance(v, bool):
         raise ValueError(f"{name} must be a number: {v!r}")
 
@@ -83,6 +85,7 @@ def _int_tuple(v, n: int, name: str, positive_from: int) -> tuple[int, ...]:
 
 
 def _kernel(v, name: str) -> int:
+    """커널 크기는 0(사용 안 함)이거나 3 이상 홀수 정수여야 한다. 아니면 ValueError."""
     if not _is_int(v) or not (v == 0 or (v >= 3 and v % 2 == 1)):
         raise ValueError(f"{name} must be 0 or an odd integer >= 3: {v!r}")
     return int(v)
@@ -115,6 +118,7 @@ class PlanarConfig:
     config_sha256: str = field(init=False)
 
     def __post_init__(self) -> None:
+        """모든 필드를 검증·정규화하고 `config_sha256`을 채운다. 잘못된 값은 ValueError."""
         put = lambda k, v: object.__setattr__(self, k, v)  # noqa: E731
 
         if not _is_int(self.format_version) or self.format_version != FORMAT_VERSION:
@@ -177,6 +181,7 @@ class PlanarConfig:
 
 
 def _config_keys() -> tuple[str, ...]:
+    """설정 파일에 쓰는 필드 이름(생성자 인자, `config_sha256` 제외)."""
     return tuple(f.name for f in PlanarConfig.__dataclass_fields__.values() if f.init)
 
 
@@ -188,6 +193,7 @@ def _canonical_sha256(c: PlanarConfig) -> str:
 
 
 def _reject_duplicates(pairs):
+    """JSON 객체의 중복 키를 거부한다(`object_pairs_hook`)."""
     out = {}
 
     for k, v in pairs:
@@ -200,10 +206,12 @@ def _reject_duplicates(pairs):
 
 
 def _reject_constant(name):
+    """JSON 비표준 상수(NaN·Infinity)를 거부한다(`parse_constant`)."""
     raise ValueError(f"non-standard JSON constant: {name}")
 
 
 def _parse_float(text: str) -> float:
+    """JSON 실수를 float로 읽고 비유한 값(`1e400` 등)을 거부한다(`parse_float`)."""
     f = float(text)
 
     if not math.isfinite(f):
@@ -288,6 +296,7 @@ class PlanarResult:
 
 
 def _check_frame(frame: FramePacket) -> np.ndarray:
+    """프레임 영상이 BGR uint8 (H, W, 3)이고 크기가 frame.width·height와 같은지 확인해 돌려준다."""
     img = frame.image
 
     if not isinstance(img, np.ndarray):

@@ -22,11 +22,15 @@ SRC_WH = (640, 480)
 
 
 def pts(*xy):
+    """(x, y) 쌍들을 (N, 2) float32 배열로 만든다."""
     return np.array(xy, dtype=np.float32).reshape(-1, 2)
 
 
 class ForwardMappingTest(unittest.TestCase):
+    """처리 영상 좌표 → 원본 좌표 정방향 복원을 손 계산 값과 비교한다(A 상세설계 §5.1)."""
+
     def test_pixel_map_roi_offset(self):
+        """ROI만 쓰면 배율 1에 ROI 원점만큼 더해 원본 좌표가 된다."""
         t = roi_transform((100, 50, 200, 100), SRC_WH)
 
         self.assertEqual(t, (1.0, 1.0, 100.0, 50.0))
@@ -36,6 +40,7 @@ class ForwardMappingTest(unittest.TestCase):
         np.testing.assert_array_equal(out, pts((100, 50), (299, 149)))
 
     def test_pixel_map_anisotropic_resize(self):
+        """가로·세로 배율이 다른 축소(x 2, y 4)를 축별로 되돌리고, 두 배율을 바꿔 쓰지 않는다."""
         t = resize_transform((640, 480), (320, 120))  # x 2.0, y 4.0
 
         self.assertEqual(t, (2.0, 4.0, 0.0, 0.0))
@@ -45,6 +50,7 @@ class ForwardMappingTest(unittest.TestCase):
         self.assertFalse(np.array_equal(to_source(pts((10, 10)), t), pts((40, 20))))
 
     def test_pixel_map_roi_then_resize_order(self):
+        """ROI 뒤 축소한 영상은 축소를 먼저 되돌리고 ROI 오프셋을 더한다. 합성 순서를 뒤집으면 다른 값이 된다."""
         # 원본 640x480 → ROI (100,50,200,100) 크롭 → 100x25로 축소(배율 x 2, y 4)
         roi = roi_transform((100, 50, 200, 100), SRC_WH)
         resize = resize_transform((200, 100), (100, 25))
@@ -62,6 +68,7 @@ class ForwardMappingTest(unittest.TestCase):
         np.testing.assert_array_equal(to_source(pts((10, 5)), wrong), pts((220, 220)))
 
     def test_compose_formula(self):
+        """합성은 배율을 곱하고 오프셋은 outer 배율×inner 오프셋 + outer 오프셋이다."""
         outer = (2.0, 3.0, 5.0, 7.0)
         inner = (0.5, 4.0, 10.0, -1.0)
 
@@ -70,7 +77,10 @@ class ForwardMappingTest(unittest.TestCase):
 
 
 class RoundTripTest(unittest.TestCase):
+    """정방향·역방향 변환이 서로 되돌리는지 확인한다."""
+
     def test_pixel_map_round_trip(self):
+        """ROI·축소 합성 변환으로 원본에 갔다가 돌아오면 소수 좌표까지 1e-4 안에서 제자리다."""
         t = compose(roi_transform((100, 50, 200, 100), SRC_WH),
                     resize_transform((200, 100), (64, 30)))
         p = pts((0, 0), (10.25, 5.5), (63.75, 29.9))
@@ -80,13 +90,17 @@ class RoundTripTest(unittest.TestCase):
         np.testing.assert_allclose(back, p, atol=1e-4, rtol=0)
 
     def test_from_source_known_value(self):
+        """역방향 변환이 손으로 계산한 값((120, 70) → (10, 5))과 같다."""
         # 정방향 상수와 독립된 역방향 손 계산 값
         t = (2.0, 4.0, 100.0, 50.0)
         np.testing.assert_array_equal(from_source(pts((120, 70)), t), pts((10, 5)))
 
 
 class ValidationTest(unittest.TestCase):
+    """잘못된 ROI·해상도·변환·점 입력을 ValueError로 거부하는지 확인한다."""
+
     def test_pixel_map_invalid_inputs(self):
+        """음수·크기 0·원본 밖·정수 아닌 ROI와 잘못된 원본 크기는 ValueError이고, 원본 경계에 딱 맞는 ROI는 받는다."""
         bad_rois = [
             (-1, 0, 10, 10),     # x 음수
             (0, -1, 10, 10),     # y 음수
@@ -113,12 +127,14 @@ class ValidationTest(unittest.TestCase):
                 validate_roi((0, 0, 1, 1), wh)
 
     def test_resize_invalid_resolution(self):
+        """축소 전후 해상도에 0·음수·정수 아닌 값이 있으면 ValueError다."""
         for src, dst in [((0, 480), (320, 240)), ((640, 480), (0, 240)),
                          ((640, -480), (320, 240)), ((640, 480), (320.5, 240))]:
             with self.assertRaises(ValueError, msg=f"{src}->{dst}"):
                 resize_transform(src, dst)
 
     def test_invalid_transform_rejected(self):
+        """배율이 0·음수·비유한이거나 오프셋이 비유한인 변환은 정방향·역방향·합성 어디서나 ValueError다."""
         p = pts((1, 1))
         bad = [(0.0, 1.0, 0.0, 0.0), (1.0, -2.0, 0.0, 0.0), (float("nan"), 1.0, 0.0, 0.0),
                (1.0, float("inf"), 0.0, 0.0), (1.0, 1.0, float("nan"), 0.0),
@@ -132,6 +148,7 @@ class ValidationTest(unittest.TestCase):
                     fn()
 
     def test_invalid_points_rejected(self):
+        """모양이 (N, 2)가 아니거나 NaN·Inf가 있는 점 배열은 변환·범위 판정 모두 ValueError다."""
         t = (1.0, 1.0, 0.0, 0.0)
         bad_points = [
             np.zeros((3,), dtype=np.float32),
@@ -151,7 +168,10 @@ class ValidationTest(unittest.TestCase):
 
 
 class InsideAndArrayTest(unittest.TestCase):
+    """원본 안쪽 판정과 출력 배열의 형·복사 규칙을 확인한다."""
+
     def test_pixel_map_outside_flag(self):
+        """원본 안쪽은 0 ≤ x < 폭, 0 ≤ y < 높이이고(소수 좌표 포함), 결과는 (N,) bool 배열이다."""
         p = pts((0, 0), (639, 479), (-1, 0), (0, -0.5), (640, 0), (0, 480), (639.9, 479.9))
 
         np.testing.assert_array_equal(
@@ -162,6 +182,7 @@ class InsideAndArrayTest(unittest.TestCase):
         self.assertEqual(inside_source(p, 640, 480).shape, (7,))
 
     def test_input_preserved_and_float32_output(self):
+        """변환은 입력 배열을 바꾸지 않고 메모리를 공유하지 않는 새 float32 배열을 돌려준다(항등 변환에서도)."""
         t = (2.0, 4.0, 100.0, 50.0)
         p64 = np.array([[10.0, 5.0], [1.0, 2.0]], dtype=np.float64)
         keep = p64.copy()
@@ -185,6 +206,7 @@ class InsideAndArrayTest(unittest.TestCase):
         self.assertEqual(float(p32[0, 0]), 10.0)
 
     def test_empty_points(self):
+        """빈 점 배열은 오류 없이 빈 (0, 2) float32 결과와 빈 (0,) bool 판정을 돌려준다."""
         t = (2.0, 4.0, 100.0, 50.0)
         empty = np.zeros((0, 2), dtype=np.float32)
 

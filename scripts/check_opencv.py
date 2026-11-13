@@ -144,6 +144,7 @@ def _r(x, nd=9):
 
 
 def _lst(a, nd=6):
+    """배열을 행 목록으로 펴고 각 값을 `_r`로 반올림한다(JSON 보고용)."""
     import numpy as np
     return [[_r(v, nd) for v in row] for row in np.asarray(a, dtype=np.float64).reshape(-1, np.asarray(a).shape[-1])]
 
@@ -151,6 +152,7 @@ def _lst(a, nd=6):
 # ── 환경·API 확인 ───────────────────────────────────────────────────────────────
 
 def _lookup(cv2, dotted: str):
+    """`cv2.a.b` 같은 점 표기 이름이 cv2 모듈에 실제로 있는지 확인한다."""
     obj = cv2
 
     for part in dotted.split(".")[1:]:
@@ -178,6 +180,7 @@ class ArucoBackend:
     """버전 문자열이 아니라 실제 기능 존재로 생성·검출 API를 고른다."""
 
     def __init__(self, cv2):
+        """cv2.aruco의 사전·생성·검출 API를 고르고, 못 고르면 사유를 `reasons`에 남긴다."""
         self.cv2 = cv2
         a = getattr(cv2, "aruco", None)
         self.reasons = []
@@ -246,6 +249,7 @@ class ArucoBackend:
 # ── 시험 항목 ────────────────────────────────────────────────────────────────────
 
 def _result(name, status, reason, **data):
+    """시험 항목 결과 dict(이름·상태·사유 + 추가 자료)를 만든다."""
     return {"name": name, "status": status, "reason": reason, **data}
 
 
@@ -370,6 +374,7 @@ def test_rotation_correspondence(np, backend, ctx, tol_px: float):
 
 
 def _pnp_candidates(cv2, np, obj_M, img_px, K, dist):
+    """IPPE_SQUARE로 PnP 후보를 모두 구해 (retval, 후보 목록)을 돌려준다. 후보마다 R·t·모서리 깊이·재투영 오차."""
     retval, rvecs, tvecs, reproj = cv2.solvePnPGeneric(obj_M, img_px, K, dist, flags=cv2.SOLVEPNP_IPPE_SQUARE)
     cands = []
     reproj = None if reproj is None else np.asarray(reproj, dtype=np.float64).ravel()
@@ -385,6 +390,7 @@ def _pnp_candidates(cv2, np, obj_M, img_px, K, dist):
 
 
 def _cand_report(c, extra=None):
+    """PnP 후보 하나를 JSON 보고용 dict로 바꾼다(카메라 앞쪽 여부 포함)."""
     d = {"t_C_M_m": [_r(v, 9) for v in c["t"]], "R_C_M": _lst(c["R"], 9),
          "reprojection_error_px": _r(c["reproj"], 9),
          "corner_z_m": [_r(v, 6) for v in c["z"]], "in_front": bool(all_finite(c["z"]) and (c["z"] > 0).all())}
@@ -545,6 +551,7 @@ def _image_targets(cv2, np, ctx):
         return []
 
     def overlay(gray, corners_list):
+        """회색 영상에 검출 모서리 윤곽과 모서리 번호를 그린 BGR 영상을 만든다."""
         img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
         for c in corners_list:
@@ -599,6 +606,7 @@ def run(cv2, np, corner_tol_px: float, output_dir: str | None = None):
 
 
 def _print_human(report):
+    """보고서를 사람이 읽는 요약(환경·API·시험 항목)으로 출력한다."""
     env = report["environment"]
     print("== 환경")
     print(f"Python {env['python_version']}  ({env['python_executable']})")

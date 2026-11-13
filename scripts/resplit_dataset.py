@@ -258,6 +258,7 @@ class UnionFind:
     """줄기 색인 묶음용 합집합-찾기. 대표는 묶음의 가장 작은 색인이다."""
 
     def __init__(self, n: int):
+        """색인 0..n-1을 각자 하나의 묶음으로 시작한다."""
         self.parent = list(range(n))
 
     def find(self, a: int) -> int:

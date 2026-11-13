@@ -21,6 +21,7 @@ _ESPEC.loader.exec_module(ev)
 
 
 def test_build_env_sets_partition_and_domain_without_mutating_base():
+    """실행 환경에 Gazebo 파티션·ROS 도메인·모델 경로를 넣되 원래 환경 dict는 바꾸지 않고, 빈 파티션은 ValueError다."""
     base = {"PATH": "/usr/bin", "ROS_DOMAIN_ID": "0"}
     env = cap.build_env(base, "eyetoarm_gz_eval_1", 61, "/models")
 
@@ -33,6 +34,7 @@ def test_build_env_sets_partition_and_domain_without_mutating_base():
 
 
 def test_resource_parsing_and_refusal():
+    """`/proc/meminfo`·nvidia-smi 출력을 읽고, 여유 메모리 부족·GPU 사용량 초과·GPU 값 없음을 거부 사유로 돌려준다."""
     assert cap.parse_meminfo_available_kib("MemTotal: 1 kB\nMemAvailable:    8849344 kB\n") == 8849344
     assert cap.parse_gpu_used_mib("2463\n") == 2463
     assert cap.check_resources(8 * 1048576, 2500) == []
@@ -44,6 +46,7 @@ def test_resource_parsing_and_refusal():
 
 
 def test_other_gz_processes_warns_but_excludes_own():
+    """다른 `gz sim` 프로세스는 경고 목록에 넣고, 자기가 띄운 PID와 gz가 아닌 프로세스는 넣지 않는다."""
     lines = ["  10 gz sim -r -s --headless-rendering /x/ax_warehouse.world",
              "  11 ruby /opt/ros/jazzy/opt/gz_tools_vendor/bin/gz sim -s world.sdf",
              "  12 python3 something", "  99 gz sim -s mine.sdf"]
@@ -53,6 +56,7 @@ def test_other_gz_processes_warns_but_excludes_own():
 
 
 def test_stop_group_only_kills_own_new_session(tmp_path):
+    """`launch_group`으로 새 세션에 띄운 그룹만 종료하고, 새 세션이 아닌 프로세스는 RuntimeError로 거부한다."""
     p = cap.launch_group(["sleep", "30"], dict(os.environ), tmp_path / "s.log")
 
     assert os.getpgid(p.pid) == p.pid != os.getpgrp()
@@ -70,6 +74,7 @@ def test_stop_group_only_kills_own_new_session(tmp_path):
 
 
 def test_launch_group_closes_parent_log_handle(tmp_path):
+    """`launch_group`은 자식 출력을 로그에 남기고, 부모의 로그 파일 핸들을 닫는다(ResourceWarning 없음, 열린 fd 없음)."""
     import gc
     import warnings
     log_path = tmp_path / "echo.log"
@@ -104,6 +109,7 @@ def test_launch_group_closes_parent_log_handle(tmp_path):
 
 
 def test_pose_vector_request_covers_all_slots():
+    """자세 요청은 슬롯 18개를 모두 담고, 계획한 부품은 그 위치·쿼터니언, 나머지는 대기 위치로 보낸다. 명령은 `set_pose_vector` 서비스다."""
     parts = [{"slot": "NUT_0", "xyz": [0.5, -0.2, 0.1005], "rpy": [0.0, 0.0, 1.5707963]}]
     req = cap.pose_vector_request(parts)
 
@@ -122,6 +128,7 @@ def test_pose_vector_request_covers_all_slots():
 
 
 def _seg(h=60, w=80, panoptic=False):
+    """분할 카메라 영상 흉내. 너트·볼트 라벨 영역과 계획에 없는 라벨 99를 그린 의미 분할(3채널 같음) 또는 파놉틱(3번째 채널) 영상."""
     lab = np.zeros((h, w), np.uint8)
     lab[10:20, 10:40] = 13   # NUT_0 (짧은 변 10)
     lab[30:36, 50:75] = 7    # BOLT_B_0 (짧은 변 6)
@@ -145,6 +152,10 @@ PARTS = [
 
 @pytest.mark.parametrize("panoptic", [False, True])
 def test_labels_for_sample_polygons_and_manifest(panoptic, tmp_path):
+    """보이는 부품만 YOLO 다각형 라벨과 짧은 변·넓이 기록을 받고, 안 보이는 부품은 보이지 않음, 계획 밖 라벨은 따로 나온다.
+
+    만든 라벨은 `eval_size_recall.py`가 그대로 읽는다.
+    """
     lines, infos, mode, unknown = cap.labels_for_sample(_seg(panoptic=panoptic), PARTS)
 
     assert mode == ("panoptic" if panoptic else "semantic") and unknown == [99]
@@ -169,6 +180,7 @@ def test_labels_for_sample_polygons_and_manifest(panoptic, tmp_path):
 
 
 def test_label_channel_single_and_dataset_yaml():
+    """1채널 분할 영상은 `single` 방식이고, `dataset.yaml`에는 절대 경로가 없이 test 경로와 클래스 이름이 있다."""
     lab = np.zeros((4, 4), np.uint8)
 
     assert cap.label_channel(lab)[1] == "single"
@@ -179,10 +191,12 @@ def test_label_channel_single_and_dataset_yaml():
 
 
 def test_memory_low_threshold():
+    """여유 메모리가 기준(GiB)보다 작으면 부족, 크면 부족이 아니다."""
     assert cap.memory_low(int(1.9 * 1048576), 2.0) and not cap.memory_low(int(2.1 * 1048576), 2.0)
 
 
 def test_reset_latest_clears_previous_batch_state():
+    """묶음 사이에 최근 RGB·분할·시계 메시지를 모두 None으로 비운다."""
     latest = {"rgb": object(), "seg": object(), "clock": object()}
     cap.reset_latest(latest)
     assert latest == {"rgb": None, "seg": None, "clock": None}

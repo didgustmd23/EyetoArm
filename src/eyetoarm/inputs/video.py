@@ -92,6 +92,7 @@ class VideoSource:
     def __init__(self, path: str | os.PathLike, *, source_id: str, issuer: FrameIdIssuer,
                  generation_provider: Callable[[], int] = lambda: 0,
                  clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
+        """경로와 발급기·세대 공급자·시계를 받아 둔다. 파일은 처음 `read()`·`seek()` 때 연다."""
         self._path = os.fspath(path)
         self._source_id = source_id
         self._issuer = issuer
@@ -146,6 +147,7 @@ class VideoSource:
         return self._open_failure
 
     def _open(self) -> tuple[InputStatus, str] | None:
+        """파일을 열고 fps·전체 프레임 수를 읽는다. 실패하면 (상태, 설명), 성공하면 None."""
         # 파일에 접근할 수 없는 경우와, 파일은 있지만 영상으로 못 여는 경우를 나눈다.
         # OpenCV는 둘 다 isOpened()가 False라 구분하지 못하므로 경로를 먼저 검사한다.
         if not os.path.isfile(self._path):
