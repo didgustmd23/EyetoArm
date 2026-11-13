@@ -1,87 +1,63 @@
-"""실행: PYTHONPATH=src python -m eyetoarm.gui [--tcp-host 127.0.0.1] [--tcp-port 47090] [--connect] [--pendant]
+"""D 1일차 진단 CLI.
 
-PySide6 가 설치된 파이썬으로 실행한다(예: ~/.venvs/eyetoarm-tcp/bin/python).
+  PYTHONPATH=src python -m eyetoarm.gui --env-only
+  PYTHONPATH=src python -m eyetoarm.gui --host 127.0.0.1 --port 47090 --timeout 3 [--json]
+
+무ID GET_STATUS 한 줄만 보낸다. 동작 명령은 보내지 않는다.
+종료 코드: 0 유효 STATUS 수신(robot_ready 값과 무관, 출력의 [준비] 줄로 구분), 1 접속 실패,
+2 프로토콜 실패, 4 환경 불일치(--env-only 또는 --check-env. --check-env 는 불일치여도 접속 진단을 계속
+하고 결과를 함께 출력하되 종료 코드는 4), 5 잘못된 인자. JSON 의 exit_code 는 실제 종료 코드와 같다.
+--timeout 은 접속+송신+수신 총 기한(초). 기본 3 = client.json connect_timeout_ms 2000 + readiness_timeout_ms 1000.
+--host 는 숫자 IP 리터럴(IPv4·IPv6)만 받는다. 이름(localhost 등)은 거부(종료 5, 접속 시도 없음).
+결과는 stdout 에만 쓴다(파일 기록은 호출 측 담당).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import signal
 import sys
-import time
-from pathlib import Path
 
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
+if not __package__:
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from eyetoarm.tcp.client import ClientConfig
-
-from .bridge import Bridge
-from .dashboard import Dashboard
-
-ROOT = Path(__file__).resolve().parents[3]
+from eyetoarm.gui import diag
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(prog="eyetoarm.gui", description="EyetoArm D 클라이언트: 대시보드와 수동 펜던트")
-    parser.add_argument("--config", default=str(ROOT / "config" / "gui" / "client.json"))
-    parser.add_argument("--tcp-host")
-    parser.add_argument("--tcp-port", type=int)
-    parser.add_argument("--connect", action="store_true", help="시작하면서 TCP 1.1 서버에 접속을 시도한다")
-    parser.add_argument("--pendant", action="store_true", help="시작하면서 펜던트 창도 연다")
-    parser.add_argument("--log", help="기록 파일(JSONL). 기본 logs/client/events-<시각>.jsonl")
-    args = parser.parse_args()
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="python -m eyetoarm.gui", description="D 1일차 환경·C STATUS 접속 진단")
+    parser.add_argument("--host", default="127.0.0.1", help="C 서버 숫자 IP (기본 127.0.0.1). 이름(localhost 등)은 거부")
+    parser.add_argument("--port", type=int, default=47090)
+    parser.add_argument("--timeout", type=float, default=diag.DEFAULT_TIMEOUT_S,
+                        help="접속+송신+수신 총 기한(초), 0 초과 60 이하. 기본 3 = connect 2 + readiness 1")
+    parser.add_argument("--env-only", action="store_true", help="환경만 점검, 접속하지 않음")
+    parser.add_argument("--check-env", action="store_true", help="접속 전에 환경도 점검")
+    parser.add_argument("--json", action="store_true", help="결과를 JSON 한 줄로 출력")
+    return parser
 
-    settings = json.loads(Path(args.config).read_text(encoding="utf-8")) if Path(args.config).is_file() else {}
-    tcp_settings = settings.get("tcp", {})
-    if not isinstance(tcp_settings, dict):
-        parser.error("tcp 설정은 객체여야 합니다")
-    # client.json also contains C-server persistence settings. The D client
-    # consumes only fields declared by ClientConfig.
-    server_only = {"record_retention", "log_retry_ms", "command_log_retention", "command_log_path"}
-    client_settings = {key: value for key, value in tcp_settings.items() if key not in server_only}
-    config = ClientConfig(**client_settings)
-    if args.tcp_host:
-        config.host = args.tcp_host
-    if args.tcp_port:
-        config.port = args.tcp_port
-    log_path = Path(args.log) if args.log else ROOT / "logs" / "client" / f"events-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
 
-    app = QApplication(sys.argv[:1])
-    bridge = Bridge(config, log_path)
-    bridge.start()
-    window = Dashboard(bridge)
-    window.show()
-    if args.pendant:
-        window.open_pendant()
-    if args.connect:
-        bridge.call("connect")
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exit_:
+        return 0 if exit_.code == 0 else diag.EXIT_USAGE
+    try:
+        diag.validate_target(args.host, args.port, args.timeout)
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return diag.EXIT_USAGE
 
-    # Ctrl+C·종료 신호: Qt 이벤트 루프는 파이썬 신호 처리기를 스스로 돌리지 않는다.
-    # 짧은 타이머로 파이썬에 차례를 주고, 신호가 오면 창을 닫아 정상 종료한다(연결 정리 포함).
-    def on_signal(*_args) -> None:
-        print("종료 신호를 받아 창을 닫습니다", flush=True)
-        window.close()
-        app.quit()
+    env = diag.check_environment() if (args.env_only or args.check_env) else None
+    result = None
+    if not args.env_only:
+        result = diag.probe(args.host, args.port, args.timeout)
 
-    signal.signal(signal.SIGINT, on_signal)
-    signal.signal(signal.SIGTERM, on_signal)
-    wake = QTimer()
-    wake.timeout.connect(lambda: None)
-    wake.start(200)
-    code = app.exec()
-    wake.stop()
-    bridge.stop()
-    # 창과 연결 객체를 QApplication 보다 먼저, 정해진 순서로 지운다(종료 때 정리 순서 문제로 죽지 않게)
-    for thing in (window.pendant_window, window, bridge):
-        if thing is not None:
-            thing.deleteLater()
-    del window, bridge
-    app.sendPostedEvents(None, 0)
-    app.processEvents()
-    return code
+    record = diag.to_record(env, result)
+    print(json.dumps(record, ensure_ascii=False) if args.json else diag.format_human(env, result))
+    return record["exit_code"]
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

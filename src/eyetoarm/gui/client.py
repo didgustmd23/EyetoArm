@@ -35,7 +35,7 @@ from typing import Any
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QTcpSocket
 
-from eyetoarm.d_client.diag import safe_text
+from eyetoarm.gui.diag import safe_text
 from eyetoarm.tcp import protocol
 
 CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "gui" / "client.json"

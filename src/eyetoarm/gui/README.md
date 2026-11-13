@@ -2,7 +2,23 @@
 
 D 운영 GUI와 TCP 클라이언트를 Windows에서 새로 구현하는 폴더다. 계획서 v1.6 §2.1(D GUI는 Windows, A·B·C·로봇은 WSL)과 §2.5(Windows Python·PySide6 환경과 저장소 체크아웃 위치는 D가 기록)를 따른다.
 
-기존 `src/eyetoarm/gui/`·`src/eyetoarm/tcp/`(WSL 실행 기준 구현)는 수정하지 않는다. 추후 별도 시험 폴더로 옮겨 구분한다.
+2026-11-13 사용자 요청에 따라 최신 `d_client/`를 이 `gui/`로 옮기고 기존 구형 `gui/` 구현을 삭제했다. `src/eyetoarm/tcp/`와 다른 폴더는 변경하지 않는다.
+
+## 현재 실행 경로
+
+기존 `eyetoarm` 환경을 활성화한 뒤 프로젝트 루트의 PowerShell에서 실행한다.
+
+```powershell
+$env:PYTHONPATH = 'src'
+python -m eyetoarm.gui.window --demo
+python -m eyetoarm.gui --env-only
+```
+
+실제 C 준비 조회·Gazebo 창 캡처는 `python -m eyetoarm.gui.window`, 임시 카메라 중계 수신은 `python -m eyetoarm.gui.window --view camera`로 실행한다. `--demo`는 소켓을 열지 않는다.
+
+다른 폴더 수정 금지 범위에 따라 `tests/`·외부 문서의 `eyetoarm.d_client` 참조와 구형 GUI 테스트는 그대로 남아 있다. 이전 경로를 사용하는 테스트·실행 안내는 후속 갱신이 필요하다. 테마 선택을 보존하기 위해 QSettings의 기존 `EyeToArms/d_client` 키는 유지한다.
+
+1일차 진단 JSON의 `tool: eyetoarm.d_client` 식별자도 기존 기록과의 호환성을 위해 유지한다. 실행 명령과 Python import 경로는 `eyetoarm.gui`를 사용한다.
 
 ## 설치 기록 (2026-11-12, D 개발 PC)
 
@@ -24,7 +40,7 @@ WSL 쪽 저장소(`~/EyetoArm`)는 C 서버·Gazebo 실행용이다. D 코드는
 Anaconda Prompt에서 저장소 루트로 이동한 뒤 순서대로 실행한다.
 
 ```bat
-conda env create -f src/eyetoarm/d_client/environment.yml
+conda env create -f src/eyetoarm/gui/environment.yml
 conda activate eyetoarm
 python -c "import PySide6, jsonschema; print(PySide6.__version__)"
 ```

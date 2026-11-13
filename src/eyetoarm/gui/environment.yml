@@ -1,6 +1,6 @@
 # D 운영 GUI·TCP 클라이언트(Windows) 실행 환경
 #
-# 만들기:  conda env create -f src/eyetoarm/d_client/environment.yml
+# 만들기:  conda env create -f src/eyetoarm/gui/environment.yml
 # 쓰기:    conda activate eyetoarm
 #
 # Python 3.12: WSL의 A·B·C(Ubuntu 기본 Python 3.12)와 맞춘다. A의 통신 시험 도구가

@@ -14,8 +14,8 @@ import time
 from PySide6.QtCore import QObject, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter
 
-from eyetoarm.d_client import theme
-from eyetoarm.d_client.client import DEFAULTS, TrafficEntry
+from eyetoarm.gui import theme
+from eyetoarm.gui.client import DEFAULTS, TrafficEntry
 
 # (연결 상태, robot_ready, not_ready_reasons). 4초마다 다음 장면으로 넘어간다
 SCENES = [("connected", True, []), ("connected", False, ["NOT_STOPPED"]),

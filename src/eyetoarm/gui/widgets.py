@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from eyetoarm.d_client import motion, theme
+from eyetoarm.gui import motion, theme
 
 
 def _font(px: int, weight: int = 500, mono: bool = False) -> QFont:

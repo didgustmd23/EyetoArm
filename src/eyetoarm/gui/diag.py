@@ -31,10 +31,10 @@ if __name__ == "__main__":
     if not __package__:
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from eyetoarm.d_client.__main__ import main
+    from eyetoarm.gui.__main__ import main
     raise SystemExit(main())
 
-from eyetoarm.d_client.models import EXIT_CONNECTION, EXIT_OK, EXIT_PROTOCOL, ProbeResult  # noqa: F401 - 재수출
+from eyetoarm.gui.models import EXIT_CONNECTION, EXIT_OK, EXIT_PROTOCOL, ProbeResult  # noqa: F401 - 재수출
 from eyetoarm.tcp import protocol
 
 MAX_LINE_BYTES = 4096   # TCP 명세서 §9 max_line_bytes (LF 제외)
