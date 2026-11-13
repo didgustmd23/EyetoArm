@@ -7,11 +7,13 @@ from pathlib import Path
 from typing import Any
 from .command_log import CommandLog, CommandLogError
 from .command_manager import CommandManager, CommandRecord
+from .execution_manager import ExecutionManager
 from .protocol import (ProtocolError, build_bad_format_status, build_command_status,
     build_get_status_response, build_rejection_status, encode_response, parse_request,
     same_move_content, validate_cancel_request, validate_get_status_request,
     validate_move_request, valid_command_id_from_request)
 from .readiness import ReadinessFields, get_readiness_fields
+from .robot_backend import UnconfiguredRobotBackend
 
 HOST, PORT, MAX_LINE_BYTES, RECORD_RETENTION, LOG_RETRY_MS = "127.0.0.1", 47090, 4096, 1000, 1000
 LOG = logging.getLogger("robot_server_package.tcp_server")
@@ -337,14 +339,22 @@ def load_tcp_settings(config_path: str | Path = DEFAULT_CONFIG_PATH) -> dict[str
             if not isinstance(b,list) or len(b)!=2 or any(type(v) not in (int,float) or not math.isfinite(v) for v in b) or b[0]>b[1]: raise ValueError(f"invalid workspace_mm.{axis}")
     return {"host":host,"port":port,"max_line_bytes":maximum,"record_retention":retention,"log_retry_ms":retry,"command_log_path":lp.resolve(),"workspace_mm":workspace}
 
-async def serve(host=None,port=None,*,config_path=DEFAULT_CONFIG_PATH,readiness_provider=get_readiness_fields,workspace_mm=None,move_executor=None):
+async def serve(host=None,port=None,*,config_path=DEFAULT_CONFIG_PATH,readiness_provider=get_readiness_fields,workspace_mm=None,move_executor=None,execution_manager=None):
     cfg=load_tcp_settings(config_path)
     if host is not None: cfg["host"]=host
     if port is not None: cfg["port"]=port
     if workspace_mm is not None: cfg["workspace_mm"]=workspace_mm
+    if execution_manager is not None:
+        readiness_provider=execution_manager.readiness_provider
+        move_executor=execution_manager.execute_move
     server=TcpServer(**cfg,readiness_provider=readiness_provider,move_executor=move_executor)
     try: await server.start()
-    finally: await server.close()
+    finally:
+        try:
+            await server.close()
+        finally:
+            if execution_manager is not None:
+                await execution_manager.close()
 
 def main():
     parser=argparse.ArgumentParser(description="EyetoArm TCP 1.1 server"); parser.add_argument("--config",default=str(DEFAULT_CONFIG_PATH)); parser.add_argument("--initialize-command-log",action="store_true"); args=parser.parse_args()
@@ -352,7 +362,9 @@ def main():
     try:
         cfg=load_tcp_settings(args.config)
         if args.initialize_command_log: CommandLog.initialize(cfg["command_log_path"]); return
-        asyncio.run(serve(config_path=args.config))
+        backend=UnconfiguredRobotBackend()
+        manager=ExecutionManager(backend)
+        asyncio.run(serve(config_path=args.config,execution_manager=manager))
     except KeyboardInterrupt: LOG.info("Server shutdown requested")
     except (ValueError,CommandLogError) as e: LOG.error("TCP configuration failed: %s",e); raise SystemExit(2) from e
 
