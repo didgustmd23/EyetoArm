@@ -119,6 +119,8 @@ class NavRail(QFrame):
         self.footer = QVBoxLayout()   # 창이 출처 표시·모션 줄이기 체크를 넣는다
         self.footer.setSpacing(10)
         layout.addLayout(self.footer)
+        self._layout_timer = QTimer(self, singleShot=True)
+        self._layout_timer.timeout.connect(self._snap)
 
     def select(self, index: int, animate: bool = True) -> None:
         self._buttons[index].setChecked(True)
@@ -135,7 +137,7 @@ class NavRail(QFrame):
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 이름
         super().resizeEvent(event)
-        QTimer.singleShot(0, self._snap)   # 레이아웃이 버튼 자리를 정한 뒤 선택 표시를 맞춘다
+        self._layout_timer.start(0)   # 소유 위젯이 삭제되면 예약된 배치 보정도 종료한다.
 
     def _snap(self) -> None:
         index = self._group.checkedId()
@@ -528,7 +530,7 @@ class TrafficTable(QTableWidget):
     """송수신 기록 표(GUI-03). 최신이 맨 위. 실제로 보내고 받은 줄만 적는다.
 
     [C 값] RX 는 C 서버 응답 원문 요약이다. 원문 줄은 행에 마우스를 올리면 보인다.
-    화면에서 지워도 원본 파일은 지우지 않는다(2일차에는 파일 저장 자체가 없다. CSV 는 3일차).
+    화면에서 지워도 세션 JSONL 파일은 지우지 않는다. CSV는 선택된 화면의 요약 기록을 내보낸다.
     """
 
     MAX_ROWS = 500
@@ -574,3 +576,31 @@ class TrafficTable(QTableWidget):
         self._filter = direction
         for row in range(self.rowCount()):
             self.setRowHidden(row, bool(direction) and self.item(row, 1).text() != direction)
+
+
+class RingProgress(QWidget):
+    """처리한 CSV 행 수의 비율. 실제 TCP/로봇 진행률과는 별개다."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.value = 0
+        self.setFixedSize(52, 52)
+        self.setAccessibleName("CSV 생성 진행률")
+
+    def set_value(self, value: int) -> None:
+        self.value = max(0, min(100, value))
+        self.setAccessibleDescription(f"{self.value}%")
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(5, 5, 42, 42)
+        painter.setPen(QPen(QColor(theme.LINE), 4))
+        painter.drawEllipse(rect)
+        pen = QPen(QColor(theme.ACCENT_INK), 4)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawArc(rect, 90 * 16, -int(self.value * 360 * 16 / 100))
+        painter.setPen(QColor(theme.TEXT))
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, f"{self.value}%")

@@ -12,8 +12,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from eyetoarm.d_client.client import load_tcp_config, split_lines  # noqa: E402
-from eyetoarm.d_client.gz_view_relay import HEADER, MAGIC, MAX_FRAME_BYTES, FrameParser, pack_frame  # noqa: E402
+from eyetoarm.gui.client import load_tcp_config, split_lines  # noqa: E402
+from eyetoarm.gui.gz_view_relay import HEADER, MAGIC, MAX_FRAME_BYTES, FrameParser, pack_frame  # noqa: E402
 
 
 class SplitLinesTest(unittest.TestCase):
@@ -60,7 +60,7 @@ class ConfigTest(unittest.TestCase):
 
 class ThemeTest(unittest.TestCase):
     def test_palettes_have_same_keys_and_apply_switches(self) -> None:
-        from eyetoarm.d_client import theme
+        from eyetoarm.gui import theme
         self.assertEqual(set(theme.PALETTES["dark"]), set(theme.PALETTES["light"]))   # 한쪽에만 있는 색이 없어야 한다
         try:
             theme.apply("light")

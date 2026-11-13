@@ -23,7 +23,7 @@ class EntryPointTest(unittest.TestCase):
     def test_direct_files_without_pythonpath_from_other_directory(self):
         for name in ("diag.py", "__main__.py"):
             with self.subTest(name=name):
-                result = self.run_cli([str(ROOT / "src/eyetoarm/d_client" / name), "--env-only", "--json"])
+                result = self.run_cli([str(ROOT / "src/eyetoarm/gui" / name), "--env-only", "--json"])
                 self.assertIn(result.returncode, (0, 4), result.stderr)
                 record = json.loads(result.stdout)
                 self.assertEqual(record["exit_code"], result.returncode)
@@ -33,12 +33,12 @@ class EntryPointTest(unittest.TestCase):
     def test_direct_files_share_help(self):
         for name in ("diag.py", "__main__.py"):
             with self.subTest(name=name):
-                result = self.run_cli([str(ROOT / "src/eyetoarm/d_client" / name), "--help"])
+                result = self.run_cli([str(ROOT / "src/eyetoarm/gui" / name), "--help"])
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("--env-only", result.stdout)
 
     def test_package_entry_points(self):
-        for module in ("eyetoarm.d_client", "eyetoarm.d_client.diag"):
+        for module in ("eyetoarm.gui", "eyetoarm.gui.diag"):
             with self.subTest(module=module):
                 result = self.run_cli(["-m", module, "--env-only", "--json"], module=True)
                 self.assertIn(result.returncode, (0, 4), result.stderr)
@@ -51,8 +51,8 @@ class EntryPointTest(unittest.TestCase):
             "sys.modules['PySide6'] = None",
             "sys.modules['eyetoarm.tcp.protocol'] = None",
             "from dataclasses import asdict",
-            "from eyetoarm.d_client.models import ProbeResult",
-            "assert 'eyetoarm.d_client.diag' not in sys.modules",
+            "from eyetoarm.gui.models import ProbeResult",
+            "assert 'eyetoarm.gui.diag' not in sys.modules",
             "print(json.dumps(asdict(ProbeResult('127.0.0.1', 47090, 3))))",
         ])
         result = self.run_cli(["-c", script], module=True)

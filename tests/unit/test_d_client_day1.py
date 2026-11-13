@@ -1,4 +1,4 @@
-"""D 1일차 진단(eyetoarm.d_client) 단위시험.
+"""D 1일차 진단(eyetoarm.gui) 단위시험.
 
 시험 안에서 127.0.0.1 임시 포트에 일회용 대역 서버를 띄운다. 합성 응답이며 실제 C 서버 검증이 아니다.
 """
@@ -18,8 +18,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from eyetoarm.d_client import diag  # noqa: E402
-from eyetoarm.d_client.__main__ import main  # noqa: E402
+from eyetoarm.gui import diag  # noqa: E402
+from eyetoarm.gui.__main__ import main  # noqa: E402
 
 READY = {"version": "1.1", "type": "STATUS", "robot_ready": True, "not_ready_reasons": [],
          "active_command_id": None, "server_time_ms": 12}
