@@ -4,7 +4,7 @@
 │ NavRail       좌측 화면 선택(조작·설정 / 운영 대시보드 / 평가·기록)   [D]    │
 │ StatusChip    상단 상태띠 한 칸                                      [C 값]  │
 │ DisplayView   영상 표시면. 메인 = Gazebo 로봇 화면                   [D 임시]│
-│               보조 2칸 = 그리퍼·고정 영상 자리                       [C 예정]│
+│               보조 2칸 = 그리퍼·링크 영상 자리                       [C 예정]│
 │ DetailPopup   메인 디스플레이 위에 겹치는 측정·보정 상세             [A·B 예정]│
 │ StageStrip    공정 단계 표시                                         [C 예정]│
 │ TrafficTable  TX/RX 기록 표(GUI-03)                                  [C 값]  │
@@ -231,6 +231,8 @@ class DisplayView(QWidget):
 
     # 색은 theme.DISPLAY_* 만 쓴다. 다크·라이트 테마와 무관하게 표시면은 항상 어둡다(영상 밝기를 테마가 바꾸지 않게)
 
+    clicked = Signal()   # set_clickable(True) 인 칸을 왼쪽 클릭하거나 포커스 상태에서 Enter·Space 를 눌렀다
+
     def __init__(self, title: str, compact: bool = False) -> None:
         super().__init__()
         self._title = title
@@ -244,6 +246,7 @@ class DisplayView(QWidget):
         self._phase = 0.0
         self._ticker = QTimer(self, interval=33)
         self._ticker.timeout.connect(self._advance)
+        self._clickable = False
         self.setMinimumSize(160, 100)
         self.setAccessibleName(title)
 
@@ -269,6 +272,31 @@ class DisplayView(QWidget):
         self._mode, self._stale_ms = "stale", age_ms
         self._arrivals.clear()
         self.update()
+
+    def set_clickable(self, tooltip: str) -> None:
+        """이 칸을 누를 수 있게 한다(보조 영상의 확대·복구). 키보드로도 고를 수 있다."""
+        self._clickable = True
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setToolTip(tooltip)
+
+    def set_compact(self, compact: bool) -> None:
+        """작은 칸용 글자 크기·모서리를 쓸지. 확대하면 큰 칸처럼 그린다."""
+        if compact != self._compact:
+            self._compact = compact
+            self.update()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._clickable and event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if self._clickable and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.clicked.emit()
+        else:
+            super().keyPressEvent(event)
 
     def set_footer(self, text: str) -> None:
         if text != self._footer:
@@ -446,38 +474,63 @@ class DetailPopup(Card):
 
 
 class DisplayStage(QWidget):
-    """메인 디스플레이 + 그 위 오른쪽 가장자리에 붙은 보조 영상 2칸 + 상세 팝업.
+    """탑뷰(큰 바탕) + 그 위 오른쪽 가장자리에 붙은 보조 영상 2칸(그리퍼·링크) + 상세 팝업.
 
     배치(골격 문서 2026-11-13 사용자 화면 방향):
-      메인이 큰 바탕이고, 보조 2칸은 메인 안쪽 오른쪽에 세로로 고정, 팝업은 가운데~왼쪽.
+      탑뷰가 큰 바탕이고, 보조 2칸은 그 안쪽 오른쪽에 세로로 고정, 팝업은 가운데~왼쪽.
+    확대(사용자 지정): 보조 칸을 한 번 누르면 그 칸이 탑뷰 자리 전체로 커지고, 다시 누르면 제자리로 돌아간다.
+      한 번에 한 칸만 커진다. 다른 보조 칸을 누르면 커진 칸이 그쪽으로 바뀐다. 영상 수신·연결은 건드리지 않는다.
+    [이름] 화면 이름 「탑뷰·그리퍼·링크」는 표시 이름이다. 탑뷰 칸에 지금 오는 것은 D 임시 경로
+      (Gazebo 창 캡처 또는 카메라 중계)이며, 정식 영상 3개는 C 표시 연결이 정해진 뒤에 온다.
     """
 
     def __init__(self) -> None:
         super().__init__()
-        self.main = DisplayView("메인 디스플레이 · Gazebo 로봇")
+        self.main = DisplayView("탑뷰")
         self.main.setParent(self)
-        self.gripper = DisplayView("그리퍼 영상", compact=True)
-        self.fixed = DisplayView("고정(탑뷰) 영상", compact=True)
-        for view in (self.gripper, self.fixed):
+        self.gripper = DisplayView("그리퍼", compact=True)
+        self.link = DisplayView("링크", compact=True)
+        self.expanded: DisplayView | None = None   # 지금 커져 있는 보조 칸. 없으면 None
+        for view in (self.gripper, self.link):
             view.setParent(self)
-            # [C 예정] 그리퍼·고정 영상은 C 표시 연결로만 온다. D 임시 경로에는 없다
+            # [C 예정] 그리퍼·링크 영상은 C 표시 연결로만 온다. D 임시 경로에는 없다
             view.set_placeholder("empty", "C 표시 연결 미결")
+            view.set_clickable("누르면 이 화면을 크게 봅니다. 다시 누르면 제자리로 돌아갑니다.")
+            view.clicked.connect(lambda v=view: self.toggle_expanded(v))
         self.popup = DetailPopup(self)
         self.setMinimumHeight(300)
 
+    def toggle_expanded(self, view: DisplayView) -> None:
+        """view 가 커져 있으면 제자리로, 아니면 view 를 키운다(다른 칸이 커져 있었다면 그 칸은 제자리로)."""
+        self.expanded = None if self.expanded is view else view
+        self._place(animate=True)
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
+        self._place(animate=False)
+
+    def _place(self, animate: bool) -> None:
         width, height = self.width(), self.height()
         self.main.setGeometry(0, 0, width, height)
         aux_width = max(170, min(300, int(width * 0.21)))
         aux_height = min(int(aux_width * 9 / 16), (height - 86) // 2)
         left = width - aux_width - 16
-        self.gripper.setGeometry(left, 52, aux_width, aux_height)
-        self.fixed.setGeometry(left, 52 + aux_height + 10, aux_width, aux_height)
+        homes = {self.gripper: QRect(left, 52, aux_width, aux_height),
+                 self.link: QRect(left, 52 + aux_height + 10, aux_width, aux_height)}
+        if self.expanded is not None:
+            self.expanded.raise_()   # 커진 칸은 탑뷰 위, 나머지 보조 칸과 팝업 아래
+        for view, home in homes.items():
+            big = view is self.expanded
+            view.set_compact(not big)
+            target = QRect(0, 0, width, height) if big else home
+            if animate:
+                motion.move_geometry(view, target, theme.MS_POPUP)
+            else:
+                view.setGeometry(target)
+            if not big:
+                view.raise_()
         popup_width = min(380, max(280, int(width * 0.3)))
         self.popup.setGeometry(24, 56, popup_width, self.popup.sizeHint().height())
-        self.gripper.raise_()
-        self.fixed.raise_()
         self.popup.raise_()
 
 
