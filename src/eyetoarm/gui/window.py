@@ -1,4 +1,4 @@
-"""D 운영 GUI 창(2일차 골격): 세 화면 + 공통 상태띠 + 메인 디스플레이.
+"""D 운영 GUI 창(3일차 TCP): 세 화면 + 공통 상태띠 + 메인 디스플레이.
 
 실행 (Windows, conda 환경 eyetoarm, 저장소 루트에서):
   set PYTHONPATH=src
@@ -23,38 +23,41 @@
 │ 측정·보정 상세    │ —                             │ A·B 결과 → C 중계 · 미결 │
 │ 공정 단계 · 수량  │ 미확인 · —                    │ C 도착 확인 · 미결       │
 │ START/STOP/RECOVER│ 비활성                        │ C · 부록 A 미승인        │
-│ CANCEL(수동 이동) │ 비활성                        │ D 3일차 구현(TCP 1.1)    │
+│ CANCEL(수동 이동) │ 현재 명령 추적 중 활성         │ C · TCP 1.1              │
 │ TX/RX 기록        │ 실제 송수신(준비 조회)        │ C · TCP 1.1 확정         │
 └────────────────────────────────────────────────────────────────────────────┘
 「—」와 비활성은 고장이 아니다. 계약이 정해지지 않아 값을 만들지 않은 자리다.
 
 [공통 상태] 연결 객체(StatusLink 와 화면 수신기 GzWindowCapture/GzViewReceiver)는 창에 하나씩만 있고 세 화면이 함께 쓴다.
   화면을 바꿔도 연결·수신·기록이 초기화되지 않는다(D 상세설계 §A.2).
-[보내는 신호] 무ID GET_STATUS 뿐이다. 이 창의 어떤 버튼도 로봇을 움직이지 않는다.
+[보내는 신호] 준비/명령 GET_STATUS, 사용자 확정 수동 MOVE, 기존 ID의 CANCEL. 분류 명령은 비활성이다.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import sys
+import time
 
 if not __package__:
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from PySide6.QtCore import QSettings, QTimer
+from PySide6.QtCore import QIODevice, QSaveFile, QSettings, QTimer
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QGridLayout, QHBoxLayout, QMainWindow, QStackedWidget, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout, QMainWindow, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from eyetoarm.gui import motion, theme
 from eyetoarm.gui.gz_view_relay import DEFAULT_PORT as VIEW_PORT
-from eyetoarm.gui.widgets import Card, DisplayStage, NavRail, StageStrip, StatusChip, TrafficTable, label, pill
+from eyetoarm.gui.widgets import Card, DisplayStage, NavRail, RingProgress, StageStrip, StatusChip, TrafficTable, label, pill
+from eyetoarm.tcp.protocol import MoveTarget
 
 PAGES = ["조작·설정", "운영 대시보드", "평가·기록"]
 NOT_APPROVED = "TCP 명세 부록 A(분류 명령 개정 제안)가 C 승인 전입니다. 승인 전에는 실제 서버로 보내지 않습니다."
-DAY3 = "수동 이동(MOVE)과 취소(CANCEL)는 D 3일차에 구현합니다. 지금은 보낼 대상 명령이 없습니다."
 NO_VALUE = "—"
 
 
@@ -64,7 +67,7 @@ class MainWindow(QMainWindow):
         self.link, self.view, self.demo = link, view, demo
         # 송수신 카드 꼬리표. 모의 모드에서는 「실제」라고 적지 않는다
         self._live_tag = "모의 · 실제 아님" if demo else "실제 송수신"
-        self.setWindowTitle("Eye To Arms · D 운영 GUI (2일차 골격)")
+        self.setWindowTitle("Eye To Arms · D 운영 GUI (3일차 TCP)")
         self.resize(1440, 960)
         self.setMinimumSize(1180, 760)
 
@@ -121,6 +124,12 @@ class MainWindow(QMainWindow):
         self.link.traffic.connect(self.traffic_full.add_entry)
         self.link.traffic.connect(self.traffic_recent.add_entry)
         self.link.status_received.connect(self._on_status)
+        if hasattr(self.link, "command_changed"):
+            self.link.command_changed.connect(self._on_command)
+            self.link.log_error.connect(self._on_log_error)
+        self._csv_file = None
+        self._export_timer = QTimer(self, interval=0)
+        self._export_timer.timeout.connect(self._export_chunk)
         self.view.frame_received.connect(self._on_frame)
         self._status: dict | None = None
         self._frame_size = ""
@@ -146,8 +155,9 @@ class MainWindow(QMainWindow):
         self.start_button = pill("START 시작", "primary", NOT_APPROVED)
         self.stop_button = pill("STOP 분류 정지", "stop", NOT_APPROVED + " STOP 은 분류 작업 정지이며 수동 이동 취소(CANCEL)와 다릅니다.")
         self.recover_button = pill("RECOVER 복구", "", NOT_APPROVED)
-        # [C 연동 · TCP 1.1] 수동 이동 취소. 3일차 구현
-        self.cancel_button = pill("CANCEL 수동 이동 취소", "", DAY3)
+        # [C 연동 · TCP 1.1] 현재 명령 ID의 취소 요청. 정지 확인과 구분한다.
+        self.cancel_button = pill("CANCEL 수동 이동 취소", "", "현재 ID로 취소 요청. 전송만으로 정지 완료가 되지 않습니다.")
+        self.cancel_button.clicked.connect(lambda: self.link.cancel() if hasattr(self.link, "cancel") else None)
         for button in (self.start_button, self.stop_button, self.recover_button, self.cancel_button):
             button.setEnabled(False)   # 비활성 사유는 툴팁과 「조작·설정」의 명령 계약 표에 있다
             row.addWidget(button)
@@ -204,7 +214,7 @@ class MainWindow(QMainWindow):
         command_card = Card("명령 계약 상태", "D ↔ C")
         self._rows(command_card, [
             ("GET_STATUS (준비 조회)", "사용 중 · TCP 1.1"),
-            ("MOVE · CANCEL", "3일차 구현 · TCP 1.1"),
+            ("MOVE · CANCEL", "수동 확정 목표 · TCP 1.1"),
             ("START · STOP · RECOVER", "부록 A 미승인 · 미전송"),
             ("링크 채널 선택", "부록 B 미승인 · 미전송"),
         ])
@@ -216,8 +226,31 @@ class MainWindow(QMainWindow):
         input_card.body.addWidget(label("A·B 값은 C 표시 연결로 옵니다. 연결 방식이 정해지기 전에는 비워 둡니다.", "Caption", wrap=True))
         grid.addWidget(input_card, 2, 0)
 
-        target_card = Card("명령 목표", "3일차")
-        self._rows(target_card, [("화면 후보 → 확정 목표", NO_VALUE), ("command_id", NO_VALUE), ("허용·거부 사유", "수동 이동 미구현")])
+        target_card = Card("수동 명령 목표", "PLANAR · mm / °")
+        self.target_inputs = []
+        for name, lower, upper in (("X mm", -10000, 10000), ("Y mm", -10000, 10000), ("θ °", 0, 179.999)):
+            line = QHBoxLayout()
+            line.addWidget(label(name, "Dim"))
+            spin = QDoubleSpinBox()
+            spin.setRange(lower, upper)
+            spin.setDecimals(3)
+            spin.setAccessibleName(name)
+            spin.valueChanged.connect(self._target_edited)
+            self.target_inputs.append(spin)
+            line.addWidget(spin)
+            target_card.body.addLayout(line)
+        self.target_confirm = QCheckBox("수동 시험 목표를 확인했습니다")
+        self.target_confirm.setToolTip("A/B 측정값이 아닙니다. C 작업 범위를 확인한 수동 목표만 사용하세요.")
+        self.move_button = pill("MOVE 목표 전송", "primary", "새 준비 조회 통과 후 확정한 수동 목표를 보냅니다.")
+        self.move_button.clicked.connect(self._execute_manual)
+        self.target_confirm.toggled.connect(self._update_command_controls)
+        self.command_label = label("명령 없음", "Caption", wrap=True)
+        target_card.body.addWidget(self.target_confirm)
+        target_card.body.addWidget(self.move_button)
+        target_card.body.addWidget(self.command_label)
+        self.resolve_button = pill("미확인 기록 보존·새 목표 확인", tooltip="C가 준비됨을 보고한 경우에만 이전 결과 미확인을 보존하고 새 목표를 확인할 수 있습니다. 자동 재송신하지 않습니다.")
+        self.resolve_button.clicked.connect(self._resolve_unconfirmed)
+        target_card.body.addWidget(self.resolve_button)
         grid.addWidget(target_card, 2, 1)
 
         shape_card = Card("로봇 외형", "D 자산 · C 적용 확인 전")
@@ -297,6 +330,7 @@ class MainWindow(QMainWindow):
         log_card = Card("TX/RX 기록", "GUI-03 · " + self._live_tag)
         tools = QHBoxLayout()
         filters = []
+        self.record_filters = filters
         for text, direction in (("전체", ""), ("TX 보냄", "TX"), ("RX 받음", "RX"), ("EV 연결 사건", "EV")):
             button = pill(text, checkable=True)
             button.setAutoExclusive(True)
@@ -305,10 +339,25 @@ class MainWindow(QMainWindow):
             tools.addWidget(button)
         filters[0].setChecked(True)
         tools.addStretch(1)
-        clear = pill("화면 비우기", tooltip="화면의 표만 비웁니다. 파일은 지우지 않습니다(2일차에는 파일 저장이 없습니다).")
+        clear = pill("화면 비우기", tooltip="화면 표만 비웁니다. 세션 JSONL 파일은 유지합니다.")
+        self.clear_records_button = clear
         clear.clicked.connect(lambda: self.traffic_full.setRowCount(0))
         tools.addWidget(clear)
+        self.export_button = pill("CSV 내보내기", tooltip="선택한 현재 화면의 요약 기록을 저장합니다. 전체 원문은 세션 JSONL에 있습니다.")
+        self.export_button.clicked.connect(self._choose_export)
+        self.export_progress = RingProgress()
+        self.export_progress.hide()
+        tools.addWidget(self.export_button)
+        tools.addWidget(self.export_progress)
         log_card.body.addLayout(tools)
+        session_log = getattr(self.link, "log", None)
+        log_path = getattr(session_log, "path", None)
+        self.log_location = label(f"세션 JSONL: {log_path}" if log_path else "모의/시험: 파일 기록 없음", "Caption", wrap=True)
+        self.export_message = label("CSV: 현재 화면의 최대 500건 요약", "Caption", wrap=True)
+        self.log_notice = label(getattr(session_log, "write_error", ""), "Caption", wrap=True)
+        log_card.body.addWidget(self.log_location)
+        log_card.body.addWidget(self.log_notice)
+        log_card.body.addWidget(self.export_message)
         log_card.body.addWidget(self.traffic_full, 1)
         row.addWidget(log_card, 5)
 
@@ -318,8 +367,9 @@ class MainWindow(QMainWindow):
         self._rows(metric_card, [("사용자 실행 → ACK 지연", NO_VALUE), ("명령 성공률", NO_VALUE), ("위치 오차", NO_VALUE)])
         metric_card.body.addWidget(label("정답·관측이 없는 지표는 계산하지 않고 —로 둡니다.", "Caption", wrap=True))
         side.addWidget(metric_card)
-        error_card = Card("오류 상세", "3일차")
-        error_card.body.addWidget(label("명령별 state · stage · code · detail 을 3일차부터 연결합니다.", "Dim", wrap=True))
+        error_card = Card("명령·오류 상세", "TCP 1.1")
+        self.error_detail = label("명령 없음", "Dim", wrap=True)
+        error_card.body.addWidget(self.error_detail)
         error_card.body.addStretch(1)
         side.addWidget(error_card, 1)
         row.addLayout(side, 2)
@@ -336,6 +386,119 @@ class MainWindow(QMainWindow):
             card.body.addLayout(line)
 
     # ══ 화면 전환 ═══════════════════════════════════════════════════════════
+
+    def _target_edited(self, *_args) -> None:
+        if hasattr(self, "target_confirm"):
+            self.target_confirm.setChecked(False)
+            if hasattr(self.link, "invalidate_target"):
+                self.link.invalidate_target("수동 목표 변경")
+
+    def _update_command_controls(self, *_args) -> None:
+        available = not self.demo and hasattr(self.link, "can_execute") and self.link.can_execute()
+        self.move_button.setEnabled(bool(available and self.target_confirm.isChecked()))
+        record = getattr(self.link, "current_record", None)
+        self.cancel_button.setEnabled(bool(not self.demo and self.link.state == "connected" and record
+                                           and record.attempts and not record.finished))
+        self.resolve_button.setEnabled(bool(not self.demo and record and not record.finished
+                                            and record.acceptance == "unconfirmed" and not self.link.is_stale()
+                                            and (getattr(self.link, "last_status", None) or {}).get("robot_ready")))
+
+    def _resolve_unconfirmed(self) -> None:
+        if self.resolve_button.isEnabled() and self.link.confirm_new_command():
+            self.target_confirm.setChecked(False)
+
+    def _execute_manual(self) -> None:
+        if not self.move_button.isEnabled():
+            return
+        x, y, theta = (spin.value() for spin in self.target_inputs)
+        now = time.monotonic_ns() // 1_000_000
+        target = MoveTarget((x, y), theta, "manual_gui", 0, now, "PC_RECEIVE", "manual_test", created_monotonic_ms=now)
+        self.link.execute(target)
+        self.target_confirm.setChecked(False)
+        self._update_command_controls()
+
+    def _on_command(self, record) -> None:
+        text = (f"ID: {record.command_id}\n{record.result}\n"
+                f"state={record.state or '—'} / stage={record.stage or '—'}\n"
+                f"code={record.code or '—'} / 시도={record.attempts}\n{record.detail or ''}")
+        self.command_label.setText(text)
+        self.error_detail.setText(text)
+        self._update_command_controls()
+
+    def _on_log_error(self, text: str) -> None:
+        self.log_notice.setText(f"로그 저장 오류: {text}" if text else "")
+
+    def _choose_export(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "현재 화면 기록 저장", "records.csv", "CSV (*.csv)")
+        if path:
+            self._start_export(path)
+
+    def _start_export(self, path: str) -> bool:
+        if self._csv_file is not None:
+            return False
+        table = self.traffic_full
+        self._csv_rows = []
+        for row in range(table.rowCount()):
+            if not table.isRowHidden(row):
+                values = [table.item(row, col).text() for col in range(4)]
+                values.append(table.item(row, 0).toolTip())
+                self._csv_rows.append(values)
+        output = QSaveFile(path, self)
+        if not output.open(QIODevice.OpenModeFlag.WriteOnly):
+            self.export_message.setText(f"CSV 저장 실패: {output.errorString()}")
+            output.deleteLater()
+            return False
+        self._csv_file = output
+        self._csv_index = 0
+        self._csv_header = True
+        self._export_path = path
+        self._export_lock(True)
+        self.export_progress.set_value(0)
+        self.export_progress.show()
+        self.export_message.setText("현재 화면 요약 CSV 생성 중 · 원문 전체는 JSONL 참조")
+        self._export_timer.start()
+        return True
+
+    def _export_lock(self, busy: bool) -> None:
+        for widget in [*self.record_filters, self.clear_records_button, self.export_button]:
+            widget.setEnabled(not busy)
+
+    def _export_chunk(self) -> None:
+        if self._csv_file is None:
+            return
+        try:
+            buffer = io.StringIO(newline="")
+            writer = csv.writer(buffer, lineterminator="\r\n")
+            if self._csv_header:
+                buffer.write("\ufeff")
+                writer.writerow(["시각", "방향", "종류", "내용", "원문 요약"])
+                self._csv_header = False
+            end = min(self._csv_index + 50, len(self._csv_rows))
+            for row in self._csv_rows[self._csv_index:end]:
+                writer.writerow(["'" + cell if cell.lstrip().startswith(("=", "+", "-", "@"))
+                                 or cell.startswith(("\t", "\r")) else cell for cell in row])
+            data = buffer.getvalue().encode("utf-8")
+            if self._csv_file.write(data) != len(data):
+                raise OSError(self._csv_file.errorString())
+            self._csv_index = end
+            self.export_progress.set_value(int(100 * end / max(1, len(self._csv_rows))))
+            if end == len(self._csv_rows):
+                if not self._csv_file.commit():
+                    raise OSError(self._csv_file.errorString())
+                self.export_progress.set_value(100)
+                self.export_message.setText(f"CSV 저장 완료: {self._export_path} ({end}건)")
+                self._finish_export()
+        except (OSError, ValueError) as error:
+            self._csv_file.cancelWriting()
+            self.export_message.setText(f"CSV 저장 실패: {error}")
+            self.export_progress.hide()
+            self._finish_export()
+
+    def _finish_export(self) -> None:
+        self._export_timer.stop()
+        self._csv_file.deleteLater()
+        self._csv_file = None
+        self._export_lock(False)
 
     def _show_page(self, index: int, animate: bool = True) -> None:
         """본문은 즉시 바뀐다. 그 뒤 카드가 차례로 등장한다. 연결·기록은 건드리지 않는다."""
@@ -402,7 +565,9 @@ class MainWindow(QMainWindow):
                 reasons = ", ".join(self._status["not_ready_reasons"]) or "사유 없음"
                 self.chip_ready.set_state("warn", f"미준비 · {reasons}")
         age = link.status_age_ms()
-        self.chip_age.set_state("idle" if age is None else "accent", NO_VALUE if age is None else f"{age / 1000:.1f}초 전")
+        age_text = NO_VALUE if age is None else ("정상 · 단절 감시" if not link.is_stale() else f"{age // 1000}초 전")
+        self.chip_age.set_state("idle" if age is None else "accent", age_text)
+        self._update_command_controls()
 
         # 표시 연결 · 메인 디스플레이 [D 임시 경로]
         main = self.stage.main
@@ -423,6 +588,11 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802
         """[자원 정리] 이 창이 만든 타이머·소켓만 닫는다. C 서버·Gazebo·중계 프로세스는 건드리지 않는다."""
         self._refresh.stop()
+        self._export_timer.stop()
+        if self._csv_file is not None:
+            self._csv_file.cancelWriting()
+            self._csv_file.deleteLater()
+            self._csv_file = None
         self.link.stop()
         self.view.stop()
         super().closeEvent(event)
@@ -435,7 +605,7 @@ def settings() -> QSettings:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m eyetoarm.gui.window", description="D 운영 GUI (2일차 골격)")
+    parser = argparse.ArgumentParser(prog="python -m eyetoarm.gui.window", description="D 운영 GUI (3일차 TCP)")
     parser.add_argument("--host", default=None, help="C 서버 숫자 IP (기본: config/gui/client.json)")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--view", choices=("window", "camera"), default="window",
@@ -451,7 +621,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shot-after", type=int, default=2500)
     parser.add_argument("--page", type=int, default=1, choices=(0, 1, 2), help="(개발용) 시작 화면")
     parser.add_argument("--popup", action="store_true", help="(개발용) 상세 팝업을 연 채 시작")
+    parser.add_argument("--log-dir", default=None, help="세션 JSONL 폴더 (기본 logs/gui)")
+    parser.add_argument("--stable-count", type=int, default=3, help="동일 상태 반복 표시 억제 횟수 (기본 3)")
+    parser.add_argument("--stable-ms", type=int, default=5000, help="동일 상태 반복 표시 억제 시간 ms (기본 5000)")
     args = parser.parse_args(argv)
+    if args.stable_count < 1 or args.stable_ms < 0:
+        parser.error("stable-count는 1 이상, stable-ms는 0 이상이어야 합니다")
 
     app = QApplication(sys.argv[:1])
     theme.apply(args.theme or str(settings().value("theme", "dark")))
@@ -462,7 +637,12 @@ def main(argv: list[str] | None = None) -> int:
         link, view = DemoLink(), DemoView()
     else:
         from eyetoarm.gui.client import StatusLink
-        link = StatusLink(args.host, args.port)
+        log_options = {}
+        if args.log_dir:
+            from pathlib import Path
+            from eyetoarm.gui.records import SessionLog
+            log_options["log_path"] = Path(args.log_dir) / SessionLog.default_path().name
+        link = StatusLink(args.host, args.port, stable_count=args.stable_count, stable_ms=args.stable_ms, **log_options)
         if args.view == "window":
             from eyetoarm.gui.gz_window import GzWindowCapture   # Win32 호출을 쓰므로 Windows 에서만 불러온다
             view = GzWindowCapture()

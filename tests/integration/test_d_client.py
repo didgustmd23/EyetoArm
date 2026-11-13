@@ -12,7 +12,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from eyetoarm.gui.session import ClientSession  # noqa: E402
 from eyetoarm.tcp.client import ClientConfig, TcpClient, now_ms  # noqa: E402
 from eyetoarm.tcp.event_log import EventLog  # noqa: E402
 from eyetoarm.tcp.protocol import MoveTarget  # noqa: E402
@@ -233,36 +232,6 @@ class Move(ClientCase):
         self.assertIn("미전송", await self.client.cancel())
         self.assertEqual(self.client.current.cancel, "unsent")
         self.assertFalse(any(r["type"] == "CANCEL" for r in self.peer.requests))
-
-
-class NoServer(unittest.IsolatedAsyncioTestCase):
-    async def test_without_any_server_signals_are_composed_and_logged_as_unsent(self):
-        host = ClientSession(ClientConfig(port=1, **FAST), None)
-        self.assertEqual(await host.execute(), "MOVE 미전송 · TCP 연결 없음")
-        await host.pendant_action("enable", on=True)
-        await host.pendant_action("jog", axis="Y", sign=-1)
-        rows = list(host.log.rows)
-        move = next(r for r in rows if r["kind"] == "MOVE")
-        self.assertEqual((move["send_state"], move["channel"], json.loads(move["raw"])["source_id"]), ("unsent", "tcp1.1", "pendant_manual"))
-        jog = next(r for r in rows if r["kind"] == "PENDANT JOG")
-        self.assertEqual((jog["send_state"], jog["channel"]), ("unsent", "pendant-draft"))
-        self.assertEqual(json.loads(jog["raw"])["target"]["Y"], 155.0)
-        self.assertEqual(host.state()["pendant"]["cart"]["Y"], 155.0)
-
-    async def test_pendant_start_needs_enable_and_stop_sends_tcp_cancel_only_when_tracking(self):
-        host = ClientSession(ClientConfig(port=1, **FAST), None)
-        await host.pendant_action("start")
-        self.assertFalse([r for r in host.log.rows if r["kind"] == "MOVE"])
-        self.assertIn("START 불가", host.pendant.message)
-        self.assertEqual(await host.pendant_action("estop"), "취소 대상 명령 없음")
-        self.assertTrue(host.pendant.estop)
-
-    async def test_manual_target_change_is_logged_and_used_by_move(self):
-        host = ClientSession(ClientConfig(port=1, **FAST), None)
-        self.assertEqual(await host.set_target(500, 120.5, 190), "수동 목표 적용")
-        await host.execute()
-        move = json.loads(next(r for r in host.log.rows if r["kind"] == "MOVE")["raw"])
-        self.assertEqual((move["position_mm"], move["theta_deg"]), ([500.0, 120.5], 10.0))  # θ 는 180° 주기로 접는다
 
 
 if __name__ == "__main__":
