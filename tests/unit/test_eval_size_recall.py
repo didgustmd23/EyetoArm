@@ -85,3 +85,10 @@ def test_read_yolo_labels(tmp_path):
     cls, polys = ev.read_yolo_labels(f, 200, 100)
     assert cls == [1] and polys[0].tolist() == [[20, 10], [60, 10], [60, 50]]
     assert ev.read_yolo_labels(tmp_path / "none.txt", 10, 10) == ([], [])
+
+
+def test_match_full_counts_false_positives():
+    gt = np.stack([_mask(_rect(10, 10, 30, 30))])
+    preds = np.stack([_mask(_rect(10, 10, 30, 30)), _mask(_rect(60, 60, 80, 80)), _mask(_rect(11, 11, 30, 30))])
+    g, p = ev.match_full(gt, [1], preds, [1, 1, 1], [0.9, 0.8, 0.7])
+    assert g.tolist() == [True] and p.tolist() == [True, False, False]  # 중복 예측은 오검출
