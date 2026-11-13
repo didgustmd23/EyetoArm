@@ -1,4 +1,4 @@
-"""scripts/coco_to_yolo_seg.py 단위 시험 (지시서 _workspace/54 §1)."""
+"""scripts/coco_to_yolo_seg.py 단위 시험 (A 상세설계 §7.1 AI 파일럿 학습 자료 변환)."""
 import hashlib
 import importlib.util
 import json
@@ -18,9 +18,10 @@ _SPEC.loader.exec_module(cy)
 def _write_raw(root: Path):
     cats = [{"id": 0, "name": "bolt-nut"}, {"id": 1, "name": "Bolt"}, {"id": 2, "name": "Nut"}]
     spec = {
-        "train": [("a.jpg", 200, 100, [(1, [[20, 10, 60, 10, 60, 50]]), (2, [[100, 50, 150, 50, 150, 100, 100, 100]])])],
+        "train": [("a.jpg", 200, 100, [(1, [[20, 10, 60, 10, 60, 50]]),
+                                       (2, [[100, 50, 150, 50, 150, 100, 100, 100]])])],
         "valid": [("b.jpg", 100, 100, [(0, [[0, 0, 10, 0, 10, 10]]),
-                                        (2, [[0, 0, 10, 0, 10, 10], [20, 20, 80, 20, 80, 80, 20, 80]])])],
+                                       (2, [[0, 0, 10, 0, 10, 10], [20, 20, 80, 20, 80, 80, 20, 80]])])],
         "test": [("c.jpg", 100, 100, [])],
     }
     for split, items in spec.items():

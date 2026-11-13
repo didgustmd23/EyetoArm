@@ -1,8 +1,8 @@
 """저장 이미지·명시 순서 목록 입력 — A 내부 잠정안.
 
-공동 API 확정이 아니다. 자료형은 `inputs/base.py`(A 내부 잠정 자료형)를 쓰고,
+공동 API 확정이 아니다. 자료형은 `inputs/base.py`(공통 자료형의 A 확장)를 쓰고,
 항목 단위 실패 정책(실패한 항목을 소비하고 다음 항목으로 진행)은 A 제안이다.
-근거: A 상세설계 §5.1·§5.4, 2일차 단계 2 실행 명세.
+근거: A 상세설계 §5.1(공통 프레임)·§5.4(입력 상태)·§6(입력 소스별 동작의 「저장 이미지」 행).
 """
 from __future__ import annotations
 
@@ -63,6 +63,7 @@ class StoredImageSource:
         self._closed = False
 
     def read(self) -> FramePacket | InputStatusEvent:
+        """목록의 다음 항목을 읽어 `FramePacket`을, 읽지 못하면 `InputStatusEvent`를 돌려준다."""
         if self._closed:
             return self._event(InputStatus.SOURCE_UNAVAILABLE, "closed", None)
         if not self._paths:
@@ -90,6 +91,7 @@ class StoredImageSource:
             return self._event(InputStatus.DECODE_FAILED,
                                f"unexpected array dtype={image.dtype} shape={image.shape}", path)
 
+        # 다른 버퍼를 빌려 쓰는 배열이면 복사해 프레임이 버퍼를 단독으로 갖게 한다.
         if not image.flags.owndata:
             image = image.copy()
         image.setflags(write=False)
@@ -118,9 +120,11 @@ class StoredImageSource:
         return frame
 
     def current(self) -> FramePacket | None:
+        """마지막 성공 프레임(같은 객체). 없으면 None."""
         return self._current
 
     def close(self) -> None:
+        """소스를 닫는다. 이후 `read()`는 `SOURCE_UNAVAILABLE`("closed")."""
         self._closed = True
         self._current = None
 

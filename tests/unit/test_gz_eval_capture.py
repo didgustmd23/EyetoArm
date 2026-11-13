@@ -61,6 +61,33 @@ def test_stop_group_only_kills_own_new_session(tmp_path):
         q.wait()
 
 
+def test_launch_group_closes_parent_log_handle(tmp_path):
+    import gc
+    import warnings
+    log_path = tmp_path / "echo.log"
+    # 부모가 핸들을 닫지 않고 버리면 CPython은 GC 때 닫으며 ResourceWarning(unclosed file)을 낸다
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", ResourceWarning)
+        p = cap.launch_group(["sh", "-c", "echo hi"], dict(os.environ), log_path)
+        gc.collect()
+    assert not [w for w in caught if issubclass(w.category, ResourceWarning) and str(log_path) in str(w.message)]
+    try:
+        assert p.wait(timeout=10) == 0
+    finally:
+        if p.poll() is None:  # 이 시험이 띄운 자식 PID만 정리
+            p.kill()
+            p.wait()
+    assert log_path.read_text() == "hi\n"
+    # 부모 프로세스에 그 로그 파일을 가리키는 열린 디스크립터가 없어야 한다
+    targets = []
+    for fd in os.listdir("/proc/self/fd"):
+        try:
+            targets.append(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:  # listdir가 연 디렉터리 fd처럼 이미 닫힌 항목
+            pass
+    assert str(log_path.resolve()) not in targets
+
+
 def test_pose_vector_request_covers_all_slots():
     parts = [{"slot": "NUT_0", "xyz": [0.5, -0.2, 0.1005], "rpy": [0.0, 0.0, 1.5707963]}]
     req = cap.pose_vector_request(parts)
@@ -103,7 +130,7 @@ def test_labels_for_sample_polygons_and_manifest(panoptic, tmp_path):
     assert nut["visible"] and nut["labeled"] and nut["short_px"] == pytest.approx(9.0, abs=1.01)
     assert bolt["short_px"] == pytest.approx(5.0, abs=1.01) and bolt["area_px"] == 150
     assert hidden == {**{k: PARTS[2][k] for k in ("slot", "label", "cls", "yolo_cls", "xyz", "rpy", "cam_depth_m",
-                                                   "expected_px")},
+                                                  "expected_px")},
                       "visible": False, "area_px": 0, "fragments": 0, "labeled": False}
     # eval_size_recall.py가 그대로 읽는다
     f = tmp_path / "a.txt"

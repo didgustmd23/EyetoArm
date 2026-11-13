@@ -1,7 +1,7 @@
 """inputs/base.py의 A 내부 잠정 자료형·식별자 발급기 단위시험.
 
 근거: A 상세설계 §5.1(FramePacket, image_seq 수명, 시각 관계), §5.4(입력 상태),
-공통 자료형 관리 초안 §3.1·§3.2·§3.6, 2일차 단계 1 실행 명세.
+공통 자료형 관리 초안 §3.1·§3.2·§3.6.
 디스크 이미지·ROS·Qt·네트워크·실제 시계에 의존하지 않는다.
 """
 import dataclasses
@@ -22,24 +22,24 @@ from eyetoarm.inputs.base import (
 
 def _make_packet(image_seq=7, **overrides):
     """합성 4x6 BGR 배열로 모든 필드를 명시한 프레임을 만든다."""
-    fields = dict(
-        image=np.zeros((4, 6, 3), dtype=np.uint8),
-        run_id="run-test",
-        source_id="stored0",
-        image_seq=image_seq,
-        timestamp_ms=1234,
-        timestamp_base=TimestampBase.PC_RECEIVE,
-        received_monotonic_ns=1_234_567_890,
-        width=6,
-        height=4,
-        crop=None,
-        calibration_id=None,
-        capture_generation=0,
-        optical_frame=None,
-        ros_stamp_ns=None,
-        source_ref="/tmp/sample.png",
-        source_index=2,
-    )
+    fields = {
+        "image": np.zeros((4, 6, 3), dtype=np.uint8),
+        "run_id": "run-test",
+        "source_id": "stored0",
+        "image_seq": image_seq,
+        "timestamp_ms": 1234,
+        "timestamp_base": TimestampBase.PC_RECEIVE,
+        "received_monotonic_ns": 1_234_567_890,
+        "width": 6,
+        "height": 4,
+        "crop": None,
+        "calibration_id": None,
+        "capture_generation": 0,
+        "optical_frame": None,
+        "ros_stamp_ns": None,
+        "source_ref": "/tmp/sample.png",
+        "source_index": 2,
+    }
     fields.update(overrides)
     return FramePacket(**fields)
 
@@ -106,7 +106,7 @@ class FramePacketTest(unittest.TestCase):
             with self.assertRaises(dataclasses.FrozenInstanceError):
                 setattr(packet, name, value)
         # frozen은 필드 재할당만 막는다. 배열 내용 불변은 이 자료형이 보장하지 않는다
-        # (버퍼 소유권·독립 복사는 단계 2 저장 소스의 책임).
+        # (버퍼 소유권·독립 복사는 저장 소스 `stored_images.py`의 책임).
         self.assertTrue(packet.image.flags.writeable)
 
 

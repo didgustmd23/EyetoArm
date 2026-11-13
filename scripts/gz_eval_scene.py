@@ -47,10 +47,12 @@ PARK = (-2.0, 0.0, 0.05)        # 쓰지 않는 슬롯(카메라 뒤 바닥)
 
 
 def is_eval_seed(seed: int) -> bool:
+    """평가 시드 구간(`EVAL_SEED_BASE` 이상, 구간 폭 `EVAL_SEED_SPAN`)이면 True."""
     return EVAL_SEED_BASE <= seed < EVAL_SEED_BASE + EVAL_SEED_SPAN
 
 
 def eval_seed(batch: int) -> int:
+    """묶음 번호의 평가 시드. 번호가 0 미만이거나 구간 폭 이상이면 ValueError."""
     if not 0 <= batch < EVAL_SEED_SPAN:
         raise ValueError("batch out of range")
     return EVAL_SEED_BASE + batch
@@ -58,6 +60,7 @@ def eval_seed(batch: int) -> int:
 
 # ---------------------------------------------------------------- 기하
 def rpy_to_matrix(r, p, y):
+    """SDF/URDF 고정축 rpy(rad) → 3×3 회전행렬 Rz(y)·Ry(p)·Rx(r)."""
     cr, sr, cp, sp, cy, sy = math.cos(r), math.sin(r), math.cos(p), math.sin(p), math.cos(y), math.sin(y)
     rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
     ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
@@ -83,6 +86,7 @@ def aim_rpy(cam_xyz, target_xyz):
 
 
 def fx_from_hfov(width=IMG_W, hfov=HFOV):
+    """수평 시야각(rad)과 영상 폭으로 초점거리 fx(px)를 구한다."""
     return (width / 2) / math.tan(hfov / 2)
 
 
@@ -99,6 +103,8 @@ def project(cam_xyz, cam_rpy, point, width=IMG_W, height=IMG_H, hfov=HFOV):
 # ---------------------------------------------------------------- 표본 계획
 @dataclass
 class PartPlacement:
+    """표본 하나에 놓는 부품 슬롯 하나의 배치."""
+
     slot: str            # 모델 이름(월드 안), 예: NUT_2
     label: int           # 분할 라벨(슬롯 고유)
     cls: str             # 세부 클래스
@@ -111,12 +117,16 @@ class PartPlacement:
 
 @dataclass
 class Sample:
+    """한 번 찍는 장면(부품 배치 목록)."""
+
     index: int
     parts: list = field(default_factory=list)
 
 
 @dataclass
 class Batch:
+    """`gz sim` 한 번 실행에 해당하는 묶음. 카메라 pose·조명은 묶음 안에서 고정이다."""
+
     batch: int
     seed: int
     cam_xyz: tuple
@@ -138,7 +148,7 @@ def slot_table():
 
 
 def _sample_camera(rng):
-    bx, by, bz = CAM_BASE["xyz"]
+    bx, by, _ = CAM_BASE["xyz"]  # 높이는 기준값을 쓰지 않고 0.40~0.65 m에서 뽑는다
     cam = (bx + rng.uniform(-0.05, 0.05), by + rng.uniform(-0.05, 0.05), rng.uniform(0.40, 0.65))
     ax, ay, az = CAM_BASE["aim"]
     aim = (ax + rng.uniform(-0.03, 0.03), ay + rng.uniform(-0.10, 0.10), az)
@@ -146,6 +156,11 @@ def _sample_camera(rng):
 
 
 def plan_batch(batch: int, samples_per_batch: int, max_parts=6, min_sep_m=0.035, margin_px=24) -> Batch:
+    """평가 시드로 묶음 하나의 카메라·조명·표본별 부품 배치를 정한다. 같은 묶음 번호면 같은 계획이다.
+
+    부품은 투영 중심이 화면 가장자리에서 `margin_px` 안쪽이고 서로 `min_sep_m` 이상 떨어지게 놓는다.
+    500번 시도해도 못 채우면 표본의 부품 수가 목표보다 적을 수 있다.
+    """
     seed = eval_seed(batch)
     rng = np.random.RandomState(seed)
     cam, aim = _sample_camera(rng)
@@ -164,11 +179,12 @@ def plan_batch(batch: int, samples_per_batch: int, max_parts=6, min_sep_m=0.035,
             cls = list(CLASSES)[int(rng.randint(len(CLASSES)))]
             if used[cls] >= SLOTS_PER_CLASS:
                 continue
-            model, ycls, (r, p), z = CLASSES[cls]
+            _, ycls, (r, p), z = CLASSES[cls]
             x = float(rng.uniform(BELT_X[0] + 0.02, BELT_X[1] - 0.02))
             y = float(rng.uniform(BELT_Y[0] + 0.02, BELT_Y[1] - 0.02))
             proj = project(b.cam_xyz, b.cam_rpy, (x, y, z))
-            if proj is None or not (margin_px <= proj[0] < IMG_W - margin_px and margin_px <= proj[1] < IMG_H - margin_px):
+            if proj is None or not (margin_px <= proj[0] < IMG_W - margin_px
+                                    and margin_px <= proj[1] < IMG_H - margin_px):
                 continue
             if any(math.hypot(x - px, y - py) < min_sep_m for px, py in positions):
                 continue
@@ -223,7 +239,8 @@ def _slot_include_xml(slot, cls, label):
 def build_world(batch: Batch, world_src: Path = WORLD_SRC) -> str:
     """원본 월드를 읽어 사본 문자열을 만든다(원본은 수정하지 않음).
 
-    - 원본의 외형 확인용 부품 3개(part_00~02)와 `appearance_check_cam`을 뺀다.
+    - 이름이 `part_00`~`part_09`인 `<include>` 줄과 `appearance_check_cam` 모델을 뺀다.
+      지금 원본 월드에 있는 것은 외형 확인용 부품 3개(part_00~02)다.
     - 해의 diffuse를 묶음 조명값으로 바꾼다.
     - 평가 카메라와 18개 부품 슬롯(라벨 1..18, 초기 위치는 화면 밖)을 넣는다.
     """
@@ -255,10 +272,12 @@ def build_world(batch: Batch, world_src: Path = WORLD_SRC) -> str:
 
 
 def batch_to_json(batch: Batch) -> dict:
+    """묶음을 JSON으로 쓸 수 있는 dict로 바꾼다."""
     return asdict(batch)
 
 
 def main(argv=None) -> int:
+    """CLI 진입점. 묶음별 월드 사본과 plan.json을 `--out`에 쓰고 0을 돌려준다."""
     p = argparse.ArgumentParser(description="Gazebo 평가 세트 장면 계획·월드 사본 생성(실행 없음)")
     p.add_argument("--batches", type=int, default=20)
     p.add_argument("--samples-per-batch", type=int, default=10)

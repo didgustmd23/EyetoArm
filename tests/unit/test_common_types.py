@@ -1,7 +1,6 @@
 """common/types.py 공통 입력 자료형과 inputs/base.py A 확장의 호환 시험.
 
-근거: 공통 자료형 관리 초안 §3.1·§3.2·§3.6, 사용자 확정(2026-11-11: 공통 자료형은 초안 기준),
-3일차 공통 자료형 전환 명세. 기대 필드 목록은 초안 표에서 옮긴 상수다.
+근거: 공통 자료형 관리 초안 §3.1·§3.2·§3.6, 사용자 확정(2026-11-11: 공통 자료형은 초안 기준). 기대 필드 목록은 초안 표에서 옮긴 상수다.
 """
 import dataclasses
 import inspect
@@ -57,12 +56,12 @@ def no_defaults(testcase, cls):
 
 def common_frame_kwargs(image):
     h, w = image.shape[:2]
-    return dict(
-        image=image, run_id="run-c", source_id="src0", image_seq=4, timestamp_ms=99,
-        timestamp_base=common.TimestampBase.VIDEO_POS, received_monotonic_ns=1000,
-        width=w, height=h, crop=None, calibration_id=None, capture_generation=2,
-        optical_frame=None, ros_stamp_ns=None,
-    )
+    return {
+        "image": image, "run_id": "run-c", "source_id": "src0", "image_seq": 4, "timestamp_ms": 99,
+        "timestamp_base": common.TimestampBase.VIDEO_POS, "received_monotonic_ns": 1000,
+        "width": w, "height": h, "crop": None, "calibration_id": None, "capture_generation": 2,
+        "optical_frame": None, "ros_stamp_ns": None,
+    }
 
 
 class CommonFrameTest(unittest.TestCase):

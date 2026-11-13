@@ -90,10 +90,10 @@ def test_project_pinhole_hand_values():
 
 
 def test_rotation_angle_deg():
-    I = np.eye(3)
-    assert oc.rotation_angle_deg(I, I) == pytest.approx(0.0, abs=1e-12)
-    assert oc.rotation_angle_deg(I, oc.rot_x(150.0)) == pytest.approx(150.0, abs=1e-9)
-    assert oc.rotation_angle_deg(I, oc.rot_x(1e-6)) == pytest.approx(1e-6, rel=1e-3)
+    eye = np.eye(3)
+    assert oc.rotation_angle_deg(eye, eye) == pytest.approx(0.0, abs=1e-12)
+    assert oc.rotation_angle_deg(eye, oc.rot_x(150.0)) == pytest.approx(150.0, abs=1e-9)
+    assert oc.rotation_angle_deg(eye, oc.rot_x(1e-6)) == pytest.approx(1e-6, rel=1e-3)
 
 
 def test_rot90_points_moves_top_left_to_bottom_left():

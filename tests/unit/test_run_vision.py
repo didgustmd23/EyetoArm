@@ -1,6 +1,6 @@
 """scripts/run_vision.py 저장 입력 재현 CLI 시험.
 
-근거: 2일차 계획 단계 4, 2일차 단계 4 실행 명세. 실제 CLI는 subprocess로 실행하고
+근거: scripts/run_vision.py 모듈 docstring의 출력·종료 코드 계약. 실제 CLI는 subprocess로 실행하고
 (sys.executable, 절대 스크립트 경로, PYTHONPATH=저장소 src, cwd 명시, timeout 10초),
 예외 경로의 close 보장만 모듈을 직접 불러 소스를 주입해 확인한다.
 """
@@ -275,8 +275,7 @@ class PublicSampleCliTest(unittest.TestCase):
                          (3, 0, "end_of_stream"))
 
 
-
-# ---------------------------------------------------------------- 3일차 단계 4: 검출 재현 모드
+# ---------------------------------------------------------------- 검출 재현 모드(--detect-config)
 # 기대 좌표·면적은 손계산 상수다. cv2.findContours의 직사각형 윤곽은 화소 중심 꼭짓점이므로
 # 화소 x0..x1, y0..y1을 채운 사각의 넓이는 (x1-x0)*(y1-y0)이다. 출력은 A 내부 표시용 기록이다.
 
@@ -288,7 +287,7 @@ DETECT_CFG = {
     "min_area_source_px2": 100, "max_area_source_px2": None, "border_margin_processed_px": 2,
 }
 REPO_CONFIG = os.path.join(REPO_ROOT, "config", "vision", "opencv_planar.json")
-REPO_CONFIG_SHA = "b54dec5729bf5dc4f5af1ae0921ede34a5db3124050e9dfe6c110571c1e51422"  # 단계 1 §5
+REPO_CONFIG_SHA = "b54dec5729bf5dc4f5af1ae0921ede34a5db3124050e9dfe6c110571c1e51422"  # REPO_CONFIG의 식별자
 OBS_KEYS = {"kind", "run_id", "source_id", "image_seq", "capture_generation", "timestamp_ms",
             "timestamp_base", "received_monotonic_ns", "config_sha256", "processed_wh", "transform",
             "threshold_used", "raw_contour_count", "eligible_count", "process_ms", "display_only",

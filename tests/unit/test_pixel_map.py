@@ -1,7 +1,7 @@
 """vision/pixel_map.py ROI·리사이즈 원본 픽셀 복원 단위시험.
 
 근거: A 상세설계 §5.1(ROI·표시 축소 복원), 공통 자료형 관리 초안 §3.1
-(PixelToSourceTransform = (scale_x, scale_y, offset_x, offset_y)), 2일차 단계 3 실행 명세.
+(PixelToSourceTransform = (scale_x, scale_y, offset_x, offset_y)).
 기대값은 손으로 계산한 상수다. 좌표는 raw 픽셀이며 단순 배율 복원은 A 내부 잠정 규약이다.
 """
 import unittest

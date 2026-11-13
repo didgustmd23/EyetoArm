@@ -68,6 +68,7 @@ def marker_object_points(length_m: float):
 
 
 def rot_x(deg: float):
+    """X축 회전행렬(3×3, 오른손 법칙, 각도는 도)."""
     import numpy as np
     a = math.radians(deg)
     c, s = math.cos(a), math.sin(a)
@@ -112,6 +113,7 @@ def rot90_points(pts_xy, k: int, size_px: int, origin_xy):
 
 
 def all_finite(*arrays) -> bool:
+    """주어진 배열의 모든 값이 유한하면 True."""
     import numpy as np
     return all(bool(np.all(np.isfinite(np.asarray(a, dtype=np.float64)))) for a in arrays)
 
@@ -152,6 +154,7 @@ def _lookup(cv2, dotted: str):
 
 
 def environment(cv2, np):
+    """Python·OpenCV·NumPy 버전과 `API_NAMES` 각 API의 존재 여부(dict)."""
     return {
         "python_version": platform.python_version(),
         "python_executable": sys.executable,
@@ -191,14 +194,17 @@ class ArucoBackend:
         elif hasattr(a, "detectMarkers") and hasattr(a, "DetectorParameters_create"):
             self.detect_api = "cv2.aruco.detectMarkers + DetectorParameters_create"
         else:
-            self.reasons.append("검출 API 조합 없음 (ArucoDetector+DetectorParameters, detectMarkers+DetectorParameters_create 모두 불가)")
+            self.reasons.append("검출 API 조합 없음 (ArucoDetector+DetectorParameters, "
+                                "detectMarkers+DetectorParameters_create 모두 불가)")
         self._detector = None
 
     @property
     def usable(self) -> bool:
+        """사전·생성·검출 API가 모두 골라졌으면 True."""
         return self.dictionary is not None and self.generate_api is not None and self.detect_api is not None
 
     def generate(self, marker_id: int, size_px: int):
+        """마커 영상(uint8, size_px×size_px)을 고른 생성 API로 만든다."""
         a = self.cv2.aruco
         if self.generate_api == "cv2.aruco.generateImageMarker":
             return a.generateImageMarker(self.dictionary, marker_id, size_px)
@@ -225,6 +231,7 @@ def _result(name, status, reason, **data):
 
 
 def make_canvas(np, marker_img):
+    """흰 캔버스 가운데에 마커를 붙인다. (캔버스, 마커 좌상단 (x, y))를 돌려준다."""
     canvas = np.full((CANVAS_H, CANVAS_W), 255, dtype=np.uint8)
     ox, oy = (CANVAS_W - MARKER_PX) // 2, (CANVAS_H - MARKER_PX) // 2
     canvas[oy:oy + MARKER_PX, ox:ox + MARKER_PX] = marker_img
@@ -232,6 +239,7 @@ def make_canvas(np, marker_img):
 
 
 def test_api_selection(backend):
+    """생성·검출 API 조합이 있으면 PASS, 없으면 UNVERIFIED."""
     if backend.usable:
         return _result("api_selection", PASS, "마커 생성·검출에 쓸 수 있는 API 조합이 있음",
                        generate_api=backend.generate_api, detect_api=backend.detect_api,
@@ -241,6 +249,7 @@ def test_api_selection(backend):
 
 
 def test_synthetic_detection(np, backend, ctx):
+    """합성 마커 1개를 검출한다. 성공하면 `ctx`에 마커·캔버스·기준 모서리(corners0)를 남긴다."""
     name = "synthetic_detection"
     if not backend.usable:
         return _result(name, UNVERIFIED, "생성·검출 API 조합이 없어 실행 불가")
@@ -262,6 +271,7 @@ def test_synthetic_detection(np, backend, ctx):
 
 
 def test_blank_negative(np, backend):
+    """흰 영상에서 아무것도 검출하지 않아야 PASS(음성 시험)."""
     name = "blank_negative"
     if not backend.usable:
         return _result(name, UNVERIFIED, "검출 API 조합이 없어 실행 불가")
@@ -275,6 +285,7 @@ def test_blank_negative(np, backend):
 
 
 def test_rotation_correspondence(np, backend, ctx, tol_px: float):
+    """마커를 0·90·180·270° 돌려 검출하고, 모서리 인덱스가 회전 기대 위치와 `tol_px` 안에서 대응하는지 본다."""
     name = "rotation_correspondence"
     if not backend.usable:
         return _result(name, UNVERIFIED, "생성·검출 API 조합이 없어 실행 불가")
@@ -337,6 +348,7 @@ def _cand_report(c, extra=None):
 
 
 def test_pnp_synthetic(cv2, np):
+    """정확한 투영점으로 IPPE_SQUARE PnP를 풀어 정답 허용치 안의 후보가 있는지 본다."""
     name = "pnp_synthetic"
     if not (_lookup(cv2, "cv2.solvePnPGeneric") and _lookup(cv2, "cv2.SOLVEPNP_IPPE_SQUARE")):
         return _result(name, UNVERIFIED, "cv2.solvePnPGeneric 또는 cv2.SOLVEPNP_IPPE_SQUARE 없음")
@@ -378,6 +390,7 @@ def test_pnp_synthetic(cv2, np):
 
 
 def test_detect_to_pnp(cv2, np, backend, ctx):
+    """검출한 모서리를 PnP에 넣어 유한한 후보가 나오는지 본다(정답 허용치는 적용하지 않음)."""
     name = "detect_to_pnp"
     if not backend.usable:
         return _result(name, UNVERIFIED, "생성·검출 API 조합이 없어 실행 불가")
@@ -461,7 +474,8 @@ def _image_targets(cv2, np, ctx):
             cv2.polylines(img, [np.round(c).astype(np.int32).reshape(-1, 1, 2)], True, (0, 200, 0), 2)
             for i, (x, y) in enumerate(c):
                 cv2.circle(img, (int(round(x)), int(round(y))), 5, (0, 0, 255), -1)
-                cv2.putText(img, str(i), (int(round(x)) + 6, int(round(y)) - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                cv2.putText(img, str(i), (int(round(x)) + 6, int(round(y)) - 6), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7, (255, 0, 0), 2)
         return img
 
     targets = [("marker.png", ctx["marker"]), ("canvas_0deg.png", ctx["canvas"])]
@@ -473,6 +487,7 @@ def _image_targets(cv2, np, ctx):
 # ── 실행 ─────────────────────────────────────────────────────────────────────────
 
 def run(cv2, np, corner_tol_px: float, output_dir: str | None = None):
+    """필수 시험 6개(와 요청 시 이미지 저장)를 실행해 보고서 dict를 돌려준다. `exit_code` 키 포함."""
     env = environment(cv2, np)
     backend = ArucoBackend(cv2)
     ctx: dict = {}
@@ -542,6 +557,7 @@ def _print_human(report):
 
 
 def main(argv=None) -> int:
+    """CLI 진입점. 종료 코드(0 PASS, 1 FAIL 있음, 2 UNVERIFIED 있음)를 돌려준다."""
     ap = argparse.ArgumentParser(description="OpenCV ArUco 검출·IPPE_SQUARE PnP 동작 점검 (합성 입력)")
     ap.add_argument("--json", action="store_true", help="기계가 읽을 수 있는 JSON으로 출력")
     ap.add_argument("--output-dir", help="합성 이미지·오버레이를 저장할 디렉터리 (지정할 때만 저장)")

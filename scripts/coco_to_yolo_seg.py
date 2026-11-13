@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """COCO 분할 주석 + 재분할 목록 → ultralytics YOLO 분할 형식(파일럿용 2클래스).
 
-- 입력: `data/raw/{train,valid,test}/_annotations.coco.json`, 분할 목록 `data/splits/resplit_v2/{train,valid,test}.txt`
+- 입력: `data/raw/{train,valid,test}/_annotations.coco.json`,
+  분할 목록 `data/splits/resplit_v2/{train,valid,test}.txt`
 - 출력: `data/derived/bolt_nut_v2/{images,labels}/{train,val,test}/`, `dataset.yaml`
   - 영상은 심볼릭 링크(복사·수정하지 않음). 원본 파일명 그대로.
   - 라벨 한 줄: `<클래스> x1 y1 x2 y2 ...` (영상 폭·높이로 나눈 [0,1] 좌표)
@@ -31,11 +32,13 @@ ANNOTATION_FILE = "_annotations.coco.json"
 
 
 def polygon_area(poly: np.ndarray) -> float:
+    """(N, 2) 다각형의 면적(신발끈 공식, 부호 없음)."""
     x, y = poly[:, 0], poly[:, 1]
     return 0.5 * abs(float(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1))))
 
 
 def annotation_to_line(ann: dict, width: int, height: int, cls: int, stats: dict):
+    """COCO 주석 하나를 YOLO 분할 라벨 한 줄로 바꾼다. 쓸 다각형이 없으면 None이고, 건너뛴 사유를 `stats`에 센다."""
     seg = ann.get("segmentation")
     if not isinstance(seg, list):
         stats["skipped_non_polygon"] += 1
@@ -70,6 +73,10 @@ def load_coco(raw_root: Path) -> dict:
 
 
 def convert(raw_root: Path, list_dir: Path, out_root: Path) -> dict:
+    """분할 목록의 영상마다 링크·라벨을 만들고 dataset.yaml·convert_stats.json을 쓴다. 통계 dict를 돌려준다.
+
+    목록 항목이 주석에 없으면 KeyError, 한 분할에 같은 파일명이 두 번 나오면 ValueError.
+    """
     raw_root, list_dir, out_root = Path(raw_root), Path(list_dir), Path(out_root)
     coco = load_coco(raw_root)
     stats = {"skipped_non_polygon": 0, "skipped_empty": 0, "multi_polygon": 0, "dropped_polygons": 0,
@@ -120,6 +127,7 @@ def convert(raw_root: Path, list_dir: Path, out_root: Path) -> dict:
 
 
 def main(argv=None) -> int:
+    """CLI 진입점. 변환 통계를 stdout에 JSON으로 쓰고 0을 돌려준다."""
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--raw", default="data/raw")
     p.add_argument("--lists", default="data/splits/resplit_v2")

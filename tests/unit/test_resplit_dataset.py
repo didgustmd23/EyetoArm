@@ -1,4 +1,4 @@
-"""scripts/resplit_dataset.py 단위 시험 (지시서 _workspace/46 §1-2, A 상세설계 §12 데이터 분리 행).
+"""scripts/resplit_dataset.py 단위 시험 (A 상세설계 §12 데이터 분리 행, 사용자 확정 2026-11-12).
 
 합성 영상과 작은 COCO 주석으로 정답을 아는 입력을 만든다.
 """
@@ -34,7 +34,9 @@ def _name(stem, h):
 
 
 def _make_raw(root: Path):
-    """줄기 20개. 정답:
+    """줄기 20개를 만든다.
+
+    정답:
     - scene_a(train 원본 폴더, 사본 3장: 원본·좌우 뒤집기·90° 회전)
     - scene_b(valid 폴더)는 scene_a와 거의 같은 영상(잡음 조금) → 같은 묶음이어야 함
     - scene_c(test 폴더)는 scene_a의 좌우 뒤집기 + 잡음 → dihedral이면 같은 묶음
@@ -193,6 +195,7 @@ def test_adjacency_join_needs_family_rank_and_similarity():
     base = rng.randn(1024)
     other = rng.randn(1024)
     other -= other @ base / (base @ base) * base  # base와 직교
+
     def unit(v):
         v = v - v.mean()
         return v / np.linalg.norm(v)

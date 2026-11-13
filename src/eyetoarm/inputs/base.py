@@ -72,9 +72,11 @@ class FrameIdIssuer:
 
     @property
     def run_id(self) -> str:
+        """생성할 때 받은 실행 ID."""
         return self._run_id
 
     def next_seq(self) -> int:
+        """다음 `image_seq`를 돌려주고 1 늘린다(첫 호출은 0)."""
         seq = self._next
         self._next += 1
         return seq

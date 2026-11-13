@@ -1,7 +1,8 @@
 """OpenCV 전처리 설정 로더와 표시용(raw) 평면 윤곽 후보 추출 — A 내부 잠정안.
 
-근거: A 3일차 단계 1 결과(설정 필드 계약·처리 순서·식별자 정규화), 단계 2 실행 명세,
-A 상세설계 §5.1, `vision/pixel_map.py`(단순 스케일 복원 잠정 규약).
+근거: A 상세설계 §5.1(공통 프레임)·§7(평면 검출 처리 1~3단계, 설정 식별자),
+`vision/pixel_map.py`(단순 스케일 복원 잠정 규약). 설정 필드·처리 순서·식별자 정규화는
+A 내부 잠정안이며, 이 모듈의 `PlanarConfig`·`detect_planar`가 그 정본이다.
 
 - 결과는 표시용이다. `eligible`은 영상 필터(면적 범위·경계 미접촉) 통과라는 뜻일 뿐이며
   B 계산용 유효 판정·관측면·클래스·규격·보정 좌표가 아니다. 후보를 자동 선정하지 않는다.
@@ -83,9 +84,9 @@ def _kernel(v, name: str) -> int:
 
 @dataclass(frozen=True)
 class PlanarConfig:
-    """검증한 전처리·필터 설정의 변경 불가 스냅샷(단계 1 §3 필드 계약).
+    """검증한 전처리·필터 설정의 변경 불가 스냅샷(A 상세설계 §7 「소스별 설정」).
 
-    생성자가 모든 값을 검증하고 정규화한다(직접 생성해도 검증을 우회하지 않는다).
+    생성자가 모든 값을 검증하고 정규화한다(직접 생성해도 검증을 우회하지 않는다). 잘못된 값은 ValueError.
     배열은 튜플, 실수 필드는 float로 보관한다. `config_sha256`은 정규화한 값에서 계산한다.
     값을 바꾸려면 새 설정을 로드하거나 새로 생성한다.
     """
@@ -266,9 +267,10 @@ def _check_frame(frame: FramePacket) -> np.ndarray:
 
 
 def detect_planar(frame: FramePacket, config: PlanarConfig) -> PlanarResult:
-    """단계 1 §3 처리 순서로 표시용 윤곽 후보를 추출한다. 입력 배열·메타데이터를 바꾸지 않는다.
+    """아래 1)~10) 순서로 표시용 윤곽 후보를 추출한다. 입력 배열·메타데이터를 바꾸지 않는다.
 
-    잘못된 프레임·원본 밖 ROI는 ValueError다(입력 사건이나 무검출로 바꾸지 않는다).
+    잘못된 프레임·원본 밖 ROI는 ValueError, `PlanarConfig`가 아닌 설정은 TypeError다
+    (입력 사건이나 무검출로 바꾸지 않는다).
     """
     if not isinstance(config, PlanarConfig):
         raise TypeError("config must be a PlanarConfig")

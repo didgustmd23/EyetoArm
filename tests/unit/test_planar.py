@@ -1,7 +1,7 @@
 """vision/planar.py 설정 로더·표시용 윤곽 추출 단위시험.
 
-근거: A 3일차 단계 1 결과(설정 필드 계약·처리 순서·식별자 정규화), 단계 2 실행 명세,
-A 상세설계 §5.1(원본 픽셀 복원), vision/pixel_map.py(단순 스케일 복원 잠정 규약).
+근거: A 상세설계 §5.1(원본 픽셀 복원)·§7(평면 검출 처리, 설정 식별자), vision/planar.py의 설정
+필드·처리 순서·식별자 정규화(A 내부 잠정안), vision/pixel_map.py(단순 스케일 복원 잠정 규약).
 
 - 입력은 NumPy로 그린 합성 영상이다. 기대 좌표·면적·경계 상자는 손으로 계산한 상수이며
   OpenCV 처리 결과로 기대값을 만들지 않는다.
@@ -49,12 +49,12 @@ def cfg(**over):
 
 def frame(image, **over):
     h, w = image.shape[:2] if image.ndim >= 2 else (0, 0)
-    fields = dict(
-        image=image, run_id="run-test", source_id="src0", image_seq=7, timestamp_ms=1234,
-        timestamp_base=TimestampBase.VIDEO_POS, received_monotonic_ns=555, width=w, height=h,
-        crop=None, calibration_id=None, capture_generation=3, optical_frame=None,
-        ros_stamp_ns=None, source_ref="synthetic", source_index=0,
-    )
+    fields = {
+        "image": image, "run_id": "run-test", "source_id": "src0", "image_seq": 7, "timestamp_ms": 1234,
+        "timestamp_base": TimestampBase.VIDEO_POS, "received_monotonic_ns": 555, "width": w, "height": h,
+        "crop": None, "calibration_id": None, "capture_generation": 3, "optical_frame": None,
+        "ros_stamp_ns": None, "source_ref": "synthetic", "source_index": 0,
+    }
     fields.update(over)
     return FramePacket(**fields)
 
@@ -106,7 +106,7 @@ class ConfigLoadTest(unittest.TestCase):
         self.assertEqual(c.min_area_source_px2, 100.0)
         self.assertIsInstance(c.min_area_source_px2, float)
         self.assertEqual(c.border_margin_processed_px, 2)
-        # 단계 1 결과 §5에 기록한 식별자
+        # 저장소 설정 config/vision/opencv_planar.json의 식별자(설정을 바꾸면 이 값도 바꾼다)
         self.assertEqual(c.config_sha256, "b54dec5729bf5dc4f5af1ae0921ede34a5db3124050e9dfe6c110571c1e51422")
 
     def test_pathlike_accepted(self):
@@ -300,7 +300,7 @@ class ThresholdTest(unittest.TestCase):
     def test_wrong_polarity_gives_background_contour(self):
         img = fill(canvas(100, 80, 255), 20, 10, 39, 29, 0)
         r = detect_planar(frame(img), cfg(polarity="bright"))
-        # 밝은 배경이 물체가 되어 영상 테두리 전체 윤곽 하나가 나온다(2일차 실패 사례와 같은 형태).
+        # 밝은 배경이 물체가 되어 영상 테두리 전체 윤곽 하나가 나온다(공개 표본에서 관찰한 실패 사례와 같은 형태).
         self.assertEqual(r.raw_contour_count, 1)
         c = r.candidates[0]
         self.assertEqual(c.bbox_source, (0.0, 0.0, 99.0, 79.0))
@@ -505,7 +505,7 @@ class ResultContractTest(unittest.TestCase):
         self.assertGreaterEqual(r.process_ms, 0.0)
 
     def test_fixed_fields_not_settable(self):
-        # 단계 3 보강: 고정 필드는 init=False라 생성 인자로 바꿀 수 없고 재할당도 막힌다.
+        # 고정 필드는 init=False라 생성 인자로 바꿀 수 없고 재할당도 막힌다.
         r = detect_planar(frame(self.img), self.config)
         kwargs = {f.name: getattr(r, f.name) for f in dataclasses.fields(PlanarResult) if f.init}
         for name, value in [("valid", True), ("display_only", False), ("selected_index", 0),

@@ -5,7 +5,7 @@
     ... [--detect-config <설정.json> [--overlay-dir <새 폴더>]]
 
 기본은 입력 재현과 기록만 한다. `--detect-config`를 주면 성공 프레임마다 `vision.planar.detect_planar`로
-표시용(raw) 윤곽을 추출해 기록한다(3일차 단계 4). GUI·ROS·TCP·로봇 명령·클래스·규격 판정은 없다.
+표시용(raw) 윤곽을 추출해 기록한다. GUI·ROS·TCP·로봇 명령·클래스·규격 판정은 없다.
 
 stdout에는 한 줄에 JSON 객체 하나를 쓴다(kind = start / frame / observation / event / end). 이 필드
 이름은 A 내부 실행 기록용 제안이며 공동 API나 TCP 규약이 아니다. 경고와 예상 밖 오류 설명은 stderr로 간다.
@@ -122,7 +122,7 @@ def _read_list(path: str) -> list[str]:
 def _frame_record(frame: FramePacket) -> dict:
     """성공 프레임 하나를 `kind=frame` 기록(dict)으로 만든다. 영상 배열은 넣지 않는다.
 
-    키 구성은 2일차 이후 그대로이며 검출 모드에서도 바뀌지 않는다.
+    키 구성은 검출 모드에서도 바뀌지 않는다.
     """
     return {
         "kind": "frame",

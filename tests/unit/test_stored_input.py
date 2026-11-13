@@ -1,7 +1,7 @@
 """inputs/stored_images.py 저장 이미지·명시 순서 목록 입력 단위시험.
 
 근거: A 상세설계 §5.1(image_seq 수명, 시각 관계), §5.4(입력 상태, 재처리),
-공통 자료형 관리 초안 §3.2·§4 불변조건 8, 2일차 단계 2 실행 명세.
+공통 자료형 관리 초안 §3.2·§4 불변조건 8, A 상세설계 §6(저장 이미지 행).
 합성 PNG·깨진 파일은 임시 폴더에 만들고, 시계는 가짜 단조 시계를 주입한다.
 """
 import os
@@ -25,7 +25,7 @@ from eyetoarm.inputs.stored_images import StoredImageSource
 
 RUN_ID = "run-test"
 
-# 2일차 계획 단계 0의 공개 train 표본(1일차 단계 3 재조사에서 디코딩 확인)
+# 공개 데이터(data/raw) train 표본. 디코딩되는 것을 확인한 파일이다
 PUBLIC_SAMPLES = (
     "data/raw/train/z4773355985498_0b2ac5577b3fbe55daacf39124e8c881_jpg.rf.000fb5ac0b21b6bb802ec8b64ef699e9.jpg",
     "data/raw/train/M6_frame_50_jpg.rf.0ea94e92b4974ee895686f3b383ecfab.jpg",
