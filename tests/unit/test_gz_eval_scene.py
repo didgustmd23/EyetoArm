@@ -32,15 +32,22 @@ def test_plan_is_deterministic_and_batches_differ():
 def test_parts_on_belt_in_view_and_separated():
     for batch in range(5):
         b = sc.plan_batch(batch, 8)
+
         for s in b.samples:
             assert 1 <= len(s.parts) <= 6
+
             slots = [p.slot for p in s.parts]
+
             assert len(set(slots)) == len(slots)
+
             for p in s.parts:
                 assert sc.BELT_X[0] < p.xyz[0] < sc.BELT_X[1] and sc.BELT_Y[0] < p.xyz[1] < sc.BELT_Y[1]
+
                 u, v, _ = sc.project(b.cam_xyz, b.cam_rpy, p.xyz)
+
                 assert 0 <= u < sc.IMG_W and 0 <= v < sc.IMG_H
                 assert p.yolo_cls == (1 if p.cls == "NUT" else 0)
+
             for i, p in enumerate(s.parts):
                 for q in s.parts[i + 1:]:
                     assert math.hypot(p.xyz[0] - q.xyz[0], p.xyz[1] - q.xyz[1]) >= 0.035 - 1e-9
@@ -49,6 +56,7 @@ def test_parts_on_belt_in_view_and_separated():
 def test_camera_variation_and_aim_center():
     b = sc.plan_batch(0, 1)
     u, v, _ = sc.project(b.cam_xyz, b.cam_rpy, b.cam_aim)
+
     assert u == pytest.approx(640, abs=1.0) and v == pytest.approx(360, abs=1.0)
     assert 0.40 <= b.cam_xyz[2] <= 0.65 and 0.75 <= b.light_diffuse <= 1.0
 
@@ -57,10 +65,12 @@ def test_quat_matches_matrix():
     r, p, y = 0.3, -0.7, 2.1
     qx, qy, qz, qw = sc.rpy_to_quat(r, p, y)
     m = sc.rpy_to_matrix(r, p, y)
+
     # 쿼터니언 → 행렬
     mq = np.array([[1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
                    [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
                    [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)]])
+
     assert np.allclose(m, mq, atol=1e-9)
 
 
@@ -72,6 +82,7 @@ def test_slot_labels_unique():
 def test_build_world_copy_keeps_source(tmp_path):
     src_hash = hashlib.sha256(sc.WORLD_SRC.read_bytes()).hexdigest()
     w = sc.build_world(sc.plan_batch(1, 2))
+
     assert hashlib.sha256(sc.WORLD_SRC.read_bytes()).hexdigest() == src_hash
     assert w.count('name="gz::sim::systems::Label"') == 18
     assert 'type="segmentation"' in w and "<segmentation_type>semantic</segmentation_type>" in w

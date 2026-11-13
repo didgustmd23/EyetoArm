@@ -107,8 +107,10 @@ def rot90_points(pts_xy, k: int, size_px: int, origin_xy):
     o = np.asarray(origin_xy, dtype=np.float64)
     p = np.asarray(pts_xy, dtype=np.float64) - o
     n1 = size_px - 1
+
     for _ in range(k % 4):
         p = np.stack([p[:, 1], n1 - p[:, 0]], axis=1)
+
     return p + o
 
 
@@ -121,10 +123,13 @@ def all_finite(*arrays) -> bool:
 def overall_exit_code(results) -> int:
     """FAIL이 있으면 1, FAIL 없이 UNVERIFIED가 있으면 2, 모두 PASS면 0."""
     statuses = {r["status"] for r in results}
+
     if FAIL in statuses:
         return 1
+
     if UNVERIFIED in statuses:
         return 2
+
     return 0
 
 
@@ -134,6 +139,7 @@ def _r(x, nd=9):
         f = float(x)
     except (TypeError, ValueError):
         return x
+
     return round(f, nd) if math.isfinite(f) else repr(f)
 
 
@@ -146,10 +152,13 @@ def _lst(a, nd=6):
 
 def _lookup(cv2, dotted: str):
     obj = cv2
+
     for part in dotted.split(".")[1:]:
         if not hasattr(obj, part):
             return False
+
         obj = getattr(obj, part)
+
     return True
 
 
@@ -175,20 +184,24 @@ class ArucoBackend:
         self.dictionary = None
         self.generate_api = None
         self.detect_api = None
+
         if a is None:
             self.reasons.append("cv2.aruco 없음 (opencv-contrib 미포함 빌드일 수 있음)")
             return
+
         if hasattr(a, "getPredefinedDictionary"):
             self.dictionary = a.getPredefinedDictionary(getattr(a, DICT_NAME))
             self.dictionary_api = "cv2.aruco.getPredefinedDictionary"
         else:
             self.reasons.append("cv2.aruco.getPredefinedDictionary 없음")
+
         if hasattr(a, "generateImageMarker"):
             self.generate_api = "cv2.aruco.generateImageMarker"
         elif hasattr(a, "drawMarker"):
             self.generate_api = "cv2.aruco.drawMarker"
         else:
             self.reasons.append("마커 생성 API 없음 (generateImageMarker·drawMarker 모두 없음)")
+
         if hasattr(a, "ArucoDetector") and hasattr(a, "DetectorParameters"):
             self.detect_api = "cv2.aruco.ArucoDetector + DetectorParameters"
         elif hasattr(a, "detectMarkers") and hasattr(a, "DetectorParameters_create"):
@@ -196,6 +209,7 @@ class ArucoBackend:
         else:
             self.reasons.append("검출 API 조합 없음 (ArucoDetector+DetectorParameters, "
                                 "detectMarkers+DetectorParameters_create 모두 불가)")
+
         self._detector = None
 
     @property
@@ -206,20 +220,25 @@ class ArucoBackend:
     def generate(self, marker_id: int, size_px: int):
         """마커 영상(uint8, size_px×size_px)을 고른 생성 API로 만든다."""
         a = self.cv2.aruco
+
         if self.generate_api == "cv2.aruco.generateImageMarker":
             return a.generateImageMarker(self.dictionary, marker_id, size_px)
+
         return a.drawMarker(self.dictionary, marker_id, size_px)
 
     def detect(self, gray):
         """(corners 목록[각 (4,2)], ids 목록). 반환 모서리 순서는 그대로 둔다(화면 기준 재정렬 금지)."""
         import numpy as np
         a = self.cv2.aruco
+
         if self.detect_api.startswith("cv2.aruco.ArucoDetector"):
             if self._detector is None:
                 self._detector = a.ArucoDetector(self.dictionary, a.DetectorParameters())
+
             corners, ids, _ = self._detector.detectMarkers(gray)
         else:
             corners, ids, _ = a.detectMarkers(gray, self.dictionary, parameters=a.DetectorParameters_create())
+
         ids_list = [] if ids is None else [int(i) for i in np.asarray(ids).ravel()]
         return [np.asarray(c, dtype=np.float64).reshape(4, 2) for c in corners], ids_list
 
@@ -244,6 +263,7 @@ def test_api_selection(backend):
         return _result("api_selection", PASS, "마커 생성·검출에 쓸 수 있는 API 조합이 있음",
                        generate_api=backend.generate_api, detect_api=backend.detect_api,
                        dictionary_api=getattr(backend, "dictionary_api", None))
+
     return _result("api_selection", UNVERIFIED, "; ".join(backend.reasons) or "API 조합 없음",
                    generate_api=backend.generate_api, detect_api=backend.detect_api)
 
@@ -251,20 +271,27 @@ def test_api_selection(backend):
 def test_synthetic_detection(np, backend, ctx):
     """합성 마커 1개를 검출한다. 성공하면 `ctx`에 마커·캔버스·기준 모서리(corners0)를 남긴다."""
     name = "synthetic_detection"
+
     if not backend.usable:
         return _result(name, UNVERIFIED, "생성·검출 API 조합이 없어 실행 불가")
+
     try:
         marker = backend.generate(MARKER_ID, MARKER_PX)
         canvas, origin = make_canvas(np, marker)
         corners, ids = backend.detect(canvas)
     except Exception as e:  # noqa: BLE001 — 예외를 숨기지 않고 FAIL 근거로 남긴다
         return _result(name, FAIL, f"생성·검출 중 예외: {type(e).__name__}: {e}")
+
     ctx.update(marker=marker, canvas=canvas, origin=origin)
+
     if ids.count(MARKER_ID) != 1 or len(ids) != 1:
         return _result(name, FAIL, f"ID {MARKER_ID}가 정확히 1개 검출되어야 함 (검출 ID: {ids})", ids=ids)
+
     c = corners[ids.index(MARKER_ID)]
+
     if c.shape != (4, 2) or not all_finite(c):
         return _result(name, FAIL, f"모서리가 4개의 유한 좌표가 아님 (shape {c.shape})", corners_px=_lst(c))
+
     ctx["corners0"] = c
     return _result(name, PASS, f"ID {MARKER_ID} 1개, 유한한 모서리 4개", ids=ids, corners_px=_lst(c, 3),
                    marker_origin_px=list(origin))
@@ -273,52 +300,68 @@ def test_synthetic_detection(np, backend, ctx):
 def test_blank_negative(np, backend):
     """흰 영상에서 아무것도 검출하지 않아야 PASS(음성 시험)."""
     name = "blank_negative"
+
     if not backend.usable:
         return _result(name, UNVERIFIED, "검출 API 조합이 없어 실행 불가")
+
     try:
         _, ids = backend.detect(np.full((CANVAS_H, CANVAS_W), 255, dtype=np.uint8))
     except Exception as e:  # noqa: BLE001
         return _result(name, FAIL, f"흰 영상 검출 중 예외: {type(e).__name__}: {e}")
+
     if ids:
         return _result(name, FAIL, f"흰 영상에서 마커가 검출됨: {ids}", ids=ids)
+
     return _result(name, PASS, "흰 영상에서 검출 없음 (음성 시험 통과)", ids=ids)
 
 
 def test_rotation_correspondence(np, backend, ctx, tol_px: float):
     """마커를 0·90·180·270° 돌려 검출하고, 모서리 인덱스가 회전 기대 위치와 `tol_px` 안에서 대응하는지 본다."""
     name = "rotation_correspondence"
+
     if not backend.usable:
         return _result(name, UNVERIFIED, "생성·검출 API 조합이 없어 실행 불가")
+
     if "corners0" not in ctx:
         return _result(name, UNVERIFIED, "기준(0°) 검출이 실패해 기대 모서리를 만들 수 없음")
+
     c0, origin = ctx["corners0"], ctx["origin"]
     rows, ok, notes = [], True, []
     ctx["rotations"] = {}
+
     for k in range(4):
         deg = 90 * k
+
         try:
             rotated = np.ascontiguousarray(np.rot90(ctx["marker"], k))
             canvas, _ = make_canvas(np, rotated)
             corners, ids = backend.detect(canvas)
         except Exception as e:  # noqa: BLE001
             return _result(name, FAIL, f"{deg}° 검출 중 예외: {type(e).__name__}: {e}", rotations=rows)
+
         ctx["rotations"][deg] = (canvas, corners, ids)
+
         if ids.count(MARKER_ID) != 1:
             ok = False
             notes.append(f"{deg}°: ID {MARKER_ID} 1개 검출 실패 (검출 ID {ids})")
             rows.append({"deg_ccw": deg, "ids": ids})
             continue
+
         got = corners[ids.index(MARKER_ID)]
         expected = rot90_points(c0, k, MARKER_PX, origin)
         max_diff = float(np.max(np.linalg.norm(got - expected, axis=1)))
+
         # 인덱스 대응이 의미 있는지: 다른 순환 대응(인덱스를 1~3칸 민 경우)과의 차이가 커야 한다.
         alt = min(float(np.max(np.linalg.norm(np.roll(got, s, axis=0) - expected, axis=1))) for s in (1, 2, 3))
         row_ok = all_finite(got) and max_diff <= tol_px
         ok &= row_ok
+
         if not row_ok:
             notes.append(f"{deg}°: 최대 차이 {max_diff:.3f}px > 허용치 {tol_px}px")
+
         rows.append({"deg_ccw": deg, "ids": ids, "max_corner_diff_px": _r(max_diff, 4),
                      "min_diff_if_index_shifted_px": _r(alt, 2), "corners_px": _lst(got, 3)})
+
     status = PASS if ok else FAIL
     reason = (f"0·90·180·270° 모두 ID 유지, 인덱스별 모서리가 회전 기대 위치와 {tol_px}px 이내 (시험용 허용치)"
               if ok else "; ".join(notes))
@@ -330,12 +373,14 @@ def _pnp_candidates(cv2, np, obj_M, img_px, K, dist):
     retval, rvecs, tvecs, reproj = cv2.solvePnPGeneric(obj_M, img_px, K, dist, flags=cv2.SOLVEPNP_IPPE_SQUARE)
     cands = []
     reproj = None if reproj is None else np.asarray(reproj, dtype=np.float64).ravel()
+
     for i, (rv, tv) in enumerate(zip(rvecs, tvecs)):
         R, _ = cv2.Rodrigues(np.asarray(rv, dtype=np.float64))
         t = np.asarray(tv, dtype=np.float64).reshape(3)
         z = transform_points(R, t, obj_M)[:, 2]
         cands.append({"R": R, "t": t, "z": z,
                       "reproj": float(reproj[i]) if reproj is not None and i < len(reproj) else float("nan")})
+
     return int(retval), cands
 
 
@@ -350,68 +395,89 @@ def _cand_report(c, extra=None):
 def test_pnp_synthetic(cv2, np):
     """정확한 투영점으로 IPPE_SQUARE PnP를 풀어 정답 허용치 안의 후보가 있는지 본다."""
     name = "pnp_synthetic"
+
     if not (_lookup(cv2, "cv2.solvePnPGeneric") and _lookup(cv2, "cv2.SOLVEPNP_IPPE_SQUARE")):
         return _result(name, UNVERIFIED, "cv2.solvePnPGeneric 또는 cv2.SOLVEPNP_IPPE_SQUARE 없음")
+
     obj_M = marker_object_points(MARKER_LENGTH_M)
     R_true = rot_x(150.0)
     t_true = np.array([0.02, -0.01, 0.50])
     z_true = transform_points(R_true, t_true, obj_M)[:, 2]
+
     if not (z_true > 0).all():
         return _result(name, FAIL, f"정답 자세의 모서리가 카메라 뒤에 있음: z={z_true}")
+
     img = project_pinhole(transform_points(R_true, t_true, obj_M), FX, FY, CX, CY)
     K = np.array([[FX, 0, CX], [0, FY, CY], [0, 0, 1]], dtype=np.float64)
     dist = np.zeros(5)
+
     try:
         n, cands = _pnp_candidates(cv2, np, obj_M, img, K, dist)
     except Exception as e:  # noqa: BLE001
         return _result(name, FAIL, f"solvePnPGeneric 예외: {type(e).__name__}: {e}")
+
     reports, finite_ok, match = [], True, False
+
     for c in cands:
         pos_err = float(np.linalg.norm(c["t"] - t_true))
         rot_err = rotation_angle_deg(c["R"], R_true)
         finite_ok &= all_finite(c["R"], c["t"], c["z"], [c["reproj"]])
+
         # 정답과의 비교는 시험 판정용일 뿐, 제품의 후보 선택 방식이 아니다.
         within = pos_err <= PNP_POS_TOL_M and rot_err <= PNP_ROT_TOL_DEG
         match |= within
         reports.append(_cand_report(c, {"position_error_m": _r(pos_err, 12), "rotation_error_deg": _r(rot_err, 9),
                                         "within_synthetic_tolerance": within}))
+
     data = {"retval": n, "candidate_count": len(cands), "candidates": reports,
             "truth": {"R_C_M": "Rx(150°)", "t_C_M_m": t_true.tolist(), "corner_z_m": [_r(v, 6) for v in z_true]},
             "image_points_px": _lst(img, 6),
             "tolerance": {"position_m": PNP_POS_TOL_M, "rotation_deg": PNP_ROT_TOL_DEG, "kind": "합성 시험용 수치 허용치"},
             "note": "모든 후보를 출력함. 이 시험은 B의 모호성 판정·최종 후보 선택을 검증하지 않음"}
+
     if not cands:
         return _result(name, FAIL, "후보가 0개", **data)
+
     if not finite_ok:
         return _result(name, FAIL, "후보 출력에 NaN·Infinity가 있음", **data)
+
     if not match:
         return _result(name, FAIL, "정답 허용치 안의 후보가 없음", **data)
+
     return _result(name, PASS, f"후보 {len(cands)}개 출력, 정답 허용치 안의 후보 존재, 모든 값 유한", **data)
 
 
 def test_detect_to_pnp(cv2, np, backend, ctx):
     """검출한 모서리를 PnP에 넣어 유한한 후보가 나오는지 본다(정답 허용치는 적용하지 않음)."""
     name = "detect_to_pnp"
+
     if not backend.usable:
         return _result(name, UNVERIFIED, "생성·검출 API 조합이 없어 실행 불가")
+
     if not (_lookup(cv2, "cv2.solvePnPGeneric") and _lookup(cv2, "cv2.SOLVEPNP_IPPE_SQUARE")):
         return _result(name, UNVERIFIED, "cv2.solvePnPGeneric 또는 cv2.SOLVEPNP_IPPE_SQUARE 없음")
+
     if "corners0" not in ctx:
         return _result(name, UNVERIFIED, "합성 마커 검출이 실패해 연결 시험을 할 수 없음")
+
     obj_M = marker_object_points(MARKER_LENGTH_M)
     K = np.array([[FX, 0, CX], [0, FY, CY], [0, 0, 1]], dtype=np.float64)
+
     try:
         n, cands = _pnp_candidates(cv2, np, obj_M, ctx["corners0"], K, np.zeros(5))
     except Exception as e:  # noqa: BLE001
         return _result(name, FAIL, f"검출 모서리로 solvePnPGeneric 호출 중 예외: {type(e).__name__}: {e}")
+
     reports = [_cand_report(c) for c in cands]
     finite = [all_finite(c["R"], c["t"], c["z"], [c["reproj"]]) for c in cands]
     data = {"retval": n, "candidate_count": len(cands), "candidates": reports,
             "reference_only": {"expected_z_m_if_fronto_parallel": _r(FX * MARKER_LENGTH_M / MARKER_PX, 4),
                                "note": "정면 배치·200px 마커에서의 참고값. 판정에 쓰지 않음"},
             "note": "검출 API와 PnP API의 연결 동작 확인. 렌더링·검출 픽셀 오차가 있어 정답 허용치를 적용하지 않음"}
+
     if not any(finite):
         return _result(name, FAIL, "유한한 후보가 없음", **data)
+
     return _result(name, PASS, f"검출 모서리 → IPPE_SQUARE 후보 {len(cands)}개, 유한한 후보 {sum(finite)}개", **data)
 
 
@@ -427,39 +493,49 @@ def save_images(cv2, np, ctx, out_dir: Path):
     """
     import os
     name = "image_save"
+
     try:
         targets = _image_targets(cv2, np, ctx)
     except Exception as e:  # noqa: BLE001
         return _result(name, FAIL, f"저장할 오버레이 영상을 만들지 못함: {type(e).__name__}: {e}",
                        output_dir=str(out_dir), saved_files=[], failed_files=[])
+
     if not targets:
         return _result(name, UNVERIFIED, "저장할 합성 이미지가 없음 (합성 마커 검출 시험이 실행·통과되지 않음)",
                        output_dir=str(out_dir), saved_files=[], failed_files=[])
+
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         return _result(name, UNVERIFIED, f"출력 디렉터리를 만들 수 없음 (환경 제약): {type(e).__name__}: {e}",
                        output_dir=str(out_dir), saved_files=[], failed_files=[])
+
     if not out_dir.is_dir() or not os.access(out_dir, os.W_OK | os.X_OK):
         return _result(name, UNVERIFIED, "출력 디렉터리에 쓸 권한이 없음 (환경 제약)",
                        output_dir=str(out_dir), saved_files=[], failed_files=[])
+
     saved, failed = [], []
+
     for fname, img in targets:
         path = out_dir / fname
+
         try:
             ok = cv2.imwrite(str(path), img)
         except Exception as e:  # noqa: BLE001 — 원인을 기록하고 다음 파일을 계속 시도한다
             failed.append({"path": str(path), "error": f"{type(e).__name__}: {e}"})
             continue
+
         if ok is not True:
             failed.append({"path": str(path), "error": f"cv2.imwrite 반환값 {ok!r}"})
         elif not path.is_file():
             failed.append({"path": str(path), "error": "cv2.imwrite가 True를 반환했으나 파일이 없음"})
         else:
             saved.append(str(path))
+
     if failed:
         return _result(name, FAIL, f"{len(targets)}개 중 {len(failed)}개 저장 실패",
                        output_dir=str(out_dir), saved_files=saved, failed_files=failed)
+
     return _result(name, PASS, f"{len(saved)}개 저장", output_dir=str(out_dir), saved_files=saved, failed_files=[])
 
 
@@ -470,17 +546,22 @@ def _image_targets(cv2, np, ctx):
 
     def overlay(gray, corners_list):
         img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
         for c in corners_list:
             cv2.polylines(img, [np.round(c).astype(np.int32).reshape(-1, 1, 2)], True, (0, 200, 0), 2)
+
             for i, (x, y) in enumerate(c):
                 cv2.circle(img, (int(round(x)), int(round(y))), 5, (0, 0, 255), -1)
                 cv2.putText(img, str(i), (int(round(x)) + 6, int(round(y)) - 6), cv2.FONT_HERSHEY_SIMPLEX,
                             0.7, (255, 0, 0), 2)
+
         return img
 
     targets = [("marker.png", ctx["marker"]), ("canvas_0deg.png", ctx["canvas"])]
+
     for deg, (canvas, corners, _) in ctx.get("rotations", {}).items():
         targets.append((f"overlay_{deg:03d}deg.png", overlay(canvas, corners)))
+
     return targets
 
 
@@ -506,11 +587,13 @@ def run(cv2, np, corner_tol_px: float, output_dir: str | None = None):
               "limits": "실제 촬영 정확도, 카메라 보정, B의 최종 후보 선택·모호성 판정, ROS 영상 변환, "
                         "GUI·TCP·로봇 통합은 이 점검으로 검증되지 않음"}
     judged = list(results)
+
     if output_dir:  # 요청했을 때만 저장 결과를 추가한다
         save = save_images(cv2, np, ctx, Path(output_dir))
         report["image_save"] = save
         report["saved_files"] = save["saved_files"]
         judged.append(save)
+
     report["exit_code"] = overall_exit_code(judged)
     return report
 
@@ -522,36 +605,47 @@ def _print_human(report):
     print(f"OpenCV {env['opencv_version']}  ({env['cv2_file']})")
     print(f"NumPy  {env['numpy_version']}")
     print("== API 존재 여부")
+
     for k, v in env["api"].items():
         print(f"  {'있음' if v else '없음':4} {k}")
+
     sa = report["selected_api"]
     print("== 선택한 API")
     print(f"  사전: {sa['dictionary']}\n  생성: {sa['generate']}\n  검출: {sa['detect']}")
     print("== 시험 결과")
+
     for r in report["results"]:
         print(f"[{r['status']:10}] {r['name']}: {r['reason']}")
+
         if r["name"] == "rotation_correspondence":
             for row in r.get("rotations", []):
                 if "max_corner_diff_px" in row:
                     print(f"      {row['deg_ccw']:3d}°: 최대 차이 {row['max_corner_diff_px']} px "
                           f"(인덱스를 민 대응이면 최소 {row['min_diff_if_index_shifted_px']} px)")
+
         if r["name"] in ("pnp_synthetic", "detect_to_pnp"):
             for i, c in enumerate(r.get("candidates", [])):
                 extra = ""
+
                 if "position_error_m" in c:
                     extra = (f", 위치 오차 {c['position_error_m']} m, 회전 오차 {c['rotation_error_deg']}°, "
                              f"허용치 안 {c['within_synthetic_tolerance']}")
+
                 print(f"      후보 {i}: t={c['t_C_M_m']} m, 재투영 {c['reprojection_error_px']} px, "
                       f"카메라 앞 {c['in_front']}{extra}")
                 print(f"              R={c['R_C_M']}")
+
     if "image_save" in report:
         s = report["image_save"]
         print("== 이미지 저장 (선택 기능, 필수 시험과 별도)")
         print(f"[{s['status']:10}] {s['name']}: {s['reason']}")
+
         for f in s["saved_files"]:
             print(f"      저장: {f}")
+
         for f in s["failed_files"]:
             print(f"      실패: {f['path']} — {f['error']}")
+
     print(f"== 종료 코드 {report['exit_code']}  (0 전체 PASS, 1 FAIL 있음, 2 UNVERIFIED 있음)")
     print(f"한계: {report['limits']}")
 
@@ -564,18 +658,22 @@ def main(argv=None) -> int:
     ap.add_argument("--corner-tolerance-px", type=float, default=DEFAULT_CORNER_TOL_PX,
                     help=f"회전 대응 시험의 픽셀 허용치, 시험용 값 (기본 {DEFAULT_CORNER_TOL_PX})")
     args = ap.parse_args(argv)
+
     if not (args.corner_tolerance_px >= 0 and math.isfinite(args.corner_tolerance_px)):
         ap.error("--corner-tolerance-px는 0 이상의 유한한 값이어야 함")
 
     missing = []
+
     try:
         import numpy as np
     except ImportError as e:
         np, missing = None, missing + [f"numpy: {e}"]
+
     try:
         import cv2
     except ImportError as e:
         cv2, missing = None, missing + [f"cv2: {e}"]
+
     if missing:
         report = {"environment": {"python_version": platform.python_version(), "python_executable": sys.executable},
                   "results": [_result("import", UNVERIFIED, "; ".join(missing))], "exit_code": 2}
@@ -584,10 +682,12 @@ def main(argv=None) -> int:
         return 2
 
     report = run(cv2, np, args.corner_tolerance_px, args.output_dir)
+
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False))
     else:
         _print_human(report)
+
     return report["exit_code"]
 
 

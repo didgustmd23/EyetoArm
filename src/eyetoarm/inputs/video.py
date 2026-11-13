@@ -142,6 +142,7 @@ class VideoSource:
         if not self._opened:
             self._opened = True
             self._open_failure = self._open()
+
         return self._open_failure
 
     def _open(self) -> tuple[InputStatus, str] | None:
@@ -149,6 +150,7 @@ class VideoSource:
         # OpenCV는 둘 다 isOpened()가 False라 구분하지 못하므로 경로를 먼저 검사한다.
         if not os.path.isfile(self._path):
             return InputStatus.SOURCE_UNAVAILABLE, "not a regular file or missing"
+
         if not os.access(self._path, os.R_OK):
             return InputStatus.SOURCE_UNAVAILABLE, "file not readable"
 
@@ -156,11 +158,13 @@ class VideoSource:
             cap = cv2.VideoCapture(self._path)
         except cv2.error as exc:
             return InputStatus.DECODE_FAILED, f"opencv open error: {exc}"
+
         if not cap.isOpened():
             cap.release()
             return InputStatus.DECODE_FAILED, "cannot open as video"
 
         fps = float(cap.get(cv2.CAP_PROP_FPS))
+
         if not math.isfinite(fps) or fps <= 0.0:
             cap.release()
             return InputStatus.DECODE_FAILED, f"invalid fps {fps!r}"
@@ -176,13 +180,17 @@ class VideoSource:
         """다음 프레임을 읽어 `FramePacket`을, 읽지 못하면 `InputStatusEvent`를 돌려준다."""
         if self._closed:
             return self._event(InputStatus.SOURCE_UNAVAILABLE, "closed", None)
+
         failure = self._ensure_open()
+
         if failure is not None:
             return self._event(failure[0], failure[1], self._path)
+
         if self._at_end:
             return self._event(InputStatus.END_OF_STREAM, "end of video", self._path)
 
         index = self._next_index
+
         try:
             ok, image = self._cap.read()
         except cv2.error as exc:
@@ -193,6 +201,7 @@ class VideoSource:
 
         if not ok or image is None:
             return self._read_failed(index, read_error)
+
         if image.dtype != np.uint8 or image.ndim != 3 or image.shape[2] != 3:
             # BGR 3채널 uint8이 아니면 프레임으로 내보내지 않는다(FramePacket 계약).
             self._sync_index(index + 1)
@@ -234,15 +243,19 @@ class VideoSource:
         """읽기 실패를 끝(`END_OF_STREAM`)과 중간 실패(`DECODE_FAILED`)로 나눈다. 기준은 클래스 docstring."""
         if self._frame_count > 0:
             pos = self._cap.get(cv2.CAP_PROP_POS_FRAMES)
+
             if math.isfinite(pos) and pos >= self._frame_count:
                 self._at_end = True
                 return self._event(InputStatus.END_OF_STREAM, "end of video", self._path)
+
             self._sync_index(index)
             return self._event(InputStatus.DECODE_FAILED,
                                f"{detail} at frame {index} of {self._frame_count}", self._path)
+
         if not self._any_read:
             return self._event(InputStatus.DECODE_FAILED,
                                f"{detail} on first read (frame count unknown)", self._path)
+
         self._at_end = True
         return self._event(InputStatus.END_OF_STREAM, "end of video (frame count unknown)", self._path)
 

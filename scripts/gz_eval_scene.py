@@ -95,8 +95,10 @@ def project(cam_xyz, cam_rpy, point, width=IMG_W, height=IMG_H, hfov=HFOV):
     fx = fx_from_hfov(width, hfov)
     v = rpy_to_matrix(*cam_rpy).T @ (np.asarray(point, float) - np.asarray(cam_xyz, float))
     z = v[0]
+
     if z <= 1e-9:
         return None
+
     return (width / 2 - fx * v[1] / z, height / 2 - fx * v[2] / z, z)
 
 
@@ -140,10 +142,12 @@ def slot_table():
     """슬롯 이름 → (세부 클래스, 라벨). 라벨은 1부터, 클래스 순서 고정."""
     out = {}
     label = 1
+
     for cls in CLASSES:
         for k in range(SLOTS_PER_CLASS):
             out[f"{cls}_{k}"] = (cls, label)
             label += 1
+
     return out
 
 
@@ -169,25 +173,32 @@ def plan_batch(batch: int, samples_per_batch: int, max_parts=6, min_sep_m=0.035,
     b = Batch(batch, seed, tuple(round(v, 4) for v in cam), tuple(round(v, 4) for v in cam_rpy),
               tuple(round(v, 4) for v in aim), round(light, 3))
     slots = slot_table()
+
     for si in range(samples_per_batch):
         n = int(rng.randint(1, max_parts + 1))
         used = {c: 0 for c in CLASSES}
         parts, positions = [], []
         tries = 0
+
         while len(parts) < n and tries < 500:
             tries += 1
             cls = list(CLASSES)[int(rng.randint(len(CLASSES)))]
+
             if used[cls] >= SLOTS_PER_CLASS:
                 continue
+
             _, ycls, (r, p), z = CLASSES[cls]
             x = float(rng.uniform(BELT_X[0] + 0.02, BELT_X[1] - 0.02))
             y = float(rng.uniform(BELT_Y[0] + 0.02, BELT_Y[1] - 0.02))
             proj = project(b.cam_xyz, b.cam_rpy, (x, y, z))
+
             if proj is None or not (margin_px <= proj[0] < IMG_W - margin_px
                                     and margin_px <= proj[1] < IMG_H - margin_px):
                 continue
+
             if any(math.hypot(x - px, y - py) < min_sep_m for px, py in positions):
                 continue
+
             yaw = float(rng.uniform(-math.pi, math.pi))
             slot = f"{cls}_{used[cls]}"
             used[cls] += 1
@@ -195,7 +206,9 @@ def plan_batch(batch: int, samples_per_batch: int, max_parts=6, min_sep_m=0.035,
             parts.append(PartPlacement(slot, slots[slot][1], cls, ycls, (round(x, 4), round(y, 4), z),
                                        (r, p, round(yaw, 4)), round(float(proj[2]), 4),
                                        (round(float(proj[0]), 1), round(float(proj[1]), 1))))
+
         b.samples.append(Sample(si, parts))
+
     return b
 
 
@@ -247,27 +260,38 @@ def build_world(batch: Batch, world_src: Path = WORLD_SRC) -> str:
     src = Path(world_src).read_text(encoding="utf-8")
     out_lines = []
     skip_model = False
+
     for line in src.splitlines():
         s = line.strip()
+
         if s.startswith("<include>") and any(f"<name>part_0{k}</name>" in s for k in range(10)):
             continue
+
         if s.startswith('<model name="appearance_check_cam">'):
             skip_model = True
             continue
+
         if skip_model:
             if s.startswith("</model>"):
                 skip_model = False
+
             continue
+
         if s.startswith("<diffuse>0.9 0.9 0.9 1</diffuse>"):
             d = batch.light_diffuse
             line = line.replace("0.9 0.9 0.9 1", f"{d:.3f} {d:.3f} {d:.3f} 1")
+
         out_lines.append(line)
+
     text = "\n".join(out_lines) + "\n"
     add = _camera_model_xml(batch.cam_xyz, batch.cam_rpy)
+
     for slot, (cls, label) in slot_table().items():
         add += _slot_include_xml(slot, cls, label)
+
     if text.count("  </world>") != 1:
         raise ValueError("원본 월드에서 </world>를 하나로 찾지 못함")
+
     return text.replace("  </world>", add + "\n  </world>")
 
 
@@ -287,10 +311,12 @@ def main(argv=None) -> int:
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     plans = []
+
     for b in range(a.first_batch, a.first_batch + a.batches):
         batch = plan_batch(b, a.samples_per_batch)
         (out / f"world_b{b:04d}.sdf").write_text(build_world(batch), encoding="utf-8")
         plans.append(batch_to_json(batch))
+
     (out / "plan.json").write_text(json.dumps(plans, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     print(json.dumps({"out": str(out), "batches": len(plans),
                       "samples": sum(len(x["samples"]) for x in plans)}, ensure_ascii=False))

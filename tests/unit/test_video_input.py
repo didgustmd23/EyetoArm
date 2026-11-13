@@ -61,19 +61,26 @@ class Gen:
 
 def write_video(path, n, fps=10.0, fourcc="MJPG", size=(W, H), color=None):
     w = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*fourcc), fps, size)
+
     if not w.isOpened():
         raise AssertionError(f"VideoWriter를 열지 못함: {fourcc} {path}")
+
     for i in range(n):
         f = np.full((size[1], size[0], 3), 128, np.uint8) if color is None else np.full(
             (size[1], size[0], 3), color, np.uint8)
         f[:16, :48] = 0
+
         for b in range(6):
             if (i >> b) & 1:
                 f[4:12, 8 * b:8 * b + 8] = 255
+
         w.write(f)
+
     w.release()
+
     if not os.path.getsize(path):
         raise AssertionError(f"빈 영상: {path}")
+
     return path
 
 
@@ -103,10 +110,13 @@ class VideoTestBase(unittest.TestCase):
 
     def read_all(self, s):
         out = []
+
         while True:
             r = s.read()
+
             if not isinstance(r, FramePacket):
                 return out, r
+
             out.append(r)
 
 
@@ -115,17 +125,24 @@ class InterfaceAndStatusTest(VideoTestBase):
     def test_r1_read_returns_only_frame_or_event_and_close(self):
         s = self.src()
         kinds = {type(s.read()) for _ in range(25)}
+
         self.assertTrue(kinds <= {FramePacket, InputStatusEvent})
+
         s.close()
+
         self.assertIsInstance(s.read(), InputStatusEvent)
 
     def test_r2_events_have_no_frame_id_and_one_clock_read(self):
         s = self.src(os.path.join(self.dir, "missing.avi"))
         before = self.clock.calls
+
         e = s.read()
+
         self.assertIsInstance(e, InputStatusEvent)
+
         for name in ("image_seq", "image", "timestamp_ms"):
             self.assertFalse(hasattr(e, name), name)
+
         self.assertEqual(self.clock.calls, before + 1)
         self.assertEqual(e.run_id, RUN_ID)
         self.assertEqual(e.source_id, "video_test")
@@ -138,21 +155,28 @@ class InterfaceAndStatusTest(VideoTestBase):
         write_video(unreadable, 3)
         os.chmod(unreadable, 0)
         self.addCleanup(os.chmod, unreadable, stat.S_IRUSR | stat.S_IWUSR)
+
         if not os.access(unreadable, os.R_OK):  # root가 아니면 읽기 불가
             cases.append(unreadable)
+
         for path in cases:
             e = self.src(path).read()
+
             self.assertIs(e.status, InputStatus.SOURCE_UNAVAILABLE, path)
             self.assertEqual(e.source_ref, path)
+
         self.assertGreaterEqual(len(cases), 3)
 
     def test_r4_garbage_file_is_decode_failed(self):
         for name in ("junk.avi", "junk.mp4", "empty.avi"):
             p = os.path.join(self.dir, name)
+
             with open(p, "wb") as f:
                 f.write(b"" if name.startswith("empty") else os.urandom(4096))
+
             s = self.src(p)
             e = s.read()
+
             self.assertIs(e.status, InputStatus.DECODE_FAILED, name)
             self.assertIs(s.read().status, InputStatus.DECODE_FAILED)  # 열기 결과 고정
             self.assertIsNone(s.current())
@@ -160,6 +184,7 @@ class InterfaceAndStatusTest(VideoTestBase):
     def test_r5_end_of_stream_after_all_frames(self):
         s = self.src()
         frames, end = self.read_all(s)
+
         self.assertEqual(len(frames), 20)
         self.assertIs(end.status, InputStatus.END_OF_STREAM)
         self.assertNotIn(end.status, (InputStatus.SOURCE_UNAVAILABLE, InputStatus.DECODE_FAILED))
@@ -168,10 +193,14 @@ class InterfaceAndStatusTest(VideoTestBase):
     def test_r6_after_end_current_cleared_repeated_end_no_seq(self):
         s = self.src()
         frames, _ = self.read_all(s)
+
         self.assertIsNone(s.current())
+
         calls = self.clock.calls
+
         for _ in range(3):
             self.assertIs(s.read().status, InputStatus.END_OF_STREAM)
+
         self.assertEqual(self.clock.calls, calls + 3)
         self.assertEqual(self.issuer.next_seq(), frames[-1].image_seq + 1)
 
@@ -179,10 +208,14 @@ class InterfaceAndStatusTest(VideoTestBase):
         s = self.src()
         f = s.read()
         before = f.image.copy()
+
         s.close()
         s.close()
+
         self.assertIsNone(s._cap)
+
         e = s.read()
+
         self.assertIs(e.status, InputStatus.SOURCE_UNAVAILABLE)
         self.assertEqual(e.detail, "closed")
         self.assertIsNone(e.source_ref)
@@ -205,14 +238,20 @@ class InterfaceAndStatusTest(VideoTestBase):
                 self._c.release()
 
         p = os.path.join(self.dir, "junk.avi")
+
         with open(p, "wb") as fh:
             fh.write(os.urandom(2048))
+
         with mock.patch.object(video.cv2, "VideoCapture", Spy):
             self.src(p).read()
+
             self.assertEqual(len(released), 1)  # 열기 실패 시 즉시 해제
+
             s = self.src()
             self.read_all(s)
+
             s.close()
+
             self.assertEqual(len(released), 2)
 
 
@@ -221,10 +260,13 @@ class FrameFieldTest(VideoTestBase):
     def test_r8_r9_fields(self):
         blue = write_video(os.path.join(self.dir, "blue.avi"), 3, color=(255, 0, 0))
         f = self.src(blue).read()
+
         self.assertEqual(f.image.shape, (H, W, 3))
         self.assertEqual((f.width, f.height), (W, H))
         self.assertEqual(f.image.dtype, np.uint8)
+
         b, g, r = f.image[16:, :].reshape(-1, 3).mean(axis=0)
+
         self.assertGreater(b, 200)
         self.assertLess(max(g, r), 60)  # BGR 순서
         self.assertEqual(f.run_id, RUN_ID)
@@ -232,11 +274,13 @@ class FrameFieldTest(VideoTestBase):
         self.assertEqual(f.source_ref, blue)
         self.assertEqual(f.source_index, 0)
         self.assertEqual(f.capture_generation, 3)
+
         for name in ("crop", "calibration_id", "optical_frame", "ros_stamp_ns"):
             self.assertIsNone(getattr(f, name), name)
 
     def test_r10_video_pos_timestamps(self):
         frames, _ = self.read_all(self.src())
+
         self.assertTrue(all(f.timestamp_base is TimestampBase.VIDEO_POS for f in frames))
         self.assertTrue(all(type(f.timestamp_ms) is int for f in frames))
         self.assertEqual(frames[0].timestamp_ms, 0)
@@ -251,7 +295,9 @@ class FrameFieldTest(VideoTestBase):
     def test_r11_clock_read_once_per_frame_and_event(self):
         s = self.src()
         c0 = self.clock.calls
+
         f = s.read()
+
         self.assertEqual(self.clock.calls, c0 + 1)
         self.assertEqual(f.received_monotonic_ns, 7_000_000_001 + c0 * 1_000_000_007)
         self.assertEqual(self.gen.calls, 1)  # 세대도 한 번
@@ -259,21 +305,29 @@ class FrameFieldTest(VideoTestBase):
     def test_r12_shared_issuer_and_seq_after_failure(self):
         a = self.src()
         b = self.src(write_video(os.path.join(self.dir, "b.avi"), 5))
+
         seqs = [a.read().image_seq, b.read().image_seq, a.read().image_seq, b.read().image_seq]
+
         self.assertEqual(seqs, [0, 1, 2, 3])
+
         bad = self.src(os.path.join(self.dir, "missing.avi"))
         bad.read()
+
         self.assertEqual(a.read().image_seq, 4)
 
     def test_r13_independent_read_only_buffers(self):
         s = self.src()
         f1, f2 = s.read(), s.read()
+
         self.assertFalse(np.shares_memory(f1.image, f2.image))
         self.assertFalse(f1.image.flags.writeable)
+
         with self.assertRaises(ValueError):
             f1.image[0, 0, 0] = 1
+
         keep = f1.image.copy()
         s.read()
+
         self.assertTrue(np.array_equal(f1.image, keep))
 
 
@@ -282,9 +336,13 @@ class SeekGenerationTest(VideoTestBase):
     def test_r14_seek_reads_target_and_position(self):
         s = self.src()
         s.read()
+
         s.seek(12)
+
         self.assertEqual(s.next_frame_index, 12)
+
         f = s.read()
+
         self.assertEqual(frame_no(f), 12)
         self.assertEqual(f.source_index, 12)
         self.assertEqual(s.next_frame_index, 13)
@@ -294,75 +352,104 @@ class SeekGenerationTest(VideoTestBase):
         before = s.read()
         self.gen.value = 4  # 파이프라인이 탐색에 맞춰 세대를 올림
         s.seek(5)
+
         after = s.read()
+
         self.assertEqual(before.capture_generation, 3)
         self.assertEqual(after.capture_generation, 4)
+
         calls = self.gen.calls
         s.seek(6)  # 소스는 탐색만으로 세대를 읽거나 바꾸지 않음
+
         self.assertEqual(self.gen.calls, calls)
 
     def test_r16_seq_not_reset_by_seek(self):
         s = self.src()
         frames = [s.read() for _ in range(4)]
         s.seek(1)
+
         f = s.read()
+
         self.assertEqual(f.image_seq, frames[-1].image_seq + 1)
         self.assertEqual(f.timestamp_ms, 100)
+
         s.seek(1)
         g = s.read()
+
         self.assertEqual(g.image_seq, f.image_seq + 1)
         self.assertEqual(g.timestamp_ms, 100)
 
     def test_r17_seek_clears_current(self):
         s = self.src()
         s.read()
+
         s.seek(3)
+
         self.assertIsNone(s.current())
+
         f = s.read()
+
         self.assertIs(s.current(), f)
 
     def test_r18_current_reuse_reads_nothing(self):
         s = self.src()
         f = s.read()
         c, g, n = self.clock.calls, self.gen.calls, self.issuer._next
+
         for _ in range(3):
             self.assertIs(s.current(), f)
+
         self.assertEqual((self.clock.calls, self.gen.calls, self.issuer._next), (c, g, n))
 
     def test_r19_new_source_continues_seq(self):
         a = self.src()
         last = [a.read() for _ in range(3)][-1]
         a.close()
+
         b = self.src()  # 같은 파일을 새 객체로 다시 엶
+
         self.assertEqual(b.read().image_seq, last.image_seq + 1)
+
         img = StoredImageSource([], source_id="x", issuer=self.issuer)  # 다른 소스와도 공유
         img.read()
+
         self.assertEqual(b.read().image_seq, last.image_seq + 2)
 
     def test_seek_after_end_resumes(self):
         s = self.src()
         self.read_all(s)
+
         s.seek(18)
+
         self.assertEqual([frame_no(s.read()), frame_no(s.read())], [18, 19])
         self.assertIs(s.read().status, InputStatus.END_OF_STREAM)
 
     def test_seek_errors_leave_state_unchanged(self):
         s = self.src()
         f = s.read()
+
         for bad, exc in ((1.5, TypeError), (True, TypeError), ("3", TypeError), (-1, ValueError), (20, ValueError)):
             with self.assertRaises(exc):
                 s.seek(bad)
+
             self.assertIs(s.current(), f)
             self.assertEqual(s.next_frame_index, 1)
+
         s.seek(np.int64(2))
+
         self.assertEqual(s.next_frame_index, 2)
+
         s.close()
+
         with self.assertRaises(RuntimeError):
             s.seek(0)
+
         bad_src = self.src(os.path.join(self.dir, "missing.avi"))
         calls, seq = self.clock.calls, self.issuer._next
+
         with self.assertRaises(RuntimeError):
             bad_src.seek(0)
+
         self.assertEqual((self.clock.calls, self.issuer._next), (calls, seq))
 
 
@@ -388,10 +475,13 @@ class FakeCap:
     def read(self):
         if self.pos >= self.frames:
             return False, None
+
         if self.pos == self.fail_at:
             if self.advance_on_fail:
                 self.pos += 1
+
             return False, None
+
         self.pos += 1
         return True, np.zeros((4, 4, 3), np.uint8)
 
@@ -415,12 +505,14 @@ class BoundaryTest(VideoTestBase):
     def test_d1_index_follows_decoder_position_after_mid_failure(self):
         # 디코더가 실패한 프레임 2를 건너뛰면 다음 성공 프레임은 인덱스 3·시각 300 ms
         s, rs = self.run_fake(FakeCap(frames=5, frame_count=5, fail_at=2, advance_on_fail=True))
+
         self.assertEqual([self.status(r) for r in rs[:6]],
                          ["frame", "frame", "DECODE_FAILED", "frame", "frame", "END_OF_STREAM"])
         self.assertEqual([(r.source_index, r.timestamp_ms) for r in (rs[3], rs[4])], [(3, 300), (4, 400)])
 
     def test_d1_index_kept_when_decoder_does_not_advance(self):
         s, rs = self.run_fake(FakeCap(frames=5, frame_count=5, fail_at=2, advance_on_fail=False))
+
         self.assertEqual(self.status(rs[2]), "DECODE_FAILED")
         self.assertEqual(s.next_frame_index, 2)  # 위치가 그대로면 같은 인덱스를 다시 시도
         self.assertEqual(self.status(rs[3]), "DECODE_FAILED")
@@ -431,14 +523,18 @@ class BoundaryTest(VideoTestBase):
 
     def test_m4_unknown_frame_count(self):
         _, rs = self.run_fake(FakeCap(frames=0, frame_count=0))
+
         self.assertEqual(self.status(rs[0]), "DECODE_FAILED")
+
         _, rs = self.run_fake(FakeCap(frames=2, frame_count=-1))
+
         self.assertEqual([self.status(r) for r in rs[:3]], ["frame", "frame", "END_OF_STREAM"])
 
     def test_invalid_fps_is_decode_failed_and_released(self):
         for fps in (0.0, -5.0, float("nan"), float("inf")):
             cap = FakeCap(frames=3, frame_count=3, fps=fps)
             _, rs = self.run_fake(cap)
+
             self.assertEqual(self.status(rs[0]), "DECODE_FAILED", fps)
             self.assertIn("invalid fps", rs[0].detail)
             self.assertTrue(cap.released)
@@ -452,17 +548,24 @@ class CodecTimestampTest(VideoTestBase):
                 with self.subTest(codec=fourcc, fps=fps):
                     p = write_video(os.path.join(self.dir, f"r20_{fourcc}_{int(fps)}{ext}"), 40, fps, fourcc)
                     s = self.src(p)
+
                     frames, end = self.read_all(s)
+
                     self.assertEqual(len(frames), 40)
                     self.assertIs(end.status, InputStatus.END_OF_STREAM)
+
                     for i, f in enumerate(frames):
                         self.assertLessEqual(abs(f.timestamp_ms - round(i * 1000 / fps)), 1, (i, f.timestamp_ms))
                         self.assertEqual(frame_no(f), i)
+
                     ts = [f.timestamp_ms for f in frames]
+
                     self.assertEqual(ts, sorted(ts))
                     self.assertGreater(ts[-1], 0)
+
                     s.seek(35)  # 끝쪽 탐색에서도 0으로 돌아가지 않음
                     g = s.read()
+
                     self.assertEqual(frame_no(g), 35)
                     self.assertLessEqual(abs(g.timestamp_ms - round(35 * 1000 / fps)), 1)
 
@@ -472,13 +575,16 @@ class BoundaryImportTest(unittest.TestCase):
     def test_r21_r23_no_forbidden_imports(self):
         tree = ast.parse(open(video.__file__, encoding="utf-8").read())
         names = set()
+
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 names.update(a.name for a in node.names)
             elif isinstance(node, ast.ImportFrom):
                 names.add(node.module or "")
+
         forbidden = ("eyetoarm.vision", "eyetoarm.calibration", "eyetoarm.transforms", "eyetoarm.tcp",
                      "eyetoarm.gui", "rclpy", "PySide6", "cv_bridge", "evaluation")
+
         self.assertFalse([n for n in names if n.startswith(forbidden)], names)
         self.assertNotIn("ground_truth", open(video.__file__, encoding="utf-8").read())
 

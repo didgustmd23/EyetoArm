@@ -37,22 +37,30 @@ def _check_wh(wh, name: str) -> tuple[int, int]:
 def _check_transform(t) -> Transform:
     if len(t) != 4 or not all(isinstance(v, Real) and not isinstance(v, bool) for v in t):
         raise ValueError(f"transform must be four real numbers: {t!r}")
+
     sx, sy, ox, oy = (float(v) for v in t)
+
     if not (math.isfinite(sx) and math.isfinite(sy) and sx > 0 and sy > 0):
         raise ValueError(f"transform scales must be positive finite numbers: {t!r}")
+
     if not (math.isfinite(ox) and math.isfinite(oy)):
         raise ValueError(f"transform offsets must be finite: {t!r}")
+
     return sx, sy, ox, oy
 
 
 def _check_points(points) -> np.ndarray:
     arr = np.asarray(points)
+
     if arr.ndim != 2 or arr.shape[1] != 2:
         raise ValueError(f"points must have shape (N, 2): {arr.shape}")
+
     if not np.issubdtype(arr.dtype, np.number) or np.issubdtype(arr.dtype, np.complexfloating):
         raise ValueError(f"points must be real numbers: {arr.dtype}")
+
     if not np.all(np.isfinite(arr)):
         raise ValueError("points must be finite")
+
     return arr
 
 
@@ -63,9 +71,12 @@ def validate_roi(roi: tuple[int, int, int, int], source_wh: tuple[int, int]) -> 
         ValueError: ROI·해상도가 정수가 아니거나 ROI가 비었거나 원본을 벗어남.
     """
     width, height = _check_wh(source_wh, "source_wh")
+
     if len(roi) != 4 or not all(_is_int(v) for v in roi):
         raise ValueError(f"roi must be four integers (x, y, width, height): {roi!r}")
+
     x, y, w, h = (int(v) for v in roi)
+
     if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > width or y + h > height:
         raise ValueError(f"roi {roi!r} is outside source {width}x{height} or empty")
 

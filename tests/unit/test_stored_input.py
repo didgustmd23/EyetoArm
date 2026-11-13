@@ -53,14 +53,17 @@ class StoredInputTestBase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.dir = self._tmp.name
+
         # 크기와 BGR 값이 서로 다른 합성 PNG 3장
         self.img_a = self._write_png("a.png", (4, 6), (10, 20, 30))
         self.img_b = self._write_png("b.png", (5, 3), (200, 100, 50))
         self.img_c = self._write_png("c.png", (2, 7), (0, 255, 128))
         self.missing = os.path.join(self.dir, "missing.png")
         self.broken = os.path.join(self.dir, "broken.jpg")
+
         with open(self.broken, "wb") as f:
             f.write(b"\x00\x01not an image\xff\xfe" * 8)
+
         self.clock = FakeClock()
         self.issuer = FrameIdIssuer(RUN_ID)
 
@@ -73,6 +76,7 @@ class StoredInputTestBase(unittest.TestCase):
         image[:] = bgr
         path = os.path.join(self.dir, name)
         self.assertTrue(cv2.imwrite(path, image))
+
         return path
 
     def _source(self, paths, **kw):
@@ -87,7 +91,9 @@ class OrderAndSequenceTest(StoredInputTestBase):
         paths = [self.img_c, self.missing, self.img_a, self.img_b]  # 정렬되지 않은 명시 순서
         src = self._source(paths)
         results = [src.read() for _ in range(4)]
+
         frames = [r for r in results if isinstance(r, FramePacket)]
+
         self.assertEqual([f.source_ref for f in frames], [self.img_c, self.img_a, self.img_b])
         self.assertEqual([f.source_index for f in frames], [0, 2, 3])  # 실패 뒤에도 목록 위치
         self.assertEqual([f.image_seq for f in frames], [0, 1, 2])
@@ -99,7 +105,9 @@ class OrderAndSequenceTest(StoredInputTestBase):
         src = self._source(paths)
         paths.reverse()
         paths.append(self.img_c)
+
         first, second, third = src.read(), src.read(), src.read()
+
         self.assertEqual([first.source_ref, second.source_ref], [self.img_a, self.img_b])
         self.assertIsInstance(third, InputStatusEvent)
         self.assertIs(third.status, InputStatus.END_OF_STREAM)
@@ -107,20 +115,25 @@ class OrderAndSequenceTest(StoredInputTestBase):
     def test_pathlike_is_stringified(self):
         import pathlib
         src = self._source([pathlib.Path(self.img_a)])
+
         frame = src.read()
+
         self.assertEqual(frame.source_ref, self.img_a)
         self.assertIsInstance(frame.source_ref, str)
 
     def test_seq_monotonic_across_sources(self):
         s1 = self._source([self.img_a, self.img_b], source_id="s1")
         s2 = self._source([self.img_c, self.img_a], source_id="s2")
+
         got = [s1.read(), s2.read(), s1.read(), s2.read()]
+
         self.assertEqual([g.image_seq for g in got], [0, 1, 2, 3])
         self.assertEqual([g.source_id for g in got], ["s1", "s2", "s1", "s2"])
 
     def test_seq_not_consumed_on_failure(self):
         src = self._source([self.img_a, self.missing, self.broken, self.img_b])
         results = [src.read() for _ in range(4)]
+
         self.assertEqual(results[0].image_seq, 0)
         self.assertEqual(results[3].image_seq, 1)
         self.assertEqual(self.issuer.next_seq(), 2)
@@ -130,17 +143,20 @@ class StatusEventTest(StoredInputTestBase):
     def test_status_events_have_no_image_seq(self):
         src = self._source([self.missing, self.broken])
         events = [src.read(), src.read(), src.read()]
+
         for ev in events:
             self.assertIsInstance(ev, InputStatusEvent)
             self.assertNotIsInstance(ev, FramePacket)
             self.assertFalse(hasattr(ev, "image_seq"))
             self.assertFalse(hasattr(ev, "image"))
             self.assertEqual(ev.run_id, RUN_ID)
+
         self.assertEqual(self.issuer.next_seq(), 0)
 
     def test_missing_vs_decode_failed_vs_end(self):
         src = self._source([self.missing, self.dir, self.broken])
         missing, directory, broken, end = (src.read() for _ in range(4))
+
         self.assertIs(missing.status, InputStatus.SOURCE_UNAVAILABLE)
         self.assertEqual(missing.source_ref, self.missing)
         self.assertIs(directory.status, InputStatus.SOURCE_UNAVAILABLE)  # 일반 파일이 아님
@@ -149,7 +165,9 @@ class StatusEventTest(StoredInputTestBase):
         self.assertEqual(broken.source_ref, self.broken)
         self.assertIs(end.status, InputStatus.END_OF_STREAM)
         self.assertIsNone(end.source_ref)
+
         details = {missing.detail, broken.detail, end.detail}
+
         self.assertEqual(len(details), 3)  # 원인이 구분되는 설명
 
     def test_expected_decode_exception_becomes_event(self):
@@ -158,9 +176,11 @@ class StatusEventTest(StoredInputTestBase):
 
         fake_cv2 = types.SimpleNamespace(
             imread=raising_imread, error=cv2.error, IMREAD_COLOR=cv2.IMREAD_COLOR)
+
         with mock.patch.object(stored_images, "cv2", fake_cv2):
             src = self._source([self.img_a, self.img_b])
             ev = src.read()
+
         self.assertIsInstance(ev, InputStatusEvent)
         self.assertIs(ev.status, InputStatus.DECODE_FAILED)
         self.assertIn("synthetic decode error", ev.detail)
@@ -172,17 +192,22 @@ class StatusEventTest(StoredInputTestBase):
 
         fake_cv2 = types.SimpleNamespace(
             imread=broken_imread, error=cv2.error, IMREAD_COLOR=cv2.IMREAD_COLOR)
+
         with mock.patch.object(stored_images, "cv2", fake_cv2):
             src = self._source([self.img_a])
+
             with self.assertRaises(RuntimeError):
                 src.read()
 
     def test_no_stale_frame_after_end(self):
         src = self._source([self.img_a])
         frame = src.read()
+
         self.assertIs(src.current(), frame)
+
         for _ in range(3):
             ev = src.read()
+
             self.assertIsInstance(ev, InputStatusEvent)
             self.assertIs(ev.status, InputStatus.END_OF_STREAM)
             self.assertIsNone(src.current())
@@ -190,6 +215,7 @@ class StatusEventTest(StoredInputTestBase):
     def test_no_stale_frame_after_failure(self):
         src = self._source([self.img_a, self.broken, self.missing])
         src.read()
+
         self.assertIsNotNone(src.current())
         self.assertIsInstance(src.read(), InputStatusEvent)
         self.assertIsNone(src.current())
@@ -198,11 +224,14 @@ class StatusEventTest(StoredInputTestBase):
 
     def test_empty_list_repeated_read(self):
         src = self._source([])
+
         for _ in range(3):
             ev = src.read()
+
             self.assertIs(ev.status, InputStatus.SOURCE_UNAVAILABLE)
             self.assertEqual(ev.detail, "empty list")
             self.assertIsNone(ev.source_ref)
+
         self.assertIsNone(src.current())
         self.assertEqual(self.issuer.next_seq(), 0)
 
@@ -210,16 +239,22 @@ class StatusEventTest(StoredInputTestBase):
         src = self._source([self.img_a, self.img_b])
         frame = src.read()
         before = frame.image.copy()
+
         src.close()
         src.close()  # 반복 호출 안전
+
         self.assertIsNone(src.current())
+
         with mock.patch.object(stored_images, "cv2") as spy:
             for _ in range(2):
                 ev = src.read()
+
                 self.assertIs(ev.status, InputStatus.SOURCE_UNAVAILABLE)
                 self.assertEqual(ev.detail, "closed")
                 self.assertIsNone(ev.source_ref)
+
             spy.imread.assert_not_called()
+
         self.assertIsNone(src.current())
         self.assertEqual(self.issuer.next_seq(), 1)
         np.testing.assert_array_equal(frame.image, before)
@@ -231,6 +266,7 @@ class TimeAndBufferTest(StoredInputTestBase):
         frame = src.read()
         calls = self.clock.calls
         again = [src.current() for _ in range(3)]
+
         for item in again:
             self.assertIs(item, frame)
             self.assertEqual(
@@ -238,37 +274,47 @@ class TimeAndBufferTest(StoredInputTestBase):
                  item.capture_generation),
                 (frame.image_seq, frame.timestamp_ms, frame.received_monotonic_ns, 3),
             )
+
         self.assertEqual(self.clock.calls, calls)
         self.assertEqual(self.issuer.next_seq(), 1)
 
     def test_pc_receive_single_clock_read(self):
         src = self._source([self.img_a, self.missing])
         frame = src.read()
+
         self.assertEqual(self.clock.calls, 1)
         self.assertEqual(frame.received_monotonic_ns, 5_000_000_789)
         self.assertEqual(frame.timestamp_ms, 5_000)  # 5_000_000_789 // 1_000_000
         self.assertIs(frame.timestamp_base, TimestampBase.PC_RECEIVE)
+
         ev = src.read()
+
         self.assertEqual(self.clock.calls, 2)
         self.assertEqual(ev.event_monotonic_ns, 6_000_000_912)
 
     def test_image_buffer_independent(self):
         src = self._source([self.img_a, self.img_a])
         f1, f2 = src.read(), src.read()
+
         self.assertFalse(np.shares_memory(f1.image, f2.image))
         self.assertFalse(f1.image.flags.writeable)
         self.assertFalse(f2.image.flags.writeable)
+
         with self.assertRaises(ValueError):
             f1.image[0, 0, 0] = 1
+
         mine = f1.image.copy()  # 소비자는 복사해서 수정
         mine[:] = 0
+
         self.assertEqual(int(f1.image[0, 0, 0]), 10)
         self.assertEqual(int(f2.image[0, 0, 0]), 10)
 
     def test_bgr_uint8_shape(self):
         src = self._source([self.img_a, self.img_b], source_id="stored9", capture_generation=2)
+
         for expected_hw, bgr in (((4, 6), (10, 20, 30)), ((5, 3), (200, 100, 50))):
             frame = src.read()
+
             self.assertEqual(frame.image.dtype, np.uint8)
             self.assertEqual(frame.image.shape, (*expected_hw, 3))
             self.assertEqual((frame.height, frame.width), expected_hw)
@@ -286,15 +332,20 @@ class PublicSampleTest(unittest.TestCase):
     def test_public_samples_decode(self):
         paths = [os.path.join(REPO_ROOT, p) for p in PUBLIC_SAMPLES]
         missing = [p for p in paths if not os.path.isfile(p)]
+
         if missing:
             self.skipTest(f"UNVERIFIED: public samples missing: {missing}")
+
         src = StoredImageSource(paths, source_id="public0", issuer=FrameIdIssuer(RUN_ID))
+
         for i, p in enumerate(paths):
             frame = src.read()
+
             self.assertIsInstance(frame, FramePacket, p)
             self.assertEqual(frame.image.shape, (640, 640, 3))
             self.assertEqual(frame.image.dtype, np.uint8)
             self.assertEqual(frame.source_index, i)
+
         self.assertIs(src.read().status, InputStatus.END_OF_STREAM)
 
 

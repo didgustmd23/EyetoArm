@@ -51,11 +51,13 @@ class EnumContractTest(unittest.TestCase):
             {m.value for m in TimestampBase},
             {"PC_RECEIVE", "PHONE_CAPTURE", "SIM_TIME", "VIDEO_POS"},
         )
+
         # A 상세설계 §5.4 입력 상태
         self.assertEqual(
             {m.value for m in InputStatus},
             {"SOURCE_UNAVAILABLE", "FRAME_TIMEOUT", "DECODE_FAILED", "END_OF_STREAM"},
         )
+
         for enum_cls in (TimestampBase, InputStatus):
             for member in enum_cls:
                 self.assertIsInstance(member, str)
@@ -70,6 +72,7 @@ class FramePacketTest(unittest.TestCase):
             crop=(10, 20, 6, 4),
             timestamp_base=TimestampBase.VIDEO_POS,
         )
+
         self.assertIs(packet.image, image)
         self.assertEqual(packet.run_id, "run-test")
         self.assertEqual(packet.source_id, "stored0")
@@ -83,6 +86,7 @@ class FramePacketTest(unittest.TestCase):
         self.assertEqual(packet.capture_generation, 0)
         self.assertIsNone(packet.optical_frame)
         self.assertIsNone(packet.ros_stamp_ns)
+
         # A 내부 재현용 필드(공통 초안에 없음)
         self.assertEqual(packet.source_ref, "/tmp/sample.png")
         self.assertEqual(packet.source_index, 2)
@@ -95,16 +99,20 @@ class FramePacketTest(unittest.TestCase):
             "source_ref", "source_index",
         ]
         fields = dataclasses.fields(FramePacket)
+
         self.assertEqual([f.name for f in fields], expected)
+
         for f in fields:
             self.assertIs(f.default, dataclasses.MISSING, f.name)
             self.assertIs(f.default_factory, dataclasses.MISSING, f.name)
 
     def test_frame_packet_reassignment_rejected(self):
         packet = _make_packet()
+
         for name, value in (("image_seq", 8), ("timestamp_ms", 0), ("image", None)):
             with self.assertRaises(dataclasses.FrozenInstanceError):
                 setattr(packet, name, value)
+
         # frozen은 필드 재할당만 막는다. 배열 내용 불변은 이 자료형이 보장하지 않는다
         # (버퍼 소유권·독립 복사는 저장 소스 `stored_images.py`의 책임).
         self.assertTrue(packet.image.flags.writeable)
@@ -120,15 +128,20 @@ class InputStatusEventTest(unittest.TestCase):
             detail="file not found",
             source_ref=None,
         )
+
         self.assertIs(event.status, InputStatus.SOURCE_UNAVAILABLE)
         self.assertIsNone(event.source_ref)
+
         names = {f.name for f in dataclasses.fields(InputStatusEvent)}
+
         self.assertEqual(
             names,
             {"run_id", "source_id", "status", "event_monotonic_ns", "detail", "source_ref"},
         )
+
         for absent in ("image_seq", "image", "timestamp_ms"):
             self.assertFalse(hasattr(event, absent), absent)
+
         for f in dataclasses.fields(InputStatusEvent):
             self.assertIs(f.default, dataclasses.MISSING, f.name)
             self.assertIs(f.default_factory, dataclasses.MISSING, f.name)
@@ -142,8 +155,10 @@ class FrameIdIssuerTest(unittest.TestCase):
 
     def test_issuer_run_id_read_only(self):
         issuer = FrameIdIssuer("run-a")
+
         with self.assertRaises(AttributeError):
             issuer.run_id = "run-b"
+
         self.assertEqual(issuer.run_id, "run-a")
 
     def test_shared_issuer_between_consumers(self):
@@ -151,15 +166,19 @@ class FrameIdIssuerTest(unittest.TestCase):
         issuer = FrameIdIssuer("run-a")
         consumer_a = issuer
         consumer_b = issuer
+
         got = [consumer_a.next_seq(), consumer_b.next_seq(),
                consumer_a.next_seq(), consumer_b.next_seq()]
+
         self.assertEqual(got, [0, 1, 2, 3])
 
     def test_reusing_packet_does_not_allocate(self):
         # 정지 화면 재처리는 같은 FramePacket을 그대로 쓰고 새 순번을 받지 않는다(A §5.1·§5.4).
         issuer = FrameIdIssuer("run-a")
         packet = _make_packet(image_seq=issuer.next_seq())
+
         first, second = packet, packet
+
         self.assertIs(first, second)
         self.assertEqual(
             (second.image_seq, second.timestamp_ms, second.received_monotonic_ns,
@@ -170,9 +189,12 @@ class FrameIdIssuerTest(unittest.TestCase):
 
     def test_new_run_id_format(self):
         value = new_run_id()
+
         self.assertIsInstance(value, str)
         self.assertEqual(len(value), 32)
+
         parsed = uuid.UUID(hex=value)
+
         self.assertEqual(parsed.version, 4)
         self.assertEqual(parsed.hex, value)
         self.assertNotEqual(new_run_id(), value)

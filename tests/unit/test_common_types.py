@@ -72,8 +72,10 @@ class CommonFrameTest(unittest.TestCase):
     def test_no_defaults_and_frozen(self):
         no_defaults(self, common.FramePacket)
         f = common.FramePacket(**common_frame_kwargs(np.zeros((2, 3, 3), np.uint8)))
+
         with self.assertRaises(dataclasses.FrozenInstanceError):
             f.image_seq = 5
+
         with self.assertRaises(TypeError):
             common.FramePacket(image=np.zeros((2, 3, 3), np.uint8))
 
@@ -86,7 +88,9 @@ class CommonFrameTest(unittest.TestCase):
 class CommonEventTest(unittest.TestCase):
     def test_fields_match_draft(self):
         self.assertEqual(field_list(common.InputStatusEvent), COMMON_EVENT_FIELDS)
+
         names = {n for n, _ in COMMON_EVENT_FIELDS}
+
         for absent in ("image_seq", "image", "timestamp_ms", "source_ref"):
             self.assertNotIn(absent, names)
 
@@ -94,7 +98,9 @@ class CommonEventTest(unittest.TestCase):
         no_defaults(self, common.InputStatusEvent)
         e = common.InputStatusEvent(run_id="r", source_id="s", status=common.InputStatus.END_OF_STREAM,
                                     event_monotonic_ns=1, detail=None)
+
         self.assertIsNone(e.detail)
+
         with self.assertRaises(dataclasses.FrozenInstanceError):
             e.detail = "x"
 
@@ -117,25 +123,34 @@ class AExtensionTest(unittest.TestCase):
         self.assertTrue(issubclass(base.FramePacket, common.FramePacket))
         self.assertIsNot(base.FramePacket, common.FramePacket)
         self.assertEqual(field_list(base.FramePacket), COMMON_FRAME_FIELDS + A_FRAME_EXTRA)
+
         no_defaults(self, base.FramePacket)
         params = list(inspect.signature(base.FramePacket).parameters)
+
         self.assertEqual(params, [n for n, _ in COMMON_FRAME_FIELDS + A_FRAME_EXTRA])
 
     def test_frame_instance(self):
         f = base.FramePacket(**common_frame_kwargs(np.zeros((2, 3, 3), np.uint8)),
                              source_ref="a.jpg", source_index=0)
+
         self.assertIsInstance(f, common.FramePacket)
+
         with self.assertRaises(dataclasses.FrozenInstanceError):
             f.source_ref = "b.jpg"
 
     def test_event_extends_common(self):
         self.assertTrue(issubclass(base.InputStatusEvent, common.InputStatusEvent))
         self.assertEqual(field_list(base.InputStatusEvent), COMMON_EVENT_FIELDS + A_EVENT_EXTRA)
+
         no_defaults(self, base.InputStatusEvent)
         params = list(inspect.signature(base.InputStatusEvent).parameters)
+
         self.assertEqual(params, [n for n, _ in COMMON_EVENT_FIELDS + A_EVENT_EXTRA])
+
         e = base.InputStatusEvent("r", "s", base.InputStatus.DECODE_FAILED, 5, "bad", None)
+
         self.assertIsInstance(e, common.InputStatusEvent)
+
         with self.assertRaises(dataclasses.FrozenInstanceError):
             e.source_ref = "x"
 
@@ -163,6 +178,7 @@ class PlanarWithCommonFrameTest(unittest.TestCase):
     def test_common_frame_without_a_fields(self):
         f = common.FramePacket(**common_frame_kwargs(self.img))
         r = planar.detect_planar(f, self.config)
+
         self.assertEqual((r.run_id, r.image_seq, r.capture_generation), ("run-c", 4, 2))
         self.assertEqual(r.raw_contour_count, 1)
         self.assertEqual(r.candidates[0].area_source_px2, 361.0)
@@ -172,6 +188,7 @@ class PlanarWithCommonFrameTest(unittest.TestCase):
         rc = planar.detect_planar(common.FramePacket(**common_frame_kwargs(self.img)), self.config)
         ra = planar.detect_planar(base.FramePacket(**common_frame_kwargs(self.img),
                                                    source_ref="x", source_index=0), self.config)
+
         self.assertEqual(rc.raw_contour_count, ra.raw_contour_count)
         self.assertEqual(rc.candidates[0].bbox_source, ra.candidates[0].bbox_source)
         self.assertEqual(rc.config_sha256, ra.config_sha256)
@@ -187,7 +204,9 @@ class ImportIsolationTest(unittest.TestCase):
         )
         src = os.path.join(os.path.dirname(__file__), "..", "..", "src")
         env = dict(os.environ, PYTHONPATH=os.path.abspath(src), PYTHONDONTWRITEBYTECODE="1")
+
         out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=60)
+
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertEqual(out.stdout.strip(), "[]")
 

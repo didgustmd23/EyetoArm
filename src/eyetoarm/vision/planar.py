@@ -56,12 +56,15 @@ def _is_int(v) -> bool:
 def _to_finite_float(v, name: str) -> float:
     if not isinstance(v, Real) or isinstance(v, bool):
         raise ValueError(f"{name} must be a number: {v!r}")
+
     try:
         f = float(v)
     except OverflowError as exc:
         raise ValueError(f"{name} is out of float range") from exc
+
     if not math.isfinite(f):
         raise ValueError(f"{name} must be finite: {v!r}")
+
     return f
 
 
@@ -69,10 +72,13 @@ def _int_tuple(v, n: int, name: str, positive_from: int) -> tuple[int, ...]:
     """정수 n개 배열. 인덱스 `positive_from` 이후는 양수, 그 앞은 0 이상."""
     if not isinstance(v, (list, tuple)) or len(v) != n or not all(_is_int(x) for x in v):
         raise ValueError(f"{name} must be {n} integers: {v!r}")
+
     out = tuple(int(x) for x in v)
+
     for i, x in enumerate(out):
         if (i >= positive_from and x <= 0) or x < 0:
             raise ValueError(f"{name} has an out-of-range value: {v!r}")
+
     return out
 
 
@@ -110,43 +116,62 @@ class PlanarConfig:
 
     def __post_init__(self) -> None:
         put = lambda k, v: object.__setattr__(self, k, v)  # noqa: E731
+
         if not _is_int(self.format_version) or self.format_version != FORMAT_VERSION:
             raise ValueError(f"format_version must be {FORMAT_VERSION}: {self.format_version!r}")
+
         if self.status != STATUS:
             raise ValueError(f"status must be {STATUS!r}: {self.status!r}")
+
         for key, value in _FIXED.items():
             if getattr(self, key) != value:
                 raise ValueError(f"{key} must be {value!r}: {getattr(self, key)!r}")
+
         put("roi", None if self.roi is None else _int_tuple(self.roi, 4, "roi", 2))
         put("resize_wh", None if self.resize_wh is None else _int_tuple(self.resize_wh, 2, "resize_wh", 0))
         put("gaussian_blur_ksize", _kernel(self.gaussian_blur_ksize, "gaussian_blur_ksize"))
         put("morph_open_ksize", _kernel(self.morph_open_ksize, "morph_open_ksize"))
+
         if not isinstance(self.polarity, str) or self.polarity not in _POLARITY_FLAG:
             raise ValueError(f"polarity must be 'dark' or 'bright': {self.polarity!r}")
+
         if not isinstance(self.threshold_method, str) or self.threshold_method not in _THRESHOLD_METHODS:
             raise ValueError(f"threshold_method must be 'otsu' or 'fixed': {self.threshold_method!r}")
+
         if self.threshold_method == "otsu":
             if self.fixed_threshold is not None:
                 raise ValueError("fixed_threshold must be null when threshold_method is 'otsu'")
         else:
             if self.fixed_threshold is None:
                 raise ValueError("fixed_threshold is required when threshold_method is 'fixed'")
+
             t = _to_finite_float(self.fixed_threshold, "fixed_threshold")
+
             if not 0.0 <= t <= 255.0:
                 raise ValueError(f"fixed_threshold must be in [0, 255]: {self.fixed_threshold!r}")
+
             put("fixed_threshold", t)
+
         lo = _to_finite_float(self.min_area_source_px2, "min_area_source_px2")
+
         if lo <= 0.0:
             raise ValueError(f"min_area_source_px2 must be > 0: {self.min_area_source_px2!r}")
+
         put("min_area_source_px2", lo)
+
         if self.max_area_source_px2 is not None:
             hi = _to_finite_float(self.max_area_source_px2, "max_area_source_px2")
+
             if not hi > lo:
                 raise ValueError("max_area_source_px2 must be greater than min_area_source_px2")
+
             put("max_area_source_px2", hi)
+
         m = self.border_margin_processed_px
+
         if not _is_int(m) or m < 0:
             raise ValueError(f"border_margin_processed_px must be an integer >= 0: {m!r}")
+
         put("border_margin_processed_px", int(m))
         put("config_sha256", _canonical_sha256(self))
 
@@ -164,10 +189,13 @@ def _canonical_sha256(c: PlanarConfig) -> str:
 
 def _reject_duplicates(pairs):
     out = {}
+
     for k, v in pairs:
         if k in out:
             raise ValueError(f"duplicate key: {k!r}")
+
         out[k] = v
+
     return out
 
 
@@ -177,8 +205,10 @@ def _reject_constant(name):
 
 def _parse_float(text: str) -> float:
     f = float(text)
+
     if not math.isfinite(f):
         raise ValueError(f"non-finite number: {text}")
+
     return f
 
 
@@ -189,17 +219,22 @@ def load_config(path: str | os.PathLike) -> PlanarConfig:
     """
     with open(path, encoding="utf-8") as f:
         text = f.read()
+
     try:
         doc = json.loads(text, object_pairs_hook=_reject_duplicates,
                          parse_constant=_reject_constant, parse_float=_parse_float)
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid JSON: {exc}") from exc
+
     if not isinstance(doc, dict):
         raise ValueError("config must be a JSON object")
+
     keys = set(_config_keys())
     missing, unknown = keys - doc.keys(), doc.keys() - keys
+
     if missing or unknown:
         raise ValueError(f"config keys mismatch: missing={sorted(missing)} unknown={sorted(unknown)}")
+
     return PlanarConfig(**doc)
 
 
@@ -254,15 +289,21 @@ class PlanarResult:
 
 def _check_frame(frame: FramePacket) -> np.ndarray:
     img = frame.image
+
     if not isinstance(img, np.ndarray):
         raise ValueError(f"frame.image must be a numpy array: {type(img).__name__}")
+
     if img.dtype != np.uint8 or img.ndim != 3 or img.shape[2] != 3:
         raise ValueError(f"frame.image must be BGR uint8 (H, W, 3): {img.dtype} {img.shape}")
+
     h, w = img.shape[:2]
+
     if h == 0 or w == 0:
         raise ValueError("frame.image is empty")
+
     if frame.width != w or frame.height != h:
         raise ValueError(f"frame width/height {frame.width}x{frame.height} != image {w}x{h}")
+
     return img
 
 
@@ -274,6 +315,7 @@ def detect_planar(frame: FramePacket, config: PlanarConfig) -> PlanarResult:
     """
     if not isinstance(config, PlanarConfig):
         raise TypeError("config must be a PlanarConfig")
+
     t0 = time.monotonic_ns()
     img = _check_frame(frame)
     src_h, src_w = img.shape[:2]
@@ -284,49 +326,62 @@ def detect_planar(frame: FramePacket, config: PlanarConfig) -> PlanarResult:
     rx, ry, rw, rh = roi
     work = img[ry:ry + rh, rx:rx + rw]
     t_roi = roi_transform(roi, (src_w, src_h))
+
     # 2) 리사이즈(INTER_AREA)
     if config.resize_wh is not None:
         work = cv2.resize(work, config.resize_wh, interpolation=cv2.INTER_AREA)
         t_resize = resize_transform((rw, rh), config.resize_wh)
     else:
         t_resize = (1.0, 1.0, 0.0, 0.0)
+
     transform = compose(t_roi, t_resize)
+
     # 3) 회색
     gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
     ph, pw = gray.shape[:2]
+
     # 4) Gaussian blur
     if config.gaussian_blur_ksize:
         k = config.gaussian_blur_ksize
         gray = cv2.GaussianBlur(gray, (k, k), 0)
+
     # 5) 이진화
     flag = _POLARITY_FLAG[config.polarity]
+
     if config.threshold_method == "otsu":
         used, binary = cv2.threshold(gray, 0, 255, flag | cv2.THRESH_OTSU)
     else:
         used, binary = cv2.threshold(gray, config.fixed_threshold, 255, flag)
+
     # 6) morphology open
     if config.morph_open_ksize:
         k = config.morph_open_ksize
         binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, np.ones((k, k), np.uint8), iterations=1)
+
     # 7) 윤곽
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     m = config.border_margin_processed_px
     side_is_source = {"left": rx == 0, "top": ry == 0, "right": rx + rw == src_w, "bottom": ry + rh == src_h}
     candidates = []
+
     for i, cnt in enumerate(contours):
         p = cnt.reshape(-1, 2)
+
         # 8) 원본 좌표 복원
         pts = to_source(p, transform)
         pts.setflags(write=False)
+
         # 9) 원본 면적
         area = float(cv2.contourArea(pts))
+
         if area < config.min_area_source_px2:
             reject = "area_below_min"
         elif config.max_area_source_px2 is not None and area > config.max_area_source_px2:
             reject = "area_above_max"
         else:
             reject = None
+
         # 10) 처리 영상 경계 접촉(전체 점)
         touch = {
             "left": bool(np.any(p[:, 0] <= m)),

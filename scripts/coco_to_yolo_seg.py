@@ -40,16 +40,21 @@ def polygon_area(poly: np.ndarray) -> float:
 def annotation_to_line(ann: dict, width: int, height: int, cls: int, stats: dict):
     """COCO 주석 하나를 YOLO 분할 라벨 한 줄로 바꾼다. 쓸 다각형이 없으면 None이고, 건너뛴 사유를 `stats`에 센다."""
     seg = ann.get("segmentation")
+
     if not isinstance(seg, list):
         stats["skipped_non_polygon"] += 1
         return None
+
     polys = [np.asarray(p, float).reshape(-1, 2) for p in seg if len(p) >= 6]
+
     if not polys:
         stats["skipped_empty"] += 1
         return None
+
     if len(polys) > 1:
         stats["multi_polygon"] += 1
         stats["dropped_polygons"] += len(polys) - 1
+
     poly = max(polys, key=polygon_area)
     norm = poly / np.array([width, height], float)
     norm = np.clip(norm, 0.0, 1.0)
@@ -59,16 +64,21 @@ def annotation_to_line(ann: dict, width: int, height: int, cls: int, stats: dict
 def load_coco(raw_root: Path) -> dict:
     """rel_path → (width, height, [(class_name, ann), ...])."""
     out = {}
+
     for split in SOURCE_SPLITS:
         with open(raw_root / split / ANNOTATION_FILE, encoding="utf-8") as f:
             coco = json.load(f)
+
         cats = {c["id"]: c["name"] for c in coco["categories"]}
         images = {im["id"]: im for im in coco["images"]}
         per = {i: [] for i in images}
+
         for ann in coco["annotations"]:
             per[ann["image_id"]].append((cats.get(ann["category_id"]), ann))
+
         for iid, im in images.items():
             out[f"{split}/{im['file_name']}"] = (im["width"], im["height"], per[iid])
+
     return out
 
 
@@ -81,6 +91,7 @@ def convert(raw_root: Path, list_dir: Path, out_root: Path) -> dict:
     coco = load_coco(raw_root)
     stats = {"skipped_non_polygon": 0, "skipped_empty": 0, "multi_polygon": 0, "dropped_polygons": 0,
              "ignored_categories": {}, "splits": {}}
+
     for list_name, out_split in LIST_TO_OUT.items():
         paths = [ln.strip() for ln in (list_dir / f"{list_name}.txt").read_text(encoding="utf-8").splitlines()
                  if ln.strip()]
@@ -90,31 +101,43 @@ def convert(raw_root: Path, list_dir: Path, out_root: Path) -> dict:
         lbl_dir.mkdir(parents=True, exist_ok=True)
         counts = {"images": 0, "bolt": 0, "nut": 0}
         names_seen = set()
+
         for rel in sorted(paths):
             if rel not in coco:
                 raise KeyError(f"주석에 없는 목록 항목: {rel}")
+
             name = Path(rel).name
+
             if name in names_seen:
                 raise ValueError(f"같은 분할에 같은 파일명 중복: {name}")
+
             names_seen.add(name)
             width, height, anns = coco[rel]
             lines = []
+
             for cname, ann in anns:
                 if cname not in CLASS_MAP:
                     stats["ignored_categories"][cname] = stats["ignored_categories"].get(cname, 0) + 1
                     continue
+
                 line = annotation_to_line(ann, width, height, CLASS_MAP[cname], stats)
+
                 if line is not None:
                     lines.append(line)
                     counts[CLASS_NAMES[CLASS_MAP[cname]]] += 1
+
             link = img_dir / name
             target = os.path.relpath((raw_root / rel).resolve(), img_dir.resolve())
+
             if link.is_symlink() or link.exists():
                 link.unlink()
+
             link.symlink_to(target)
             (lbl_dir / (Path(name).stem + ".txt")).write_text("".join(ln + "\n" for ln in lines), encoding="utf-8")
             counts["images"] += 1
+
         stats["splits"][out_split] = counts
+
     yaml = ("# 파일럿용 2클래스(클래스 구성은 B와 미결). coco_to_yolo_seg.py가 생성\n"
             "train: images/train\n"
             "val: images/val\n"

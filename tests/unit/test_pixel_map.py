@@ -28,14 +28,19 @@ def pts(*xy):
 class ForwardMappingTest(unittest.TestCase):
     def test_pixel_map_roi_offset(self):
         t = roi_transform((100, 50, 200, 100), SRC_WH)
+
         self.assertEqual(t, (1.0, 1.0, 100.0, 50.0))
+
         out = to_source(pts((0, 0), (199, 99)), t)
+
         np.testing.assert_array_equal(out, pts((100, 50), (299, 149)))
 
     def test_pixel_map_anisotropic_resize(self):
         t = resize_transform((640, 480), (320, 120))  # x 2.0, y 4.0
+
         self.assertEqual(t, (2.0, 4.0, 0.0, 0.0))
         np.testing.assert_array_equal(to_source(pts((10, 10)), t), pts((20, 40)))
+
         # 배율을 바꿔 쓰면 (40, 20)이 되어야 하므로 위 결과와 다르다
         self.assertFalse(np.array_equal(to_source(pts((10, 10)), t), pts((40, 20))))
 
@@ -43,17 +48,23 @@ class ForwardMappingTest(unittest.TestCase):
         # 원본 640x480 → ROI (100,50,200,100) 크롭 → 100x25로 축소(배율 x 2, y 4)
         roi = roi_transform((100, 50, 200, 100), SRC_WH)
         resize = resize_transform((200, 100), (100, 25))
+
         t = compose(roi, resize)  # resize를 먼저 되돌리고 ROI 오프셋을 더함
+
         self.assertEqual(t, (2.0, 4.0, 100.0, 50.0))
+
         # 손 계산: (10*2+100, 5*4+50) = (120, 70)
         np.testing.assert_array_equal(to_source(pts((10, 5)), t), pts((120, 70)))
+
         # 순서를 뒤집으면 ((10+100)*2, (5+50)*4) = (220, 220)으로 달라야 함
         wrong = compose(resize, roi)
+
         np.testing.assert_array_equal(to_source(pts((10, 5)), wrong), pts((220, 220)))
 
     def test_compose_formula(self):
         outer = (2.0, 3.0, 5.0, 7.0)
         inner = (0.5, 4.0, 10.0, -1.0)
+
         # 배율 곱, 오프셋 = outer.scale*inner.offset + outer.offset
         self.assertEqual(compose(outer, inner), (1.0, 12.0, 25.0, 4.0))
 
@@ -63,7 +74,9 @@ class RoundTripTest(unittest.TestCase):
         t = compose(roi_transform((100, 50, 200, 100), SRC_WH),
                     resize_transform((200, 100), (64, 30)))
         p = pts((0, 0), (10.25, 5.5), (63.75, 29.9))
+
         back = from_source(to_source(p, t), t)
+
         np.testing.assert_allclose(back, p, atol=1e-4, rtol=0)
 
     def test_from_source_known_value(self):
@@ -83,13 +96,18 @@ class ValidationTest(unittest.TestCase):
             (0, 470, 10, 11),    # y + h = 481 > 480
             (0.5, 0, 10, 10),    # 정수 아님
         ]
+
         for roi in bad_rois:
             with self.assertRaises(ValueError, msg=str(roi)):
                 validate_roi(roi, SRC_WH)
+
             with self.assertRaises(ValueError, msg=str(roi)):
                 roi_transform(roi, SRC_WH)
+
         validate_roi((630, 470, 10, 10), SRC_WH)  # 경계와 딱 맞음
+
         self.assertEqual(roi_transform((630, 470, 10, 10), SRC_WH), (1.0, 1.0, 630.0, 470.0))
+
         for wh in [(0, 480), (640, -1), (640.0, 480)]:
             with self.assertRaises(ValueError, msg=str(wh)):
                 validate_roi((0, 0, 1, 1), wh)
@@ -106,6 +124,7 @@ class ValidationTest(unittest.TestCase):
                (1.0, float("inf"), 0.0, 0.0), (1.0, 1.0, float("nan"), 0.0),
                (1.0, 1.0, 0.0, float("-inf"))]
         good = (1.0, 1.0, 0.0, 0.0)
+
         for t in bad:
             for fn in (lambda: to_source(p, t), lambda: from_source(p, t),
                        lambda: compose(t, good), lambda: compose(good, t)):
@@ -121,10 +140,12 @@ class ValidationTest(unittest.TestCase):
             pts((float("nan"), 0)),
             pts((0, float("inf"))),
         ]
+
         for p in bad_points:
             for fn in (to_source, from_source):
                 with self.assertRaises(ValueError):
                     fn(p, t)
+
             with self.assertRaises(ValueError):
                 inside_source(p, 640, 480)
 
@@ -132,6 +153,7 @@ class ValidationTest(unittest.TestCase):
 class InsideAndArrayTest(unittest.TestCase):
     def test_pixel_map_outside_flag(self):
         p = pts((0, 0), (639, 479), (-1, 0), (0, -0.5), (640, 0), (0, 480), (639.9, 479.9))
+
         np.testing.assert_array_equal(
             inside_source(p, 640, 480),
             np.array([True, True, False, False, False, False, True]),
@@ -144,25 +166,34 @@ class InsideAndArrayTest(unittest.TestCase):
         p64 = np.array([[10.0, 5.0], [1.0, 2.0]], dtype=np.float64)
         keep = p64.copy()
         out = to_source(p64, t)
+
         back = from_source(out, t)
+
         np.testing.assert_array_equal(p64, keep)
         self.assertEqual(out.dtype, np.float32)
         self.assertEqual(back.dtype, np.float32)
         self.assertEqual(out.shape, (2, 2))
         self.assertFalse(np.shares_memory(out, p64))
+
         p32 = pts((10, 5))
         out32 = to_source(p32, (1.0, 1.0, 0.0, 0.0))
+
         self.assertFalse(np.shares_memory(out32, p32))
+
         out32[0, 0] = 999.0
+
         self.assertEqual(float(p32[0, 0]), 10.0)
 
     def test_empty_points(self):
         t = (2.0, 4.0, 100.0, 50.0)
         empty = np.zeros((0, 2), dtype=np.float32)
+
         self.assertEqual(to_source(empty, t).shape, (0, 2))
         self.assertEqual(to_source(empty, t).dtype, np.float32)
         self.assertEqual(from_source(empty, t).shape, (0, 2))
+
         flags = inside_source(empty, 640, 480)
+
         self.assertEqual(flags.shape, (0,))
         self.assertEqual(flags.dtype, np.bool_)
 

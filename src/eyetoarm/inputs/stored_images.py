@@ -66,8 +66,10 @@ class StoredImageSource:
         """목록의 다음 항목을 읽어 `FramePacket`을, 읽지 못하면 `InputStatusEvent`를 돌려준다."""
         if self._closed:
             return self._event(InputStatus.SOURCE_UNAVAILABLE, "closed", None)
+
         if not self._paths:
             return self._event(InputStatus.SOURCE_UNAVAILABLE, "empty list", None)
+
         if self._next_index >= len(self._paths):
             return self._event(InputStatus.END_OF_STREAM, "end of list", None)
 
@@ -78,6 +80,7 @@ class StoredImageSource:
         if not os.path.isfile(path):
             return self._event(InputStatus.SOURCE_UNAVAILABLE,
                                "not a regular file or missing", path)
+
         if not os.access(path, os.R_OK):
             return self._event(InputStatus.SOURCE_UNAVAILABLE, "file not readable", path)
 
@@ -85,8 +88,10 @@ class StoredImageSource:
             image = cv2.imread(path, cv2.IMREAD_COLOR)
         except cv2.error as exc:
             return self._event(InputStatus.DECODE_FAILED, f"opencv decode error: {exc}", path)
+
         if image is None:
             return self._event(InputStatus.DECODE_FAILED, "imread returned None", path)
+
         if image.dtype != "uint8" or image.ndim != 3 or image.shape[2] != 3:
             return self._event(InputStatus.DECODE_FAILED,
                                f"unexpected array dtype={image.dtype} shape={image.shape}", path)
@@ -94,6 +99,7 @@ class StoredImageSource:
         # 다른 버퍼를 빌려 쓰는 배열이면 복사해 프레임이 버퍼를 단독으로 갖게 한다.
         if not image.flags.owndata:
             image = image.copy()
+
         image.setflags(write=False)
 
         seq = self._issuer.next_seq()
