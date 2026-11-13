@@ -97,7 +97,6 @@ class CommandManager:
         self.pending_terminal_statuses: dict[str, dict[str, Any]] = {}
         self.recovery_failed = False
         self.recovering = True
-        self._record_retention = record_retention
         self.load_log()
 
     def load_log(self) -> None:
