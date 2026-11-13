@@ -1,6 +1,6 @@
 # A 담당 비전 상세설계
 
-문서 버전 1.9 · 설계 초안 · 2026-11-12
+문서 버전 1.9 · 설계 초안 · 2026-11-12 · 고정 CCTV 설정 확정 갱신 2026-11-13
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
@@ -309,6 +309,35 @@ D는 이 이벤트를 현재 표시·실행 가능 상태와 **아직 송신하�
 
 ### 6.1 링크 카메라 센서 설정·입력 요구 (A 제안, C 공유용)
 
+**2026-11-13 팔 카메라 매립 시험:** 사용자 요청 “한번 해보고 이상하면 복구”에 따라
+데모 팔 카메라의 외부 본체·장착대를 없애고 렌즈면만 표시하는 배치를 시험 적용합니다.
+기존 각도·화각은 유지하고 광학 중심을 팔 표면 쪽으로 옮깁니다. 변경 전 파일은 로컬에 백업합니다.
+운영 보정·기구 설계 확정이 아니며, 실제 영상·자기 가림 확인은 미실행입니다.
+
+**2026-11-13 고정 CCTV 데모 추가:** 후속 사용자 요청으로 로봇 정면 위에서 작업 셀을
+내려다보는 월드 고정 카메라 `overview_cam`을 추가합니다. Gazebo 영상은 `/overview_cam/image`이며,
+사용자의 “연결은 하지 말고 직접 열겠다”는 지시에 따라 이 카메라의 ROS 브리지·RViz 구독이나 창 실행은 추가하지 않습니다.
+현재 확정 설정은 §6.2, 직접 확인 방법은 [`simulation/README.md`](../../simulation/README.md#고정-cctv-카메라)에 기록합니다.
+이는 과거 고정 탑뷰·센서 담당 미결 기록과 구분하는 데모 구현이며, 운영 보정·로봇 동작 검증 완료를 의미하지 않습니다.
+
+**2026-11-13 그리퍼 RGB-D 데모 추가:** 후속 사용자 요청으로 `simulation/` 데모의
+`robotiq_85_base_link`에 RGB-D 카메라를 추가하며, 후속 요청에 따라 앞면 중앙 매립형으로 배치합니다.
+외부 하우징 없이 렌즈면만 표시합니다. 센서 초기값은 컬러·깊이 640×480, 15Hz,
+토픽 `/gripper_cam/image`·`/gripper_cam/depth_image`·`/gripper_cam/camera_info`입니다.
+이는 표시·깊이 확인용 데모 구현이며, 특정 실물 센서 선정이나 운영 검출·보정 계약의 확정이 아닙니다.
+아래의 그리퍼 센서 담당·설정 미결 기술과는 구분하며, 현재 데모의 장착·실행법은
+[`simulation/README.md`](../../simulation/README.md#그리퍼-rgb-d-카메라)에 기록합니다.
+
+**2026-11-13 사용자 정정·데모 적용:** 카메라를 베이스 위 흰색 세로 몸체의 위쪽에 붙이라는 요청에 따라,
+현재 `simulation/` 데모는 `upper_arm_link`에 장착합니다. 초기 대기 자세에서 높이는 약 0.50m입니다.
+launch의 현재 매립 위치는 `-0.3420864 -0.0601521 0.1400000` m, 각도는
+`1.5707963 0 -0.815927` rad이며 초기 대기 자세에서 로봇 정면 아래 약 43.3°를 봅니다.
+xacro 단독은 별도의 기존 수평 시선 `1.5707963 0.6151567 -1.5715927` rad와
+매립 위치 `-0.3400051 -0.0594480 0.0964437` m를 유지합니다. 각도는 모두 `upper_arm_link` 기준입니다.
+아래 `base_link` 고정 조각과 사본 좌표는 이전 제안·시험 기록입니다. 현재 데모 장착값·실행법은
+[`simulation/README.md`](../../simulation/README.md#로봇-링크-카메라)를 따릅니다. 관절 이동 시 카메라도 움직이므로
+운영 계산에는 프레임 시각의 TF와 대응하는 보정이 필요합니다. 이 변경은 운영 보정·가림 검증 완료를 의미하지 않습니다.
+
 이 절은 A가 C에 공유할 링크 카메라 설정입니다(사용자 결정 2026-11-12, C 회신 C-01 채택, §11.1 11-15를 앞당겨 문서화). 확정된 것은 사용자 결정 네 가지뿐입니다. 운영(검출) 카메라는 링크 카메라이고, 장착 위치는 베이스 또는 어깨이며, 시점은 베이스 근처에서 벨트를 비스듬히 내려다보는 경사 시점이고(사용자 확정 2026-11-12), C-01 회신은 채택되었습니다. 아래 이름과 값은 「제안」이거나 「초기값」, 또는 프로젝트 밖 사본에서 얻은 「사본 확인값」입니다. C 모델에 붙이는 일, 월드·브리지 통합, 실제 연결 확인은 아직 하지 않았습니다. 로봇 모델(URDF/xacro)은 C 소유이므로 아래 조각은 C가 모델에 붙입니다. 그리퍼·고정(탑뷰) 카메라의 센서 설정 담당은 미결입니다.
 
 **장착 (제안).** `base_link` 아래에 고정 링크 `link_cam_link`를 두고, 그 아래에 광학 프레임 `link_cam_optical_frame`을 둡니다. 광학 프레임은 `rpy="-1.5708 0 -1.5708"`로 붙이며 축은 z 앞, x 오른쪽, y 아래입니다. `shoulder_link`를 쓰지 않는 이유는 이 링크가 1번 관절(shoulder_pan)과 함께 돌기 때문입니다. 어깨에 달면 「1번 관절이 정해진 각도일 때만 검출 유효」 규칙이 따로 필요합니다(B 확인 필요).
@@ -411,6 +440,106 @@ ros2 run tf2_ros tf2_echo base_link link_cam_optical_frame
 - **헤더 확인(정적 모델):** 월드 사본에 같은 pose의 **정적 카메라 모델**을 넣고 헤드리스 `gz sim`(gz-sim 8.15.0)과 `ros_gz_bridge`를 돌렸습니다. 결과는 `frame_id` `link_cam_optical_frame`, 인코딩 `rgb8`, 1280×720, `D` 0이었고 `K`는 위 식과 일치했습니다. URDF 병합 상태의 헤더는 확인하지 않았습니다(C 통합 뒤).
 - **경사 시점 예시(r2):** 위 예시 pose로 월드 사본(`r2/sort_cell_linkcam_oblique.sdf`, 시험용 너트 3개 추가)을 같은 방법으로 실행했습니다. 헤더 `frame_id` `link_cam_optical_frame`, `rgb8`, 1280×720, `K`는 r1과 같았습니다. 계산한 투영 위치(예: (0.64, −0.49) → (1009, 146))와 영상 속 너트 위치(1008, 147)가 1~2 px 안에서 맞았습니다. 기록은 `r2/link_cam_frame.png`·`r2/nut_px.txt`·`r2/oblique_search.py`·`r2/region_search.py`에 있습니다. 프로세스는 PID(프로세스 그룹)로만 종료했습니다.
 - 수신률은 약 1.5 Hz로 나왔습니다. 같은 시각에 다른 시뮬레이션이 돌아 부하 평균이 약 21이었으므로 15 Hz 설정을 평가하는 값이 아닙니다.
+
+### 6.2 고정 CCTV 카메라 확정 설정
+
+**사용자 확정 2026-11-13:** 사용자가 직접 조정한 현재 파일 값을 로봇 동작 관찰용
+고정 CCTV 카메라의 설정으로 정합니다. 위치·각도는 월드 좌표 기준이며 로봇 관절과 함께 움직이지 않습니다.
+이 절은 CCTV 설정에만 적용하며, 팔 카메라 매립 시험과 그리퍼 RGB-D 설정을 변경하지 않습니다.
+
+| 항목 | 확정값 |
+|---|---|
+| 모델·센서 | `overview_cam` / `overview_camera` (`camera`, `static=true`) |
+| 위치 xyz | `2.04 0.02 1.99` m |
+| 자세 roll·pitch·yaw | `0 0.7027648944 3.0981417582` rad |
+| 구도 | 로봇 정면 위에서 약 40.3° 아래로 보는 경사 CCTV |
+| 조준점 | 약 `(0.2, 0.1, 0.43)` m |
+| 수평 화각 | **`1.0034063702` rad (약 57.49°)** |
+| 영상 | **960×720 (4:3), `R8G8B8`** |
+| 센서 갱신률 설정 | **15 Hz** — 실제 수신률 보장값이 아님 |
+| 클립 near·far | `0.05` / `10.0` m |
+| Gazebo 영상 토픽 | `/overview_cam/image` |
+| 광학 프레임 이름 | `overview_cam_optical_frame` |
+| 용도 | 로봇·컨베이어 동작 관찰, 운영 검출·작업 좌표 계산에는 연결하지 않음 |
+
+설정 원본은 [월드의 `overview_cam` 배치](../../simulation/worlds/sort_cell.sdf)와
+[고정 카메라 센서 모델](../../simulation/models/overview_camera/model.sdf)입니다.
+이전 `1.1234063702` rad(약 64.37°)·80° 화각과 이전 원거리 위치는 조정 이력이며 현재 확정값이 아닙니다.
+현재 화각으로 계산한 세로 화각은 약 44.72°이며, 이전의 “세로 화각 유지·가로 시야 25% 축소” 설명은
+중간 조정값에 해당합니다.
+
+사용자가 직접 열도록 자동 ROS 브리지·RViz 구독·창 실행은 추가하지 않습니다.
+필요 시 사용자가 `/overview_cam/image`를 수동으로 브리지하고 RViz의 Image 표시로 선택합니다.
+설정 확정과 검증 완료는 구분합니다. 최종 설정으로 로봇 이동 중 가림·화면 경계·실측 수신률을 확인한 기록은
+아직 수집하지 않았으며, 이번 문서 갱신에서 Gazebo·RViz를 실행하지 않았습니다.
+
+#### 6.2.1 카메라 실행·표시 명령
+
+아래 명령은 WSL의 **서로 다른 터미널 3개**에서 사용자가 직접 실행합니다.
+Gazebo·브리지는 같은 `GZ_PARTITION`, 모든 ROS 프로그램은 같은 `ROS_DOMAIN_ID`를 사용합니다.
+설치된 ROS 2 Jazzy와 UR5e·Robotiq 관련 패키지가 필요합니다. 실행 설정이나 카메라 배치를 바꿨다면
+기존 Gazebo를 종료한 뒤 다시 실행해야 반영됩니다.
+
+**터미널 1 — Gazebo·로봇·카메라 실행**
+
+```bash
+cd /home/yhs/EyetoArm
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=42
+export GZ_PARTITION=eyetoarm_camera_preview
+
+ros2 launch scripts/sim_sort_cell.launch.py
+```
+
+이 launch는 팔 카메라와 그리퍼 RGB-D의 ROS 브리지를 함께 실행합니다.
+CCTV는 Gazebo 토픽만 발행하므로 RViz에서 보려면 다음 수동 브리지가 필요합니다.
+
+**터미널 2 — CCTV Gazebo→ROS 영상 브리지**
+
+```bash
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=42
+export GZ_PARTITION=eyetoarm_camera_preview
+
+ros2 run ros_gz_bridge parameter_bridge \
+  '/overview_cam/image@sensor_msgs/msg/Image[gz.msgs.Image'
+```
+
+`Creating GZ->ROS Bridge` 로그 이후 대기하는 것이 정상입니다. 이 프로그램은 영상 창을 열지 않습니다.
+브리지는 영상 확인 중 계속 실행해 둡니다. 생성 로그만으로 실제 영상 수신을 확인한 것은 아닙니다.
+
+**터미널 3 — RViz 영상 창**
+
+```bash
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=42
+
+rviz2 -d /home/yhs/EyetoArm/simulation/rviz/cameras.rviz \
+  --ros-args -p use_sim_time:=true
+```
+
+[카메라 RViz 설정](../../simulation/rviz/cameras.rviz)에는 다음 표시가 들어 있습니다.
+
+| RViz 표시 이름 | 영상 토픽 |
+|---|---|
+| `Link Camera` | `/link_cam/image` |
+| `Gripper RGB` | `/gripper_cam/image` |
+| `Gripper Depth` | `/gripper_cam/depth_image` |
+
+CCTV는 RViz에서 **Add → By display type → Image**를 추가한 뒤,
+**Topic = `/overview_cam/image`**, **Reliability Policy = `Best Effort`**로 선택합니다.
+ROS를 거치지 않고 확인하려면 Gazebo의 **⋮ → Image Display → `/overview_cam/image`**를 선택합니다.
+
+수신 여부·실제 주기를 확인하려면 추가 터미널에서 다음을 실행합니다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=42
+ros2 topic hz /overview_cam/image
+```
+
+설정 주기 15Hz와 실제 수신률은 다를 수 있습니다. 종료는 각 실행 터미널에서 **Ctrl+C**를 누릅니다.
+위 명령은 실행 안내이며, 이번 문서 추가 과정에서는 프로그램 실행·연결을 하지 않았습니다.
 
 ## 7. 평면 검출 처리
 

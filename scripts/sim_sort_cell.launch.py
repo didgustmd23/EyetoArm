@@ -27,6 +27,10 @@ def generate_launch_description():
     description = Command([
         FindExecutable(name="xacro"), " ", str(ROBOT / "ur5e_2f85.urdf.xacro"),
         " simulation_controllers:=", str(ROBOT / "controllers.yaml"),
+        ' link_camera_xyz:="', LaunchConfiguration("link_camera_xyz"), '"',
+        ' link_camera_rpy:="', LaunchConfiguration("link_camera_rpy"), '"',
+        ' gripper_camera_xyz:="', LaunchConfiguration("gripper_camera_xyz"), '"',
+        ' gripper_camera_rpy:="', LaunchConfiguration("gripper_camera_rpy"), '"',
     ])
     robot_description = {"robot_description": ParameterValue(description, value_type=str)}
 
@@ -40,6 +44,14 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("world", default_value=str(SIM / "worlds" / "sort_cell.sdf")),
         DeclareLaunchArgument("gui", default_value="true"),
+        DeclareLaunchArgument("link_camera_xyz", default_value="-0.3420864 -0.0601521 0.1400000",
+                              description="upper_arm_link 기준 매립 시험 카메라 위치(m), 흰색 몸체 위쪽 옆면"),
+        DeclareLaunchArgument("link_camera_rpy", default_value="1.5707963 0 -0.815927",
+                              description="upper_arm_link 기준 자세(rad), 초기 대기 자세에서 정면 아래 약 43.3도"),
+        DeclareLaunchArgument("gripper_camera_xyz", default_value="0 0 0.068",
+                              description="robotiq_85_base_link 기준 앞면 중앙 매립 RGB-D 카메라 위치(m)"),
+        DeclareLaunchArgument("gripper_camera_rpy", default_value="0 -1.57079632679 0",
+                              description="그리퍼 기준 자세(rad), 기본값은 손가락 전방(+Z)을 봄"),
         AppendEnvironmentVariable("GZ_SIM_RESOURCE_PATH", str(SIM / "models")),
         *[AppendEnvironmentVariable("GZ_SIM_RESOURCE_PATH", p) for p in sorted(resource_paths)],
         IncludeLaunchDescription(
@@ -51,7 +63,12 @@ def generate_launch_description():
         Node(package="ros_gz_sim", executable="create", output="screen",
              arguments=["-topic", "robot_description", "-name", "ur5e_2f85"]),
         Node(package="ros_gz_bridge", executable="parameter_bridge", output="screen",
-             arguments=["/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock"]),
+             arguments=["/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
+                        "/link_cam/image@sensor_msgs/msg/Image[gz.msgs.Image",
+                        "/link_cam/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+                        "/gripper_cam/image@sensor_msgs/msg/Image[gz.msgs.Image",
+                        "/gripper_cam/depth_image@sensor_msgs/msg/Image[gz.msgs.Image",
+                        "/gripper_cam/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo"]),
         spawner("joint_state_broadcaster"),
         spawner("joint_trajectory_controller"),
         spawner("gripper_controller"),
