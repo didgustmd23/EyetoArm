@@ -2,12 +2,12 @@
 
 실행 (Windows, conda 환경 eyetoarm, 저장소 루트에서):
   set PYTHONPATH=src
-  python -m eyetoarm.d_client.window            실제 C 서버(127.0.0.1:47090) + 화면에 떠 있는 Gazebo 창
-  python -m eyetoarm.d_client.window --view camera  Gazebo 창 대신 카메라 중계(127.0.0.1:47091, gz_view_relay.py 필요)
-  python -m eyetoarm.d_client.window --demo     모의 데이터로 외형·모션만 확인 (아무 것도 보내지 않음)
-  python -m eyetoarm.d_client.window --no-motion  모션 줄이기 상태로 시작
-  python -m eyetoarm.d_client.window --theme light  라이트 테마로 시작 (좌측 아래 「다크 / 라이트」로 실행 중 전환)
-1일차 진단 CLI(python -m eyetoarm.d_client)는 그대로다. 이 창은 별도 진입점이다.
+  python -m eyetoarm.gui.window            실제 C 서버(127.0.0.1:47090) + 화면에 떠 있는 Gazebo 창
+  python -m eyetoarm.gui.window --view camera  Gazebo 창 대신 카메라 중계(127.0.0.1:47091, gz_view_relay.py 필요)
+  python -m eyetoarm.gui.window --demo     모의 데이터로 외형·모션만 확인 (아무 것도 보내지 않음)
+  python -m eyetoarm.gui.window --no-motion  모션 줄이기 상태로 시작
+  python -m eyetoarm.gui.window --theme light  라이트 테마로 시작 (좌측 아래 「다크 / 라이트」로 실행 중 전환)
+1일차 진단 CLI(python -m eyetoarm.gui)는 그대로다. 이 창은 별도 진입점이다.
 
 ┌─ 화면 구역과 연동 파트 ────────────────────────────────────────────────────┐
 │ 구역              │ 지금 표시하는 것              │ 연동 파트 · 계약 상태    │
@@ -48,9 +48,9 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QGridLayout, QHBoxLayout, QMainWindow, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from eyetoarm.d_client import motion, theme
-from eyetoarm.d_client.gz_view_relay import DEFAULT_PORT as VIEW_PORT
-from eyetoarm.d_client.widgets import Card, DisplayStage, NavRail, StageStrip, StatusChip, TrafficTable, label, pill
+from eyetoarm.gui import motion, theme
+from eyetoarm.gui.gz_view_relay import DEFAULT_PORT as VIEW_PORT
+from eyetoarm.gui.widgets import Card, DisplayStage, NavRail, StageStrip, StatusChip, TrafficTable, label, pill
 
 PAGES = ["조작·설정", "운영 대시보드", "평가·기록"]
 NOT_APPROVED = "TCP 명세 부록 A(분류 명령 개정 제안)가 C 승인 전입니다. 승인 전에는 실제 서버로 보내지 않습니다."
@@ -430,11 +430,12 @@ class MainWindow(QMainWindow):
 
 def settings() -> QSettings:
     """사용자 화면 설정 저장소(Windows 레지스트리 HKCU/Software/EyeToArms/d_client). 테마 선택만 저장한다."""
+    # 폴더명 변경 뒤에도 기존 테마 선택을 읽도록 저장 키는 유지한다.
     return QSettings("EyeToArms", "d_client")
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m eyetoarm.d_client.window", description="D 운영 GUI (2일차 골격)")
+    parser = argparse.ArgumentParser(prog="python -m eyetoarm.gui.window", description="D 운영 GUI (2일차 골격)")
     parser.add_argument("--host", default=None, help="C 서버 숫자 IP (기본: config/gui/client.json)")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--view", choices=("window", "camera"), default="window",
@@ -457,16 +458,16 @@ def main(argv: list[str] | None = None) -> int:
     app.setStyleSheet(theme.QSS)
     motion.set_reduced(args.no_motion)
     if args.demo:
-        from eyetoarm.d_client.demo import DemoLink, DemoView
+        from eyetoarm.gui.demo import DemoLink, DemoView
         link, view = DemoLink(), DemoView()
     else:
-        from eyetoarm.d_client.client import StatusLink
+        from eyetoarm.gui.client import StatusLink
         link = StatusLink(args.host, args.port)
         if args.view == "window":
-            from eyetoarm.d_client.gz_window import GzWindowCapture   # Win32 호출을 쓰므로 Windows 에서만 불러온다
+            from eyetoarm.gui.gz_window import GzWindowCapture   # Win32 호출을 쓰므로 Windows 에서만 불러온다
             view = GzWindowCapture()
         else:
-            from eyetoarm.d_client.gz_view import GzViewReceiver
+            from eyetoarm.gui.gz_view import GzViewReceiver
             view = GzViewReceiver(args.view_host, args.view_port)
     window = MainWindow(link, view, demo=args.demo)
     window.show()

@@ -19,7 +19,7 @@
   2) source /opt/ros/jazzy/setup.bash
      ros2 run ros_gz_bridge parameter_bridge "/appearance_check/image@sensor_msgs/msg/Image[gz.msgs.Image"
   3) source /opt/ros/jazzy/setup.bash
-     python3 src/eyetoarm/d_client/gz_view_relay.py
+     python3 src/eyetoarm/gui/gz_view_relay.py
 Windows 대시보드는 127.0.0.1:47091 로 접속한다(WSL NAT localhost 전달).
 
 전송 형식(이 임시 경로 전용, 팀 계약 아님): 프레임마다

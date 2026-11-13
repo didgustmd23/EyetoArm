@@ -22,7 +22,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtGui import QImage
 from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QTcpSocket
 
-from eyetoarm.d_client.gz_view_relay import DEFAULT_PORT, FrameParser
+from eyetoarm.gui.gz_view_relay import DEFAULT_PORT, FrameParser
 
 RECONNECT_MS = 1500
 STALE_MS = 3000   # 카메라가 2 Hz(500 ms 간격)이므로 6장 연속 누락이면 중단으로 본다
