@@ -9,10 +9,14 @@ D 운영 GUI와 TCP 클라이언트를 Windows에서 새로 구현하는 폴더�
 기존 `eyetoarm` 환경을 활성화한 뒤 프로젝트 루트의 PowerShell에서 실행한다.
 
 ```powershell
-$env:PYTHONPATH = 'src'
+$env:PYTHONPATH = (Resolve-Path .\src).Path
 python -m eyetoarm.gui.window --demo
 python -m eyetoarm.gui --env-only
 ```
+
+저장소 루트의 `pyrightconfig.json`은 Pyright/Pylance가 `src` 아래의 `eyetoarm` 패키지를 찾도록 한다. 개인 Python 설치 경로는 공유 설정에 넣지 않으며, VS Code에서는 이 프로젝트의 `eyetoarm` 환경을 선택한다. 이 설정은 에디터 분석용이므로 터미널 실행에서는 위 `PYTHONPATH` 설정이 별도로 필요하다. [Pyright 공식 설정 문서](https://github.com/microsoft/pyright/blob/main/docs/configuration.md#environment-options)
+
+`widgets.py`는 실행 진입점이 아닌 화면 부품 모듈이다. 앱은 `python -m eyetoarm.gui.window`로 실행한다. `from eyetoarm.gui import motion, theme` 문법과 네임스페이스 패키지 구조를 경고를 숨기기 위해 바꾸지 않는다.
 
 실제 C 준비 조회·Gazebo 창 캡처는 `python -m eyetoarm.gui.window`, 임시 카메라 중계 수신은 `python -m eyetoarm.gui.window --view camera`로 실행한다. `--demo`는 소켓을 열지 않는다.
 

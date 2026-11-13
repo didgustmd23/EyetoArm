@@ -16,19 +16,19 @@
 # 계획서 v1.6 §2.1·§2.5: D 운영 GUI(PySide6)와 TCP 클라이언트는 Windows 11에서 실행하고,
 # A·B·C는 WSL2에서 실행합니다. GUI 의존성은 WSL에 설치하지 않습니다(계획서 §2.1·§2.5).
 # - 배포: Anaconda3 conda 환경 `eyetoarm`
-#   정의 파일: src/eyetoarm/d_client/environment.yml (conda env create -f 로 생성)
+#   정의 파일: src/eyetoarm/gui/environment.yml (conda env create -f 로 생성)
 # - Python 3.12 (확인 3.12.16). WSL Python 3.12와 맞춤: A 통신 시험 도구가 D의 TCP 클라이언트를
 #   WSL에서 재사용하므로(계획서 §3, D-06) D 클라이언트 코드는 3.12에서 동작해야 합니다.
 # - PySide6-Essentials==6.12.0 (shiboken6 6.12.0), jsonschema==4.26.0 — conda 환경 안에서 pip 설치
 # - 저장소 체크아웃: Windows 로컬 드라이브(D PC 기준 C:\Users\user\WSL\EyetoArm)
 # - Windows → WSL C 서버 접속: 127.0.0.1:47090 확인(2026-11-12, WSL NAT 기본 localhost 전달)
-# 설치 기록·확인 결과: src/eyetoarm/d_client/README.md
+# 설치 기록·확인 결과: src/eyetoarm/gui/README.md
 #
 # ── 설치 대상 목록 (계획서 §2.5 기준, 버전은 2026-11-12 D PC에서 확인한 값) ────────
 # [Windows 11 · D 운영 GUI]
 # - Git for Windows                       2.55.0
 # - Anaconda3                             conda 26.5.3
-# - conda 환경 eyetoarm                   Python 3.12.16  (conda env create -f src/eyetoarm/d_client/environment.yml)
+# - conda 환경 eyetoarm                   Python 3.12.16  (conda env create -f src/eyetoarm/gui/environment.yml)
 #   - PySide6-Essentials (pip)            6.12.0 (shiboken6 6.12.0)
 #   - jsonschema (pip)                    4.26.0
 # - VS Code                               (WSL 연결로 A·B·C 편집)
