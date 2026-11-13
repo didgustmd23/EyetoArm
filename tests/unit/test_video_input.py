@@ -31,6 +31,10 @@ RUN_ID = "run-video-test"
 W, H = 64, 48
 CODECS = {"MJPG": ".avi", "mp4v": ".mp4", "FFV1": ".avi"}
 
+# 동영상 컨테이너로 해석되지 않는 고정 바이트. 무작위 바이트는 실행마다 내용이 달라
+# OpenCV 4.6(FFmpeg)이 드물게 열기에서 멈췄다(30회 중 1회 재현).
+_GARBAGE = bytes(range(256)) * 16
+
 
 class FakeClock:
     """호출마다 증가하는 가짜 단조 시계. 호출 수를 센다."""
@@ -172,7 +176,7 @@ class InterfaceAndStatusTest(VideoTestBase):
             p = os.path.join(self.dir, name)
 
             with open(p, "wb") as f:
-                f.write(b"" if name.startswith("empty") else os.urandom(4096))
+                f.write(b"" if name.startswith("empty") else _GARBAGE)
 
             s = self.src(p)
             e = s.read()
@@ -240,7 +244,7 @@ class InterfaceAndStatusTest(VideoTestBase):
         p = os.path.join(self.dir, "junk.avi")
 
         with open(p, "wb") as fh:
-            fh.write(os.urandom(2048))
+            fh.write(_GARBAGE)
 
         with mock.patch.object(video.cv2, "VideoCapture", Spy):
             self.src(p).read()
