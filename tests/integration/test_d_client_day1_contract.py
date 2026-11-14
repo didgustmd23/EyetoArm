@@ -26,7 +26,7 @@ class Day1ContractTest(unittest.TestCase):
         received = d_protocol.parse_status(c_protocol.encode_response(status)[:-1])
         self.assertEqual(d_protocol.status_kind(received), "ready")
         self.assertFalse(received["robot_ready"])
-        self.assertEqual(received["not_ready_reasons"], ["RECOVERING"])
+        self.assertEqual(received["not_ready_reasons"], ["ROS_DISCONNECTED"])
         self.assertIsNone(received["active_command_id"])
 
 
