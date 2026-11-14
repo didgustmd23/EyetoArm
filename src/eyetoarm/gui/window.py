@@ -1,10 +1,10 @@
-"""D 운영 GUI 창(3일차 TCP): 세 화면 + 공통 상태띠 + 메인 디스플레이.
+"""D 운영 GUI 창: TCP 1.1 + 소켓 없는 4일차 분류 대역.
 
 실행 (Windows, conda 환경 eyetoarm, 저장소 루트에서):
   set PYTHONPATH=src
   python -m eyetoarm.gui.window            실제 C 서버(127.0.0.1:47090) + 화면에 떠 있는 Gazebo 창
   python -m eyetoarm.gui.window --view camera  Gazebo 창 대신 카메라 중계(127.0.0.1:47091, gz_view_relay.py 필요)
-  python -m eyetoarm.gui.window --demo     모의 데이터로 외형·모션만 확인 (아무 것도 보내지 않음)
+  python -m eyetoarm.gui.window --demo     모의 분류 조작·상태 확인 (아무 것도 보내지 않음)
   python -m eyetoarm.gui.window --no-motion  모션 줄이기 상태로 시작
   python -m eyetoarm.gui.window --theme light  라이트 테마로 시작 (좌측 아래 「다크 / 라이트」로 실행 중 전환)
 1일차 진단 CLI(python -m eyetoarm.gui)는 그대로다. 이 창은 별도 진입점이다.
@@ -15,14 +15,14 @@
 │ 상태띠 명령 TCP   │ 연결 상태(실제)               │ C · TCP 1.1 확정         │
 │ 상태띠 유효STATUS │ 최근 준비 응답 수신 여부(실제)│ C · TCP 1.1 확정         │
 │ 상태띠 로봇 준비  │ robot_ready · 사유(실제)      │ C · TCP 1.1 확정         │
-│ 상태띠 분류 상태  │ —                             │ C · 부록 A 미승인        │
+│ 상태띠 분류 상태  │ 실제 모드 — / 모의 내부 상태   │ C · 부록 A 미승인        │
 │ 상태띠 표시 연결  │ Gazebo 화면 수신 상태(실제)   │ D 임시 경로(정식은 C·부록 B 미승인)│
 │ 메인 디스플레이   │ Gazebo 창 실제 화면(기본)     │ D 임시 경로 · gz_window.py│
 │                   │ 또는 카메라 중계(--view camera)│ D 임시 경로 · gz_view.py │
 │ 보조 영상 2칸     │ 자리만                        │ C 표시 연결 · 미결       │
 │ 측정·보정 상세    │ —                             │ A·B 결과 → C 중계 · 미결 │
 │ 공정 단계 · 수량  │ 미확인 · —                    │ C 도착 확인 · 미결       │
-│ START/STOP/RECOVER│ 비활성                        │ C · 부록 A 미승인        │
+│ START/STOP/RECOVER│ 실제 비활성 / 모의에서만 조작  │ C · 부록 A 미승인        │
 │ CANCEL(수동 이동) │ 현재 명령 추적 중 활성         │ C · TCP 1.1              │
 │ TX/RX 기록        │ 실제 송수신(준비 조회)        │ C · TCP 1.1 확정         │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -30,7 +30,7 @@
 
 [공통 상태] 연결 객체(StatusLink 와 화면 수신기 GzWindowCapture/GzViewReceiver)는 창에 하나씩만 있고 세 화면이 함께 쓴다.
   화면을 바꿔도 연결·수신·기록이 초기화되지 않는다(D 상세설계 §A.2).
-[보내는 신호] 준비/명령 GET_STATUS, 사용자 확정 수동 MOVE, 기존 ID의 CANCEL. 분류 명령은 비활성이다.
+[보내는 신호] 준비/명령 GET_STATUS, 사용자 확정 수동 MOVE, 기존 ID의 CANCEL. 모의 분류는 TCP를 사용하지 않는다.
 """
 
 from __future__ import annotations
@@ -45,10 +45,11 @@ if not __package__:
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from PySide6.QtCore import QIODevice, QSaveFile, QSettings, QTimer
+from PySide6.QtCore import QIODevice, QSaveFile, QSettings, Qt, QTimer
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDoubleSpinBox, QFileDialog, QGridLayout, QHBoxLayout, QMainWindow, QStackedWidget, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QMainWindow, QScrollArea, QStackedWidget,
+    QVBoxLayout, QWidget,
 )
 
 from eyetoarm.gui import motion, theme
@@ -65,9 +66,14 @@ class MainWindow(QMainWindow):
     def __init__(self, link, view, demo: bool = False) -> None:
         super().__init__()
         self.link, self.view, self.demo = link, view, demo
+        self.sort_demo = None
+        self._sort_logged = None
+        if demo:
+            from eyetoarm.gui.sort_demo import DemoSortController
+            self.sort_demo = DemoSortController(self)
         # 송수신 카드 꼬리표. 모의 모드에서는 「실제」라고 적지 않는다
         self._live_tag = "모의 · 실제 아님" if demo else "실제 송수신"
-        self.setWindowTitle("Eye To Arms · D 운영 GUI (3일차 TCP)")
+        self.setWindowTitle("Eye To Arms · D 운영 GUI (모의 분류)" if demo else "Eye To Arms · D 운영 GUI (TCP 1.1)")
         self.resize(1440, 960)
         self.setMinimumSize(1180, 760)
 
@@ -131,6 +137,9 @@ class MainWindow(QMainWindow):
         self._export_timer = QTimer(self, interval=0)
         self._export_timer.timeout.connect(self._export_chunk)
         self.view.frame_received.connect(self._on_frame)
+        if self.sort_demo is not None:
+            self.sort_demo.changed.connect(self._update_sort_controls)
+            self.link.state_changed.connect(self._on_demo_connection)
         self._status: dict | None = None
         self._frame_size = ""
 
@@ -155,6 +164,8 @@ class MainWindow(QMainWindow):
         self.start_button = pill("START 시작", "primary", NOT_APPROVED)
         self.stop_button = pill("STOP 분류 정지", "stop", NOT_APPROVED + " STOP 은 분류 작업 정지이며 수동 이동 취소(CANCEL)와 다릅니다.")
         self.recover_button = pill("RECOVER 복구", "", NOT_APPROVED)
+        for action, button in (("START", self.start_button), ("STOP", self.stop_button), ("RECOVER", self.recover_button)):
+            button.clicked.connect(lambda _checked=False, command=action: self._request_sort(command))
         # [C 연동 · TCP 1.1] 현재 명령 ID의 취소 요청. 정지 확인과 구분한다.
         self.cancel_button = pill("CANCEL 수동 이동 취소", "", "현재 ID로 취소 요청. 전송만으로 정지 완료가 되지 않습니다.")
         self.cancel_button.clicked.connect(lambda: self.link.cancel() if hasattr(self.link, "cancel") else None)
@@ -211,15 +222,31 @@ class MainWindow(QMainWindow):
         ])
         grid.addWidget(link_card, 0, 2)
 
-        command_card = Card("명령 계약 상태", "D ↔ C")
-        self._rows(command_card, [
-            ("GET_STATUS (준비 조회)", "사용 중 · TCP 1.1"),
-            ("MOVE · CANCEL", "수동 확정 목표 · TCP 1.1"),
-            ("START · STOP · RECOVER", "부록 A 미승인 · 미전송"),
-            ("링크 채널 선택", "부록 B 미승인 · 미전송"),
-        ])
-        command_card.body.addStretch(1)
+        command_card = Card("모의 분류 조작" if self.demo else "명령 계약 상태", "실제 전송 없음" if self.demo else "D ↔ C")
+        if not self.demo:
+            self._rows(command_card, [
+                ("GET_STATUS (준비 조회)", "사용 중 · TCP 1.1"),
+                ("MOVE · CANCEL", "수동 확정 목표 · TCP 1.1"),
+                ("START · STOP · RECOVER", "부록 A 미승인 · 미전송"),
+                ("링크 채널 선택", "부록 B 미승인 · 미전송"),
+            ])
         grid.addWidget(command_card, 1, 2)
+        if self.demo:
+            self.sort_detail = label("모의 분류 상태 대기", "Caption", wrap=True)
+            self.sort_confirm = QCheckBox("모의 복구 조건을 확인했습니다")
+            self.sort_confirm.toggled.connect(self._update_sort_controls)
+            command_card.body.addWidget(self.sort_detail)
+            command_card.body.addWidget(self.sort_confirm)
+            self.sort_fault_button = pill("모의 보유 상태 불명", tooltip="실제 장치에 영향 없이 복구 잠금 상태를 재현합니다.")
+            self.sort_fault_button.clicked.connect(self._inject_demo_recovery)
+            self.sort_connection_button = pill("모의 연결 끊기", tooltip="실제 TCP 연결이 없는 내부 대역의 연결 상태를 바꿉니다.")
+            self.sort_connection_button.clicked.connect(lambda: self.link.set_connected(self.link.state != "connected"))
+            scenarios = QHBoxLayout()
+            scenarios.addWidget(self.sort_fault_button)
+            scenarios.addWidget(self.sort_connection_button)
+            command_card.body.addLayout(scenarios)
+            command_card.body.addWidget(label("실제 모드 분류 명령은 부록 A 승인 대기입니다.", "Caption", wrap=True))
+        command_card.body.addStretch(1)
 
         input_card = Card("입력·보정", "A·B 결과 미수신")
         self._rows(input_card, [("입력 소스 · 모드", NO_VALUE), ("보정 프로파일", NO_VALUE), ("보정 상태 · 무효 사유", NO_VALUE)])
@@ -264,7 +291,14 @@ class MainWindow(QMainWindow):
         grid.setRowStretch(0, 2)
         grid.setRowStretch(1, 2)
         grid.setRowStretch(2, 1)
-        return page, [display_card, link_card, command_card, input_card, target_card, shape_card]
+        # 최소 창(1180x760)에서는 카드 최소 높이 합이 본문보다 커서 글자·입력칸이 잘린다. 줄이지 않고 세로로 넘긴다
+        scroll = QScrollArea()
+        scroll.setWidget(page)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        return scroll, [display_card, link_card, command_card, input_card, target_card, shape_card]
 
     # ══ 화면 2: 운영 대시보드 ═══════════════════════════════════════════════
 
@@ -298,7 +332,7 @@ class MainWindow(QMainWindow):
 
         stage_card = Card("공정 단계", "C 확인 전")
         stage_card.body.addWidget(label("볼트", "Caption"))
-        self.bolt_stages = StageStrip(["정지·재검출", "집기", "도착", "복귀"])
+        self.bolt_stages = StageStrip(["이동 중 집기", "운반", "도착", "복귀"])
         stage_card.body.addWidget(self.bolt_stages)
         stage_card.body.addWidget(label("너트", "Caption"))
         self.nut_stages = StageStrip(["통과", "도착"])
@@ -535,6 +569,57 @@ class MainWindow(QMainWindow):
 
     # ══ 값 반영 ═════════════════════════════════════════════════════════════
 
+    def _on_demo_connection(self, state):
+        self.sort_demo.set_connected(state == "connected")
+        if state != "connected":
+            self.sort_confirm.setChecked(False)
+            return
+        snapshot = self.sort_demo.snapshot or dict(epoch=1, seq=0, state="IDLE", holding="DETACHED", job_id=None, detail="모의 초기 상태")
+        if snapshot["state"] in {"STARTING", "RUNNING", "STOPPING", "RECOVERING"}:
+            snapshot.update(state="RECOVERY_REQUIRED", holding="HOLD_UNKNOWN", detail="모의 재접속 · 실행 결과 불명 · 복구 확인 필요")
+        snapshot["seq"] += 1
+        self.sort_demo.apply_snapshot(snapshot, resync=True)
+
+    def _request_sort(self, action):
+        if self.sort_demo is None:
+            return
+        confirmed = action != "RECOVER" or self.sort_confirm.isChecked()
+        self.sort_demo.request(action, confirmed=confirmed)
+        if action == "RECOVER":
+            self.sort_confirm.setChecked(False)
+
+    def _inject_demo_recovery(self):
+        snapshot = self.sort_demo.snapshot
+        if snapshot and self.sort_demo.connected and self.sort_demo.synchronized:
+            snapshot.update(seq=snapshot["seq"] + 1, state="RECOVERY_REQUIRED", holding="HOLD_UNKNOWN", detail="모의 보유 상태 불명 · 시작 잠금")
+            self.sort_confirm.setChecked(False)
+            self.sort_demo.apply_snapshot(snapshot)
+
+    def _update_sort_controls(self):
+        if self.sort_demo is None:
+            return
+        controller = self.sort_demo
+        snapshot = controller.snapshot
+        for action, button in (("START", self.start_button), ("STOP", self.stop_button), ("RECOVER", self.recover_button)):
+            allowed, reason = controller.allowed(action)
+            if action == "RECOVER" and not self.sort_confirm.isChecked():
+                allowed, reason = False, "복구 조건 확인란을 선택하세요."
+            button.setEnabled(allowed)
+            button.setToolTip("모의 · 실제 전송 없음. " + reason)
+        self.sort_fault_button.setEnabled(controller.connected and controller.synchronized)
+        self.sort_connection_button.setText("모의 연결 끊기" if controller.connected else "모의 재접속")
+        if not controller.connected or not controller.synchronized or snapshot is None:
+            self.chip_sort.set_state("warn", "모의 · 상태 미확인")
+            self.sort_detail.setText("모의 연결·스냅샷 동기화 전에는 분류 조작을 허용하지 않습니다.")
+            return
+        state = snapshot["state"]
+        self.chip_sort.set_state("warn" if state in {"STOPPING", "RECOVERY_REQUIRED", "RECOVERING"} else "accent", "모의 · " + state)
+        self.sort_detail.setText(f"모의 · {state}\n보유: {snapshot['holding']}\n{snapshot['detail']}")
+        key = (snapshot["epoch"], snapshot["seq"])
+        if key != self._sort_logged:
+            self._sort_logged = key
+            self.link.record_event("EV", "모의 분류", f"실제 전송 없음 · {state} · 보유 {snapshot['holding']} · {snapshot['detail']}")
+
     def _on_status(self, message: dict) -> None:
         self._status = message
         self._update_status()
@@ -594,6 +679,8 @@ class MainWindow(QMainWindow):
             self._csv_file.deleteLater()
             self._csv_file = None
         self.link.stop()
+        if self.sort_demo is not None:
+            self.sort_demo.close()
         self.view.stop()
         super().closeEvent(event)
 
@@ -605,7 +692,7 @@ def settings() -> QSettings:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m eyetoarm.gui.window", description="D 운영 GUI (3일차 TCP)")
+    parser = argparse.ArgumentParser(prog="python -m eyetoarm.gui.window", description="D 운영 GUI (TCP 1.1 · 모의 분류)")
     parser.add_argument("--host", default=None, help="C 서버 숫자 IP (기본: config/gui/client.json)")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--view", choices=("window", "camera"), default="window",
@@ -613,7 +700,7 @@ def main(argv: list[str] | None = None) -> int:
                              "camera: Gazebo 카메라 영상 중계(2 Hz, WSL 에서 브리지와 gz_view_relay.py 필요)")
     parser.add_argument("--view-host", default="127.0.0.1", help="--view camera 일 때 중계 주소")
     parser.add_argument("--view-port", type=int, default=VIEW_PORT)
-    parser.add_argument("--demo", action="store_true", help="모의 데이터로 외형·모션만 확인. 소켓을 열지 않음")
+    parser.add_argument("--demo", action="store_true", help="모의 분류 조작·상태·화면 확인. 소켓을 열지 않음")
     parser.add_argument("--no-motion", action="store_true", help="모션 줄이기 상태로 시작")
     parser.add_argument("--theme", choices=tuple(theme.PALETTES), default=None,
                         help="시작 테마. 생략하면 지난번에 고른 테마(없으면 dark). 이 인자로 준 값은 저장하지 않음")

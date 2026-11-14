@@ -132,6 +132,7 @@ class StatusLink(QObject):
         self._stable_since = 0.0
         self._unchanged = 0
         self._suppressing = False
+        self._last_disconnect_reason = None
         self._buffer = bytearray()
         self._conn_id = 0
         self._want = False
@@ -160,6 +161,7 @@ class StatusLink(QObject):
         self._open()
 
     def stop(self):
+        self._last_disconnect_reason = None
         if self._want or self.state != "disconnected":
             self._log("EV", "세션 종료", "사용자 종료 · C 서버 프로세스는 유지")
         self._want = False
@@ -269,6 +271,7 @@ class StatusLink(QObject):
 
     def _on_connected(self):
         self._connect_deadline.stop()
+        self._last_disconnect_reason = None
         self._conn_id += 1
         self._set_state("connected")
         self._log("EV", "접속", f"{self.host}:{self.port} 연결됨")
@@ -315,7 +318,8 @@ class StatusLink(QObject):
         self._suppressing, self._unchanged = False, 0
         self._set_state("disconnected")
         self._socket.abort()
-        self._log("EV", "끊김", reason)
+        self._log("EV", "끊김", reason, visible=reason != self._last_disconnect_reason)
+        self._last_disconnect_reason = reason
         if self._want:
             self._retry.start()
 

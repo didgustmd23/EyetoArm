@@ -1,4 +1,4 @@
-"""모의 데이터(--demo). C 서버·Gazebo 없이 화면 외형과 모션만 확인할 때 쓴다.
+"""모의 데이터(--demo). C 서버·Gazebo 없이 화면과 내부 분류 대역을 확인한다.
 
 [중요] 여기서 나오는 값과 화면은 전부 가짜다. 실제 C 서버 응답이나 Gazebo 영상이 아니다.
   - 창 좌하단 출처 표시가 「모의 데이터」로 바뀌고, 모의 화면 안에도 「모의 화면」이라고 적힌다.
@@ -17,13 +17,8 @@ from PySide6.QtGui import QColor, QImage, QPainter
 from eyetoarm.gui import theme
 from eyetoarm.gui.client import DEFAULTS, TrafficEntry
 
-# (연결 상태, robot_ready, not_ready_reasons). 4초마다 다음 장면으로 넘어간다
-SCENES = [("connected", True, []), ("connected", False, ["NOT_STOPPED"]),
-          ("connected", False, ["RECOVERING"]), ("disconnected", None, [])]
-
-
 class DemoLink(QObject):
-    """StatusLink 대역. 정상 → 미준비 → 복구 중 → 끊김 장면을 돌려 가며 내보낸다."""
+    """StatusLink 대역. 분류 시험 중 연결은 사용자의 모의 조작으로만 바뀐다."""
 
     state_changed = Signal(str)
     status_received = Signal(dict)
@@ -34,20 +29,16 @@ class DemoLink(QObject):
         self.config = dict(DEFAULTS)
         self.host, self.port = "모의", 0
         self.state = "disconnected"
-        self._scene = -1
         self._last_at: float | None = None
-        self._scene_timer = QTimer(self, interval=4000)
-        self._scene_timer.timeout.connect(self._next_scene)
+        self._status_logged = False   # 모의 준비 응답은 늘 같다. 접속마다 첫 TX/RX 한 쌍만 기록에 남긴다
         self._poll = QTimer(self, interval=1000)
         self._poll.timeout.connect(self._emit_status)
 
     def start(self) -> None:
-        self._next_scene()
-        self._scene_timer.start()
+        self.set_connected(True)
         self._poll.start()
 
     def stop(self) -> None:
-        self._scene_timer.stop()
         self._poll.stop()
 
     def status_age_ms(self) -> int | None:
@@ -57,27 +48,28 @@ class DemoLink(QObject):
         age = self.status_age_ms()
         return self.state != "connected" or age is None or age > self.config["status_watchdog_ms"]
 
-    def _next_scene(self) -> None:
-        self._scene = (self._scene + 1) % len(SCENES)
-        state = SCENES[self._scene][0]
+    def set_connected(self, connected: bool) -> None:
+        state = "connected" if connected else "disconnected"
         if state != self.state:
             self.state = state
+            self._status_logged = False
             if state != "connected":
                 self._last_at = None
-            self._log("EV", "모의 접속" if state == "connected" else "모의 끊김", "모의 장면 전환")
+            self.record_event("EV", "모의 접속" if state == "connected" else "모의 끊김", "모의 연결 조작")
             self.state_changed.emit(state)
         self._emit_status()
 
     def _emit_status(self) -> None:
-        state, ready, reasons = SCENES[self._scene]
-        if state != "connected":
+        if self.state != "connected":
             return
-        self._last_at = time.monotonic()
-        self._log("TX", "준비 조회", "모의 · 실제로 보내지 않음")
-        self._log("RX", "STATUS", f"모의 · robot_ready={str(ready).lower()} 사유={','.join(reasons) or '-'}")
-        self.status_received.emit({"robot_ready": ready, "not_ready_reasons": list(reasons), "active_command_id": None})
+        self._last_at = time.monotonic()   # 기록은 줄여도 신선도는 매 조회 갱신한다
+        if not self._status_logged:
+            self._status_logged = True
+            self.record_event("TX", "준비 조회", "모의 · 실제로 보내지 않음")
+            self.record_event("RX", "STATUS", "모의 · robot_ready=true · 같은 응답 반복은 기록 생략")
+        self.status_received.emit({"robot_ready": True, "not_ready_reasons": [], "active_command_id": None})
 
-    def _log(self, direction: str, kind: str, summary: str) -> None:
+    def record_event(self, direction: str, kind: str, summary: str) -> None:
         now = time.time()
         wall = time.strftime("%H:%M:%S", time.localtime(now)) + f".{int(now * 1000) % 1000:03d}"
         self.traffic.emit(TrafficEntry(wall, direction, kind, summary))
