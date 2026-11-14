@@ -32,9 +32,10 @@ class ExecutionManager:
             move_executor=manager.execute_move,
         )
 
-    백엔드가 아직 구성되지 않았을 때는 이 관리자를 생성하지 말고 TCP 서버에
-    실행기를 전달하지 않아야 합니다. 이 경우 tcp_server가
-    ``ROS_DISCONNECTED``로 MOVE를 거절합니다.
+    실제 ROS/MoveIt 백엔드가 준비되지 않은 동안에는
+    ``UnconfiguredRobotBackend``를 연결할 수 있습니다. 이 구현체는 readiness를
+    ``ROS_DISCONNECTED``로 반환하므로 TCP 서버가 MOVE를 거절하고, 실제 동작이나
+    성공 응답을 만들어내지 않습니다.
     """
 
     def __init__(self, backend: RobotBackend) -> None:
