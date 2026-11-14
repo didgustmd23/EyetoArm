@@ -103,6 +103,40 @@ class LinkTests(unittest.TestCase):
         self.link._handle_line(wire(READY))
         self.assertEqual(len(seen), 1)
 
+    def test_repeated_connect_failure_keeps_audit_and_retry_without_duplicate_rows(self):
+        events = []
+        self.link.traffic.connect(events.append)
+        with tempfile.TemporaryDirectory(prefix="eyetoarm-record-repeat-") as folder:
+            path = Path(folder) / "audit.jsonl"
+            self.link.log = SessionLog(path)
+            self.link._want = True
+            try:
+                for _ in range(4):
+                    self.link.state = "connecting"
+                    self.link._drop("접속 기한 초과")
+                self.assertEqual(len([event for event in events if event.kind == "끊김"]), 1)
+                rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+                self.assertEqual(sum(row["note"] == "접속 기한 초과" for row in rows), 4)
+                self.assertEqual(len([row for row in self.link.log.rows() if row["kind"] == "끊김"]), 1)
+                self.assertTrue(self.link._retry.isActive())
+                self.assertTrue(self.link.is_stale())
+            finally:
+                self.link.stop()
+
+    def test_connection_failure_change_and_failure_after_recovery_are_visible(self):
+        events = []
+        self.link.traffic.connect(events.append)
+        self.link._drop("접속 기한 초과")
+        self.link.state = "connecting"
+        self.link._drop("연결 거부")
+        self.link._on_connected()
+        self.link._drop("연결 거부")
+        self.link.stop()
+        self.link.state = "connecting"
+        self.link._drop("연결 거부")
+        self.assertEqual([event.summary for event in events if event.kind == "끊김"],
+                         ["접속 기한 초과", "연결 거부", "연결 거부", "연결 거부"])
+
     def test_readiness_has_only_one_outstanding_query(self):
         self.link._send_get_status()
         self.link._send_get_status()
