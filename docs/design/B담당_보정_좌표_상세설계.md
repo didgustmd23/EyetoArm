@@ -722,9 +722,12 @@ B의 책임: 기준 자세 보정, 의도 판정(유지 시간·히스테리시�
 | `src/eyetoarm/transforms/work_result.py` | `from_observation()`: A `PlanarObservation` + `FramePacket` → `WorkPlanarResult`, `to_output_dict()`: mm 출력 |
 | `src/eyetoarm/transforms/grasp.py` | `build_sort_goal()`: B 결과 → C 목표 사전 |
 | `src/eyetoarm/transforms/overlay.py` | 중심점 주석 영상 그리기 |
+| `src/eyetoarm/transforms/b_stage.py` | **A가 부를 B 입구** `BStage.process(관측, 프레임)`: 촬영 시각 TF(`RosTfLookup`) → 판정 → C 목표(+`goal_id`·세대·시각 연결 키), `render_center()`로 center 영상 |
 | `scripts/b_live_view.py` | 시뮬레이션 링크 카메라에 B 좌표·판정을 겹쳐 보기, `--publish`로 `/b/center_overlay/image` |
 | `scripts/b_demo_synthetic.py` | ROS 없이 합성 영상으로 B 계산 확인 |
-| `tests/unit/test_b_transforms.py` | 렌즈 값·투영 왕복·판정·A 관측→C 목표 25개 |
+| `tests/unit/test_b_transforms.py` | 렌즈 값·투영 왕복·판정·A 관측→C 목표·B 입구 30개 |
+
+B→C 액션 필드 제안은 [B_C_분류목표_액션_제안.md](B_C_분류목표_액션_제안.md)에 있습니다.
 
 ### 16.5 남은 일
 

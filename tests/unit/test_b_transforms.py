@@ -264,3 +264,49 @@ class TestObservationToGoal(unittest.TestCase):
         R = quat_to_rot(*down_quat_xyzw(math.radians(40)))
         np.testing.assert_allclose(R[:, 2], [0, 0, -1], atol=1e-6)
         np.testing.assert_allclose(R[:, 0], [math.cos(math.radians(40)), math.sin(math.radians(40)), 0], atol=1e-6)
+
+
+# ---------- B 입구 (A 파이프라인이 부르는 함수) ----------
+from types import SimpleNamespace as NS  # noqa: E402
+
+from eyetoarm.transforms.b_stage import BStage, StaticTfLookup, goal_to_json, transform_to_matrix  # noqa: E402
+
+
+class TestBStage(unittest.TestCase):
+    def setUp(self):
+        self.stage = BStage.from_config(ROOT, CAM, StaticTfLookup(T_W_C))
+
+    def test_process_bolt(self):
+        obs = make_obs(to_px(bolt(0.018, 0.55, -0.05, 60)).astype(np.float32))
+        out = self.stage.process(obs, make_frame())
+        self.assertEqual((out.result.spec, out.goal["kind"]), ("BOLT_A", "PICK_PLACE"))
+        self.assertEqual(out.goal["place"]["bin"], "BOLT_A")
+        self.assertEqual(out.result_dict["spec"], "BOLT_A")
+        self.assertIn('"kind":"PICK_PLACE"', goal_to_json(out.goal))
+
+    def test_tf_missing_skips(self):
+        stage = BStage.from_config(ROOT, CAM, lambda frame: None)
+        out = stage.process(make_obs(to_px(bolt(0.018, 0.55, 0, 0)).astype(np.float32)), make_frame())
+        self.assertEqual((out.result.reason, out.result.reason_owner, out.goal["kind"]), ("TF_UNAVAILABLE", "B", "SKIP"))
+
+    def test_render_center_keeps_original(self):
+        frame = make_frame()
+        out = self.stage.process(make_obs(to_px(bolt(0.046, 0.55, -0.05, 20)).astype(np.float32)), frame)
+        img = self.stage.render_center(frame.image, [out])
+        self.assertEqual(int(frame.image.sum()), 0)        # 원본은 그대로
+        self.assertGreater(int(img.sum()), 0)              # 복사본에 그려짐
+
+    def test_transform_to_matrix(self):
+        tr = NS(translation=NS(x=0.06, y=0.14, z=0.505), rotation=NS(x=0.0, y=0.0, z=0.0, w=1.0))
+        np.testing.assert_allclose(transform_to_matrix(tr)[:3, 3], [0.06, 0.14, 0.505])
+
+
+class TestBStageKeys(unittest.TestCase):
+    def test_correlation_keys(self):
+        stage = BStage.from_config(ROOT, CAM, StaticTfLookup(T_W_C))
+        stage.sort_job_id = "job-1"
+        out = stage.process(make_obs(to_px(bolt(0.046, 0.55, 0, 0)).astype(np.float32)), make_frame())
+        g = out.goal
+        self.assertEqual((g["sort_job_id"], g["run_id"], g["job_seq"], g["timestamp_base"]), ("job-1", "r1", 1, "SIM_TIME"))
+        self.assertEqual(len(g["goal_id"]), 36)
+        self.assertNotEqual(g["goal_id"], stage.process(make_obs(to_px(bolt(0.046, 0.55, 0, 0)).astype(np.float32)), make_frame()).goal["goal_id"])
