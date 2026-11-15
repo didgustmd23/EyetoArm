@@ -102,6 +102,8 @@
 | CB-5 | 로봇 기준 프레임 이름 | 예: `base_link`, `tool0` |
 
 👉 C 답 — CB-1 (링크 카메라 TF / 그리퍼 카메라 TF): 
+링크 카메라: link_cam_link / 광학 프레임 link_cam_optical_frame / 장착 링크 upper_arm_link / 토픽 /link_cam/image, /link_cam/camera_info
+그리퍼 카메라: gripper_cam_link / 광학 프레임 gripper_cam_optical_frame / 장착 링크 robotiq_85_base_link / 토픽 /gripper_cam/image, /gripper_cam/depth_image, /gripper_cam/camera_info
 
 👉 C 답 — CB-2 (가능/불가): 가능하도록 구성. SIM_TIME 기준으로 촬영 시각의 TF 조회. 카메라·TF 통합 후 실제 일치 여부 검증 필요.
 
