@@ -1,6 +1,6 @@
 # B 담당 협업 요청 초안 (A·C)
 
-문서 버전 0.3 · 작성 B담당 · 2026-11-13
+문서 버전 0.4 · 작성 B담당 · 2026-11-16
 **목적:** B(보정·좌표)가 A·C와 **무엇을 주고받는지**, **누가 무엇을 맡는지**를 확정하기 위한 요청서입니다.
 
 > ### ✍️ 답하는 방법 (1분이면 끝나요)
@@ -222,3 +222,77 @@ IK(역기구학) = "손이 여기 가려면 관절 6개를 각각 몇 도 돌려
 - push까지 하면 B담당이 `git pull`로 받아서 확인합니다.
 - 결정된 내용은 B 상세설계(§12·§13·§15)에 반영하겠습니다.
 - **같은 줄을 두 사람이 동시에 고치면 충돌**이 날 수 있어요. 자기 이름(A/C) 줄만 고쳐 주세요.
+
+---
+
+## 6. 받은 요청 회신
+
+다른 담당이 B에게 보낸 요청의 답을 여기에 모읍니다. 요청한 문서에는 이 절을 가리키는 한 줄만 남깁니다.
+
+### DB-01 (D → B) 규격·측정값과 중심점 영상
+
+**B 답신(2026-11-16):**
+
+- **단위:** B 내부 계산은 m. B가 내보내는 결과(C 액션·표시 JSON)는 위치·길이 **mm**, 각도 **deg**로 B가 한 번만 변환합니다. D는 다시 변환하지 않습니다.
+- **각도:** `theta_deg`는 작업 좌표 +X에서 반시계 방향, 0~180°. 너트는 `theta_valid=false`, `theta_deg=null`(방향 없음).
+- **규격 판정 기준(볼트는 머리 포함 전체 길이):**
+
+| 규격 | 부품 | 기준 | 허용 범위 | 상자 |
+| --- | --- | --- | --- | --- |
+| BOLT_A | M6×12 | 18 mm | 14~22 mm | A 상자 (120, 450) mm |
+| BOLT_B | M6×40 | 46 mm | 40~52 mm | B 상자 (320, 450) mm |
+| NUT | M6 | 맞변 약 10 mm | 7~14 mm | 너트 상자 (550, 760) mm |
+| UNRESOLVED | 판정 불가 | — | — | 집지 않음 |
+
+- **판정 규칙:** 길이÷폭 ≥ 1.5 → 볼트(길이로 A/B), 아니면 크기로 NUT, 어디에도 맞지 않으면 UNRESOLVED.
+- **무효 사유와 책임:** `CALIBRATION_MISMATCH`(A), `CONTOUR_TOO_SMALL`(A), `ASPECT_TOO_LOW`(B), `LENGTH_OUT_OF_RANGE`(B), `NUT_SIZE_OUT_OF_RANGE`(B).
+- **결과 JSON 예시(시뮬레이션 실측값):**
+
+```json
+{"source_id": "link_cam", "image_seq": 1532, "part_track_id": 7, "calibration_id": "cal-02deec24c525",
+ "spec": "BOLT_B", "class_name": "bolt", "valid": true, "reason": null, "reason_owner": null,
+ "center_w_mm": [538.9, -151.2], "theta_deg": 176.6, "theta_valid": true,
+ "length_mm": 49.7, "width_mm": 7.2}
+```
+
+```json
+{"source_id": "link_cam", "image_seq": 1532, "part_track_id": 8, "calibration_id": "cal-02deec24c525",
+ "spec": "NUT", "class_name": "nut", "valid": true, "reason": null, "reason_owner": null,
+ "center_w_mm": [550.7, 0.1], "theta_deg": null, "theta_valid": false,
+ "length_mm": 10.6, "width_mm": 9.9}
+```
+
+- **center 주석 영상:** 링크 카메라 원본 사진 위에 B 결과(윤곽·중심점·방향 화살표·규격·길이)를 그린 영상. 원본과 같은 `source_id`·`image_seq`·촬영 시각(`header.stamp`)·`frame_id`(`link_cam_optical_frame`)를 그대로 씁니다. ROS 토픽 `/b/center_overlay/image`로 C에 보내는 것을 제안합니다(이름은 C와 11/17 확정).
+- **C에 보내는 조건:** `valid=true`인 결과만 집기 목표로 보냅니다. 무효 결과는 표시용으로만 보내고 사유를 붙입니다.
+
+### DB-02 (D → B) B→C 액션 단위와 관측 상관
+
+**B 답신(2026-11-16):** C 회신(§4 IK-1·IK-2·§4.2·§4.3·CB-4·CB-5)에 맞춰 아래로 정했습니다. C는 11/17·11/19 확인 일정에서 최종 확인해 주세요.
+
+| # | 항목 | 결정 |
+| --- | --- | --- |
+| 1 | 단위 | 위치 **mm**, 방향 **쿼터니언 [x, y, z, w]**. B 내부는 m, 내보낼 때 B가 한 번만 변환 |
+| 2 | 기준 좌표 | `base_link` (= `world`, 로봇 바닥이 원점) |
+| 3 | 움직이는 벨트 | B는 **찍은 위치 + 찍은 시각(SIM_TIME, ns)**만 보냄. 벨트 속도·잡는 시점 예측은 C |
+| 4 | 잡는 방향 | 집게 가운데 프레임 G: z = 아래, x = 손가락 닫히는 방향 = 볼트 각도 + 90°. 180° 다른 후보 **2개**, C가 선택 |
+| 5 | 잡는 점 | G 기준 (볼트 무게중심, 높이 = 벨트 위 5 mm = 105 mm). G → `tool0` 오프셋은 C가 적용 |
+| 6 | 너트 | 집지 않음 → `PASS_THROUGH` (벨트 끝 너트 상자로 흘러감) |
+| 7 | 놓는 곳 | 상자 가운데, 상자 윗면 위 100 mm (z = 180 mm), 집게 벌림 20 mm |
+| 8 | 보내는 조건 | `valid=true` 볼트만 `PICK_PLACE`. 무효·판정 불가는 `SKIP` + 사유 |
+
+- **관측 → 목표 → 실행 연결 키:** `source_id`, `image_seq`, `part_track_id`, `calibration_id`, `capture_stamp`(SIM_TIME ns). A 관측의 키를 B가 바꾸지 않고 그대로 넘깁니다(A B-07).
+- **목표 예시(`PICK_PLACE`, 긴 볼트):**
+
+```json
+{"kind": "PICK_PLACE", "frame_id": "base_link", "source_id": "link_cam", "image_seq": 1532,
+ "part_track_id": 7, "capture_stamp": {"base": "SIM_TIME", "ns": 94264000000},
+ "calibration_id": "cal-02deec24c525", "spec": "BOLT_B", "reason": null,
+ "observed_position_mm": [538.9, -151.2, 105.0],
+ "grasp_candidates": [
+   {"position_mm": [538.9, -151.2, 105.0], "orientation_xyzw": [0.6858, -0.7278, 0.0, 0.0], "closing_yaw_deg": -93.4},
+   {"position_mm": [538.9, -151.2, 105.0], "orientation_xyzw": [0.7278, 0.6858, 0.0, 0.0], "closing_yaw_deg": 86.6}],
+ "gripper_opening_mm": 20.0,
+ "place": {"bin": "BOLT_B", "position_mm": [320.0, 450.0, 180.0], "orientation_xyzw": [1.0, 0.0, 0.0, 0.0]}}
+```
+
+- **구현:** `src/eyetoarm/transforms/grasp.py`의 `build_sort_goal()`이 이 사전을 만듭니다. ROS 액션 메시지 필드 이름은 C의 액션 정의가 나오면 이 사전에서 그대로 옮깁니다.
