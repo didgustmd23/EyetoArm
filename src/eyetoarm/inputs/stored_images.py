@@ -38,6 +38,10 @@ class StoredImageSource:
       이 시각은 파일 디코딩을 마친 PC 시각이며 촬영 시각이 아니다. 촬영 지연·실제 관측
       시간·로봇 목표 유효성의 근거로 쓰지 않는다.
     - `source_index`는 원래 목록에서의 0부터 시작하는 위치다(성공 순번이 아님).
+    - `capture_generation`: `generation_provider`가 None이면 생성 때 받은 고정 값(기본 0)을 쓴다.
+      공급자가 있으면 성공한 새 프레임을 만들 때만 순번·시계 다음에 한 번 읽어 쓴다(`video.py`와 같은
+      순서). 실패·EOF·빈 목록·close 뒤 `read()`와 `current()`에서는 읽지 않고, 이미 내보낸 프레임의
+      세대를 바꾸지 않는다. 세대를 올리는 것은 파이프라인이다(A 상세설계 §4·§5.4, 계획 작업 3).
     - 디코딩한 배열의 소유권은 프레임에 넘긴다. 소스는 그 배열을 다시 쓰지 않고 읽기 전용으로
       표시한다. 읽기 전용 표시는 다른 별칭을 통한 변경까지 막지 못한다. 소비자가 고치려면 복사한다.
     - `current()`는 마지막 성공 프레임과 같은 객체다(정지 화면 재처리용). 시계·순번을 읽지 않는다.
@@ -52,12 +56,14 @@ class StoredImageSource:
 
     def __init__(self, paths: Sequence[str | os.PathLike], *, source_id: str,
                  issuer: FrameIdIssuer, capture_generation: int = 0,
-                 clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
-        """경로 목록을 복사해 두고 발급기·세대·시계를 주입받는다. 파일은 `read()` 때 연다."""
+                 clock_ns: Callable[[], int] = time.monotonic_ns,
+                 generation_provider: Callable[[], int] | None = None) -> None:
+        """경로 목록을 복사해 두고 발급기·세대(고정 값 또는 공급자)·시계를 주입받는다. 파일은 `read()` 때 연다."""
         self._paths = [os.fspath(p) for p in paths]
         self._source_id = source_id
         self._issuer = issuer
         self._capture_generation = capture_generation
+        self._generation_provider = generation_provider
         self._clock_ns = clock_ns
         self._next_index = 0
         self._current: FramePacket | None = None
@@ -105,6 +111,13 @@ class StoredImageSource:
 
         seq = self._issuer.next_seq()
         received_ns = self._clock_ns()
+
+        # 공급자가 있으면 새 프레임마다 한 번 읽고, 없으면 고정 세대를 쓴다
+        if self._generation_provider is None:
+            generation = self._capture_generation
+        else:
+            generation = self._generation_provider()
+
         frame = FramePacket(
             image=image,
             run_id=self._issuer.run_id,
@@ -117,7 +130,7 @@ class StoredImageSource:
             height=int(image.shape[0]),
             crop=None,
             calibration_id=None,
-            capture_generation=self._capture_generation,
+            capture_generation=generation,
             optical_frame=None,
             ros_stamp_ns=None,
             source_ref=path,
