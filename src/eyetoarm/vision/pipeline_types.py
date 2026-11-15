@@ -4,8 +4,9 @@
 A 상세설계 §5.1(식별자)·§5.4(세대·재처리 조건)·§9(처리 기록·처리 건수).
 
 - 이름·필드 묶음은 계획의 **제안**이며 A 내부 타입이다. D API·B 계약·공통형이 아니다.
-- 검출 설정은 기존 `PlanarConfig`(frozen, `config_sha256`)를 그대로 쓴다. 같은 의미의 설정·해시를
-  새로 만들지 않는다.
+- 검출 설정은 기존 `PlanarConfig` 또는 AI 분할 설정 `AiSegConfig`(둘 다 frozen, `config_sha256`)다(YOLO 연결
+  계획 r2 G1). 같은 의미의 설정·해시를 새로 만들지 않고, AI 설정을 외부 클로저에 숨겨 같은 설정 ID로 여러 모델을
+  돌리지 않는다. 표시 결과도 `PlanarResult` 또는 `AiSegResult`다(G3·G4).
 - `JobOutcome`·`PipelineCounters`는 작업 4에서 채운다. `ProcessRecord`·`InputStateRecord`는 필드
   정의만 두며 채우는 동작은 작업 5에서 붙인다.
 - 명령 ID·가짜 식별자를 만들지 않는다. Qt·ROS·TCP를 import하지 않는다.
@@ -22,7 +23,13 @@ from eyetoarm.common.types import (
     PlanarObservation,
     TimestampBase,
 )
+from eyetoarm.vision.ai_config import AiSegConfig
+from eyetoarm.vision.ai_result import AiSegResult
 from eyetoarm.vision.planar import PlanarConfig, PlanarResult
+
+# 검출 설정·표시 결과로 허용하는 형(YOLO 연결 계획 r2 G1–G4)
+DetectorConfig = PlanarConfig | AiSegConfig
+DisplayResult = PlanarResult | AiSegResult
 
 
 def _require_text(value, name: str) -> None:
@@ -65,14 +72,14 @@ class PipelineSettings:
 
     - `mode`는 A 내부 처리 모드다. TCP 명령 모드가 아니며 허용 값은 문서 미정이라
       비어 있지 않은 문자열이면 받는다.
-    - `detector_config`는 기존 `PlanarConfig`. 생성자가 이미 값을 검증했다.
+    - `detector_config`는 `PlanarConfig`(OpenCV) 또는 `AiSegConfig`(AI). 생성자가 이미 값을 검증했다.
     - `profile`이 None이면 표시용 처리만 가능하다(B 유효 입력·재처리 불가).
     - 오버레이 색 등 표시 전용 설정은 처리 설정이 아니므로 두지 않는다(A 상세설계 §5.4).
     """
 
     source_id: str
     mode: str
-    detector_config: PlanarConfig
+    detector_config: DetectorConfig
     profile: SourceProfile | None
 
     def __post_init__(self) -> None:
@@ -80,15 +87,16 @@ class PipelineSettings:
         _require_text(self.source_id, "source_id")
         _require_text(self.mode, "mode")
 
-        if not isinstance(self.detector_config, PlanarConfig):
-            raise ValueError(f"detector_config must be PlanarConfig: {type(self.detector_config).__name__}")
+        if not isinstance(self.detector_config, (PlanarConfig, AiSegConfig)):
+            raise ValueError(f"detector_config must be PlanarConfig or AiSegConfig: "
+                             f"{type(self.detector_config).__name__}")
 
         if self.profile is not None and not isinstance(self.profile, SourceProfile):
             raise ValueError(f"profile must be SourceProfile or None: {type(self.profile).__name__}")
 
     @property
     def detector_config_id(self) -> str:
-        """검출 설정 식별자(`PlanarConfig.config_sha256`)."""
+        """검출 설정 식별자(`PlanarConfig`·`AiSegConfig`의 `config_sha256`)."""
         return self.detector_config.config_sha256
 
 
@@ -155,7 +163,7 @@ class JobOutcome:
     context: JobContext
     status: JobStatus
     observation: PlanarObservation | None
-    display_result: PlanarResult | None
+    display_result: DisplayResult | None
     error: str | None
     invalidation: CandidateInvalidationEvent | None
     applied: bool = False
@@ -170,6 +178,9 @@ class ProcessRecord:
     - `command_id`는 A가 만들지 않는다. 항상 None이며 다른 값은 ValueError.
     - `eval_run_id`는 평가 실행 중일 때만 평가 도구가 발급한 값이고 아니면 None이다(A §9 「처리 작업마다
       `eval_run_id`(평가 중일 때)」). A가 만들지 않는다. 기본값이 있는 끝 필드라 기존 생성자와 호환된다.
+    - AI 기록(YOLO 연결 계획 r2 §4.6, A §9): `method`("opencv"·"ai", 시작 설정 기준), `model_id`(AI만), `infer_ms`
+      (AI 완료의 predict 호출 ms), `ai_instances`(AI 완료의 인스턴스별 클래스·점수·거부·잘림·면적 dict 튜플, 다각형 없음).
+      모두 기본값 None인 끝 필드다. 실패·중단·세대 폐기에는 인스턴스가 없다.
     """
 
     run_id: str
@@ -192,6 +203,10 @@ class ProcessRecord:
     process_ms: float | None
     command_id: None
     eval_run_id: str | None = None
+    method: str | None = None
+    model_id: str | None = None
+    infer_ms: float | None = None
+    ai_instances: tuple | None = None
 
     def __post_init__(self) -> None:
         """명령 ID를 만들지 않는다는 계약과 eval_run_id 형식(None 또는 비어 있지 않은 문자열)을 검사한다."""

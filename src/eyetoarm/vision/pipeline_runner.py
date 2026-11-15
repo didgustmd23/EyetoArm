@@ -36,8 +36,10 @@ import traceback
 from dataclasses import dataclass, field
 from typing import Callable
 
-from eyetoarm.common.types import FramePacket, InputStatus, InputStatusEvent, InvalidationKind, PlanarObservation
+from eyetoarm.common.types import (CandidateInvalidationEvent, FramePacket, InputStatus, InputStatusEvent,
+                                   InvalidationKind, PlanarObservation)
 from eyetoarm.inputs.base import FrameIdIssuer, new_run_id
+from eyetoarm.vision.ai_result import AiJobConfigError, ModelPrepareError
 from eyetoarm.vision.pipeline import GenerationCause, VisionPipeline
 from eyetoarm.vision.pipeline_opencv import process_opencv
 from eyetoarm.vision.pipeline_records import InputStateTracker, PipelineLog
@@ -96,6 +98,9 @@ class RunnerConfig:
       (2026-11-15 「일단 개발값으로 10, 1로 넣고 운용 테스트하면서 조절」)이며 운영 최종값이 아니다. 첫 값은 run 한 번에서
       실제 detector에 넘긴 최초 작업 하나에만, 둘째 값은 그 뒤 모든 작업에 쓴다. **둘 다 None이면 감시 끔**(6a 동기
       경로), 한쪽만 None은 오류다.
+    - `model_load_timeout_s`(10.0): AI 모델 준비(`prepare`: 파일 확인·해시·import·생성·검사) 상한. **A 임시 개발 기본값**
+      (YOLO 연결 구현 지시 Q1)이며 사용자 확정 첫 검출 10 s·이후 1 s와 다르다. 준비는 첫 검출 기회를 소모하지 않는다.
+      감시를 끄면 쓰지 않는다(준비를 동기로 부름).
     - `cancel_grace_s`(0.2)·`worker_cleanup_limit_s`(0.3)·`stop_check_interval_s`(0.02): 시간 초과·정지 뒤 worker 반환
       유예, close 때 worker 정리 한도, 검출 대기 중 정지 요청·기한 확인 간격. 문서 근거 없는 **A 임시 개발 기본안**
       (설계 113 r3 시험 값)이며 사용자 확정 10/1과 구분한다. 유예·정리 한도는 실제 단조 시계로 잰다.
@@ -107,6 +112,7 @@ class RunnerConfig:
     max_frames: int | None = None
     first_detect_timeout_s: float | None = 10.0
     detect_timeout_s: float | None = 1.0
+    model_load_timeout_s: float = 10.0
     cancel_grace_s: float = 0.2
     worker_cleanup_limit_s: float = 0.3
     stop_check_interval_s: float = 0.02
@@ -130,7 +136,7 @@ class RunnerConfig:
             if value is not None and not _positive_finite(value):
                 raise ValueError(f"{name} must be None or a finite number > 0: {value!r}")
 
-        for name in ("cancel_grace_s", "worker_cleanup_limit_s", "stop_check_interval_s"):
+        for name in ("model_load_timeout_s", "cancel_grace_s", "worker_cleanup_limit_s", "stop_check_interval_s"):
             if not _positive_finite(getattr(self, name)):
                 raise ValueError(f"{name} must be a finite number > 0: {getattr(self, name)!r}")
 
@@ -231,6 +237,17 @@ def _logged(fn, *args, **kwargs):
 
 
 _STOP = object()       # worker 수신 칸 종료 표지
+
+
+class _Call:
+    """worker 수신 칸에 넣는 작업 아닌 호출(모델 준비)."""
+
+    __slots__ = ("fn",)
+
+    def __init__(self, fn) -> None:
+        """호출할 함수."""
+        self.fn = fn
+
 _NO_RESULT = object()  # 유예 안에 반환을 확인하지 못함
 
 
@@ -252,6 +269,7 @@ class _DetectorWorker:
         self._outbox: queue.Queue = queue.Queue(maxsize=1)
         self._stopping = threading.Event()  # 종료 의도(수신 칸 Full과 무관하게 보존, r1 F1)
         self.job: JobContext | None = None
+        self.call_name: str | None = None   # 작업이 아닌 호출(모델 준비) 이름. JobContext를 위조하지 않는다
         self.token: CancelToken | None = None
         self.submitted_monotonic: float | None = None
         self._thread = threading.Thread(target=self._loop, name="eyetoarm-detector", daemon=True)
@@ -259,21 +277,33 @@ class _DetectorWorker:
 
     @property
     def busy(self) -> bool:
-        """넣은 작업의 반환을 아직 받지 못했는가."""
-        return self.job is not None
+        """넣은 작업·호출의 반환을 아직 받지 못했는가."""
+        return self.job is not None or self.call_name is not None
 
     def submit(self, job: JobContext, token: CancelToken) -> None:
         """작업 하나를 넘긴다. 이전 호출이 반환하지 않았으면 계약 오류(겹침 금지)."""
         if self.busy:
-            raise RuntimeError(f"detector worker busy with job_seq={self.job.job_seq}")
+            raise RuntimeError(f"detector worker busy with {self.describe()}")
 
         self.job, self.token, self.submitted_monotonic = job, token, time.monotonic()
         self._inbox.put_nowait((job, token))
 
+    def submit_call(self, name: str, fn: Callable[[], object], token: CancelToken) -> None:
+        """작업이 아닌 호출(모델 준비) 하나를 같은 칸으로 넘긴다. 결과는 `(None, 값, 예외)`로 핸드오프된다."""
+        if self.busy:
+            raise RuntimeError(f"detector worker busy with {self.describe()}")
+
+        self.call_name, self.token, self.submitted_monotonic = name, token, time.monotonic()
+        self._inbox.put_nowait(_Call(fn))
+
+    def describe(self) -> str:
+        """지금 붙잡힌 일(보고용): "job_seq=N" 또는 호출 이름."""
+        return f"job_seq={self.job.job_seq}" if self.job is not None else str(self.call_name)
+
     def take(self, timeout: float):
         """핸드오프 칸에서 결과 하나를 최대 timeout 초 기다려 꺼낸다. 없으면 queue.Empty. 꺼내면 IDLE."""
         item = self._outbox.get(timeout=max(0.0, timeout))
-        self.job = self.token = self.submitted_monotonic = None
+        self.job = self.call_name = self.token = self.submitted_monotonic = None
 
         return item
 
@@ -298,7 +328,9 @@ class _DetectorWorker:
 
         if self.busy:
             report["stalled"] = True
-            report["stalled_job_seq"] = self.job.job_seq
+            report["stalled_job_seq"] = None if self.job is None else self.job.job_seq
+            report["stalled_call"] = self.call_name
+            report["stalled_what"] = self.describe()
             report["busy_s"] = round(time.monotonic() - self.submitted_monotonic, 3)
 
         # 종료 의도는 먼저 상태로 남긴다. 수신 칸이 차 있어(작업을 아직 꺼내지 않음) 표지를 못 넣어도, worker는 작업을
@@ -332,11 +364,18 @@ class _DetectorWorker:
             if item is _STOP or self._stopping.is_set():
                 return  # 종료 뒤 꺼낸 작업은 detector를 부르지 않는다
 
-            job, token = item
+            if isinstance(item, _Call):
+                job, token, call = None, None, item.fn
+            else:
+                (job, token), call = item, None
+
             value = exc = None
 
             try:
-                value = self._detector(job, token) if self._takes_token else self._detector(job)
+                if call is not None:
+                    value = call()
+                else:
+                    value = self._detector(job, token) if self._takes_token else self._detector(job)
             except BaseException as caught:  # 예외 분류는 제어 흐름이 한다(6a 동기 경로와 같은 규칙)
                 exc = caught
 
@@ -346,7 +385,7 @@ class _DetectorWorker:
             self._outbox.put_nowait((job, value, exc))
 
             # 다음 작업까지 IDLE로 기다리는 동안 끝난 작업의 영상을 붙잡지 않는다
-            item = job = token = value = exc = None
+            item = job = token = call = value = exc = None
 
 
 def _wait_for_detection(take, should_stop, clock, deadline: float, interval_s: float):
@@ -388,7 +427,8 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         b_consumer: Callable[[FramePacket, PlanarObservation], None] | None = None,
         config: RunnerConfig = RunnerConfig(), stderr=None, clock_ns: Callable[[], int] = time.monotonic_ns,
         should_stop: Callable[[], bool] | None = None, versions: dict | None = None,
-        detector_takes_token: bool = False, watch_clock: Callable[[], float] = time.monotonic) -> RunResult:
+        detector_takes_token: bool = False, watch_clock: Callable[[], float] = time.monotonic,
+        prepare: Callable[[], dict] | None = None) -> RunResult:
     """저장 입력 한 번을 끝까지 처리한다. 예외를 밖으로 내지 않고 `RunResult`(종료 코드 포함)를 돌려준다.
 
     `source_factory(issuer, generation_provider)`는 실행기가 만든 단일 발급기와 `pipeline.current_generation`을
@@ -402,6 +442,11 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
     - 검출 기한 경계: 제어 흐름이 worker에 작업을 넘기기 직전 `watch_clock()`부터, 핸드오프 칸에서 결과를 꺼내거나
       칸이 빈 채 기한을 판정할 때까지. 실측(#114)의 `process_opencv`·`predict` 호출 경계에 스레드 전달·깨우기 지연이
       더해진다. 파일 열기·디코딩·B 지점·기록은 포함하지 않는다.
+    - `prepare`(YOLO 연결 R3): AI 모델 준비 함수. run_meta 뒤 **프레임을 읽기 전에** 한 번 부른다. 감시를 켜면 같은 worker에
+      작업 아닌 호출로 넘기고 `model_load_timeout_s`로 감시한다(첫 검출 기회를 쓰지 않음). 성공하면 반환 dict를
+      `model_ready`로 기록한다. 실패는 프레임 없는 사건(`ModelPrepareError`의 kind, 그 밖은 MODEL_LOAD_FAILED, 시간 초과는
+      MODEL_LOAD_FAILED `prepare_timeout`)으로 적용·기록하고 프레임 없이 종료 1. 정지 요청·KeyboardInterrupt는 사건 없이
+      정리한다(계획 r2 §4.2 표). 가짜 image_seq·job_seq를 만들지 않는다.
     """
     err = stderr if stderr is not None else sys.stderr
     issuer = FrameIdIssuer(run_id or new_run_id())
@@ -445,6 +490,9 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
 
         if isinstance(exc, JobCancelled):
             handle(pipeline.fail(job, InvalidationKind.JOB_ABORTED, f"cancelled: {exc}" if str(exc) else "cancelled"))
+        elif isinstance(exc, AiJobConfigError):
+            # 작업 중 설정 불일치(ROI·시작 설정·class_map 밖 클래스)는 MODEL_CONFIG_INVALID 작업 값(A §5.4)
+            handle(pipeline.fail(job, InvalidationKind.MODEL_CONFIG_INVALID, exc.cause))
         elif isinstance(exc, KeyboardInterrupt):
             handle(pipeline.fail(job, InvalidationKind.JOB_ABORTED, "interrupted"))
             raise exc
@@ -531,12 +579,97 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
 
         return "stop" if what == "stop" else None
 
+    def prepare_failed(kind: InvalidationKind, cause: str, reason: str | None = None) -> None:
+        """준비 실패: 실행 실패(원래 원인)를 **먼저** 보존한 뒤 프레임 없는 사건 1건을 코어에 적용·기록한다(r1 F1).
+
+        사건 기록이 실패해도(_LogFailure) 원래 준비 실패 원인이 RunResult.errors·stderr에 남는다. 대표 정지 사유는
+        원래 준비 실패(먼저 정해짐)이고, 기록 실패는 바깥 처리에서 errors에 추가된다. 프레임은 읽지 않는다.
+        """
+        reason = reason or ("model_load_failed" if kind is InvalidationKind.MODEL_LOAD_FAILED
+                            else "model_config_invalid")
+        fail_run(reason, f"model prepare failed: {kind.value}: {cause}")
+        event = CandidateInvalidationEvent(
+            run_id=issuer.run_id, source_id=pipeline.settings.source_id, kind=kind, cause=cause,
+            event_monotonic_ns=clock_ns(), generation=pipeline.current_generation(),
+            detector_config_id=pipeline.settings.detector_config_id, job_seq=None, image_seq=None)
+        pipeline.apply_invalidation(event)
+        _logged(log.sync, pipeline)
+
+    def prepare_outcome(value, exc) -> bool:
+        """준비 반환·예외를 처리한다. 성공이면 model_ready를 쓰고 True."""
+        if exc is None:
+            _logged(log.write_model_ready, value if isinstance(value, dict) else {"info": repr(value)})
+            return True
+
+        if isinstance(exc, ModelPrepareError):
+            prepare_failed(exc.kind, exc.cause)
+        elif isinstance(exc, Exception):
+            prepare_failed(InvalidationKind.MODEL_LOAD_FAILED, f"{type(exc).__name__}: {exc}")
+        else:
+            raise exc   # KeyboardInterrupt·SystemExit 등은 6a 분류대로 실행 수준으로 올린다
+
+        return False
+
+    def run_prepare() -> bool:
+        """모델 준비 단계. 프레임 처리를 계속해도 되면 True."""
+        nonlocal worker
+
+        if not config.watchdog:
+            try:
+                value = prepare()
+            except BaseException as exc:
+                return prepare_outcome(None, exc)
+
+            return prepare_outcome(value, None)
+
+        if worker is None:
+            worker = _DetectorWorker(detector, detector_takes_token)
+
+        token = CancelToken()
+        started = watch_clock()
+        worker.submit_call("prepare", prepare, token)
+
+        try:
+            what, item = _wait_for_detection(worker.take, should_stop, watch_clock,
+                                             started + config.model_load_timeout_s, config.stop_check_interval_s)
+        except KeyboardInterrupt:
+            token._cancel()
+            raise
+
+        if what == "result":
+            _, value, exc = item
+            return prepare_outcome(value, exc)
+
+        token._cancel()
+
+        if what == "timeout":
+            prepare_failed(InvalidationKind.MODEL_LOAD_FAILED,
+                           f"prepare_timeout: model prepare did not finish within {config.model_load_timeout_s} s",
+                           reason="model_load_timeout")
+
+        late = _await_return(worker, config.cancel_grace_s, config.stop_check_interval_s)
+
+        if late is _NO_RESULT:
+            fail_run("worker_stalled", f"detector worker stalled: prepare did not return within cancel grace "
+                                       f"{config.cancel_grace_s} s after {what}; no detection")
+            result.stop_reason = "worker_stalled"   # 시간 초과 사건을 남겼어도 멈춤이 최종 정지 사유(계획 §4.2 표)
+            result.stalled = True
+            return False
+
+        result.late_results += 1   # 늦은 준비 결과는 버린다(실행은 이미 실패·정지로 끝남)
+
+        if what == "stop":
+            result.stop_reason = "stop_requested"
+
+        return False
+
     try:
         source = source_factory(issuer, pipeline.current_generation)
         _logged(log.write_run_meta, pipeline, started_monotonic_ns=clock_ns(), versions=versions)
         consecutive_errors = 0
+        proceed = prepare is None or run_prepare()
 
-        while True:
+        while proceed:
             if should_stop is not None and should_stop():
                 result.stop_reason = "stop_requested"
                 break
@@ -651,7 +784,8 @@ def _finish(pipeline, log, tracker, source, config, clock_ns, result, log_ok, er
             result.stalled = True
             result.exit_code = 1
             result.stop_reason = result.stop_reason or "worker_stalled"
-            result.errors.append(f"worker still running: job_seq={report['stalled_job_seq']}, busy "
+            what = report.get("stalled_what") or f"job_seq={report['stalled_job_seq']}"
+            result.errors.append(f"worker still running: {what}, busy "
                                  f"{report.get('busy_s')} s, did not return within cleanup limit "
                                  f"{config.worker_cleanup_limit_s} s (thread cannot be force-stopped)")
         elif not report["thread_stopped"]:

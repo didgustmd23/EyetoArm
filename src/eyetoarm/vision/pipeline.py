@@ -48,6 +48,8 @@ from eyetoarm.vision.pipeline_types import (
     QueueDropReason,
     QueueDropRecord,
 )
+from eyetoarm.vision.ai_config import AiSegConfig
+from eyetoarm.vision.ai_result import AiSegResult
 from eyetoarm.vision.planar import PlanarConfig, PlanarResult
 
 
@@ -120,10 +122,20 @@ class _TerminalMeta:
     first_applied: bool
 
 
-def _revalidated_config(config: PlanarConfig) -> PlanarConfig:
-    """`PlanarConfig` 생성자 검증을 다시 통과하는지 확인한다. 생성 뒤 값이 바뀌었으면 계약 오류."""
+def _revalidated_config(config):
+    """검출 설정이 자기 형(`PlanarConfig`·`AiSegConfig`)의 생성자 검증을 다시 통과하는지 확인한다.
+
+    생성 뒤 값이 바뀌었으면(검증 실패 또는 해시 불일치) 계약 오류. 형별로 같은 형의 생성자로만 다시 만든다(G2).
+    """
+    if not isinstance(config, (PlanarConfig, AiSegConfig)):
+        raise PipelineContractError(f"detector_config must be PlanarConfig or AiSegConfig: {type(config).__name__}")
+
     init_fields = {f.name: getattr(config, f.name) for f in dataclasses.fields(config) if f.init}
-    rebuilt = PlanarConfig(**init_fields)
+
+    try:
+        rebuilt = type(config)(**init_fields)
+    except ValueError as exc:
+        raise PipelineContractError(f"detector_config was modified after validation: {exc}") from exc
 
     if rebuilt.config_sha256 != config.config_sha256:
         raise PipelineContractError("detector_config was modified after validation")
@@ -155,7 +167,7 @@ def _validated_settings(settings) -> PipelineSettings:
     if not isinstance(settings, PipelineSettings):
         raise PipelineContractError(f"settings must be PipelineSettings: {type(settings).__name__}")
 
-    # 생성자 검증(형식)과 PlanarConfig 검증을 다시 통과해야 한다
+    # 생성자 검증(형식)과 검출 설정(PlanarConfig·AiSegConfig) 검증을 다시 통과해야 한다
     PipelineSettings(settings.source_id, settings.mode, settings.detector_config, settings.profile)
     _revalidated_config(settings.detector_config)
 
@@ -449,7 +461,7 @@ class VisionPipeline:
     # ------------------------------------------------------------------ terminal 처리·무효화
 
     def complete(self, job: JobContext, observation: PlanarObservation, *,
-                 display_result: PlanarResult | None = None) -> JobOutcome:
+                 display_result: PlanarResult | AiSegResult | None = None) -> JobOutcome:
         """작업 완료를 적용한다. 무효 관측(무검출 등)도 정상 완료다.
 
         순서: 작업 판별(미등록·복제는 계약 오류) → 재통지면 duplicate 응답 → 관측 타입·식별자 검사
@@ -786,8 +798,18 @@ class VisionPipeline:
         elif not valid and (type(reason) is not str or not reason):
             bad.append("reason")
 
-        if display_result is not None and not isinstance(display_result, PlanarResult):
-            bad.append("display_result_type")
+        # 방식 일치(G3): OpenCV 설정 작업은 opencv 관측·PlanarResult, AI 설정 작업은 ai 관측·AiSegResult(시작 설정 해시)
+        is_ai = isinstance(job.settings.detector_config, AiSegConfig)
+
+        # 생성 뒤 변조된 배열·비문자열이 진릿값 예외로 새지 않도록 타입까지 같은지 본다(`_same_id`, r1 F1)
+        if not _same_id(observation.method, "ai" if is_ai else "opencv"):
+            bad.append("method")
+
+        if display_result is not None:
+            if not isinstance(display_result, AiSegResult if is_ai else PlanarResult):
+                bad.append("display_result_type")
+            elif is_ai and not _same_id(display_result.config_sha256, job.detector_config_id):
+                bad.append("display_result_config")
 
         return bad
 
