@@ -1,13 +1,15 @@
-"""A 비전 파이프라인 상태 코어(작업 2·3) 단위시험 — 세대·설정 전이·최신 대기 프레임·작업 스냅샷·재처리.
+"""A 비전 파이프라인 상태 코어(작업 2~4) 단위시험 — 세대·설정 전이·최신 대기 프레임·작업 스냅샷·재처리.
+
+작업 4 시험(완료·실패·중단·무효화 순서·멱등·보관 정책)은 `test_pipeline_terminal.py`에 있다.
 
 근거: 계획 `docs/superpowers/plans/2026-11-15-a-vision-pipeline.md` r3 작업 2·3·「인터페이스 제안」,
 A 상세설계 §3(최신 프레임 1개·버퍼 비덮어쓰기)·§5.1(image_seq 수명)·§5.4(세대 증가 조건·설정 스냅샷·
 동일 프레임 재처리 조건)·§9(처리 건수·보존식), 공통 자료형 관리 초안 §3.5·§4.
 시계는 가짜 `clock_ns`를 주입한다. ROS·Qt·실제 입력 장치를 쓰지 않는다.
 
-작업 4 이전 임시 사항: `complete()`가 아직 없어 활성 작업을 끝내는 공개 경로가 없다. 재처리 시험은
-골격 헬퍼 `_release_active(job)`로 활성 슬롯만 비우고, 현재 관측 무효화 시험은 `_current_observation`에
-시험용 관측을 직접 넣는다. 작업 4에서 `complete()`로 바꾼다.
+활성 작업은 실제 `complete()`로 끝내고, 현재 관측도 `complete()`가 반영한 값으로 확인한다(작업 4에서
+`_release_active`·`_current_observation` 직접 조작을 대체). 누적 이력 방어선 시험 하나만
+`_clear_selection`을 막는 내부 조작을 남긴다.
 """
 import dataclasses
 import subprocess
@@ -22,6 +24,7 @@ from eyetoarm.inputs import base
 from eyetoarm.vision.pipeline import GenerationCause, PipelineContractError, VisionPipeline
 from eyetoarm.vision.pipeline_types import (
     JobContext,
+    JobStatus,
     PipelineSettings,
     QueueDropReason,
     SourceProfile,
@@ -116,12 +119,12 @@ def frame(image_seq=0, capture_generation=0, *, common_type=False, image=None, *
 
 
 def observation(job):
-    """작업 식별자를 그대로 옮긴 시험용 무효 관측(현재 관측 무효화 확인용)."""
+    """작업·프레임 식별자를 그대로 옮긴 시험용 무효 관측(NO_OBJECT, 가짜 detector 결과)."""
     return PlanarObservation(
         run_id=job.frame.run_id, source_id=job.frame.source_id, image_seq=job.frame.image_seq,
         capture_generation=job.frame.capture_generation, generation=job.generation,
         job_seq=job.job_seq, detector_config_id=job.detector_config_id, pixel_basis=PixelBasis.RAW,
-        calibration_id=None, observed_face=None, calc_contour=None, display_mask_contour=None,
+        calibration_id=job.frame.calibration_id, observed_face=None, calc_contour=None, display_mask_contour=None,
         candidate_count=0, selected_index=None, valid=False, reason="NO_OBJECT", process_ms=0.1,
         method="opencv", class_name=None, confidence=None, model_id=None)
 
@@ -174,13 +177,13 @@ class PipelineTestBase(unittest.TestCase):
         return (p.current_generation(), p.counters, p.selected_frame, p.pending_frame,
                 p.queue_drop_records, p.current_observation, p.settings)
 
-    def start_and_release(self, f, p=None):
-        """프레임을 offer·start하고 활성 슬롯만 비운다(작업 4 전 임시 경로). 시작한 작업을 돌려준다."""
+    def start_and_complete(self, f, p=None):
+        """프레임을 offer·start하고 무효 관측으로 실제 `complete()`한다. 시작한 작업을 돌려준다."""
         p = p or self.p
         self.assertTrue(p.offer_frame(f))
         job = p.start_next()
         self.assertIsNotNone(job)
-        p._release_active(job)
+        p.complete(job, observation(job))
 
         return job
 
@@ -209,9 +212,9 @@ class GenerationTransitionTest(PipelineTestBase):
                 clock = FakeClock()
                 p = VisionPipeline(settings(), run_id=RUN_ID, clock_ns=clock)
 
-                # 현재 관측이 있는 상태(작업 4 전 임시로 직접 설정)
-                job = self.start_and_release(frame(0), p)
-                p._current_observation = observation(job)
+                # 현재 관측이 있는 상태(실제 complete로 반영)
+                self.start_and_complete(frame(0), p)
+                self.assertIsNotNone(p.current_observation)
                 self.assertTrue(p.offer_frame(frame(1)))
 
                 new_settings = change(p.settings)
@@ -250,8 +253,9 @@ class GenerationTransitionTest(PipelineTestBase):
             PipelineSettings(source_id="src0", mode="planar", detector_config=config(),
                              profile=profile(), overlay_color=(0, 255, 0))
 
-        job = self.start_and_release(frame(0))
-        self.p._current_observation = obs = observation(job)
+        self.start_and_complete(frame(0))
+        obs = self.p.current_observation
+        self.assertIsNotNone(obs)
         self.assertTrue(self.p.offer_frame(frame(1)))
         before = self.snapshot()
         clock_calls = self.clock.calls
@@ -272,8 +276,8 @@ class GenerationTransitionTest(PipelineTestBase):
 
     def test_invalid_settings_change_is_atomic(self):
         """검증 실패(설정 형식·변조된 PlanarConfig·원인 불일치·모르는 원인)는 예외이며 세대·현재 결과·선택·대기·기록이 변하지 않는다."""
-        job = self.start_and_release(frame(0))
-        self.p._current_observation = observation(job)
+        self.start_and_complete(frame(0))
+        self.assertIsNotNone(self.p.current_observation)
         self.assertTrue(self.p.offer_frame(frame(1)))
         before = self.snapshot()
 
@@ -306,9 +310,9 @@ class GenerationTransitionTest(PipelineTestBase):
 
     def test_job_seq_is_not_reset_by_generation_change(self):
         """job_seq는 세대 변경으로 초기화되지 않고 실행 안에서 계속 증가한다(A 상세설계 §5.4)."""
-        first = self.start_and_release(frame(0))
+        first = self.start_and_complete(frame(0))
         self.p.change_settings(self.settings, cause=GenerationCause.RECONNECT)
-        second = self.start_and_release(frame(1, capture_generation=1))
+        second = self.start_and_complete(frame(1, capture_generation=1))
 
         self.assertEqual((first.job_seq, second.job_seq), (0, 1))
         self.assertEqual((first.generation, second.generation), (0, 1))
@@ -320,7 +324,7 @@ class ReprocessConditionTest(PipelineTestBase):
     def test_only_detector_changes_allow_selected_frame_reprocessing(self):
         """선택 프레임 수신 뒤 세대 증가가 모두 검출 설정 변경일 때만 재처리를 허용하고, 소스→검출 설정처럼 중간에 다른 전이가 있으면 거부한다."""
         # 검출 설정 변경만 두 번: 허용
-        self.start_and_release(frame(0))
+        self.start_and_complete(frame(0))
         self.p.change_settings(CHANGES[GenerationCause.DETECTOR_CONFIG_CHANGED](self.p.settings),
                                cause=GenerationCause.DETECTOR_CONFIG_CHANGED)
         self.p.change_settings(dataclasses.replace(self.p.settings, detector_config=config(fixed_threshold=90)),
@@ -338,7 +342,7 @@ class ReprocessConditionTest(PipelineTestBase):
             with self.subTest(first=cause):
                 clock = FakeClock()
                 p = VisionPipeline(settings(), run_id=RUN_ID, clock_ns=clock)
-                self.start_and_release(frame(0), p)
+                self.start_and_complete(frame(0), p)
                 p.change_settings(CHANGES[cause](p.settings), cause=cause)
                 p.change_settings(dataclasses.replace(p.settings, detector_config=config(fixed_threshold=90)),
                                   cause=GenerationCause.DETECTOR_CONFIG_CHANGED)
@@ -358,7 +362,7 @@ class ReprocessConditionTest(PipelineTestBase):
             with self.subTest(first=cause):
                 p = VisionPipeline(settings(), run_id=RUN_ID, clock_ns=FakeClock())
                 p._clear_selection = lambda: None  # 선택 비우기를 막아 이력 판정만 남긴다
-                self.start_and_release(frame(0), p)
+                self.start_and_complete(frame(0), p)
 
                 # 프로파일 변경은 없음→원래 프로파일로 되돌려 프로파일 조건은 통과시키고 이력만 남긴다
                 if cause is GenerationCause.PROFILE_CHANGED:
@@ -375,7 +379,7 @@ class ReprocessConditionTest(PipelineTestBase):
 
     def test_combined_change_is_not_treated_as_detector_only(self):
         """한 호출에서 검출 설정과 다른 설정이 함께 바뀌면 비검출 전이로 보고 선택을 비운다(M3 임시 결정)."""
-        self.start_and_release(frame(0))
+        self.start_and_complete(frame(0))
         both = dataclasses.replace(self.settings, mode="planar_alt", detector_config=config(fixed_threshold=90))
 
         event = self.p.change_settings(both, cause=GenerationCause.DETECTOR_CONFIG_CHANGED)
@@ -401,7 +405,7 @@ class ReprocessConditionTest(PipelineTestBase):
             with self.subTest(case=name):
                 clock = FakeClock()
                 p = VisionPipeline(settings(profile=prof), run_id=RUN_ID, clock_ns=clock)
-                self.start_and_release(frame(0, **frame_over), p)
+                self.start_and_complete(frame(0, **frame_over), p)
                 before = self.snapshot(p)
                 calls = clock.calls
 
@@ -411,7 +415,7 @@ class ReprocessConditionTest(PipelineTestBase):
 
         # 대조: 일치하는 프로파일이면 시작
         p = VisionPipeline(settings(), run_id=RUN_ID, clock_ns=FakeClock())
-        self.start_and_release(frame(0), p)
+        self.start_and_complete(frame(0), p)
         self.assertIsNotNone(p.start_reprocess())
 
     def test_reprocess_needs_selection_and_no_active_job(self):
@@ -461,7 +465,7 @@ class PendingQueueTest(PipelineTestBase):
 
         # 다음 시작은 활성 작업이 끝난 뒤 C
         self.assertIsNone(self.p.start_next())
-        self.p._release_active(job_a)
+        self.p.complete(job_a, observation(job_a))
         self.assertEqual(self.p.start_next().frame.image_seq, 2)
         self.assert_received_balance()
 
@@ -574,11 +578,11 @@ class PendingQueueTest(PipelineTestBase):
         self.assert_received_balance()
 
         # 혼합: 새 대기, 교체, 재처리(받기 아님)
-        p._release_active(job)
+        p.complete(job, observation(job))  # 세대 전이 뒤 완료: 세대 폐기
         p.offer_frame(frame(4, capture_generation=1))
         p.offer_frame(frame(5, capture_generation=1))
         job = p.start_next()
-        p._release_active(job)
+        p.complete(job, observation(job))
         p.change_settings(dataclasses.replace(p.settings, detector_config=config(fixed_threshold=90)),
                           cause=GenerationCause.DETECTOR_CONFIG_CHANGED)
         self.assertIsNotNone(p.start_reprocess())
@@ -628,7 +632,7 @@ class JobSnapshotTest(PipelineTestBase):
         self.assertEqual(self.clock.calls, calls)
 
         # 활성 작업을 끝낸 뒤 다음 job_seq는 직전+1
-        self.p._release_active(job)
+        self.p.complete(job, observation(job))
         self.assertEqual(self.p.start_next().job_seq, job.job_seq + 1)
 
     def test_job_keeps_original_configuration(self):
@@ -671,19 +675,20 @@ class JobSnapshotTest(PipelineTestBase):
         self.p.offer_frame(frame(2))
         self.assertIs(self.p.selected_frame, job.frame)
 
-        # 처리 중 검출 설정만 변경: 선택 유지(완료 폐기 경로는 작업 4)
+        # 처리 중 검출 설정만 변경: 선택 유지
         self.p.change_settings(dataclasses.replace(self.settings, detector_config=config(fixed_threshold=90)),
                                cause=GenerationCause.DETECTOR_CONFIG_CHANGED)
         self.assertIs(self.p.selected_frame, job.frame)
 
-        # 조건을 만족하면 재처리 가능, 재처리 시작은 선택을 바꾸지 않음
-        self.p._release_active(job)
+        # 늦은 완료는 세대 폐기되지만 선택은 보존된다. 조건을 만족하면 재처리 가능
+        self.assertIs(self.p.complete(job, observation(job)).status, JobStatus.DISCARDED_GENERATION)
+        self.assertIs(self.p.selected_frame, job.frame)
         re_job = self.p.start_reprocess()
         self.assertIs(re_job.frame, job.frame)
         self.assertIs(self.p.selected_frame, job.frame)
 
         # 다음 실제 start_next는 선택을 새 프레임으로 교체
-        self.p._release_active(re_job)
+        self.p.complete(re_job, observation(re_job))
         self.p.offer_frame(frame(3, capture_generation=1))
         new_job = self.p.start_next()
         self.assertIs(self.p.selected_frame, new_job.frame)
@@ -696,7 +701,7 @@ class JobSnapshotTest(PipelineTestBase):
 
             with self.subTest(cause=cause):
                 p = VisionPipeline(settings(), run_id=RUN_ID, clock_ns=FakeClock())
-                self.start_and_release(frame(0), p)
+                self.start_and_complete(frame(0), p)
                 self.assertIsNotNone(p.selected_frame)
 
                 p.change_settings(CHANGES[cause](p.settings), cause=cause)
@@ -737,7 +742,7 @@ class JobSnapshotTest(PipelineTestBase):
         source = CountingSource([frame(issuer.next_seq())])
         self.assertTrue(self.p.offer_frame(source.read()))
         first = self.p.start_next()
-        self.p._release_active(first)
+        self.p.complete(first, observation(first))
         reads, seqs = source.reads, issuer.calls
 
         self.p.change_settings(dataclasses.replace(self.settings, detector_config=config(fixed_threshold=90)),
@@ -766,19 +771,7 @@ class JobSnapshotTest(PipelineTestBase):
 
 
 class SkeletonBoundaryTest(PipelineTestBase):
-    """작업 4로 미룬 API와 의존성 경계(계획 Global Constraints·작업 3)."""
-
-    def test_terminal_api_is_not_implemented_yet(self):
-        """complete·fail·apply_invalidation·close는 작업 4 전이라 NotImplementedError를 낸다."""
-        self.p.offer_frame(frame(0))
-        job = self.p.start_next()
-
-        for call in (lambda: self.p.complete(job, observation(job)),
-                     lambda: self.p.fail(job, InvalidationKind.INFERENCE_ERROR, "x"),
-                     lambda: self.p.apply_invalidation(None),
-                     lambda: self.p.close()):
-            with self.assertRaises(NotImplementedError):
-                call()
+    """의존성 경계와 작업 반환 타입(계획 Global Constraints·작업 3)."""
 
     def test_pipeline_imports_no_ros_qt_tcp_or_other_roles(self):
         """파이프라인 모듈을 import해도 ROS·Qt·ultralytics·TCP·GUI·B/C/D 모듈이 로드되지 않고 스레드를 만들지 않는다."""
