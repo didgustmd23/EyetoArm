@@ -21,7 +21,7 @@
 │                   │ 또는 카메라 중계(--view camera)│ D 임시 경로 · gz_view.py │
 │ 보조 영상 2칸     │ 자리만                        │ C 표시 연결 · 미결       │
 │ 측정·보정 상세    │ —                             │ A·B 결과 → C 중계 · 미결 │
-│ 공정 단계 · 수량  │ 미확인 · —                    │ C 도착 확인 · 미결       │
+│ 공정 단계 · 수량  │ 실제 미확인 · — / 모의 사건 집계│ C 도착 확인 · 미결       │
 │ START/STOP/RECOVER│ 실제 비활성 / 모의에서만 조작  │ C · 부록 A 미승인        │
 │ CANCEL(수동 이동) │ 현재 명령 추적 중 활성         │ C · TCP 1.1              │
 │ TX/RX 기록        │ 실제 송수신(준비 조회)        │ C · TCP 1.1 확정         │
@@ -48,7 +48,7 @@ if not __package__:
 from PySide6.QtCore import QIODevice, QSaveFile, QSettings, Qt, QTimer
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QMainWindow, QScrollArea, QStackedWidget,
+    QApplication, QCheckBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QMainWindow, QScrollArea, QStackedWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -66,11 +66,16 @@ class MainWindow(QMainWindow):
     def __init__(self, link, view, demo: bool = False) -> None:
         super().__init__()
         self.link, self.view, self.demo = link, view, demo
-        self.sort_demo = None
+        self.sort_demo = self.tally = self.supplier = None
         self._sort_logged = None
         if demo:
-            from eyetoarm.gui.sort_demo import DemoSortController
+            from eyetoarm.gui.sort_demo import DemoProcessSupplier, DemoSortController, SortTally
             self.sort_demo = DemoSortController(self)
+            # 5일차 모의 공정: 공급자는 자기 사건으로만 권위 집합을 만들고, 집계는 조작 상태와 따로 둔다
+            self.supplier = DemoProcessSupplier()
+            self.tally = SortTally(self.supplier.scope)
+        self._cycle_timer = QTimer(self, interval=250)   # 모의 1주기 사건 공급. 실제 도착 근거가 아니다
+        self._cycle_timer.timeout.connect(self._cycle_step)
         # 송수신 카드 꼬리표. 모의 모드에서는 「실제」라고 적지 않는다
         self._live_tag = "모의 · 실제 아님" if demo else "실제 송수신"
         self.setWindowTitle("Eye To Arms · D 운영 GUI (모의 분류)" if demo else "Eye To Arms · D 운영 GUI (TCP 1.1)")
@@ -241,10 +246,15 @@ class MainWindow(QMainWindow):
             self.sort_fault_button.clicked.connect(self._inject_demo_recovery)
             self.sort_connection_button = pill("모의 연결 끊기", tooltip="실제 TCP 연결이 없는 내부 대역의 연결 상태를 바꿉니다.")
             self.sort_connection_button.clicked.connect(lambda: self.link.set_connected(self.link.state != "connected"))
+            self.sort_cycle_button = pill("모의 1주기", tooltip="모의 RUNNING에서 볼트 A·볼트 B·너트 정상 단계·도착 사건을 내부에서만 재현합니다. 실제 전송 없음.")
+            self.sort_cycle_button.clicked.connect(self._start_cycle)
             scenarios = QHBoxLayout()
             scenarios.addWidget(self.sort_fault_button)
             scenarios.addWidget(self.sort_connection_button)
+            scenarios.addWidget(self.sort_cycle_button)
             command_card.body.addLayout(scenarios)
+            self.process_detail = label("모의 공정 대기", "Caption", wrap=True)   # 인식·로봇·벨트·그리퍼·보유·실패
+            command_card.body.addWidget(self.process_detail)
             command_card.body.addWidget(label("실제 모드 분류 명령은 부록 A 승인 대기입니다.", "Caption", wrap=True))
         command_card.body.addStretch(1)
 
@@ -330,25 +340,35 @@ class MainWindow(QMainWindow):
         self._rows(measure_card, [("(u, v) px", NO_VALUE), ("(X, Y) mm", NO_VALUE), ("θ °", NO_VALUE)])
         measure_card.body.addStretch(1)
 
-        stage_card = Card("공정 단계", "C 확인 전")
-        stage_card.body.addWidget(label("볼트", "Caption"))
-        self.bolt_stages = StageStrip(["이동 중 집기", "운반", "도착", "복귀"])
+        stage_card = Card("공정 단계", "모의 · 실제 아님" if self.demo else "C 확인 전")
+        stage_card.body.setSpacing(8)
+        self.bolt_caption = label("볼트 · 단계 미확인", "Caption")
+        stage_card.body.addWidget(self.bolt_caption)
+        self.bolt_stages = StageStrip(["집기", "운반", "도착", "복귀"])
+        self.bolt_stages.setToolTip("이동 중 집기 → 운반 → 도착 확인 → 복귀. 정상 집기에서 벨트를 멈추는 뜻이 아닙니다.")
         stage_card.body.addWidget(self.bolt_stages)
-        stage_card.body.addWidget(label("너트", "Caption"))
+        self.nut_caption = label("너트 · 단계 미확인", "Caption")
+        stage_card.body.addWidget(self.nut_caption)
         self.nut_stages = StageStrip(["통과", "도착"])
         stage_card.body.addWidget(self.nut_stages)
-        stage_card.body.addWidget(label("C가 확인한 단계만 강조합니다. 지금은 전부 미확인입니다.", "Caption", wrap=True))
+        self.stage_note = label("모의 사건으로 확인된 단계만 강조합니다." if self.demo
+                                else "C가 확인한 단계만 강조합니다. 지금은 전부 미확인입니다.", "Caption", wrap=True)
+        stage_card.body.addWidget(self.stage_note)
         stage_card.body.addStretch(1)
 
-        count_card = Card("수량", "C 도착 확인 전")
-        self._rows(count_card, [("볼트 A 상자", NO_VALUE), ("볼트 B 상자", NO_VALUE), ("너트 상자", NO_VALUE), ("격리", NO_VALUE)])
+        count_card = Card("수량", "모의 · 미확인" if self.demo else "C 도착 확인 전")
+        self.count_tag = count_card.findChild(QLabel, "Tag")
+        self.count_values = dict(zip(("BOLT_A", "BOLT_B", "NUT", "QUARANTINE", "EXCEPTION"), self._rows(count_card, [
+            ("볼트 A 상자", NO_VALUE), ("볼트 B 상자", NO_VALUE), ("너트 상자", NO_VALUE), ("격리", NO_VALUE),
+            ("오분류 / 미판정", NO_VALUE)])))
+        self.count_values["EXCEPTION"].setToolTip("예외 도착: 오분류(WRONG_BIN) / 미판정(UNRESOLVED). 정상 상자 수량에는 포함하지 않습니다.")
         count_card.body.addStretch(1)
 
         recent_card = Card("최근 TX/RX", self._live_tag)
         recent_card.body.addWidget(self.traffic_recent, 1)
 
         for card, stretch in ((measure_card, 2), (stage_card, 4), (count_card, 2), (recent_card, 5)):
-            card.setFixedHeight(236)
+            card.setFixedHeight(268)   # 단계 ID·실패 줄과 수량 5줄이 최소 창에서도 잘리지 않는 높이
             cards.addWidget(card, stretch)
         column.addLayout(cards)
         return page, [holder, measure_card, stage_card, count_card, recent_card]
@@ -373,7 +393,7 @@ class MainWindow(QMainWindow):
             tools.addWidget(button)
         filters[0].setChecked(True)
         tools.addStretch(1)
-        clear = pill("화면 비우기", tooltip="화면 표만 비웁니다. 세션 JSONL 파일은 유지합니다.")
+        clear = pill("화면 비우기", tooltip="화면 표만 비웁니다. 세션 JSONL 파일과 모의 수량 집계는 유지합니다.")
         self.clear_records_button = clear
         clear.clicked.connect(lambda: self.traffic_full.setRowCount(0))
         tools.addWidget(clear)
@@ -410,14 +430,17 @@ class MainWindow(QMainWindow):
         return page, [log_card, metric_card, error_card]
 
     @staticmethod
-    def _rows(card: Card, rows: list[tuple[str, str]]) -> None:
-        """「이름 ……… 값」 줄을 카드에 넣는다."""
+    def _rows(card: Card, rows: list[tuple[str, str]]) -> list[QLabel]:
+        """「이름 ……… 값」 줄을 카드에 넣고 값 라벨을 돌려준다(동적 갱신용)."""
+        values = []
         for name, value in rows:
             line = QHBoxLayout()
             line.addWidget(label(name, "Dim"))
             line.addStretch(1)
-            line.addWidget(label(value, "CardTitle" if value != NO_VALUE else "Dim"))
+            values.append(label(value, "CardTitle" if value != NO_VALUE else "Dim"))
+            line.addWidget(values[-1])
             card.body.addLayout(line)
+        return values
 
     # ══ 화면 전환 ═══════════════════════════════════════════════════════════
 
@@ -595,11 +618,103 @@ class MainWindow(QMainWindow):
             self.sort_confirm.setChecked(False)
             self.sort_demo.apply_snapshot(snapshot)
 
+    # ── 5일차 모의 공정·집계 ──────────────────────────────────────────────
+
+    def _start_cycle(self) -> bool:
+        if self.sort_demo is None or not self.sort_cycle_button.isEnabled() or not self.supplier.start_cycle():
+            return False
+        self.link.record_event("EV", "모의 공정", f"모의 · 실제 아님 · 범위 {self.supplier.scope} · 1주기 시작(볼트 A·볼트 B·너트)")
+        self._cycle_timer.start()
+        self._update_sort_controls()
+        return True
+
+    def _cycle_step(self) -> None:
+        snapshot = self.sort_demo.snapshot if self.sort_demo is not None else None
+        if snapshot is None or not (self.sort_demo.connected and self.sort_demo.synchronized and snapshot["state"] == "RUNNING"):
+            self._stop_cycle("RUNNING 아님")
+            return
+        event = self.supplier.next_event(snapshot["epoch"])
+        if event is not None:
+            self.feed_demo_event(event)
+        if not self.supplier.active:
+            self._cycle_timer.stop()
+            self.link.record_event("EV", "모의 공정", f"모의 · 실제 아님 · 범위 {self.supplier.scope} · 1주기 사건 공급 끝")
+            self._update_sort_controls()
+
+    def _stop_cycle(self, reason: str) -> None:
+        """추가 시나리오만 멈춘다. 조작 상태·권한·수량은 건드리지 않는다. 남은 사건은 만들지 않는다."""
+        self._cycle_timer.stop()
+        if self.supplier is not None and self.supplier.active:
+            dropped = self.supplier.abort()
+            self.tally.mark_stage_unknown()
+            self.link.record_event("EV", "모의 공정", f"모의 · 실제 아님 · 1주기 중단 · {reason} · 남은 사건 {dropped}건 미생성 · 단계 미확인")
+
+    def feed_demo_event(self, event):
+        """모의 사건 하나를 집계에 넣고 처분을 기록한다. 실제 모드에는 연결하지 않는다."""
+        if self.tally is None:
+            return None
+        outcome = self.tally.process(event)
+        get = event.get if isinstance(event, dict) else (lambda _key, default="?": default)
+        self.link.record_event("EV", "모의 공정", " · ".join(str(part) for part in (
+            "모의 · 실제 아님", f"범위 {get('scope', '?')}", f"세대 {get('epoch', '?')}", f"#{get('seq', '?')}", get("part", "?"),
+            get("kind", "?"), get("spec", get("reason", "")) or "-", outcome.code, outcome.note)))
+        self._update_process_view()
+        return outcome
+
+    def _sync_tally(self) -> None:
+        outcome = self.tally.apply_snapshot(self.supplier.snapshot(self.sort_demo.snapshot["epoch"]))
+        self.link.record_event("EV", "모의 집계", f"모의 · 실제 아님 · 범위 {self.supplier.scope} · 집계 스냅샷 {outcome.code} · {outcome.note}")
+
+    def _update_process_view(self) -> None:
+        tally, controller = self.tally, self.sort_demo
+        snapshot = controller.snapshot
+        trusted = controller.connected and controller.synchronized and tally.synchronized
+        show_stage = trusted and tally.stage_known and snapshot is not None and snapshot["state"] != "RECOVERY_REQUIRED"
+        for group, caption, strip in (("bolt", self.bolt_caption, self.bolt_stages), ("nut", self.nut_caption, self.nut_stages)):
+            current = tally.display[group]
+            name = "볼트" if group == "bolt" else "너트"
+            if show_stage and current is not None:
+                caption.setText(f"{name} · {current['part']} · {current['spec']} · 모의")
+                strip.set_stage(current["stage"])
+            else:
+                caption.setText(f"{name} · 단계 미확인" + (f" · 마지막 {current['part']}" if current else ""))
+                strip.set_stage(None)
+        counts = tally.counts()
+        for key, value in self.count_values.items():
+            value.setText(f"{counts['WRONG_BIN']} / {counts['UNRESOLVED']}" if key == "EXCEPTION" else str(counts[key]))
+        if not trusted:
+            self.count_tag.setText("모의 · 마지막 값 · 미확인")
+        else:
+            self.count_tag.setText("모의 · 불일치 · 집계 미확인" if tally.conflict else "모의 · 동기화됨")
+        failures = tally.failure_counts()
+        failure_text = ("실패: 최근 " + (tally.last_failure or "—") + " · 사유별 "
+                        + ", ".join(f"{reason} {count}" for reason, count in sorted(failures.items()))) if failures else "실패: 없음"
+        summary = f"실패 {sum(failures.values())}건 · 사유 {len(failures)}종" if failures else "실패: 없음"
+        self.stage_note.setText(summary if trusted else "단계 미확인 · " + summary)
+        self.stage_note.setToolTip(failure_text)
+        fields = {key: (value or NO_VALUE) if show_stage else "미확인" for key, value in tally.fields.items()}
+        holding = snapshot["holding"] if controller.connected and controller.synchronized and snapshot else "미확인"
+        self.process_detail.setText(f"모의 공정 · 인식 {fields['recognition']} · 로봇 {fields['robot']} · 벨트 {fields['belt']}"
+                                    f" · 그리퍼 {fields['gripper']} · 보유 {holding}\n{failure_text}")
+
     def _update_sort_controls(self):
         if self.sort_demo is None:
             return
         controller = self.sort_demo
         snapshot = controller.snapshot
+        synced = controller.connected and controller.synchronized and snapshot is not None
+        if synced and snapshot["epoch"] != self.tally.epoch:
+            self._stop_cycle("세대 전환")
+            self.tally.desync()
+        running = synced and snapshot["state"] == "RUNNING"
+        if self.supplier.active and not running:
+            self._stop_cycle("단절" if not controller.connected else ("동기화 상실·세대 전환" if not synced else f"상태 {snapshot['state']}"))
+        if not synced:
+            self.tally.desync()
+        elif not self.tally.synchronized:
+            self._sync_tally()
+        self.sort_cycle_button.setEnabled(running and self.tally.synchronized and not self.supplier.active)
+        self._update_process_view()
         for action, button in (("START", self.start_button), ("STOP", self.stop_button), ("RECOVER", self.recover_button)):
             allowed, reason = controller.allowed(action)
             if action == "RECOVER" and not self.sort_confirm.isChecked():
@@ -674,6 +789,7 @@ class MainWindow(QMainWindow):
         """[자원 정리] 이 창이 만든 타이머·소켓만 닫는다. C 서버·Gazebo·중계 프로세스는 건드리지 않는다."""
         self._refresh.stop()
         self._export_timer.stop()
+        self._stop_cycle("창 닫기")
         if self._csv_file is not None:
             self._csv_file.cancelWriting()
             self._csv_file.deleteLater()
