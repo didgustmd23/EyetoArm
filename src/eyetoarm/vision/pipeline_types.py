@@ -6,8 +6,8 @@ A 상세설계 §5.1(식별자)·§5.4(세대·재처리 조건)·§9(처리 기
 - 이름·필드 묶음은 계획의 **제안**이며 A 내부 타입이다. D API·B 계약·공통형이 아니다.
 - 검출 설정은 기존 `PlanarConfig`(frozen, `config_sha256`)를 그대로 쓴다. 같은 의미의 설정·해시를
   새로 만들지 않는다.
-- `JobOutcome`·`ProcessRecord`·`InputStateRecord`·`PipelineCounters`의 나머지 계수는 필드 정의만
-  둔다. 채우는 동작은 작업 4·5에서 붙인다.
+- `JobOutcome`·`PipelineCounters`는 작업 4에서 채운다. `ProcessRecord`·`InputStateRecord`는 필드
+  정의만 두며 채우는 동작은 작업 5에서 붙인다.
 - 명령 ID·가짜 식별자를 만들지 않는다. Qt·ROS·TCP를 import하지 않는다.
 """
 from __future__ import annotations
@@ -135,11 +135,21 @@ class QueueDropReason(str, Enum):
 
 @dataclass(frozen=True)
 class JobOutcome:
-    """작업 하나의 terminal 결과(계획 「인터페이스 제안」). 필드 정의만 두며 채우는 동작은 작업 4.
+    """작업 하나의 terminal 응답(계획 「인터페이스 제안」, 작업 4 보완 103 §4). frozen.
 
-    - `observation`은 완료일 때만 있고, 폐기·예외·중단에는 None이다.
-    - `error`는 실패 설명(형식은 작업 4에서 확정).
+    - observation은 최초 완료 응답에서만 제공할 수 있다. 실패·폐기·중단 및 duplicate 응답은 None이다.
+      `display_result`도 같다.
+    - duplicate 응답은 최초 status·error·사건을 유지하되 데이터 재전달·상태 변경을 하지 않는다.
+      `invalidation`을 담아도 새로 발행한 사건이 아니라 최초 사건의 참조 정보다. 소비자는 duplicate
+      응답을 관측·사건·처리 기록으로 다시 발행하거나 집계하지 않는다.
+    - applied는 해당 호출이 완료 관측을 현재 슬롯에 반영했는지이며, 중복 응답은 False다.
+      무효 관측으로 교체해도 True일 수 있으므로 B 유효 입력·로봇 실행 가능을 뜻하지 않는다.
+      오류 차단선 이전에 시작한 늦은 완료는 관측이 유효해도 False다. 무효화 사건의 applied 계수와는
+      다른 개념이다.
+    - `error`는 실패·중단 원인 문자열(`fail()`의 cause, 계약 위반은 `adapter_contract_violation:...`).
+      완료·세대 폐기는 None.
     - `invalidation`은 해당 실패·중단의 사건 또는 None이며 다시 만들어 중복 발행하지 않는다.
+    - `applied`·`duplicate`는 기본값이 있는 끝 필드라 기존 6인자 생성자를 그대로 쓸 수 있다.
     """
 
     context: JobContext
@@ -148,6 +158,8 @@ class JobOutcome:
     display_result: PlanarResult | None
     error: str | None
     invalidation: CandidateInvalidationEvent | None
+    applied: bool = False
+    duplicate: bool = False
 
 
 @dataclass(frozen=True)
@@ -224,8 +236,10 @@ class PipelineCounters:
     """처리 건수(A 상세설계 §9 「처리 건수」, 계획의 12개 계수). 파이프라인 안에서만 바꾼다.
 
     - 사유·종류별 계수는 열거의 `.value` 문자열을 키로 쓴다.
-    - 작업 1~3은 `received`·`first_started`·`reprocess_started`·`queue_dropped`만 채운다.
-      나머지는 작업 4·5에서 채운다. 무효 완료를 처리 실패로 세지 않는다.
+    - 작업 1~4가 모든 필드를 채운다. 무효 완료(`invalid_completed_by_reason`)를 처리 실패(`failed`)로
+      세지 않는다. 시작한 작업은 completed·generation_discarded·failed·aborted 중 정확히 하나로 끝난다.
+    - `invalidation_*_by_kind`에는 처리 오류 4종과 `GENERATION_CHANGED`가 kind 키로 나뉘어 들어간다.
+      보고할 때 오류 4종 합계와 세대 전이 수를 따로 낸다.
     """
 
     received: int = 0
