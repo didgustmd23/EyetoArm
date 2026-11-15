@@ -40,6 +40,7 @@
 | 1.11 (A→C 전달) | 2026-11-15 | **(같은 날 1.12로 대체됨)** 사용자 확정 2026-11-15(reviewer 전달): A→C 표시 데이터는 별도 프로세스 + 로컬 소켓, 병목 실측 시 공유 메모리 검토. §3 「영상 표시 경로」 미결·A→C 항목과 §12 미결 행을 정합화하고 기존 A→C ROS 토픽 제안을 대체. 소켓 종류·프레이밍·주소·버퍼·재접속·순서·측정 기준은 미결로 기록. B→C 액션·Gazebo 카메라 ROS 수신은 무변 |
 | 1.12 (A→C 같은 프로세스) | 2026-11-15 | 사용자 확정 2026-11-15(reviewer 전달, 「그럼 일단 같은 프로세스로 구성하고 문제가 된다면 분리하는게 맞는거 같아」 → 「설계 원복시켜」): 1.11의 「별도 프로세스 + 로컬 소켓 우선」을 대체. A 파이프라인과 C를 같은 프로세스로 두고 객체·내부 대기열로 전달하며, 운용·통합 측정에서 문제가 확인되면 분리를 검토(로컬 소켓·공유 메모리는 그때의 선택지). §3 「A→C 전달」·미결 문장, §12 표시 경로 미결 행 정정. 과거 A→C ROS 토픽 제안은 되살리지 않음. A→B 호출·B→C 액션·Gazebo ROS 입력·명령 TCP·C→D 표시 연결 경계는 무변 |
 | 1.13 (파이프라인 작업 6b) | 2026-11-15 | 사용자 확정 2026-11-15(reviewer 전달, 「일단 개발값으로 10, 1로 넣고 운용 테스트하면서 조절」): 저장 입력 실행기에 검출 감시(설계 113 r3 A1: 같은 프로세스의 검출 전용 worker 스레드 1개 + 제어 흐름 감시)를 미커밋 구현. 개발 초기값 첫 검출 10 s·이후 1 s(운영 최종값 아님)와 CLI 조절 방법, 시간 초과·멈춤 처리, 실제 검증 범위·미검증을 §4·§9에 기록. A2(검출 자식 프로세스)는 채택하지 않음 |
+| 1.14 (YOLO 파이프라인 1단계) | 2026-11-15 | 사용자 요청 「구현 지시 전달」(reviewer 전달, 계획 `docs/superpowers/plans/2026-11-15-yolo-pipeline.md` r2): 저장 입력 파이프라인에 YOLO 분할 추론을 **표시용 무효 관측(valid=False)**으로 미커밋 연결(검토점 R1~R3 reviewer PASS, R4 실제 로컬 가중치 smoke). §4 ai_* 모듈 상태, §7.1 1단계 연결 상태·실측·미검증, §9 AI 기록 필드를 기록. 관측면·클래스 구성·보정·선택 규칙(2단계)과 B/C/D 연결은 미결·후속 |
 
 ## 1. 목적과 적용 범위
 
@@ -154,8 +155,8 @@ C→D 표시 연결은 별도 포트의 표시 연결 1개(영상 3채널 + JSON
 | `src/eyetoarm/vision/` | `pipeline_records.py` | **작업 5 구현(11-15, 미커밋):** JSONL(`format_version` 1, kind `run_meta`·`process`·`event`·`queue_drop`·`input_state`). 최초 terminal·사건·폐기를 1회씩 기록하고 duplicate 응답은 재기록 안 함. 입력 상태 구간 지속 시간(PC 단조 시계). 실행기 연결은 작업 6 |
 | `src/eyetoarm/vision/`, `scripts/` | `pipeline_runner.py`, `run_pipeline.py` | **작업 6a 구현(11-15, 미커밋):** 저장 이미지·영상 실행기. 단일 issuer·세대 공급자 주입, detector 동기 호출(겹침 없음), 정상→complete·예외→fail(INFERENCE_ERROR)·`JobCancelled`/KeyboardInterrupt→fail(JOB_ABORTED), finally close(유한 재시도, 임시 기본 3회·0.05 s), 기록 fail-stop, B 소비 조건 `b_gate`, 코어 `note_input_status`(입력 사건 시 현재 관측·선택 비움, 세대 불변). C·ROS·YOLO 미연결. **작업 6b 구현(11-15, 미커밋, reviewer r2 PASS·개발용 범위):** 검출 감시 기본 켬. 검출 전용 상주 worker 스레드 1개(`eyetoarm-detector`, 데몬)가 detector를 부르고 코어·기록·B 지점은 제어 흐름만 호출. 상한은 사용자 확정 개발 초기값 첫 검출 10 s·이후 1 s(`RunnerConfig.first_detect_timeout_s`·`detect_timeout_s`, CLI `--first-detect-timeout`·`--detect-timeout`, `--no-detect-timeout`은 6a 동기 경로). 유예 0.2 s·정리 한도 0.3 s·확인 간격 0.02 s는 A 임시 개발 기본안. 협조 취소는 선택(`detector_takes_token=True`일 때 `detector(job, CancelToken)`). 상세는 §9 |
 | `src/eyetoarm/vision/` | `planar.py` | ROI·전처리·윤곽 검출·영상 후보 필터·대상 선택 |
-| `src/eyetoarm/vision/` | `ai_detector.py` | AI 모델 로딩·추론, 마스크에서 윤곽 추출·원본 픽셀 좌표 복원 |
-| `config/vision/` | AI 검출 설정 | 검출 방식, 모델·가중치 경로와 식별자, 대상 클래스, 신뢰도 기준, 입력 크기, 추론 장치. 구현 시 추가 |
+| `src/eyetoarm/vision/` | `ai_detector.py` | AI 모델 로딩·추론, 마스크에서 윤곽 추출·원본 픽셀 좌표 복원. **YOLO 1단계 구현(11-15, 미커밋, R1~R3 reviewer PASS):** `ai_config.py`(`AiSegConfig`·엄격 JSON·설정 ID=정규 JSON sha256(가중치 경로 제외, method 포함)·`model_id`=계열@가중치 sha256 앞 16자), `ai_result.py`(`RawSegOutput`·`AiInstance`·`AiSegResult`·`ModelPrepareError`·`AiJobConfigError`), `ai_convert.py`(ROI 뷰·retina 마스크 → 원본 px 다각형, ROI 오프셋만), `ai_detector.py`(`AiSegDetector`: 생성자 I/O 없음, `prepare`에서 파일·sha256·환경 변수·지연 import·생성·task·names·장치 검사, 준비한 스레드에서만 predict). 코어 `PipelineSettings`·`JobOutcome`이 `PlanarConfig\|AiSegConfig`·`PlanarResult\|AiSegResult`를 받고 방식 일치를 검사한다. 관측은 항상 valid=False |
+| `config/vision/` | AI 검출 설정 | 검출 방식, 모델·가중치 경로와 식별자, 대상 클래스, 신뢰도 기준, 입력 크기, 추론 장치. 형식은 `AiSegConfig` JSON(11-15). 로컬 가중치 경로·해시를 담는 개발 예시는 Git 제외 `_workspace/scenarios/yolo_pipeline/configs/`에만 두었다(운영 선정 아님, 추적 설정 파일 없음) |
 | `src/eyetoarm/vision/` | `human_pose.py` | (제안) 사람 자세 모델 추론, 관절점·신뢰도·시각·유효성 출력(4~5주) |
 | `src/eyetoarm/vision/` | `marker.py`, `pnp.py` (후속) | 마커 모서리와 PnP 후보·품질 출력. OpenCV API 분기 어댑터(§8) |
 | `src/eyetoarm/vision/` | `overlay.py` | 프레임에 대응하는 ROI·윤곽·마커 표시 자료 |
@@ -661,6 +662,20 @@ ros2 topic hz /overview_cam/image
 
 모델 구조·과제와 실행 방법은 Ultralytics 공식 문서([YOLOv8](https://docs.ultralytics.com/models/yolov8/), [YOLO11](https://docs.ultralytics.com/models/yolo11/), [YOLO26](https://docs.ultralytics.com/models/yolo26/))를 참조합니다. 위 내용은 설계이며 데이터·가중치 확보, 학습·추론 구현과 성능 검증은 아직 완료되지 않았습니다.
 
+**YOLO 파이프라인 1단계 연결(2026-11-15, 미커밋, 검토점 R1~R3 reviewer PASS·R4 local smoke).** 계획 `docs/superpowers/plans/2026-11-15-yolo-pipeline.md` r2의 1단계(추론 연결)만 구현했습니다. **운영 유효 관측·운영 모델 선정이 아닙니다.**
+
+| 항목 | 현재 구현 |
+|---|---|
+| 경로 | 저장 FramePacket → `AiSegConfig`(고정 설정 스냅샷) → ROI 뷰(BGR 그대로) → ultralytics `predict(retina_masks=True)` → 마스크(=crop 해상도)에서 `RETR_CCOMP` 윤곽 → ROI 오프셋만 더한 원본 px 다각형 → `AiSegResult` + 표시용 무효 `PlanarObservation` → 기존 terminal·기록·감시·CLI |
+| 관측 | 항상 `valid=False`. 관측면·계산 윤곽·선택·표시 마스크·관측 단위 class/confidence는 None, 인스턴스별 클래스·점수는 표시 결과·기록에. 사유: CALIBRATION_MISMATCH > TOP_FACE_UNRESOLVED(대상이 여럿이어도, 개발 구현안 Q2) > CONTOUR_CLIPPED(거부 없이 잘림) > NO_OBJECT |
+| 후보 판정 | 거부 순서 비대상 → 점수 미달 → 기하 없음(EMPTY) → 작은 마스크(SMALL). polygon 유무는 기하(바깥 윤곽 3점 이상·면적 > 0)로만 정함. `candidate_count`=대상·점수 통과 수 |
+| 준비·감시 | 모델 준비(파일·sha256·`YOLO_AUTOINSTALL=false`/`YOLO_OFFLINE=1`·import·생성·task·names·장치)는 검출 worker에서 `model_load_timeout_s`(개발 10 s, **A 임시값**)로 감시. 첫 검출 10 s·이후 1 s(사용자 확정 개발값)는 그대로이며 준비가 첫 기회를 쓰지 않음. 준비 실패는 프레임 없는 MODEL_LOAD_FAILED·MODEL_CONFIG_INVALID 사건 1건 + 프레임 없이 종료 1. 작업 중 설정 불일치(ROI·시작 설정·class_map 밖 클래스)는 MODEL_CONFIG_INVALID 작업 실패, 출력 계약 위반(NaN 마스크·비retina 해상도 등)은 INFERENCE_ERROR. 자동 OpenCV 대체 실행 없음 |
+| CLI | `scripts/run_pipeline.py --detector ai --ai-config JSON [--model-load-timeout SEC] [--log-instance-geometry]`. 기본은 `--detector opencv`이며 torch·ultralytics를 import하지 않음. 신뢰도 기준은 설정 JSON `conf_threshold`로 조절(ROS 파라미터 없음) |
+
+R4 local smoke(실제 로컬 가중치 `outputs/pilot_640_1280/p640/weights/best.pt` = yolo11n-seg 640 학습, 추론 imgsz 1280, conf 0.25 개발 참고값, ultralytics 8.4.211·torch 2.11.0+cu128·RTX 5080, 저장 입력에 보정 프로파일 없음): Gazebo 평가 영상 20장(GPU·CPU·GPU+ROI 100,60,1080,600), 공개 test 20장(GPU), 합성 빈 영상 1장(GPU) 다섯 조건이 모두 종료 0·시간 초과 0·멈춤 0이었습니다. 다각형·박스는 원본(ROI 실행은 ROI) 범위 밖이 0개이고, 빈 영상은 인스턴스 0개였습니다. 첫 predict는 GPU 2.5~4.5 s·CPU 0.9 s, 이후 GPU 중앙값 8.8~13.0 ms·최댓값 41 ms, CPU 중앙값 52 ms이고, 준비는 0.86~2.9 s였습니다. 실제 Results는 retina 마스크가 crop 해상도(홀수 641×361 포함) uint8 0/1, 클래스 float32였습니다(비retina는 letterbox 736×1280이라 계약 검사가 거부). 좌표 이중 변환 확인용으로 평가 라벨과 비교한 IoU 중앙값은 0.75였습니다(평가 경로 참고값이며 검출 품질·valid 근거 아님). 증거는 `_workspace/evidence/2026-11-15-yolo-r4/`입니다.
+
+미검증: 관측면·클래스 구성(2/3클래스)·보정·복수 후보 선택 규칙(2단계 진입 조건), B 계산 소비·C 같은 프로세스 통합·D 표시, 실제 카메라·장시간·동시 부하(Gazebo와 GPU 공유), GIL을 놓지 않는 import·CUDA 초기화·네이티브 호출에서의 감시, YOLOv8n-seg·YOLO26n-seg 가중치(PC에 없음), 검출 품질(이번 smoke는 경로 확인이며 성능 평가가 아님).
+
 ## 8. 마커 검출·PnP 확장 (후속, 이번 5주 필수 아님)
 
 이 절은 후속 6D 확장의 기준으로 유지합니다. TCP 1.1의 `POSE_6D` 정의도 그대로입니다.
@@ -723,7 +738,7 @@ Gazebo 모델에는 마커 텍스처 방향·변 길이·부품 기준점과의 
 
 **처리 기록(프레임 로그).** 처리 작업마다 `eval_run_id`(평가 중일 때), `run_id`, `source_id`, `image_seq`, `capture_generation`, 처리 작업의 `generation`, 모드, 영상 시각(`timestamp_ms`·`timestamp_base`), 보정·검출 설정 식별자, 처리 결과 구분(완료·세대 변경 폐기·예외·중단), 완료한 경우 검출 결과·판정 사유(판정 주체 포함), 후보 수와 처리시간을 기록합니다. 마커 모드에서는 ID·픽셀 크기·후보별 오차·B의 선택 결과를 추가합니다. 명령이 생성된 프레임은 D의 `command_id`와 연결해 C의 로봇 로그까지 추적합니다. 명령을 보내지 않은 프레임의 `command_id`는 비워 둡니다.
 
-AI 평면 모드에서는 검출 방식, 모델·가중치 식별자, 클래스·신뢰도, 실제 입력 크기·추론 장치·라이브러리 버전도 처리 기록 또는 연결된 실행 메타데이터에 남깁니다. 모델 로딩 시간은 프레임 추론 시간과 분리하고, 모델 로딩 실패는 실행 오류 기록으로 남깁니다. OpenCV/AI 비교는 같은 평가 자료를 사용하되 방식·설정별로 서로 다른 `eval_run_id`로 집계합니다.
+AI 평면 모드에서는 검출 방식, 모델·가중치 식별자, 클래스·신뢰도, 실제 입력 크기·추론 장치·라이브러리 버전도 처리 기록 또는 연결된 실행 메타데이터에 남깁니다. 모델 로딩 시간은 프레임 추론 시간과 분리하고, 모델 로딩 실패는 실행 오류 기록으로 남깁니다. **구현(2026-11-15, YOLO 1단계, 미커밋):** JSONL `run_meta`의 `detector` 묶음(방식·설정 ID·model_id·가중치 경로·sha256·클래스 맵·대상·임계값·imgsz·장치·ROI 등), 준비 성공 1줄 `model_ready`(준비 ms·model_source·ultralytics·torch 버전·장치 이름·환경 변수), `process`의 끝 필드 `method`·`model_id`·`infer_ms`(predict 호출만)·`ai_instances`(인스턴스별 클래스·점수·거부·잘림·면적, **기본 기록**), 선택 `ai_geometry`(박스·다각형·조각/구멍 수, `--log-instance-geometry`). 준비 실패는 프레임 없는 사건 줄이며 원래 원인은 기록 실패와 별도로 stderr에도 남깁니다. `format_version`은 1을 유지합니다(키·kind 추가, A 내부). OpenCV/AI 비교는 같은 평가 자료를 사용하되 방식·설정별로 서로 다른 `eval_run_id`로 집계합니다.
 
 **처리 건수.** 실행(또는 평가 실행)마다 다음 건수를 따로 기록합니다. 대기열에서 버린 프레임과 처리 도중 사라진 작업을 검출 결과에 섞지 않기 위해서입니다.
 

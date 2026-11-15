@@ -11,6 +11,10 @@
   `invalidation_kind`로 이름을 바꿔 쓴다
 - `queue_drop`: 시작하지 않고 폐기한 프레임 하나(`QueueDropRecord`)
 - `input_state`: 입력 상태 구간 하나(`InputStateRecord`)
+- `model_ready`: AI 모델 준비 성공 1줄(준비 소요·model_source·버전·장치·환경, YOLO 연결 계획 r2 §4.6)
+- `ai_geometry`(선택, `log_geometry=True`): AI 완료 작업의 인스턴스 박스·다각형·조각/구멍 수. process 다음 줄
+- AI 작업의 클래스·점수·거부는 **기본으로** process의 `ai_instances`에 있다(옵션 없음). `format_version`은 키·kind를
+  더한 것뿐이라 1을 유지한다(A 내부 제안, 저장소 안 소비자는 kind로 걸러 읽는 A 시험뿐)
 
 1회 기록 규칙
 - 작업마다 최초 terminal(`duplicate=False`) 응답의 처리 기록 1줄. duplicate 응답은 쓰지 않는다.
@@ -42,6 +46,8 @@ from enum import Enum
 from typing import Any
 
 from eyetoarm.common.types import CandidateInvalidationEvent, InputStatus, InputStatusEvent
+from eyetoarm.vision.ai_config import AiSegConfig
+from eyetoarm.vision.ai_result import AiSegResult
 from eyetoarm.vision.pipeline_types import (
     InputStateRecord,
     JobOutcome,
@@ -78,6 +84,10 @@ def process_record(outcome: JobOutcome, *, eval_run_id: str | None = None) -> Pr
     f = job.frame
     obs = outcome.observation if outcome.status is JobStatus.COMPLETED else None
     reason = obs.reason if obs is not None else None
+    cfg = job.settings.detector_config
+    is_ai = isinstance(cfg, AiSegConfig)
+    display = outcome.display_result if outcome.status is JobStatus.COMPLETED else None
+    ai = display if is_ai and isinstance(display, AiSegResult) else None
 
     return ProcessRecord(
         run_id=f.run_id, source_id=f.source_id, image_seq=f.image_seq,
@@ -89,7 +99,38 @@ def process_record(outcome: JobOutcome, *, eval_run_id: str | None = None) -> Pr
         reason_owner="A" if reason in _A_REASONS else None,
         candidate_count=obs.candidate_count if obs is not None else None,
         process_ms=obs.process_ms if obs is not None else None,
-        command_id=None, eval_run_id=_check_eval_run_id(eval_run_id))
+        command_id=None, eval_run_id=_check_eval_run_id(eval_run_id),
+        method="ai" if is_ai else "opencv", model_id=cfg.model_id if is_ai else None,
+        infer_ms=ai.infer_ms if ai is not None else None,
+        ai_instances=None if ai is None else tuple(_instance_summary(i) for i in ai.instances))
+
+
+def _instance_summary(inst) -> dict:
+    """필수 AI 기록의 인스턴스 요약(다각형·박스 없음)."""
+    return {"index": inst.index, "class_index": inst.class_index, "class_name": inst.class_name,
+            "confidence": inst.confidence, "rejected": inst.rejected, "clipped": inst.clipped,
+            "area_px": inst.area_px}
+
+
+def _instance_geometry(inst) -> dict:
+    """선택 geometry 기록의 인스턴스 기하(원본 픽셀)."""
+    return {"index": inst.index, "box_xyxy": list(inst.box_xyxy),
+            "polygon": None if inst.polygon is None else inst.polygon.astype(float).tolist(),
+            "component_count": inst.component_count, "hole_count": inst.hole_count}
+
+
+def _detector_block(cfg) -> dict:
+    """run_meta의 검출 설정 묶음."""
+    if not isinstance(cfg, AiSegConfig):
+        return {"method": "opencv", "config_id": cfg.config_sha256}
+
+    return {"method": "ai", "config_id": cfg.config_sha256, "model_id": cfg.model_id,
+            "model_family": cfg.model_family, "weights_path": cfg.weights_path,
+            "weights_sha256": cfg.weights_sha256, "class_map": {str(i): n for i, n in cfg.class_map},
+            "target_classes": list(cfg.target_classes), "conf_threshold": cfg.conf_threshold,
+            "iou_threshold": cfg.iou_threshold, "imgsz": cfg.imgsz, "max_det": cfg.max_det, "device": cfg.device,
+            "half": cfg.half, "retina_masks": cfg.retina_masks, "roi": None if cfg.roi is None else list(cfg.roi),
+            "min_mask_area_px": cfg.min_mask_area_px, "border_margin_px": cfg.border_margin_px}
 
 
 def _plain(value: Any) -> Any:
@@ -174,8 +215,12 @@ class JsonlRecorder:
 class PipelineLog:
     """파이프라인 기록을 1회씩만 쓰는 층. 무엇을 이미 썼는지(작업·사건·폐기)를 기억한다."""
 
-    def __init__(self, recorder: JsonlRecorder, *, eval_run_id: str | None = None) -> None:
-        """기록기와 평가 실행 ID(평가가 아니면 None)를 받는다."""
+    def __init__(self, recorder: JsonlRecorder, *, eval_run_id: str | None = None, log_geometry: bool = False) -> None:
+        """기록기와 평가 실행 ID(평가가 아니면 None), 선택 AI geometry 기록 여부를 받는다."""
+        if not isinstance(log_geometry, bool):
+            raise ValueError(f"log_geometry must be a bool: {log_geometry!r}")
+
+        self._log_geometry = log_geometry
         self._recorder = recorder
         self._eval_run_id = _check_eval_run_id(eval_run_id)
         self._jobs_logged: set[int] = set()
@@ -202,8 +247,18 @@ class PipelineLog:
             "calibration_id": s.profile.calibration_id if s.profile is not None else None,
             "started_monotonic_ns": started_monotonic_ns,
             "versions": {"python": platform.python_version(), **(versions or {})},
+            "detector": _detector_block(s.detector_config),
         }
         self._recorder.write("run_meta", meta)
+
+    def write_model_ready(self, info: dict) -> None:
+        """AI 모델 준비 성공 1줄(`AiSegDetector.prepare` 반환 정보 그대로). 실패 상태면 RecorderFailedError."""
+        self._check()
+
+        if not isinstance(info, dict):
+            raise TypeError(f"model_ready info must be a dict: {type(info).__name__}")
+
+        self._recorder.write("model_ready", info)
 
     def log_outcome(self, outcome: JobOutcome) -> bool:
         """최초 terminal 응답의 처리 기록과 그 사건을 1회 쓴다. duplicate·이미 쓴 작업이면 False(무기록)."""
@@ -213,6 +268,15 @@ class PipelineLog:
 
         self._recorder.write("process", process_record(outcome, eval_run_id=self._eval_run_id))
         self._jobs_logged.add(outcome.context.job_seq)
+        display = outcome.display_result
+
+        # 선택 geometry: AI 완료 작업만, process 바로 다음 줄(같은 1회 규칙)
+        if self._log_geometry and outcome.status is JobStatus.COMPLETED and isinstance(display, AiSegResult):
+            job = outcome.context
+            self._recorder.write("ai_geometry", {
+                "run_id": job.frame.run_id, "source_id": job.frame.source_id, "image_seq": job.frame.image_seq,
+                "generation": job.generation, "job_seq": job.job_seq, "detector_config_id": job.detector_config_id,
+                "instances": [_instance_geometry(i) for i in display.instances]})
 
         if outcome.invalidation is not None:
             self._write_event(outcome.invalidation)
