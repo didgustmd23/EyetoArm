@@ -28,6 +28,7 @@ def _project_root() -> Path:
 PROJECT_ROOT = _project_root()
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config/gui/client.json"
 DEFAULT_COMMAND_LOG_PATH = PROJECT_ROOT / "logs/command_log.jsonl"
+DEFAULT_SERVER_LOG_PATH = PROJECT_ROOT / "logs/tcp_server.log"
 
 @dataclass
 class _ClientSession:
@@ -38,6 +39,7 @@ class _ClientSession:
     command_ids: set[str] = field(default_factory=set)
     last_command_status: dict[str, dict[str, Any]] = field(default_factory=dict)
     direct_response_queued: bool = False
+    initial_status_logged: bool = False
 
 class _CancelledBeforeDispatch(Exception): pass
 
@@ -187,6 +189,9 @@ class TcpServer:
             response = build_rejection_status(e.code, self._readiness(), valid_command_id_from_request(request), detail=str(e)[:256])
         sig = json.dumps({k:v for k,v in response.items() if k != "server_time_ms"}, sort_keys=True)
         if sig != previous[0]: LOG.info("STATUS %s", sig); previous[0] = sig
+        if request.get("type") == "GET_STATUS" and not session.initial_status_logged:
+            LOG.info("Initial GET_STATUS connection=%s response=%s", session.connection_id, sig)
+            session.initial_status_logged = True
         if not session.direct_response_queued: self._queue(session, response)
         if response.get("state") == "ACK" and request.get("type") == "MOVE":
             r = self.command_manager.records.get(response["command_id"])
@@ -362,6 +367,11 @@ def main():
     try:
         cfg=load_tcp_settings(args.config)
         if args.initialize_command_log: CommandLog.initialize(cfg["command_log_path"]); return
+        DEFAULT_SERVER_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(DEFAULT_SERVER_LOG_PATH, encoding="utf-8")
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        LOG.addHandler(file_handler)
         backend=UnconfiguredRobotBackend()
         manager=ExecutionManager(backend)
         asyncio.run(serve(config_path=args.config,execution_manager=manager))
