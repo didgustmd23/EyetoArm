@@ -19,7 +19,7 @@ A 상세설계 §3(최신 프레임 1개·처리 중 버퍼 비덮어쓰기)·§
   시계는 주입한 `clock_ns`만 읽는다.
 - 처리 기록(ProcessRecord)·JSONL은 작업 5, 실행기·외부 전달은 작업 6 범위다. 이 코어는 메모리 안의
   결과·사건·계수만 다룬다. 사건을 C/D로 보내지 않는다.
-- 입력 사건을 코어에 알리는 메서드는 계획에 없어 만들지 않았다(M2). 선택·대기를 비우는 내부 헬퍼만 둔다.
+- 입력 사건은 `note_input_status(event)`로 알린다(작업 6a): 현재 관측·선택을 비우고 대기를 폐기하며 세대를 올리지 않는다.
 - TCP·ROS·Qt·B/C/D 모듈을 import하지 않는다. A가 최종 후보·좌표·규격을 정하지 않는다.
 """
 from __future__ import annotations
@@ -35,6 +35,7 @@ import numpy as np
 from eyetoarm.common.types import (
     CandidateInvalidationEvent,
     FramePacket,
+    InputStatusEvent,
     InvalidationKind,
     PlanarObservation,
 )
@@ -548,6 +549,26 @@ class VisionPipeline:
 
         return self._evaluate_event(event)
 
+    def note_input_status(self, event: InputStatusEvent) -> None:
+        """입력 사건(입력 오류·EOF 등)을 반영한다: 현재 관측·선택 프레임을 비우고 대기를 사유 input_status로 폐기한다.
+
+        - 세대를 올리지 않는다(재접속·탐색 같은 명시 전이가 아님, 계획 작업 6). 가짜 image_seq·job_seq를 만들지 않는다.
+        - 활성 작업은 건드리지 않는다(그 작업은 정상 terminal 경로로 끝난다). 무효화 사건을 만들지 않는다.
+        - 다른 run/source의 사건, 종료 후 호출은 계약 오류(상태 무변).
+        """
+        if self._closed:
+            raise PipelineContractError("note_input_status after close")
+
+        if not isinstance(event, InputStatusEvent):
+            raise PipelineContractError(f"note_input_status needs InputStatusEvent: {type(event).__name__}")
+
+        if event.run_id != self._run_id or event.source_id != self._settings.source_id:
+            raise PipelineContractError("input status event from another run/source")
+
+        self._current_observation = None
+        self._clear_selection()
+        self._drop_pending(QueueDropReason.INPUT_STATUS, self._clock_ns())
+
     def close(self) -> tuple[JobOutcome, ...]:
         """종료 처리. 활성 작업을 ABORTED로 한 번 정리하고 관측·선택·대기를 비운다. 재호출은 빈 tuple.
 
@@ -771,7 +792,7 @@ class VisionPipeline:
         return bad
 
     def _clear_selection(self) -> None:
-        """선택 프레임을 비운다. close와 입력 사건(작업 6)에서 쓴다(M2)."""
+        """선택 프레임을 비운다. close와 입력 사건(`note_input_status`)에서 쓴다(M2)."""
         self._selected = None
 
     def _reprocess_allowed(self, frame: FramePacket) -> bool:
