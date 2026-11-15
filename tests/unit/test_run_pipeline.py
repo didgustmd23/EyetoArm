@@ -32,7 +32,9 @@ from test_video_input import write_video
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SCRIPT = os.path.join(ROOT, "scripts", "run_pipeline.py")
-FAST = RunnerConfig(close_attempts=3, close_retry_interval_s=0.0, max_consecutive_input_errors=3)
+# 6a 동기 경로 시험: 6b 기본값(감시 켬 10/1)과 달리 감시를 명시적으로 끈다(동기 호출·스레드 1개 전제 유지)
+FAST = RunnerConfig(close_attempts=3, close_retry_interval_s=0.0, max_consecutive_input_errors=3,
+                    first_detect_timeout_s=None, detect_timeout_s=None)
 
 
 def lines(stream):
