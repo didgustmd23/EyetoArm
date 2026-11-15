@@ -364,6 +364,115 @@ class TimeAndBufferTest(StoredInputTestBase):
             self.assertIsNone(frame.ros_stamp_ns)
 
 
+class GenerationProviderTest(StoredInputTestBase):
+    """선택적 세대 공급자(계획 「기존 코드와 파일 배치」 끝 단락·작업 3, A 상세설계 §4·§5.4)."""
+
+    class CountingProvider:
+        """호출 수를 세고, 호출할 때의 발급기·시계 호출 수를 남기는 세대 공급자."""
+
+        def __init__(self, test, values):
+            """돌려줄 세대 값 목록과 순서 확인용 시험 객체를 받는다."""
+            self.test = test
+            self.values = list(values)
+            self.calls = 0
+            self.seen = []
+
+        def __call__(self):
+            """다음 세대 값을 돌려주고 호출 시점의 시계 호출 수를 남긴다."""
+            self.calls += 1
+            self.seen.append(self.test.clock.calls)
+
+            return self.values.pop(0)
+
+    def test_signature_keeps_existing_arguments(self):
+        """기존 인자·순서·기본값은 그대로이고 `generation_provider`는 기본 None인 키워드 인자로 뒤에 붙는다."""
+        import inspect
+
+        params = inspect.signature(StoredImageSource.__init__).parameters
+
+        self.assertEqual(list(params), ["self", "paths", "source_id", "issuer", "capture_generation",
+                                        "clock_ns", "generation_provider"])
+        self.assertEqual(params["capture_generation"].default, 0)
+        self.assertIs(params["generation_provider"].default, None)
+        self.assertIs(params["generation_provider"].kind, inspect.Parameter.KEYWORD_ONLY)
+
+    def test_fixed_generation_without_provider(self):
+        """공급자가 없으면 기본 0·명시 3·명시 2 고정 세대를 읽을 때마다 그대로 쓴다."""
+        cases = ((None, 0), (3, 3), (2, 2))
+
+        for given, expected in cases:
+            with self.subTest(capture_generation=given):
+                kw = {} if given is None else {"capture_generation": given}
+                src = self._source([self.img_a, self.img_b], generation_provider=None, **kw)
+
+                self.assertEqual([src.read().capture_generation for _ in range(2)], [expected, expected])
+
+    def test_provider_called_once_per_new_frame(self):
+        """공급자는 성공한 새 프레임마다 한 번(순번·시계 다음) 불리고, 실패·EOF·current·close 뒤에는 불리지 않으며 기존 프레임 세대를 바꾸지 않는다."""
+        provider = self.CountingProvider(self, [5, 7])
+        src = self._source([self.img_a, self.missing, self.broken, self.img_b],
+                           capture_generation=3, generation_provider=provider)
+
+        first = src.read()
+        self.assertEqual((provider.calls, first.capture_generation), (1, 5))
+        self.assertEqual(provider.seen, [1])  # 시계를 읽은 뒤 공급자를 읽는다
+
+        # 읽기 실패 2건·current: 호출 없음
+        self.assertIs(src.read().status, InputStatus.SOURCE_UNAVAILABLE)
+        self.assertIs(src.read().status, InputStatus.DECODE_FAILED)
+        self.assertIsNone(src.current())
+        self.assertEqual(provider.calls, 1)
+
+        second = src.read()
+        self.assertEqual((provider.calls, second.capture_generation), (2, 7))
+
+        # current·EOF·close 뒤: 호출 없음, 기존 프레임 세대 그대로
+        self.assertIs(src.current(), second)
+        self.assertIs(src.read().status, InputStatus.END_OF_STREAM)
+        src.close()
+        self.assertIs(src.read().status, InputStatus.SOURCE_UNAVAILABLE)
+        self.assertIsNone(src.current())
+        self.assertEqual(provider.calls, 2)
+        self.assertEqual((first.capture_generation, second.capture_generation), (5, 7))
+
+        # 빈 목록: 호출 없음
+        empty_provider = self.CountingProvider(self, [])
+        empty = self._source([], generation_provider=empty_provider)
+        self.assertIs(empty.read().status, InputStatus.SOURCE_UNAVAILABLE)
+        self.assertEqual(empty_provider.calls, 0)
+
+    def test_pipeline_generation_feeds_next_image(self):
+        """파이프라인 세대를 공급자로 주입하면 검출 설정 변경 뒤 읽은 다음 새 이미지가 새 capture_generation을 받아 새 수신으로 대기한다."""
+        import dataclasses
+
+        from eyetoarm.vision.pipeline import GenerationCause, VisionPipeline
+        from eyetoarm.vision.pipeline_types import PipelineSettings
+        from eyetoarm.vision.planar import PlanarConfig
+
+        base_cfg = dict(format_version=1, status="provisional_display_only", roi=None, resize_wh=None,
+                        resize_interpolation="INTER_AREA", gaussian_blur_ksize=0, polarity="dark",
+                        threshold_method="fixed", fixed_threshold=128, morph_open_ksize=0,
+                        contour_retrieval="RETR_EXTERNAL", contour_approximation="CHAIN_APPROX_SIMPLE",
+                        min_area_source_px2=100, max_area_source_px2=None, border_margin_processed_px=2)
+        settings = PipelineSettings(source_id="stored0", mode="planar",
+                                    detector_config=PlanarConfig(**base_cfg), profile=None)
+        pipeline = VisionPipeline(settings, run_id=RUN_ID, clock_ns=self.clock)
+        src = self._source([self.img_a, self.img_b], generation_provider=pipeline.current_generation)
+
+        first = src.read()
+        self.assertEqual(first.capture_generation, 0)
+        self.assertTrue(pipeline.offer_frame(first))
+
+        changed = dataclasses.replace(settings, detector_config=PlanarConfig(**{**base_cfg, "fixed_threshold": 90}))
+        pipeline.change_settings(changed, cause=GenerationCause.DETECTOR_CONFIG_CHANGED)
+
+        second = src.read()
+        self.assertEqual(second.capture_generation, 1)
+        self.assertEqual(first.capture_generation, 0)
+        self.assertTrue(pipeline.offer_frame(second))
+        self.assertEqual(pipeline.start_next().frame.image_seq, second.image_seq)
+
+
 class PublicSampleTest(unittest.TestCase):
     """실제 공개 데이터 표본으로 읽기를 확인한다."""
 

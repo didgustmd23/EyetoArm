@@ -1,0 +1,242 @@
+"""A 비전 파이프라인 내부 타입 — 설정 스냅샷·작업·완료 상태·처리 기록·계수.
+
+근거: 계획 `docs/superpowers/plans/2026-11-15-a-vision-pipeline.md` r3 「인터페이스 제안」·작업 1,
+A 상세설계 §5.1(식별자)·§5.4(세대·재처리 조건)·§9(처리 기록·처리 건수).
+
+- 이름·필드 묶음은 계획의 **제안**이며 A 내부 타입이다. D API·B 계약·공통형이 아니다.
+- 검출 설정은 기존 `PlanarConfig`(frozen, `config_sha256`)를 그대로 쓴다. 같은 의미의 설정·해시를
+  새로 만들지 않는다.
+- `JobOutcome`·`ProcessRecord`·`InputStateRecord`·`PipelineCounters`의 나머지 계수는 필드 정의만
+  둔다. 채우는 동작은 작업 4·5에서 붙인다.
+- 명령 ID·가짜 식별자를 만들지 않는다. Qt·ROS·TCP를 import하지 않는다.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+
+from eyetoarm.common.types import (
+    CandidateInvalidationEvent,
+    FramePacket,
+    InputStatus,
+    PlanarObservation,
+    TimestampBase,
+)
+from eyetoarm.vision.planar import PlanarConfig, PlanarResult
+
+
+def _require_text(value, name: str) -> None:
+    """비어 있지 않은 문자열인지 확인한다. 아니면 ValueError."""
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} must be a non-empty string: {value!r}")
+
+
+@dataclass(frozen=True)
+class SourceProfile:
+    """소스·보정 프로파일의 적용 조건(계획 「인터페이스 제안」, A 상세설계 §5.4 재처리 조건 3).
+
+    - 적용 조건만 보관한다. B 보정 수치를 계산하거나 담지 않는다.
+    - `crop`·`calibration_id`는 `FramePacket`의 같은 이름 필드와 같은 형이다.
+      B 프로파일 필드 이름은 초안 §8에서 미결이다.
+    """
+
+    source_id: str
+    width: int
+    height: int
+    crop: tuple[int, int, int, int] | None
+    calibration_id: str | None
+
+    def applies_to(self, frame: FramePacket) -> bool:
+        """이 프로파일이 그 프레임에 유효한지(source_id·해상도·크롭·calibration_id 일치, 보정 있음)."""
+        # 보정 누락은 B 유효 입력으로 허용하지 않는다(초안 §4-7)
+        if self.calibration_id is None:
+            return False
+
+        return (frame.source_id == self.source_id
+                and frame.width == self.width
+                and frame.height == self.height
+                and frame.crop == self.crop
+                and frame.calibration_id == self.calibration_id)
+
+
+@dataclass(frozen=True)
+class PipelineSettings:
+    """처리 설정 스냅샷(계획 「인터페이스 제안」). frozen.
+
+    - `mode`는 A 내부 처리 모드다. TCP 명령 모드가 아니며 허용 값은 문서 미정이라
+      비어 있지 않은 문자열이면 받는다.
+    - `detector_config`는 기존 `PlanarConfig`. 생성자가 이미 값을 검증했다.
+    - `profile`이 None이면 표시용 처리만 가능하다(B 유효 입력·재처리 불가).
+    - 오버레이 색 등 표시 전용 설정은 처리 설정이 아니므로 두지 않는다(A 상세설계 §5.4).
+    """
+
+    source_id: str
+    mode: str
+    detector_config: PlanarConfig
+    profile: SourceProfile | None
+
+    def __post_init__(self) -> None:
+        """필드 형식을 검사한다. 어긋나면 ValueError."""
+        _require_text(self.source_id, "source_id")
+        _require_text(self.mode, "mode")
+
+        if not isinstance(self.detector_config, PlanarConfig):
+            raise ValueError(f"detector_config must be PlanarConfig: {type(self.detector_config).__name__}")
+
+        if self.profile is not None and not isinstance(self.profile, SourceProfile):
+            raise ValueError(f"profile must be SourceProfile or None: {type(self.profile).__name__}")
+
+    @property
+    def detector_config_id(self) -> str:
+        """검출 설정 식별자(`PlanarConfig.config_sha256`)."""
+        return self.detector_config.config_sha256
+
+
+@dataclass(frozen=True)
+class JobContext:
+    """시작한 처리 작업 하나의 스냅샷(계획 「인터페이스 제안」). frozen.
+
+    - `frame`은 파이프라인이 소유한 복사 프레임이다. 재처리는 같은 객체를 다시 쓴다.
+    - `generation`은 시작 시점의 현재 세대, `job_seq`는 실행 내 시작 순번이다.
+    - `settings`는 시작 시점 설정이며 이후 설정이 바뀌어도 이 작업은 이 값으로 계산·기록한다.
+    """
+
+    frame: FramePacket
+    generation: int
+    job_seq: int
+    settings: PipelineSettings
+    started_monotonic_ns: int
+    reprocess: bool
+
+    @property
+    def detector_config_id(self) -> str:
+        """시작 설정의 검출 설정 식별자(`settings.detector_config.config_sha256`)."""
+        return self.settings.detector_config.config_sha256
+
+
+class JobStatus(str, Enum):
+    """시작한 작업의 종료 구분. 대기열 폐기는 작업을 시작하지 않았으므로 이 상태로 표현하지 않는다."""
+
+    COMPLETED = "COMPLETED"
+    DISCARDED_GENERATION = "DISCARDED_GENERATION"
+    FAILED = "FAILED"
+    ABORTED = "ABORTED"
+
+
+class QueueDropReason(str, Enum):
+    """대기 프레임 폐기 사유(계획 작업 3·5의 사유별 집계). 이름은 A 내부 임시 결정이다."""
+
+    REPLACED_BY_NEWER = "replaced_by_newer"
+    STALE_CAPTURE = "stale_capture_generation"
+    GENERATION_CHANGED = "generation_changed"
+    INPUT_STATUS = "input_status"
+    CLOSED = "closed"
+
+
+@dataclass(frozen=True)
+class JobOutcome:
+    """작업 하나의 terminal 결과(계획 「인터페이스 제안」). 필드 정의만 두며 채우는 동작은 작업 4.
+
+    - `observation`은 완료일 때만 있고, 폐기·예외·중단에는 None이다.
+    - `error`는 실패 설명(형식은 작업 4에서 확정).
+    - `invalidation`은 해당 실패·중단의 사건 또는 None이며 다시 만들어 중복 발행하지 않는다.
+    """
+
+    context: JobContext
+    status: JobStatus
+    observation: PlanarObservation | None
+    display_result: PlanarResult | None
+    error: str | None
+    invalidation: CandidateInvalidationEvent | None
+
+
+@dataclass(frozen=True)
+class ProcessRecord:
+    """처리 작업 기록 한 줄(A 상세설계 §9 「처리 기록」). 필드 정의만 두며 채우는 동작은 작업 5.
+
+    - 원본 시각(`timestamp_ms`·`timestamp_base`)과 시작 설정 ID를 그대로 남긴다.
+    - `command_id`는 A가 만들지 않는다. 항상 None이며 다른 값은 ValueError.
+    """
+
+    run_id: str
+    source_id: str
+    image_seq: int
+    capture_generation: int
+    generation: int
+    job_seq: int
+    mode: str
+    timestamp_ms: int
+    timestamp_base: TimestampBase
+    calibration_id: str | None
+    detector_config_id: str
+    reprocess: bool
+    status: JobStatus
+    valid: bool | None
+    reason: str | None
+    reason_owner: str | None
+    candidate_count: int | None
+    process_ms: float | None
+    command_id: None
+
+    def __post_init__(self) -> None:
+        """명령 ID를 만들지 않는다는 계약을 검사한다."""
+        if self.command_id is not None:
+            raise ValueError("command_id is not generated by A and must be None")
+
+
+@dataclass(frozen=True)
+class QueueDropRecord:
+    """작업을 시작하지 않고 대기 중 폐기한 프레임의 기록(계획 「인터페이스 제안」).
+
+    작업이 없으므로 `job_seq`·처리 `generation`을 두지 않는다. `dropped_monotonic_ns`는 PC 단조 시각.
+    """
+
+    run_id: str
+    source_id: str
+    image_seq: int
+    capture_generation: int
+    timestamp_ms: int
+    timestamp_base: TimestampBase
+    received_monotonic_ns: int
+    ros_stamp_ns: int | None
+    reason: QueueDropReason
+    dropped_monotonic_ns: int
+
+
+@dataclass(frozen=True)
+class InputStateRecord:
+    """입력 상태 기록(A 상세설계 §9 「입력 상태 로그」). 필드 정의만 두며 채우는 동작은 작업 5.
+
+    공통 `InputStatusEvent` 5개 필드 + 상태 지속 시간(`duration_ns`, PC 단조 시계, 미확정이면 None).
+    프레임 ID 필드를 두지 않는다.
+    """
+
+    run_id: str
+    source_id: str
+    status: InputStatus
+    event_monotonic_ns: int
+    detail: str | None
+    duration_ns: int | None
+
+
+@dataclass
+class PipelineCounters:
+    """처리 건수(A 상세설계 §9 「처리 건수」, 계획의 12개 계수). 파이프라인 안에서만 바꾼다.
+
+    - 사유·종류별 계수는 열거의 `.value` 문자열을 키로 쓴다.
+    - 작업 1~3은 `received`·`first_started`·`reprocess_started`·`queue_dropped`만 채운다.
+      나머지는 작업 4·5에서 채운다. 무효 완료를 처리 실패로 세지 않는다.
+    """
+
+    received: int = 0
+    first_started: int = 0
+    reprocess_started: int = 0
+    completed: int = 0
+    valid_completed: int = 0
+    invalid_completed_by_reason: dict[str, int] = field(default_factory=dict)
+    queue_dropped: dict[str, int] = field(default_factory=dict)
+    generation_discarded: int = 0
+    failed: int = 0
+    aborted: int = 0
+    invalidation_applied_by_kind: dict[str, int] = field(default_factory=dict)
+    invalidation_ignored_by_kind: dict[str, int] = field(default_factory=dict)
