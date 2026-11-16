@@ -43,6 +43,7 @@ from eyetoarm.common.types import (CandidateInvalidationEvent, FramePacket, Inpu
 from eyetoarm.inputs.base import FrameIdIssuer, new_run_id
 from eyetoarm.inputs.live_slot import BoundaryKind, LiveInputOverflow, NoticeKind
 from eyetoarm.vision.ai_result import AiJobConfigError, ModelPrepareError
+from eyetoarm.vision.handoff import HandoffClosed, HandoffError, HandoffFailed, HandoffState
 from eyetoarm.vision.pipeline import GenerationCause, VisionPipeline
 from eyetoarm.vision.pipeline_opencv import process_opencv
 from eyetoarm.vision.pipeline_records import InputStateTracker, PipelineLog
@@ -187,6 +188,7 @@ class RunResult:
     live_inputs: dict = field(default_factory=dict)  # 실시간 소스: 반영한 경계·알림 종류별 수
     input_boundary_aborts: int = 0  # 실시간 소스: 공개 직전 epoch가 현재가 아니라 JOB_ABORTED로 끝낸 작업 수(실패 아님)
     source_stats: dict | None = None  # 실시간 소스 통계(종료 때)
+    handoff: dict | None = None  # A→C 연결부(#142) 종료 보고(handoff_sink=None이면 None)
 
 
 def b_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
@@ -474,7 +476,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         config: RunnerConfig = RunnerConfig(), stderr=None, clock_ns: Callable[[], int] = time.monotonic_ns,
         should_stop: Callable[[], bool] | None = None, versions: dict | None = None,
         detector_takes_token: bool = False, watch_clock: Callable[[], float] = time.monotonic,
-        prepare: Callable[[], dict] | None = None, display_sink=None) -> RunResult:
+        prepare: Callable[[], dict] | None = None, display_sink=None, handoff_sink=None) -> RunResult:
     """저장 입력 한 번을 끝까지 처리한다. 예외를 밖으로 내지 않고 `RunResult`(종료 코드 포함)를 돌려준다.
 
     `source_factory(issuer, generation_provider)`는 실행기가 만든 단일 발급기와 `pipeline.current_generation`을
@@ -498,6 +500,13 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
       그 프레임 수신 epoch가 현재), ② 실시간 입력 항목마다 기록 뒤·수신기 실패 판정 앞에
       `on_input(kind, detail, generation, generation_changed)`. 관측·valid·b_consumer·기록 내용은 바꾸지 않는다.
       전달 지점 예외는 다른 예외처럼 실행 실패(1)로 정리된다.
+    - `handoff_sink`(#142 Task 3, 기본 None=꺼짐): A→C 같은 프로세스 연결부(`vision.handoff.AToCHandoff`). 연결부는 호출자가
+      만들고 닫는다(run은 닫지 않음). run_meta 직후 `start_run`, 코어를 바꾼 뒤 기록 sync 지점마다 `sync_invalidations`, 입력 사건
+      반영 직후 `note_input_status`, terminal 응답의 기록 뒤·B 지점 앞에서 표시 조건(`display_gate` 그리고 실시간이면 수신 epoch
+      현재)을 통과하면 `offer_result`, 코어가 현재 관측을 바꿨는데 통과 못 했으면 `clear("result_withheld")`(계약 r3 §2.4).
+      입력 대기 회차·검출/준비 대기 회차마다 `check()`. 연결부 실패(`HandoffFailed`·`HandoffClosed`)는 `handoff_failed`로
+      원래 정지 사유를 덮지 않고 남기며 기존 유한 정리를 계속한다. 정리에서는 코어 close·기록 뒤 마지막 sync로 미전달 수를
+      확정하고, 연결부가 OPEN일 때만 `RUN_END`를 넣는다. 관측·valid·b_consumer·display_sink·기록 내용은 바꾸지 않는다.
     """
     err = stderr if stderr is not None else sys.stderr
     issuer = FrameIdIssuer(run_id or new_run_id())
@@ -510,6 +519,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
     first_pending = True   # run 한 번에서 아직 첫 검출을 넘기지 않음(정지로 시작하지 않은 작업은 소모하지 않음)
     live = False           # 실시간 소스(poll_input 있음)인가. 소스를 만든 뒤 정한다
     transitions: collections.deque[int] = collections.deque()  # 실시간: 세대를 올린 경계의 PC 단조 시각(반복 감시)
+    handoff_started = False  # start_run을 시도했는가(연결부 결합 여부)
 
     def fail_run(reason: str, message: str) -> None:
         """실행 수준 실패를 기록한다(종료 1)."""
@@ -517,14 +527,42 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         result.stop_reason = result.stop_reason or reason
         result.errors.append(message)
 
-    def handle(outcome: JobOutcome) -> None:
-        """terminal 응답을 기록하고, 소비 조건을 통과하면 그 자리에서 B 지점을 한 번 부른다."""
-        _logged(log.log_outcome, outcome)
+    def sync_records() -> None:
+        """코어를 바꾼 뒤의 기록 sync 지점: 남은 사건·폐기를 기록하고, 연결부가 있으면 새 사건을 넘긴다(#142)."""
         _logged(log.sync, pipeline)
 
-        if display_sink is not None:
+        if handoff_sink is not None:
+            handoff_sink.sync_invalidations(pipeline)
+
+    def check_handoff() -> None:
+        """대기 회차의 연결부 실패 확인(계약 §3). 실패면 HandoffFailed·HandoffClosed가 올라간다."""
+        if handoff_sink is not None:
+            handoff_sink.check()
+
+    def note_status(event: InputStatusEvent) -> None:
+        """입력 사건을 코어에 반영하고 연결부에 INPUT_STATUS를 넣는다."""
+        pipeline.note_input_status(event)
+
+        if handoff_sink is not None:
+            handoff_sink.note_input_status(event)
+
+    def handle(outcome: JobOutcome) -> None:
+        """terminal 응답을 기록하고, 표시·연결부 전달 뒤 소비 조건을 통과하면 그 자리에서 B 지점을 한 번 부른다."""
+        _logged(log.log_outcome, outcome)
+        sync_records()
+
+        if display_sink is not None or handoff_sink is not None:
             current = display_gate(pipeline, outcome) and (not live or source.frame_current(outcome.context.frame))
-            display_sink.on_outcome(outcome, current)
+
+            if display_sink is not None:
+                display_sink.on_outcome(outcome, current)
+
+            if handoff_sink is not None:
+                if current:
+                    handoff_sink.offer_result(outcome)
+                elif outcome.status is JobStatus.COMPLETED and outcome.applied and not outcome.duplicate:
+                    # 코어는 현재 관측을 바꿨지만 공개하지 않는다(수신 epoch 경합). 연결부 현재 결과를 비운다(§2.4-2)
+                    handoff_sink.clear("result_withheld")
 
         if b_consumer is not None and b_gate(pipeline, outcome):
             result.b_calls += 1
@@ -594,7 +632,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             status_event = source.status_event(item)
 
             if status_event is not None:
-                pipeline.note_input_status(status_event)
+                note_status(status_event)
                 _logged(log.log_input_states, tracker.on_status(status_event))
 
                 if InputStatus(status_event.status) is not InputStatus.FRAME_TIMEOUT:
@@ -605,7 +643,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
                                            "event_monotonic_ns": item.event_monotonic_ns,
                                            "generation": pipeline.current_generation(),
                                            "generation_changed": event is not None})
-            _logged(log.sync, pipeline)
+            sync_records()
             source.input_applied(item, pipeline.current_generation())
 
             if display_sink is not None:
@@ -682,10 +720,17 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         started = watch_clock()
         worker.submit(job, token)
 
+        def on_idle() -> None:
+            """검출 대기 회차(지점 B): 실시간 입력 반영, 연결부 실패 확인."""
+            if live:
+                apply_live_inputs()
+
+            check_handoff()
+
         try:
             what, item = _wait_for_detection(worker.take, should_stop, watch_clock, started + limit,
                                              config.stop_check_interval_s,
-                                             on_idle=apply_live_inputs if live else None)
+                                             on_idle=on_idle if live or handoff_sink is not None else None)
         except KeyboardInterrupt:
             token._cancel()
             handle(pipeline.fail(job, InvalidationKind.JOB_ABORTED, "interrupted"))
@@ -733,7 +778,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             event_monotonic_ns=clock_ns(), generation=pipeline.current_generation(),
             detector_config_id=pipeline.settings.detector_config_id, job_seq=None, image_seq=None)
         pipeline.apply_invalidation(event)
-        _logged(log.sync, pipeline)
+        sync_records()
 
     def prepare_outcome(value, exc) -> bool:
         """준비 반환·예외를 처리한다. 성공이면 model_ready를 쓰고 True."""
@@ -771,7 +816,8 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
 
         try:
             what, item = _wait_for_detection(worker.take, should_stop, watch_clock,
-                                             started + config.model_load_timeout_s, config.stop_check_interval_s)
+                                             started + config.model_load_timeout_s, config.stop_check_interval_s,
+                                             on_idle=check_handoff if handoff_sink is not None else None)
         except KeyboardInterrupt:
             token._cancel()
             raise
@@ -807,6 +853,11 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         source = source_factory(issuer, pipeline.current_generation)
         live = callable(getattr(source, "poll_input", None))
         _logged(log.write_run_meta, pipeline, started_monotonic_ns=clock_ns(), versions=versions)
+
+        if handoff_sink is not None:
+            handoff_started = True   # 실패해도 결합 여부는 정리에서 연결부 상태로 판단한다
+            handoff_sink.start_run(pipeline)
+
         consecutive_errors = 0
 
         # 실시간 표시 단계에서는 B 계산 소비를 허용하지 않는다(계획 결정 D13, reviewer 지시)
@@ -821,6 +872,9 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
                 result.stop_reason = "stop_requested"
                 break
 
+            # 입력 대기 회차(지점 A, read()가 None인 회차 포함): 추가 입력 없이도 수신 측 실패를 알아챈다(계약 §3)
+            check_handoff()
+
             # 지점 A: 읽기 전에 입력 경계·알림을 반영한다
             if live:
                 apply_live_inputs()
@@ -831,9 +885,9 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
                 continue
 
             if isinstance(item, InputStatusEvent):
-                pipeline.note_input_status(item)
+                note_status(item)
                 _logged(log.log_input_states, tracker.on_status(item))
-                _logged(log.sync, pipeline)
+                sync_records()
                 status = InputStatus(item.status)
 
                 if status is InputStatus.END_OF_STREAM:
@@ -875,7 +929,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             elif job is not None:
                 run_job(job)
             else:
-                _logged(log.sync, pipeline)
+                sync_records()
 
             if config.max_frames is not None and result.frames >= config.max_frames:
                 result.stop_reason = "max_frames"
@@ -887,19 +941,23 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         pass   # 사유는 이미 fail_run으로 남겼다
     except LiveInputOverflow as exc:
         fail_run("input_overflow", f"live input queue overflow: {exc}")
+    except (HandoffFailed, HandoffClosed) as exc:
+        # 연결부 실패는 원래 실행 오류와 구분된 사유로 남긴다(앞선 정지 사유가 있으면 그대로 둠)
+        fail_run("handoff_failed", f"handoff failed: {type(exc).__name__}: {exc}")
     except KeyboardInterrupt:
         fail_run("interrupted", "interrupted (KeyboardInterrupt)")
     except BaseException as exc:  # 소비자 실패·예상하지 못한 예외·SystemExit도 정리를 거쳐 1로 끝낸다
         fail_run("error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
     finally:
-        _finish(pipeline, log, tracker, source, config, clock_ns, result, log_ok, err, worker, live=live)
+        _finish(pipeline, log, tracker, source, config, clock_ns, result, log_ok, err, worker, live=live,
+                handoff=handoff_sink, handoff_started=handoff_started)
 
     return result
 
 
 def _finish(pipeline, log, tracker, source, config, clock_ns, result, log_ok, err, worker=None, *,
-            live: bool = False) -> None:
-    """정리: 코어 close(유한 재시도) → worker 정리(감시 켬) → 중단 결과·남은 기록 → 소스 close.
+            live: bool = False, handoff=None, handoff_started: bool = False) -> None:
+    """정리: 코어 close(유한 재시도) → worker 정리(감시 켬) → 중단 결과·남은 기록 → 소스 close → 연결부 마지막 sync·RUN_END.
 
     각 단계 실패는 보고하고 다음 단계를 계속한다.
     """
@@ -998,12 +1056,75 @@ def _finish(pipeline, log, tracker, source, config, clock_ns, result, log_ok, er
         result.errors.append(f"completed with {result.counters.failed} failed job(s) and "
                              f"{result.input_errors} input error(s); detect timeouts: {result.timeouts}")
 
+    if handoff is not None:
+        _finish_handoff(handoff, handoff_started, pipeline, result)
+
     # 최종 실패 통로는 stderr다(기록기가 깨졌어도 원래 오류가 남는다)
     for message in result.errors:
         try:
             err.write(f"run_pipeline: {message}\n")
         except Exception:
             pass
+
+
+def _finish_handoff(handoff, started: bool, pipeline, result) -> None:
+    """연결부 정리(계약 §3·§4-3): 코어 close 뒤 마지막 sync로 close 사건을 넘기고 미전달 수를 확정한 뒤, OPEN이면 RUN_END.
+
+    - 연결부가 이미 FAILED·CLOSED여도 마지막 sync를 불러 records_seen·미전달 수를 확정한다(넣지는 못함).
+    - 이 단계의 연결부 실패는 `handoff_failed`로 남기되 앞선 정지 사유를 덮지 않는다. RUN_END는 그 시점의 종료 코드를 싣는다.
+    - **최종 상태 검사(r1 T3-F1):** RUN_END 시도 뒤 연결부 상태를 한 번 읽어(이 실행의 실패 관측 경계) 결합된 연결부가 FAILED이거나
+      CLOSED(run은 닫지 않으므로 예상하지 못한 닫힘)면 새 사건·예외 유무와 관계없이 종료 1·`handoff failed: state=… reason=…` 진단을 남긴다.
+      RUN_END를 넣은 뒤 수신 측이 전달 실패를 latch한 경우도 여기서 잡으며 `run_end_sent`는 실제로 넣었는지 그대로 둔다.
+      이 읽기 뒤에 새로 생긴 외부 실패는 반환값에 반영되지 않는다.
+    - start_run 전에 끝난 실행(소스 생성·run_meta 실패)이나 start_run이 거부된 실행은 이 코어와 결합되지 않았으므로 sync하지 않는다.
+    - 연결부를 닫지 않는다(수명은 호출자).
+    """
+    report = {"run_end_sent": False, "events_unsent": 0}
+    bound = False
+
+    if started:
+        try:
+            handoff.sync_invalidations(pipeline)
+            bound = True
+        except (HandoffFailed, HandoffClosed) as exc:
+            bound = True
+            if not any(e.startswith("handoff failed") for e in result.errors):
+                result.exit_code = 1
+                result.stop_reason = result.stop_reason or "handoff_failed"
+                result.errors.append(f"handoff failed: {type(exc).__name__}: {exc}")
+        except HandoffError:
+            bound = False   # 이 코어와 결합되지 않음(start_run 거부)
+
+    if bound and handoff.state().state is HandoffState.OPEN:
+        try:
+            handoff.end_run(result.exit_code, result.stop_reason)
+            report["run_end_sent"] = True
+        except (HandoffFailed, HandoffClosed) as exc:
+            result.exit_code = 1
+            result.stop_reason = result.stop_reason or "handoff_failed"
+            result.errors.append(f"handoff failed: {type(exc).__name__}: {exc}")
+
+    stats = handoff.stats()
+    status = handoff.state()
+
+    # 실패 관측 경계: 이 상태 읽기. 결합된 연결부가 OPEN이 아니면 실패로 보고한다(앞선 정지 사유·오류는 보존)
+    if bound and status.state is not HandoffState.OPEN:
+        message = f"handoff failed: state={status.state.value} reason={status.reason}"
+        result.exit_code = 1
+        result.stop_reason = result.stop_reason or "handoff_failed"
+
+        if message not in result.errors:
+            result.errors.append(message)
+
+    report.update(state=status.state.value, reason=status.reason, bound=bound,
+                  events_unsent=stats.events_unsent if bound else 0, events_enqueued=stats.events_enqueued if bound else 0,
+                  records_seen=stats.records_seen if bound else 0, results_offered=stats.results_offered,
+                  results_enqueued=stats.results_enqueued, published=stats.published, pending=stats.pending)
+
+    if bound and (stats.events_unsent or not report["run_end_sent"]):
+        result.errors.append(f"handoff_unsent: events={stats.events_unsent} run_end_sent={report['run_end_sent']}")
+
+    result.handoff = report
 
 
 def stored_source_factory(kind: str, paths: list[str], source_id: str):
