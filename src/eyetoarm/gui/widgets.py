@@ -432,20 +432,21 @@ class DetailPopup(Card):
     정지 버튼과 상태띠는 창 위쪽에 따로 있어 이 팝업에 가려지지 않는다.
     """
 
-    def __init__(self, parent: QWidget) -> None:
-        super().__init__("측정·보정 상세", "A·B 결과 미수신")
+    def __init__(self, parent: QWidget, demo: bool = False) -> None:
+        super().__init__("측정·보정 상세", "D 모의 · 실제 아님" if demo else "A·B 결과 미수신")
         self.setParent(parent)
         self.refresh_theme()
         self.values: dict[str, QLabel] = {}
         for key, name in (("px", "검출 중심 (u, v) px"), ("mm", "작업 좌표 (X, Y) mm"), ("theta", "장축각 θ °"),
-                          ("calibration", "보정 상태"), ("frame", "source_id · image_seq")):
+                          ("calibration", "보정 상태"), ("frame", "소스 · 프레임"),
+                          ("detail", "상태 · 규격")):
             row = QHBoxLayout()
             row.addWidget(label(name, "Dim"))
             row.addStretch(1)
             self.values[key] = label("—", "CardTitle")
             row.addWidget(self.values[key])
             self.body.addLayout(row)
-        self.body.addWidget(label("값이 없을 때 0이나 이전 값을 채우지 않습니다. 사유: C 표시 연결 미결(TCP 명세 부록 B).", "Caption", wrap=True))
+        self.body.addWidget(label("일치하는 유효 결과만 표시합니다. D 모의 값은 실제 측정이 아닙니다. C 표시 연결은 미결입니다.", "Caption", wrap=True))
         self.hide()
 
     def refresh_theme(self) -> None:
@@ -484,7 +485,7 @@ class DisplayStage(QWidget):
       (Gazebo 창 캡처 또는 카메라 중계)이며, 정식 영상 3개는 C 표시 연결이 정해진 뒤에 온다.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, demo: bool = False) -> None:
         super().__init__()
         self.main = DisplayView("탑뷰")
         self.main.setParent(self)
@@ -497,8 +498,8 @@ class DisplayStage(QWidget):
             view.set_placeholder("empty", "C 표시 연결 미결")
             view.set_clickable("누르면 이 화면을 크게 봅니다. 다시 누르면 제자리로 돌아갑니다.")
             view.clicked.connect(lambda v=view: self.toggle_expanded(v))
-        self.popup = DetailPopup(self)
-        self.setMinimumHeight(300)
+        self.popup = DetailPopup(self, demo=demo)
+        self.setMinimumHeight(max(380, 72 + self.popup.sizeHint().height()))
 
     def toggle_expanded(self, view: DisplayView) -> None:
         """view 가 커져 있으면 제자리로, 아니면 view 를 키운다(다른 칸이 커져 있었다면 그 칸은 제자리로)."""
@@ -529,7 +530,7 @@ class DisplayStage(QWidget):
                 view.setGeometry(target)
             if not big:
                 view.raise_()
-        popup_width = min(380, max(280, int(width * 0.3)))
+        popup_width = min(380, max(280, width - 48))
         self.popup.setGeometry(24, 56, popup_width, self.popup.sizeHint().height())
         self.popup.raise_()
 

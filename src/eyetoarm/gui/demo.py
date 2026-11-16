@@ -80,6 +80,9 @@ class DemoView(QObject):
 
     state_changed = Signal(str)
     frame_received = Signal(QImage)
+    display_session = Signal(str, str)
+    display_frame = Signal(str, object, object)
+    display_result = Signal(object, int, int)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -93,6 +96,7 @@ class DemoView(QObject):
 
     def start(self) -> None:
         self.state = "connected"
+        self.display_session.emit("mock-run", "mock-link")
         self.state_changed.emit(self.state)
         self._timer.start()
 
@@ -129,3 +133,21 @@ class DemoView(QObject):
         painter.end()
         self._last_at = time.monotonic()
         self.frame_received.emit(image)
+        for channel, variants in (("fixed", ("raw",)), ("gripper", ("raw",)),
+                                  ("link", ("raw", "detect", "center"))):
+            for variant in variants:
+                sample = image.copy()
+                painter = QPainter(sample)
+                painter.setPen(QColor(theme.DISPLAY_TEXT))
+                painter.drawText(30, 70, f"D 모의 · {channel} / {variant}")
+                painter.end()
+                self.display_frame.emit(channel, sample, dict(source_id=f"mock-{channel}", image_seq=self.frame_count,
+                    generation=1, calibration_id="mock-calibration", variant=variant, run_id="mock-run",
+                    capture_generation=1, detector_config_id="mock-config", job_seq=self.frame_count))
+        self.display_result.emit({"source_id": "mock-link", "image_seq": self.frame_count,
+                                  "calibration_id": "mock-calibration", "valid": True,
+                                  "run_id": "mock-run", "capture_generation": 1,
+                                  "detector_config_id": "mock-config", "job_seq": self.frame_count,
+                                  "center_px": (320, 240), "center_w_mm": (12.0, 34.0),
+                                  "theta_deg": 45.0, "theta_valid": True,
+                                  "spec": "모의", "reason": None}, 1, self.frame_count)

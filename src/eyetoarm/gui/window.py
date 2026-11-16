@@ -19,8 +19,8 @@
 │ 상태띠 표시 연결  │ Gazebo 화면 수신 상태(실제)   │ D 임시 경로(정식은 C·부록 B 미승인)│
 │ 메인 디스플레이   │ Gazebo 창 실제 화면(기본)     │ D 임시 경로 · gz_window.py│
 │                   │ 또는 카메라 중계(--view camera)│ D 임시 경로 · gz_view.py │
-│ 보조 영상 2칸     │ 자리만                        │ C 표시 연결 · 미결       │
-│ 측정·보정 상세    │ —                             │ A·B 결과 → C 중계 · 미결 │
+│ 보조 영상 2칸     │ 실제 자리 / D 모의 영상       │ C 표시 연결 · 미결       │
+│ 측정·보정 상세    │ 실제 — / D 모의 값            │ A·B 결과 → C 중계 · 미결 │
 │ 공정 단계 · 수량  │ 실제 미확인 · — / 모의 사건 집계│ C 도착 확인 · 미결       │
 │ START/STOP/RECOVER│ 실제 비활성 / 모의에서만 조작  │ C · 부록 A 미승인        │
 │ CANCEL(수동 이동) │ 현재 명령 추적 중 활성         │ C · TCP 1.1              │
@@ -66,6 +66,10 @@ class MainWindow(QMainWindow):
     def __init__(self, link, view, demo: bool = False) -> None:
         super().__init__()
         self.link, self.view, self.demo = link, view, demo
+        self.display = None
+        if demo:
+            from eyetoarm.gui.display import DisplayModel
+            self.display = DisplayModel(self)
         self.sort_demo = self.tally = self.supplier = None
         self._sort_logged = None
         if demo:
@@ -121,7 +125,7 @@ class MainWindow(QMainWindow):
 
         self.traffic_full = TrafficTable()      # 평가·기록 화면의 전체 기록
         self.traffic_recent = TrafficTable()    # 운영 대시보드의 최근 기록(같은 내용을 함께 받는다)
-        self.stage = DisplayStage()             # 메인 디스플레이. 창에 하나만 있고 화면 사이를 옮겨 다닌다
+        self.stage = DisplayStage(demo=demo)    # 메인 디스플레이. 창에 하나만 있고 화면 사이를 옮겨 다닌다
         self.pages = QStackedWidget()
         self._page_cards: list[list[QWidget]] = []
         for build in (self._build_setup_page, self._build_operate_page, self._build_record_page):
@@ -142,6 +146,12 @@ class MainWindow(QMainWindow):
         self._export_timer = QTimer(self, interval=0)
         self._export_timer.timeout.connect(self._export_chunk)
         self.view.frame_received.connect(self._on_frame)
+        if self.display is not None:
+            self.view.display_session.connect(self.display.begin_session)
+            self.view.display_frame.connect(self._on_display_frame)
+            self.view.display_result.connect(lambda result, generation, order: self.display.ingest_result(result, generation=generation, order=order))
+            self.display.changed.connect(self._update_display)
+            self.view.state_changed.connect(lambda state: self.display.set_connected(state == "connected"))
         if self.sort_demo is not None:
             self.sort_demo.changed.connect(self._update_sort_controls)
             self.link.state_changed.connect(self._on_demo_connection)
@@ -208,10 +218,11 @@ class MainWindow(QMainWindow):
         display_card.body.addLayout(self.setup_display_slot, 1)
         channel = QHBoxLayout()
         channel.addWidget(label("링크 채널", "Caption"))
-        for name in ("raw 원본", "detect 검출", "center 중심점"):
-            # [C·A·B 예정] 링크 채널 선택 요청. 요청 형식이 미결이라 비활성
-            button = pill(name, tooltip="링크 채널 선택 요청 형식이 미결입니다(C·D 협의, TCP 명세 부록 B).")
-            button.setEnabled(False)
+        for mode, name in (("raw", "raw 원본"), ("detect", "detect 검출"), ("center", "center 중심점")):
+            button = pill(name, tooltip="D 내부 모의 영상 선택" if self.demo else "C 표시 연결 형식 미결")
+            button.setEnabled(self.demo)
+            if self.demo:
+                button.clicked.connect(lambda _checked=False, m=mode: self.display.set_mode(m))
             channel.addWidget(button)
         channel.addStretch(1)
         display_card.body.addLayout(channel)
@@ -248,7 +259,7 @@ class MainWindow(QMainWindow):
             self.sort_connection_button.clicked.connect(lambda: self.link.set_connected(self.link.state != "connected"))
             self.sort_cycle_button = pill("모의 1주기", tooltip="모의 RUNNING에서 볼트 A·볼트 B·너트 정상 단계·도착 사건을 내부에서만 재현합니다. 실제 전송 없음.")
             self.sort_cycle_button.clicked.connect(self._start_cycle)
-            scenarios = QHBoxLayout()
+            scenarios = QVBoxLayout()
             scenarios.addWidget(self.sort_fault_button)
             scenarios.addWidget(self.sort_connection_button)
             scenarios.addWidget(self.sort_cycle_button)
@@ -258,9 +269,9 @@ class MainWindow(QMainWindow):
             command_card.body.addWidget(label("실제 모드 분류 명령은 부록 A 승인 대기입니다.", "Caption", wrap=True))
         command_card.body.addStretch(1)
 
-        input_card = Card("입력·보정", "A·B 결과 미수신")
-        self._rows(input_card, [("입력 소스 · 모드", NO_VALUE), ("보정 프로파일", NO_VALUE), ("보정 상태 · 무효 사유", NO_VALUE)])
-        input_card.body.addWidget(label("A·B 값은 C 표시 연결로 옵니다. 연결 방식이 정해지기 전에는 비워 둡니다.", "Caption", wrap=True))
+        input_card = Card("입력·보정", "D 모의" if self.demo else "A·B 결과 미수신")
+        self.input_values = self._rows(input_card, [("소스 · 모드", NO_VALUE), ("보정", NO_VALUE), ("상태 · 사유", NO_VALUE)])
+        input_card.body.addWidget(label("D 내부 모의 값입니다. 실제 A·B 측정값이 아닙니다." if self.demo else "A·B 값은 C 표시 연결로 옵니다. 연결 방식이 정해지기 전에는 비워 둡니다.", "Caption", wrap=True))
         grid.addWidget(input_card, 2, 0)
 
         target_card = Card("수동 명령 목표", "PLANAR · mm / °")
@@ -336,8 +347,8 @@ class MainWindow(QMainWindow):
         cards = QHBoxLayout()
         cards.setSpacing(14)
 
-        measure_card = Card("현재 측정", "A·B 미수신")
-        self._rows(measure_card, [("(u, v) px", NO_VALUE), ("(X, Y) mm", NO_VALUE), ("θ °", NO_VALUE)])
+        measure_card = Card("현재 측정", "D 모의" if self.demo else "A·B 미수신")
+        self.measure_values = self._rows(measure_card, [("(u, v) px", NO_VALUE), ("(X, Y) mm", NO_VALUE), ("θ °", NO_VALUE)])
         measure_card.body.addStretch(1)
 
         stage_card = Card("공정 단계", "모의 · 실제 아님" if self.demo else "C 확인 전")
@@ -371,7 +382,13 @@ class MainWindow(QMainWindow):
             card.setFixedHeight(268)   # 단계 ID·실패 줄과 수량 5줄이 최소 창에서도 잘리지 않는 높이
             cards.addWidget(card, stretch)
         column.addLayout(cards)
-        return page, [holder, measure_card, stage_card, count_card, recent_card]
+        scroll = QScrollArea()
+        scroll.setWidget(page)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        return scroll, [holder, measure_card, stage_card, count_card, recent_card]
 
     # ══ 화면 3: 평가·기록 ═══════════════════════════════════════════════════
 
@@ -741,7 +758,57 @@ class MainWindow(QMainWindow):
 
     def _on_frame(self, image: QImage) -> None:
         self._frame_size = f"{image.width()}×{image.height()}"
-        self.stage.main.show_frame(image)
+        if not self.demo:
+            self.stage.main.show_frame(image)
+
+    def _on_display_frame(self, channel, image, envelope):
+        self.display.ingest_frame(channel, image, **envelope)
+
+    def _update_display(self):
+        if self.display is None:
+            return
+        for channel, view in (("fixed", self.stage.main), ("gripper", self.stage.gripper), ("link", self.stage.link)):
+            frame = self.display.frame(channel)
+            if self.display.fresh(frame):
+                if getattr(view, "_display_item", None) is not frame:
+                    view.show_frame(frame["image"])
+                    view._display_item = frame
+                view.set_footer(f"D 모의 · {frame['source_id']} · 프레임 {frame['image_seq']} · 보정 {frame['calibration_id'] or NO_VALUE}")
+            else:
+                view.set_placeholder("empty", "D 모의 영상 미수신 또는 노후")
+                view._display_item = None
+        result = self.display.matched_result()
+        values = self.stage.popup.values
+        def show(value):
+            return NO_VALUE if value is None else str(value)
+        contents = {
+            "px": show(result.get("center_px")) if result else NO_VALUE,
+            "mm": show(result.get("center_w_mm")) if result else NO_VALUE,
+            "theta": show(result.get("theta_deg")) if result and result.get("theta_valid") else NO_VALUE,
+            "calibration": show(result.get("calibration_id")) if result else NO_VALUE,
+            "frame": f"{result['source_id']} · {result['image_seq']}" if result else NO_VALUE,
+            "detail": f"D 모의 · {show(result.get('spec'))}" if result else self.display.reason,
+        }
+        for key, text in contents.items():
+            self._set_elided(values[key], text)
+        for output, key in zip(self.measure_values, ("px", "mm", "theta")):
+            self._set_elided(output, contents[key])
+        inputs = (f"{result['source_id']} · {self.display.mode}" if result else NO_VALUE,
+                  contents["calibration"], contents["detail"])
+        for output, text in zip(self.input_values, inputs):
+            self._set_elided(output, text)
+
+    @staticmethod
+    def _set_elided(value: QLabel, text: str) -> None:
+        """「이름 … 값」 줄에서 이름을 뺀 실제 남은 폭으로 말줄임하고 전체 값은 툴팁에 둔다."""
+        row = getattr(value, "_row", None)
+        if row is None:
+            row = value._row = next(r for r in value.parentWidget().findChildren(QHBoxLayout) if r.indexOf(value) >= 0)
+        name = row.itemAt(0).widget()
+        width = row.geometry().width() - name.sizeHint().width() - 2 * max(row.spacing(), 6)
+        # 아직 배치 전이면 이전 고정 폭을 쓴다. 250 ms 갱신 때 실제 폭으로 다시 맞춘다.
+        value.setText(value.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, width if width > 0 else 110))
+        value.setToolTip(text)
 
     def _update_status(self) -> None:
         """250 ms 마다와 값 수신 때 부른다. 오래된 값은 현재값처럼 남기지 않는다."""
@@ -768,6 +835,11 @@ class MainWindow(QMainWindow):
         age_text = NO_VALUE if age is None else ("정상 · 단절 감시" if not link.is_stale() else f"{age // 1000}초 전")
         self.chip_age.set_state("idle" if age is None else "accent", age_text)
         self._update_command_controls()
+
+        if self.demo:
+            self._update_display()
+            self.chip_view.set_state("ok" if self.view.state == "connected" and not self.view.is_stale() else "fail", "D 모의 화면")
+            return
 
         # 표시 연결 · 메인 디스플레이 [D 임시 경로]
         main = self.stage.main
@@ -798,6 +870,8 @@ class MainWindow(QMainWindow):
         if self.sort_demo is not None:
             self.sort_demo.close()
         self.view.stop()
+        if self.display is not None:
+            self.display.set_connected(False)
         super().closeEvent(event)
 
 
