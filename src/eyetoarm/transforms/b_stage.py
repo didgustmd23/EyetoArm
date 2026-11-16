@@ -4,6 +4,11 @@ A는 관측 하나마다 이렇게 부른다 (A 협업 요청 B-07, B 상세설�
 
     stage = BStage.from_config(root, camera_profile, tf_lookup)
     out = stage.process(observation, frame)
+
+A 실행기(`vision/pipeline_runner.run`)의 B 자리 `b_consumer(frame, obs)`에는 순서가 같은 `stage.consume`을 넣는다:
+
+    run(..., b_consumer=stage.consume)      # A 검사(b_gate)를 통과한 유효 관측만 들어온다
+    stage.on_output = c_queue.put           # (선택) B 출력을 C 쪽으로 넘길 곳. 없으면 stage.last 에만 남긴다
     out.result        # WorkPlanarResult (m, B 내부)
     out.result_dict   # C·D 표시용 결과 (mm·deg, DB-01)
     out.goal          # C 목표 사전 (PICK_PLACE / PASS_THROUGH / SKIP, DB-02)
@@ -104,6 +109,8 @@ class BStage:
         self.specs = specs
         self.sort_job_id: str | None = None    # C가 START 수락 때 발급 → 파이프라인이 넣어 줌
         self.run_epoch: int | None = None      # C 실행 세대 (C 상세설계 §16.5.2)
+        self.on_output: Callable[[BOutput], None] | None = None   # B 출력 받을 곳 (C 대기열 등)
+        self.last: BOutput | None = None
 
     @classmethod
     def from_config(cls, root: str | Path, camera: CameraProfile, tf_lookup: TfLookup) -> "BStage":
@@ -140,6 +147,16 @@ class BStage:
         })
 
         return BOutput(result, to_output_dict(result, frame.source_id), goal, T_W_C)
+
+    def consume(self, frame, obs) -> BOutput:
+        """A 실행기 `b_consumer(frame, obs)` 자리용. `process`를 부르고 결과를 `last`·`on_output`으로 넘긴다."""
+        out = self.process(obs, frame)
+        self.last = out
+
+        if self.on_output is not None:
+            self.on_output(out)
+
+        return out
 
     def render_center(self, image: np.ndarray, outputs: list[BOutput], guides: bool = True) -> np.ndarray:
         """center 주석 영상: 원본 프레임 복사본 위에 B 결과(+작업 좌표 안내선)를 그린다 (DB-01).

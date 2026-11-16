@@ -310,3 +310,27 @@ class TestBStageKeys(unittest.TestCase):
         self.assertEqual((g["sort_job_id"], g["run_id"], g["job_seq"], g["timestamp_base"]), ("job-1", "r1", 1, "SIM_TIME"))
         self.assertEqual(len(g["goal_id"]), 36)
         self.assertNotEqual(g["goal_id"], stage.process(make_obs(to_px(bolt(0.046, 0.55, 0, 0)).astype(np.float32)), make_frame()).goal["goal_id"])
+
+
+class TestAConnection(unittest.TestCase):
+    def test_consume_matches_runner_order(self):
+        stage = BStage.from_config(ROOT, CAM, StaticTfLookup(T_W_C))
+        got = []
+        stage.on_output = got.append
+        frame = make_frame()
+        out = stage.consume(frame, make_obs(to_px(bolt(0.046, 0.55, 0, 30)).astype(np.float32)))
+        self.assertIs(stage.last, out)
+        self.assertEqual([o.goal["kind"] for o in got], ["PICK_PLACE"])
+
+    def test_runner_signature(self):
+        import inspect
+        from eyetoarm.vision.pipeline_runner import run
+        self.assertIn("b_consumer", inspect.signature(run).parameters)
+
+    def test_yolo_class_names(self):
+        from eyetoarm.transforms.work_result import normalize_class
+        for name, want in [("bolt", "bolt"), ("Bolt", "bolt"), ("BOLT_A", "bolt"), ("BOLT_B", "bolt"),
+                           ("nut", "nut"), ("NUT", "nut"), (None, None), ("washer", None)]:
+            self.assertEqual(normalize_class(name), want, name)
+        r = compute_work_result(to_px(bolt(0.046, 0.55, 0, 10)), CAM, T_W_C, SPECS, class_name="BOLT_A")
+        self.assertEqual(r.spec, "BOLT_B")    # A 이름이 BOLT_A여도 길이로 다시 판정
