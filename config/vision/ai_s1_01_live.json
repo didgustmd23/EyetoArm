@@ -1,0 +1,25 @@
+{
+ "format_version": 1,
+ "method": "ai",
+ "model_family": "yolov8n-seg",
+ "weights_path": "outputs/s1_candidates/S1-01_yolov8n-seg/weights/best.pt",
+ "weights_sha256": "68ed4d1139d4d19fa009e20b037e052924574d6429c61f20ec7bdd81dc26f2c6",
+ "class_map": {
+  "0": "bolt",
+  "1": "nut"
+ },
+ "target_classes": [
+  "bolt",
+  "nut"
+ ],
+ "conf_threshold": 0.084,
+ "iou_threshold": 0.7,
+ "imgsz": 1280,
+ "max_det": 300,
+ "device": "0",
+ "half": false,
+ "retina_masks": true,
+ "roi": null,
+ "min_mask_area_px": 20,
+ "border_margin_px": 2
+}

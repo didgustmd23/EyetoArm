@@ -4,6 +4,7 @@
   학습 인자 키를 넣으면 ConfigError다(같은 조건 보장).
 - 경로는 저장소 루트 기준 상대 경로만 받는다(절대 경로·`..` 거부). 호출자가 루트를 붙여 해석한다.
 - `kind`는 `comparison`(비교 실험) 또는 `smoke`(검증용, `fraction` 허용)다. smoke 결과는 비교 묶음에 넣지 않는다.
+- 후보 파일의 `selection_mode`를 생략하면 3계열 비교 규칙, `"single"`이면 후보 정확히 1개다(#139). 모드는 config_id 스냅샷에 들어간다.
 - 감시 값 중 `mem_available_stop_kib`(2 GiB)는 기존 사용자 결정의 참조이고, 나머지 기한·유예 값은 조절 가능한 A 개발 임시값이다.
 - torch·ultralytics를 import하지 않는다.
 """
@@ -26,9 +27,14 @@ FAMILIES = ("yolov8n-seg", "yolo11n-seg", "yolo26n-seg")   # 사용자 확정 �
 FAMILY_WEIGHTS = {"yolov8n-seg": "yolov8n-seg.pt", "yolo11n-seg": "yolo11n-seg.pt", "yolo26n-seg": "yolo26n-seg.pt"}
 TRAIN_KEYS = ("imgsz", "epochs", "seed", "deterministic", "batch", "device", "workers", "cache", "plots")
 SMOKE_ONLY_KEYS = ("fraction",)
+# 명시할 때만 ultralytics에 넘기는 선택 학습 키(#141). 생략하면 ultralytics 기본값이고 스냅샷·config_id도 그대로다
+OPTIONAL_TRAIN_KEYS = ("hsv_v",)
 WATCH_KEYS = ("watch_interval_s", "mem_available_stop_kib", "kill_grace_s", "train_deadline_s", "eval_deadline_s",
               "reap_timeout_s", "monitor_cmd_timeout_s")
 REQUIRED_ENV = {"YOLO_AUTOINSTALL": "false", "YOLO_OFFLINE": "1"}
+# 후보 선택 모드(#139): 생략(_MODE_DEFAULT) = 3계열 비교 규칙, "single" = 후보 정확히 1개. 생략과 구분하려고 기본값은 객체로 둔다
+_MODE_DEFAULT = object()
+SELECTION_MODES = (_MODE_DEFAULT, "single")
 OFFICIAL_URL = "https://github.com/ultralytics/assets/releases/download/"
 _SHA_RE = re.compile(r"[0-9a-f]{64}")
 _EXP_RE = re.compile(r"S1-[0-9]{2}")
@@ -183,7 +189,7 @@ def common_from_dict(d) -> CommonConfig:
         raise ConfigError(f"kind must be one of {KINDS}: {d['kind']!r}")
 
     t = d["train"]
-    _exact_keys(t, TRAIN_KEYS, "train", optional=SMOKE_ONLY_KEYS)
+    _exact_keys(t, TRAIN_KEYS, "train", optional=SMOKE_ONLY_KEYS + OPTIONAL_TRAIN_KEYS)
     imgsz = _pos_int(t["imgsz"], "imgsz", 32, 4096)
     if imgsz % 32:
         raise ConfigError(f"imgsz must be a multiple of 32: {imgsz}")
@@ -204,6 +210,13 @@ def common_from_dict(d) -> CommonConfig:
         if f > 1:
             raise ConfigError(f"fraction must be in (0, 1]: {f}")
         train["fraction"] = f
+    if "hsv_v" in t:
+        # 밝기(V) 증강 폭: bool 제외 유한 실수, ultralytics 분수 키와 같은 [0, 1].
+        # 범위 비교를 isfinite보다 먼저 한다: 거대 정수(10**400)는 float 변환 없이 비교에서 걸러진다(r1 F1)
+        v = t["hsv_v"]
+        if isinstance(v, bool) or not isinstance(v, Real) or not 0 <= v <= 1 or not math.isfinite(v):
+            raise ConfigError(f"hsv_v must be a finite number in [0, 1]: {v!r}")
+        train["hsv_v"] = float(v)
 
     data = d["data"]
     _exact_keys(data, ("data_yaml", "split_lists", "class_names", "expected_fingerprint"), "data")
@@ -235,10 +248,19 @@ def common_from_dict(d) -> CommonConfig:
 
 
 def candidates_from_dict(d) -> tuple[Candidate, ...]:
-    """후보 설정 dict를 검증한다. 3계열이 정확히 한 번씩, exp_id 유일."""
-    _exact_keys(d, ("format_version", "candidates"), "candidates file")
+    """후보 설정 dict를 검증한다. exp_id 유일.
+
+    `selection_mode`를 생략하면 비교 규칙(3계열이 정확히 한 번씩)이고, `"single"`이면 후보가 정확히 1개여야 한다
+    (#139 reviewer 결정 B). 어느 모드든 후보마다 계열·공식 파일·출처·sha256 검증은 같다. 그 밖의 모드 값은 거부한다.
+    """
+    _exact_keys(d, ("format_version", "candidates"), "candidates file", optional=("selection_mode",))
     if not _is_int(d["format_version"]) or d["format_version"] != FORMAT_VERSION:
         raise ConfigError(f"format_version must be {FORMAT_VERSION}")
+
+    mode = d["selection_mode"] if "selection_mode" in d else _MODE_DEFAULT
+    if mode not in SELECTION_MODES:
+        raise ConfigError(f"selection_mode must be one of {SELECTION_MODES[1:]} or omitted: {mode!r}")
+
     items = d["candidates"]
     if not isinstance(items, list):
         raise ConfigError("candidates must be a list")
@@ -248,7 +270,7 @@ def candidates_from_dict(d) -> tuple[Candidate, ...]:
         if not isinstance(c, dict):
             raise ConfigError(f"candidates[{i}] must be an object")
         extra = c.keys() - {"exp_id", "family", "weights_file", "source", "sha256", "size_bytes"}
-        if extra & set(TRAIN_KEYS + SMOKE_ONLY_KEYS) or extra:
+        if extra & set(TRAIN_KEYS + SMOKE_ONLY_KEYS + OPTIONAL_TRAIN_KEYS) or extra:
             raise ConfigError(f"candidates[{i}] must not carry training args or unknown keys: {sorted(extra)}")
         try:
             out.append(Candidate(**c))
@@ -257,7 +279,11 @@ def candidates_from_dict(d) -> tuple[Candidate, ...]:
 
     if len({c.exp_id for c in out}) != len(out):
         raise ConfigError("exp_id must be unique")
-    if sorted(c.family for c in out) != sorted(FAMILIES):
+
+    if mode == "single":
+        if len(out) != 1:
+            raise ConfigError(f"selection_mode single requires exactly one candidate: {len(out)}")
+    elif sorted(c.family for c in out) != sorted(FAMILIES):
         raise ConfigError(f"candidates must contain each of {FAMILIES} exactly once")
 
     return tuple(out)

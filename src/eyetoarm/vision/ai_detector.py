@@ -315,9 +315,13 @@ class AiSegDetector:
         t0 = time.perf_counter_ns()
         crop, _ = crop_frame(job.frame, cfg)
 
+        # 정밀도: 설정 `half`는 그대로 두고 predict에는 폐기된 `half` 대신 `quantize`로 넘긴다(사용자 지시 2026-11-16).
+        # 설치 Ultralytics `cfg._handle_deprecation`의 변환과 같다: half False → None(FP32), True → 16(FP16)
+        quantize = 16 if cfg.half else None
+
         t1 = time.perf_counter_ns()
         results = self._model.predict(crop, imgsz=cfg.imgsz, conf=cfg.conf_threshold, iou=cfg.iou_threshold,
-                                      max_det=cfg.max_det, device=cfg.device, half=cfg.half, retina_masks=True,
+                                      max_det=cfg.max_det, device=cfg.device, quantize=quantize, retina_masks=True,
                                       verbose=False)
         infer_ms = (time.perf_counter_ns() - t1) / 1e6
 

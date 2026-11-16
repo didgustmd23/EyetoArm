@@ -1,0 +1,41 @@
+{
+ "format_version": 1,
+ "candidates": [
+  {
+   "exp_id": "S1-04",
+   "family": "yolov8n-seg",
+   "weights_file": "yolov8n-seg.pt",
+   "source": {
+    "repo": "ultralytics/assets",
+    "tag": "v8.4.0",
+    "url": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n-seg.pt"
+   },
+   "sha256": "a7cd8f929e1903d78a12a48efecab430209f18dc46cb96c3599a5980c63c423c",
+   "size_bytes": 7071756
+  },
+  {
+   "exp_id": "S1-05",
+   "family": "yolo11n-seg",
+   "weights_file": "yolo11n-seg.pt",
+   "source": {
+    "repo": "ultralytics/assets",
+    "tag": "v8.4.0",
+    "url": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n-seg.pt"
+   },
+   "sha256": "55ed65c56c91713d23e8402371c6c49a6fd84f257f7dce452e8d70e41dcbe152",
+   "size_bytes": 6182636
+  },
+  {
+   "exp_id": "S1-06",
+   "family": "yolo26n-seg",
+   "weights_file": "yolo26n-seg.pt",
+   "source": {
+    "repo": "ultralytics/assets",
+    "tag": "v8.4.0",
+    "url": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n-seg.pt"
+   },
+   "sha256": "361fbfabab285c3237700b6bb91d7ecfa602cd945fffda8dbe1242829b71e73f",
+   "size_bytes": 6719965
+  }
+ ]
+}
