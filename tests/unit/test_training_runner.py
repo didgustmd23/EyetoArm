@@ -696,3 +696,48 @@ class SettleDecisionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SingleModeRunTest(Fixture):
+    """selection_mode single(#139): 가짜 자식으로 선택한 후보 하나만 실행된다."""
+
+    def test_single_mode_runs_only_selected_candidate(self):
+        """single 설정(S1-01 하나)으로 run_train하면 자식은 S1-01만 뜨고, run_set 후보 1개 completed, 다른 계열 폴더는 없다, rc 0."""
+        common, _ = self.config_docs()
+        cfg = training_config_from_dicts(common, {"format_version": 1, "selection_mode": "single",
+                                                  "candidates": [self.cands[0]]})
+
+        res = self.run_batch({"S1-01": ("ok", 0.1)}, cfg=cfg)
+
+        self.assertEqual(res.rc, 0, res.errors)
+        self.assertEqual(self.spawned, [("S1-01", None)])
+        rs = _read_json(os.path.join(res.run_set_dir, "run_set.json"))
+        self.assertEqual([(c["exp_id"], c["status"]) for c in rs["candidates"]], [("S1-01", "completed")])
+        self.assertEqual(sorted(d for d in os.listdir(res.run_set_dir) if d.startswith("S1-")),
+                         ["S1-01_yolov8n-seg"])
+
+
+class HsvVRunnerTest(Fixture):
+    """hsv_v(#141): 실행기의 기대 공통 값·기록에 연결된다."""
+
+    def test_expected_common_includes_hsv_v_only_when_configured(self):
+        """_expected_common은 설정에 hsv_v가 있을 때만 넣는다."""
+        from eyetoarm.training.runner import _expected_common
+        common, cands = self.config_docs()
+
+        self.assertNotIn("hsv_v", _expected_common(training_config_from_dicts(common, cands)))
+        common["train"] = {**common["train"], "hsv_v": 0.6}
+        self.assertEqual(_expected_common(training_config_from_dicts(common, cands))["hsv_v"], 0.6)
+
+    def test_single_hsv_v_run_records_train_args(self):
+        """single + hsv_v 0.6 가짜 실행: S1-01만 뜨고 run_manifest의 train 기록에 hsv_v 0.6이 남는다."""
+        common, _ = self.config_docs()
+        common["train"] = {**common["train"], "hsv_v": 0.6}
+        cfg = training_config_from_dicts(common, {"format_version": 1, "selection_mode": "single",
+                                                  "candidates": [self.cands[0]]})
+
+        res = self.run_batch({"S1-01": ("ok", 0.1)}, cfg=cfg)
+
+        self.assertEqual(self.spawned, [("S1-01", None)])
+        m = _read_json(os.path.join(self.exp(res, "S1-01", "yolov8n-seg"), "run_manifest.json"))
+        self.assertEqual(m["train"]["hsv_v"], 0.6)

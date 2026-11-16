@@ -176,3 +176,111 @@ class CliEvalTest(Fixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SingleModeCliTest(Fixture):
+    """selection_mode single 설정의 check(#139)."""
+
+    def test_check_single_mode_ok(self):
+        """single 후보(S1-01 하나) 설정으로 check는 종료 0이고 weights에 S1-01만 나온다."""
+        common, _ = self.config_docs()
+        os.makedirs(os.path.join(self.root, "config", "training"))
+        _write(os.path.join(self.root, "config", "training", "c.json"), json.dumps(common))
+        _write(os.path.join(self.root, "config", "training", "k.json"),
+               json.dumps({"format_version": 1, "selection_mode": "single", "candidates": [self.cands[0]]}))
+        base = ["--repo-root", self.root, "--common", "config/training/c.json", "--candidates", "config/training/k.json"]
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = load_cli().main(base + ["check"])
+        out = json.loads(buf.getvalue())
+
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["weights"], {"S1-01": "ok"})
+        self.assertEqual(out["fingerprint_diffs"], [])
+
+
+class FakeYOLO:
+    """가짜 ultralytics.YOLO: train 인자를 기록만 한다(GPU·모델 로드 없음)."""
+
+    calls = []
+
+    def __init__(self, path):
+        """생성 경로를 기록한다."""
+        self.path = path
+
+    def add_callback(self, name, fn):
+        """콜백 등록(무시)."""
+
+    def train(self, **kw):
+        """train 인자 기록."""
+        FakeYOLO.calls.append(kw)
+
+
+class HsvVChildTest(Fixture):
+    """학습 자식이 hsv_v를 model.train에 넘기는지(#141), 가짜 torch·ultralytics로 확인한다."""
+
+    def run_child(self, hsv):
+        """가짜 모듈로 _child-train을 부르고 train 인자를 돌려준다."""
+        import types
+        from unittest import mock
+        common, _ = self.config_docs()
+        if hsv is not None:
+            common["train"] = {**common["train"], "hsv_v": hsv}
+        os.makedirs(os.path.join(self.root, "config", "training"), exist_ok=True)
+        _write(os.path.join(self.root, "config", "training", "c.json"), json.dumps(common))
+        _write(os.path.join(self.root, "config", "training", "k.json"),
+               json.dumps({"format_version": 1, "selection_mode": "single", "candidates": [self.cands[0]]}))
+        fake_ul = types.ModuleType("ultralytics")
+        fake_ul.YOLO, fake_ul.__version__ = FakeYOLO, "fake"
+        FakeYOLO.calls = []
+        exp = os.path.join(self.root, "outputs", "training", "x", "S1-01_yolov8n-seg")
+        os.makedirs(exp, exist_ok=True)
+        argv = ["--repo-root", self.root, "--common", "config/training/c.json", "--candidates",
+                "config/training/k.json", "_child-train", "--exp-id", "S1-01", "--exp-dir", exp]
+        with mock.patch.dict(sys.modules, {"torch": types.ModuleType("torch"), "ultralytics": fake_ul}):
+            self.assertEqual(load_cli().main(argv), 0)
+        return FakeYOLO.calls[0]
+
+    def test_hsv_v_passed_only_when_configured(self):
+        """hsv_v 0.6 설정이면 model.train(hsv_v=0.6, 나머지 공통 값 그대로), 설정에 없으면 hsv_v 인자 없음."""
+        with_hsv = self.run_child(0.6)
+        without = self.run_child(None)
+
+        self.assertEqual(with_hsv["hsv_v"], 0.6)
+        self.assertNotIn("hsv_v", without)
+        self.assertEqual({k: v for k, v in with_hsv.items() if k != "hsv_v"}, without)
+
+    def test_inspect_reports_hsv_v(self):
+        """_child-inspect는 체크포인트 train_args의 hsv_v를 메타에 넣는다(재개·완료 대조용)."""
+        import types
+        from unittest import mock
+        fake_torch = types.ModuleType("torch")
+        fake_torch.load = lambda *a, **k: {"epoch": 3, "optimizer": object(), "train_args": {"hsv_v": 0.6, "imgsz": 640}}
+        buf = io.StringIO()
+        with mock.patch.dict(sys.modules, {"torch": fake_torch}), redirect_stdout(buf):
+            load_cli().main(["_child-inspect", "x.pt"])
+
+        self.assertEqual(json.loads(buf.getvalue())["train_args"]["hsv_v"], 0.6)
+
+
+class HsvVBadConfigCliTest(Fixture):
+    """잘못된 hsv_v 설정의 CLI check(#141 r1 F1): traceback 대신 오류 JSON과 종료 2."""
+
+    def test_huge_int_hsv_v_exit_2_json(self):
+        """hsv_v가 ±10**400(정상 JSON 정수)이면 check는 종료 2와 ConfigError 오류 JSON을 낸다."""
+        for v in (10 ** 400, -(10 ** 400)):
+            common, cands = self.config_docs()
+            common["train"] = {**common["train"], "hsv_v": v}
+            os.makedirs(os.path.join(self.root, "config", "training"), exist_ok=True)
+            _write(os.path.join(self.root, "config", "training", "c.json"), json.dumps(common))
+            _write(os.path.join(self.root, "config", "training", "k.json"), json.dumps(cands))
+            base = ["--repo-root", self.root, "--common", "config/training/c.json",
+                    "--candidates", "config/training/k.json"]
+            buf = io.StringIO()
+            with self.subTest(sign=v > 0), redirect_stdout(buf):
+                rc = load_cli().main(base + ["check"])
+            out = json.loads(buf.getvalue())
+            self.assertEqual(rc, 2)
+            self.assertFalse(out["ok"])
+            self.assertIn("ConfigError", out["error"])

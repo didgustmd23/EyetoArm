@@ -260,7 +260,7 @@ class InferenceTest(WeightsMixin, unittest.TestCase):
         return det, cfg, job
 
     def test_passes_bgr_crop_unchanged_and_kwargs(self):
-        """predict는 원본 BGR crop을 값·shape 그대로(색 변환·복사 수정 없이) 받고 설정의 imgsz·conf·iou·max_det·device·half·retina_masks를 받는다. 원본 프레임은 바뀌지 않는다."""
+        """predict는 원본 BGR crop을 값·shape 그대로(색 변환·복사 수정 없이) 받고 설정의 imgsz·conf·iou·max_det·device·정밀도(half False → quantize None)·retina_masks를 받는다. 폐기된 half 인자는 넘기지 않는다. 원본 프레임은 바뀌지 않는다."""
         det, cfg, job = self.ready(cfg_over={"roi": [100, 50, 64, 48], "imgsz": 640})
         img = job.frame.image
         before = img.copy()
@@ -272,9 +272,23 @@ class InferenceTest(WeightsMixin, unittest.TestCase):
         self.assertEqual(tuple(int(v) for v in copy[0, 0]), (10 + 100 % 50, 20, 30))   # BGR 순서 그대로
         self.assertEqual((source.shape, source.dtype), ((48, 64, 3), np.uint8))
         self.assertEqual(kwargs, {"imgsz": 640, "conf": cfg.conf_threshold, "iou": cfg.iou_threshold,
-                                  "max_det": cfg.max_det, "device": "cpu", "half": False, "retina_masks": True,
+                                  "max_det": cfg.max_det, "device": "cpu", "quantize": None, "retina_masks": True,
                                   "verbose": False})
+        self.assertNotIn("half", kwargs)
         self.assertTrue(np.array_equal(img, before))
+
+    def test_half_maps_to_quantize(self):
+        """정밀도 대응(설치 Ultralytics `_handle_deprecation`과 같음): half False → quantize None(FP32), True → 16(FP16). 설정의 half 필드는 그대로 정규형에 남는다."""
+        for half, want in ((False, None), (True, 16)):
+            with self.subTest(half=half):
+                det, cfg, job = self.ready(cfg_over={"half": half})
+                det(job)
+                kwargs = self.model.calls[0][2]
+
+                self.assertEqual(kwargs["quantize"], want)
+                self.assertNotIn("half", kwargs)
+                self.assertIs(cfg.half, half)
+                self.assertIn(f'"half":{"true" if half else "false"}', cfg.canonical_json())
 
     def test_call_returns_invalid_observation_and_offset_polygons(self):
         """결과는 표시용 무효 관측(TOP_FACE_UNRESOLVED·candidate 2)과 ROI 오프셋만 더한 다각형의 AiSegResult다."""

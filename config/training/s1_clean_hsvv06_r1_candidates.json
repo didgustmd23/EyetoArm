@@ -1,0 +1,18 @@
+{
+ "format_version": 1,
+ "selection_mode": "single",
+ "candidates": [
+  {
+   "exp_id": "S1-08",
+   "family": "yolov8n-seg",
+   "weights_file": "yolov8n-seg.pt",
+   "source": {
+    "repo": "ultralytics/assets",
+    "tag": "v8.4.0",
+    "url": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n-seg.pt"
+   },
+   "sha256": "a7cd8f929e1903d78a12a48efecab430209f18dc46cb96c3599a5980c63c423c",
+   "size_bytes": 7071756
+  }
+ ]
+}

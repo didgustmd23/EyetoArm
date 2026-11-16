@@ -260,6 +260,24 @@ class PipelineLog:
 
         self._recorder.write("model_ready", info)
 
+    def write_live_input(self, record: dict) -> None:
+        """실시간 소스의 경계·알림 반영 1줄(`live_input`, 계획 live-link r3 §3.5). 반영 순서가 기록 순서다."""
+        self._check()
+
+        if not isinstance(record, dict):
+            raise TypeError(f"live_input record must be a dict: {type(record).__name__}")
+
+        self._recorder.write("live_input", record)
+
+    def write_source_stats(self, stats: dict) -> None:
+        """실시간 소스 통계 1줄(`source_stats`, 종료 때)."""
+        self._check()
+
+        if not isinstance(stats, dict):
+            raise TypeError(f"source_stats must be a dict: {type(stats).__name__}")
+
+        self._recorder.write("source_stats", stats)
+
     def log_outcome(self, outcome: JobOutcome) -> bool:
         """최초 terminal 응답의 처리 기록과 그 사건을 1회 쓴다. duplicate·이미 쓴 작업이면 False(무기록)."""
         self._check()

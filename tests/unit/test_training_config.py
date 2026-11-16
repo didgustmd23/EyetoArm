@@ -12,7 +12,7 @@ import tempfile
 import unittest
 
 from eyetoarm.training.config import (ConfigError, candidates_from_dict, common_from_dict, load_candidates,
-                                      load_common, load_training_config)
+                                      load_common, load_training_config, thaw, training_config_from_dicts)
 
 
 def _write(path, data, mode="w"):
@@ -249,3 +249,173 @@ class SnapshotTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+CLEAN_COMMON = os.path.join(ROOT, "config", "training", "s1_clean_train_r1_common.json")
+CLEAN_CANDS = os.path.join(ROOT, "config", "training", "s1_clean_train_r1_candidates.json")
+
+
+def single_doc(n=1):
+    """selection_mode single 후보 문서: 저장소 후보에서 앞 n개를 쓴다(n=1이면 S1-01 yolov8n-seg)."""
+    d = cands_doc()
+    d["selection_mode"] = "single"
+    d["candidates"] = d["candidates"][:n]
+    return d
+
+
+class SelectionModeTest(unittest.TestCase):
+    """후보 선택 모드(#139, reviewer 결정 B): 생략하면 기존 3계열 규칙, single이면 정확히 1개."""
+
+    def test_single_mode_accepts_exactly_one(self):
+        """selection_mode single + yolov8n-seg 1개는 통과하고 후보는 그 하나뿐이다."""
+        cs = candidates_from_dict(single_doc())
+
+        self.assertEqual([(c.exp_id, c.family) for c in cs], [("S1-01", "yolov8n-seg")])
+
+    def test_single_mode_rejects_wrong_counts_and_bad_candidate(self):
+        """single에서 빈 목록·2개·3개, 계열↔파일 불일치, 비공식 url, 잘못된 sha256, 후보별 학습 인자는 ConfigError."""
+        bads = {"empty": single_doc(0), "two": single_doc(2), "three": single_doc(3)}
+
+        d = single_doc()
+        d["candidates"][0]["weights_file"] = "yolo11n-seg.pt"
+        bads["family-file"] = d
+
+        d = single_doc()
+        d["candidates"][0]["source"]["url"] = "http://example.com/yolov8n-seg.pt"
+        bads["url"] = d
+
+        d = single_doc()
+        d["candidates"][0]["sha256"] = "0" * 63
+        bads["sha"] = d
+
+        d = single_doc()
+        d["candidates"][0]["epochs"] = 10
+        bads["train-arg"] = d
+
+        for name, bad in bads.items():
+            with self.subTest(case=name):
+                with self.assertRaises(ConfigError):
+                    candidates_from_dict(bad)
+
+    def test_unknown_mode_rejected(self):
+        """알 수 없는 모드 값(대소문자 다름·다른 문자열·null·숫자·빈 문자열)은 ConfigError."""
+        for mode in ("SINGLE", "multi", None, 1, "", "all"):
+            d = single_doc()
+            d["selection_mode"] = mode
+            with self.subTest(mode=mode):
+                with self.assertRaises(ConfigError):
+                    candidates_from_dict(d)
+
+    def test_omitted_mode_keeps_three_family_rule(self):
+        """모드를 생략하면 기존 규칙 그대로: 3계열 문서는 통과, 1개·2개 문서는 ConfigError."""
+        self.assertEqual(len(candidates_from_dict(cands_doc())), 3)
+
+        for n in (1, 2):
+            d = cands_doc()
+            d["candidates"] = d["candidates"][:n]
+            with self.subTest(n=n):
+                with self.assertRaises(ConfigError):
+                    candidates_from_dict(d)
+
+    def test_mode_is_part_of_config_id(self):
+        """single 모드는 정규 스냅샷(config_id 계산 대상)에 들어가고, 스냅샷 재검증(verify)도 통과한다."""
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "k.json")
+        _write(path, json.dumps(single_doc()))
+
+        cfg = load_training_config(COMMON, path)
+
+        self.assertIn('"selection_mode":"single"', cfg.canonical)
+        self.assertTrue(cfg.verify())
+        self.assertNotEqual(cfg.config_id, load_training_config(COMMON, CANDS).config_id)
+
+    def test_repo_clean_train_r1_config(self):
+        """저장소 clean_train_r1 설정: 후보는 single·S1-07 yolov8n-seg 공식 v8.4.0 하나, 공통 학습 값·감시는 s1_common과 같다."""
+        cfg = load_training_config(CLEAN_COMMON, CLEAN_CANDS)
+        base = load_common(COMMON)
+
+        self.assertEqual([(c.exp_id, c.family, c.weights_file, c.source["tag"]) for c in cfg.candidates],
+                         [("S1-07", "yolov8n-seg", "yolov8n-seg.pt", "v8.4.0")])
+        self.assertEqual(cfg.candidates[0].sha256, load_candidates(CANDS)[0].sha256)
+        self.assertEqual(dict(cfg.common.train), dict(base.train))
+        self.assertEqual(dict(cfg.common.watch), dict(base.watch))
+        self.assertEqual(cfg.common.data["data_yaml"], "data/derived/bolt_nut_clean_train_r1/dataset.yaml")
+        self.assertIsNotNone(cfg.common.data["expected_fingerprint"])
+
+
+HSVV_COMMON = os.path.join(ROOT, "config", "training", "s1_clean_hsvv06_r1_common.json")
+HSVV_CANDS = os.path.join(ROOT, "config", "training", "s1_clean_hsvv06_r1_candidates.json")
+
+
+def hsv_common(value):
+    """공통 설정 사본에 train.hsv_v를 넣는다."""
+    d = common_doc()
+    d["train"] = {**d["train"], "hsv_v": value}
+    return d
+
+
+class HsvVTest(unittest.TestCase):
+    """선택 학습 키 hsv_v(#141): 명시할 때만 전달, [0, 1] 유한 실수, 생략 시 기존 동작·config_id 그대로."""
+
+    def test_omitted_keeps_existing_snapshot(self):
+        """hsv_v 없는 저장소 설정은 train_args에 hsv_v가 없고 config_id가 변경 전 값과 같다(#139·기존 s1 기록값)."""
+        base = load_training_config(COMMON, CANDS)
+        clean = load_training_config(CLEAN_COMMON, CLEAN_CANDS)
+
+        self.assertNotIn("hsv_v", base.train_args())
+        self.assertNotIn("hsv_v", dict(base.common.train))
+        self.assertEqual(base.config_id, "77368a324a0da01e7bd379b84cc96b3b5603a7db6c25b7973ee02bf1d2d7bb56")
+        self.assertEqual(clean.config_id, "1e38cf433ee6c4327145b2853bd121da4e24647115ce42ecdcb47015857c98b1")
+
+    def test_accepts_range_and_passes_to_train_args(self):
+        """0·0.6·1(정수 포함)은 통과하고 train_args·검증된 train에 그 값이 들어간다."""
+        for v in (0, 0.0, 0.6, 1, 1.0):
+            with self.subTest(v=v):
+                cfg = training_config_from_dicts(hsv_common(v), cands_doc())
+                self.assertEqual(cfg.train_args()["hsv_v"], v)
+                self.assertEqual(cfg.common.train["hsv_v"], float(v))
+
+    def test_rejects_bad_values(self):
+        """bool·문자열·null·NaN·±inf·음수·1 초과·리스트·범위 밖 정수(±10**400 거대 정수 포함, r1 F1)는 ConfigError."""
+        for v in (True, False, "0.6", None, float("nan"), float("inf"), -0.1, 1.01, [0.6], 2, -1,
+                  10 ** 400, -(10 ** 400), float("-inf")):
+            with self.subTest(v=v):
+                with self.assertRaises(ConfigError):
+                    common_from_dict(hsv_common(v))
+
+    def test_only_hsv_v_is_added(self):
+        """다른 증강 키(hsv_s·hsv_h·mosaic·fliplr)는 여전히 공통 train에서 거부된다(임의 키 허용 확대 없음)."""
+        for k in ("hsv_s", "hsv_h", "mosaic", "fliplr"):
+            d = common_doc()
+            d["train"] = {**d["train"], k: 0.5}
+            with self.subTest(k=k):
+                with self.assertRaises(ConfigError):
+                    common_from_dict(d)
+
+    def test_candidate_cannot_carry_hsv_v(self):
+        """후보별 hsv_v는 학습 인자로 거부된다(후보별 train 인자 금지 유지)."""
+        d = cands_doc()
+        d["candidates"][0]["hsv_v"] = 0.6
+
+        with self.assertRaises(ConfigError) as ctx:
+            candidates_from_dict(d)
+        self.assertIn("training args", str(ctx.exception))
+
+    def test_value_changes_config_id(self):
+        """hsv_v 0.6과 0.5, 그리고 생략은 서로 다른 config_id."""
+        a = training_config_from_dicts(hsv_common(0.6), cands_doc()).config_id
+        b = training_config_from_dicts(hsv_common(0.5), cands_doc()).config_id
+        c = training_config_from_dicts(common_doc(), cands_doc()).config_id
+
+        self.assertEqual(len({a, b, c}), 3)
+
+    def test_repo_hsvv06_config(self):
+        """저장소 hsv_v 설정: single S1-08 yolov8n-seg, train = clean_train_r1 + hsv_v 0.6, 데이터·fingerprint·감시는 clean과 같다."""
+        cfg = load_training_config(HSVV_COMMON, HSVV_CANDS)
+        clean = load_training_config(CLEAN_COMMON, CLEAN_CANDS)
+
+        self.assertEqual([(c.exp_id, c.family) for c in cfg.candidates], [("S1-08", "yolov8n-seg")])
+        self.assertEqual(cfg.candidates[0].sha256, clean.candidates[0].sha256)
+        self.assertEqual(cfg.train_args(), {**clean.train_args(), "hsv_v": 0.6})
+        self.assertEqual(thaw(cfg.common.raw["data"]), thaw(clean.common.raw["data"]))
+        self.assertEqual(dict(cfg.common.watch), dict(clean.common.watch))

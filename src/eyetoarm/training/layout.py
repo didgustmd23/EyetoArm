@@ -20,6 +20,13 @@ LOCK_NAME = "OWNER.lock"
 _RUN_SET_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
 # 완료·재개에서 같아야 하는 공통 학습 키(train_args 기준)
 COMMON_KEYS = ("data", "imgsz", "batch", "epochs", "seed", "deterministic", "workers", "device")
+# 설정에 있을 때만 대조하는 선택 공통 키(#141 hsv_v). 설정에 없으면 체크포인트 값(ultralytics 기본)을 비교하지 않는다
+OPTIONAL_COMMON_KEYS = ("hsv_v",)
+
+
+def _compared_keys(common: dict) -> list:
+    """완료·재개에서 대조할 키: 필수 공통 키 + 설정에 있는 선택 키."""
+    return list(COMMON_KEYS) + [k for k in OPTIONAL_COMMON_KEYS if k in common]
 
 
 class LayoutError(RuntimeError):
@@ -138,7 +145,7 @@ def _ckpt_reasons(name: str, meta: dict | None, target_epochs: int, common: dict
     args = meta.get("train_args") or {}
     if args.get("epochs") != target_epochs:
         r.append(f"{name}: train_args.epochs {args.get('epochs')} != {target_epochs}")
-    for k in COMMON_KEYS:
+    for k in _compared_keys(common):
         if args.get(k) != common.get(k):
             r.append(f"{name}: train_args.{k} {args.get(k)!r} != {common.get(k)!r}")
     return r
@@ -197,7 +204,7 @@ def check_resume(*, last: dict, target_epochs: int, common: dict, exp_project: s
     args = last.get("train_args") or {}
     if (args.get("project"), args.get("name")) != (exp_project, exp_name):          # (a) 실험 신원
         r.append(f"checkpoint belongs to {args.get('project')}/{args.get('name')}")
-    for k in COMMON_KEYS:                                                             # (b) 공통 설정
+    for k in _compared_keys(common):                                                  # (b) 공통 설정
         if args.get(k) != common.get(k):
             r.append(f"checkpoint train_args.{k} {args.get(k)!r} != {common.get(k)!r}")
     chain = attempts[-1].get("end_last_sha256") if attempts else None                 # (c) 체크포인트 사슬
@@ -211,6 +218,6 @@ def check_resume(*, last: dict, target_epochs: int, common: dict, exp_project: s
     return r
 
 
-__all__ = ["COMMON_KEYS", "LOCK_NAME", "LayoutError", "acquire_lock", "append_jsonl", "check_completion",
+__all__ = ["COMMON_KEYS", "LOCK_NAME", "OPTIONAL_COMMON_KEYS", "LayoutError", "acquire_lock", "append_jsonl", "check_completion",
            "check_resume", "make_exp_dir", "parse_epochs", "read_lock", "release_lock", "validate_run_set_name",
            "write_json_atomic"]

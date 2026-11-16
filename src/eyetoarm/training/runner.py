@@ -26,9 +26,9 @@ from eyetoarm.training.config import TrainingConfig, thaw
 from eyetoarm.training.fingerprint import compare_fingerprint, compute_fingerprint
 from eyetoarm.training.identity import (TOKEN_ENV, ProcFS, _scan, blocking_states, job_min_start, new_job_token,
                                         own_processes, parent_alive, settled_processes, stale_lock_decision)
-from eyetoarm.training.layout import (LayoutError, acquire_lock, append_jsonl, check_completion, check_resume,
-                                      make_exp_dir, parse_epochs, read_lock, release_lock, validate_run_set_name,
-                                      write_json_atomic)
+from eyetoarm.training.layout import (OPTIONAL_COMMON_KEYS, LayoutError, acquire_lock, append_jsonl,
+                                      check_completion, check_resume, make_exp_dir, parse_epochs, read_lock,
+                                      release_lock, validate_run_set_name, write_json_atomic)
 from eyetoarm.training.records import start_manifest, write_sha256sums
 from eyetoarm.training.weights import check_weights
 
@@ -209,8 +209,12 @@ def terminate_group(p, token: str, *, grace_s: float, reap_s: float, proc: ProcF
 def _expected_common(cfg: TrainingConfig) -> dict:
     """train_args와 비교할 공통 값(ultralytics에 넘기는 형태 그대로)."""
     t = cfg.train_args()
-    return {"data": cfg.common.data["data_yaml"], "imgsz": t["imgsz"], "batch": t["batch"], "epochs": t["epochs"],
-            "seed": t["seed"], "deterministic": t["deterministic"], "workers": t["workers"], "device": t["device"]}
+    out = {"data": cfg.common.data["data_yaml"], "imgsz": t["imgsz"], "batch": t["batch"], "epochs": t["epochs"],
+           "seed": t["seed"], "deterministic": t["deterministic"], "workers": t["workers"], "device": t["device"]}
+    for k in OPTIONAL_COMMON_KEYS:   # 선택 키(hsv_v)는 설정에 있을 때만 대조한다
+        if k in t:
+            out[k] = t[k]
+    return out
 
 
 def _host_identity(proc: ProcFS) -> dict:

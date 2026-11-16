@@ -27,6 +27,8 @@
 """
 from __future__ import annotations
 
+import collections
+import dataclasses
 import math
 import queue
 import sys
@@ -39,11 +41,13 @@ from typing import Callable
 from eyetoarm.common.types import (CandidateInvalidationEvent, FramePacket, InputStatus, InputStatusEvent,
                                    InvalidationKind, PlanarObservation)
 from eyetoarm.inputs.base import FrameIdIssuer, new_run_id
+from eyetoarm.inputs.live_slot import BoundaryKind, LiveInputOverflow, NoticeKind
 from eyetoarm.vision.ai_result import AiJobConfigError, ModelPrepareError
 from eyetoarm.vision.pipeline import GenerationCause, VisionPipeline
 from eyetoarm.vision.pipeline_opencv import process_opencv
 from eyetoarm.vision.pipeline_records import InputStateTracker, PipelineLog
-from eyetoarm.vision.pipeline_types import JobContext, JobOutcome, JobStatus, PipelineCounters, PipelineSettings
+from eyetoarm.vision.pipeline_types import (JobContext, JobOutcome, JobStatus, PipelineCounters, PipelineSettings,
+                                            SourceProfile)
 
 # 저장 입력 소스가 「더 읽을 것이 없음」으로 돌려주는 사건 설명(inputs/stored_images.py)
 _NO_INPUT_DETAILS = ("empty list", "closed")
@@ -104,6 +108,9 @@ class RunnerConfig:
     - `cancel_grace_s`(0.2)·`worker_cleanup_limit_s`(0.3)·`stop_check_interval_s`(0.02): 시간 초과·정지 뒤 worker 반환
       유예, close 때 worker 정리 한도, 검출 대기 중 정지 요청·기한 확인 간격. 문서 근거 없는 **A 임시 개발 기본안**
       (설계 113 r3 시험 값)이며 사용자 확정 10/1과 구분한다. 유예·정리 한도는 실제 단조 시계로 잰다.
+    - 실시간 소스(`poll_input`이 있는 소스, 계획 2026-11-16 live-link-camera r3 §3.8): `live_transition_limit`(10)·
+      `live_transition_window_s`(1.0) — 세대를 올린 입력 경계가 창 안에서 상한을 넘으면 `input_transition_storm`으로 끝낸다.
+      **A 임시 개발값**(계획 결정 D5 기본안)이며 사용자 확정값이 아니다. 저장 입력에는 쓰지 않는다.
     """
 
     close_attempts: int = 3
@@ -116,6 +123,8 @@ class RunnerConfig:
     cancel_grace_s: float = 0.2
     worker_cleanup_limit_s: float = 0.3
     stop_check_interval_s: float = 0.02
+    live_transition_limit: int = 10
+    live_transition_window_s: float = 1.0
 
     @property
     def watchdog(self) -> bool:
@@ -136,11 +145,12 @@ class RunnerConfig:
             if value is not None and not _positive_finite(value):
                 raise ValueError(f"{name} must be None or a finite number > 0: {value!r}")
 
-        for name in ("model_load_timeout_s", "cancel_grace_s", "worker_cleanup_limit_s", "stop_check_interval_s"):
+        for name in ("model_load_timeout_s", "cancel_grace_s", "worker_cleanup_limit_s", "stop_check_interval_s",
+                     "live_transition_window_s"):
             if not _positive_finite(getattr(self, name)):
                 raise ValueError(f"{name} must be a finite number > 0: {getattr(self, name)!r}")
 
-        for name in ("close_attempts", "max_consecutive_input_errors"):
+        for name in ("close_attempts", "max_consecutive_input_errors", "live_transition_limit"):
             value = getattr(self, name)
 
             if type(value) is not int or value < 1:
@@ -174,6 +184,9 @@ class RunResult:
     stalled: bool = False        # 유예·정리 한도 안에 검출 호출이 반환하지 않음
     late_results: int = 0        # 시간 초과·정지 뒤 유예 안에 돌아와 duplicate로 버린 결과 수
     worker: dict | None = None   # worker 정리 보고(감시 끔이면 None)
+    live_inputs: dict = field(default_factory=dict)  # 실시간 소스: 반영한 경계·알림 종류별 수
+    input_boundary_aborts: int = 0  # 실시간 소스: 공개 직전 epoch가 현재가 아니라 JOB_ABORTED로 끝낸 작업 수(실패 아님)
+    source_stats: dict | None = None  # 실시간 소스 통계(종료 때)
 
 
 def b_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
@@ -203,6 +216,31 @@ def b_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
             and (obs.job_seq, obs.image_seq, obs.generation) == (ctx.job_seq, ctx.frame.image_seq, ctx.generation))
 
 
+def display_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
+    """표시 조건(#138 실시간 검출 확인 창). 최초 현재 적용 결과만 그린다.
+
+    duplicate 아님, COMPLETED·applied, 응답 관측이 코어의 현재 관측 그 자체이고 세대·검출 설정·소스·관측 식별자가 작업과
+    같아야 한다. `b_gate`와 달리 **유효 여부·프로필은 보지 않는다**(표시용 invalid 관측도 그림). 표시 허가는 B 전달 허가가
+    아니며 관측을 바꾸지 않는다. 실시간 소스의 수신 epoch 확인은 실행기가 따로 더한다.
+    """
+    obs = outcome.observation
+
+    if outcome.duplicate or outcome.status is not JobStatus.COMPLETED or not outcome.applied:
+        return False
+
+    if not isinstance(obs, PlanarObservation) or pipeline.closed:
+        return False
+
+    ctx = outcome.context
+    settings = pipeline.settings
+
+    return (pipeline.current_observation is obs
+            and ctx.generation == pipeline.current_generation()
+            and ctx.detector_config_id == settings.detector_config_id
+            and ctx.frame.source_id == settings.source_id
+            and (obs.job_seq, obs.image_seq, obs.generation) == (ctx.job_seq, ctx.frame.image_seq, ctx.generation))
+
+
 def apply_seek(pipeline: VisionPipeline, source, frame_index: int) -> bool:
     """탐색을 시도한다. 성공하면 세대를 올리고(SEEK) True, 실패하면 위치·세대·선택을 그대로 두고 False.
 
@@ -217,6 +255,10 @@ def apply_seek(pipeline: VisionPipeline, source, frame_index: int) -> bool:
     pipeline.change_settings(pipeline.settings, cause=GenerationCause.SEEK)
 
     return True
+
+
+class _StopRun(Exception):
+    """실행 수준 실패를 이미 기록하고 루프를 끝낼 때 올린다(실시간 경계 반복 등)."""
 
 
 class _LogFailure(Exception):
@@ -388,11 +430,12 @@ class _DetectorWorker:
             item = job = token = call = value = exc = None
 
 
-def _wait_for_detection(take, should_stop, clock, deadline: float, interval_s: float):
-    """검출 대기 루프(설계 113 r3 §5). 매 회차: 결과 → 정지 요청 → 기한 순서로 하나만 판정한다.
+def _wait_for_detection(take, should_stop, clock, deadline: float, interval_s: float, on_idle=None):
+    """검출 대기 루프(설계 113 r3 §5). 매 회차: 결과 → (입력 반영) → 정지 요청 → 기한 순서로 하나만 판정한다.
 
-    `take(timeout)`이 돌려준 값은 그 자리에서 ("result", 값)으로 보존해 돌려준다. 비었을 때(queue.Empty)만 정지 요청,
-    그다음 기한을 확인한다. 반환: ("result", 값) | ("stop", None) | ("timeout", None).
+    `take(timeout)`이 돌려준 값은 그 자리에서 ("result", 값)으로 보존해 돌려준다. 비었을 때(queue.Empty)만 `on_idle`(실시간
+    소스의 입력 반영, 계획 live-link r3 §3.5 지점 B), 정지 요청, 그다음 기한을 확인한다.
+    반환: ("result", 값) | ("stop", None) | ("timeout", None).
     """
     while True:
         remaining = deadline - clock()
@@ -401,6 +444,9 @@ def _wait_for_detection(take, should_stop, clock, deadline: float, interval_s: f
             return "result", take(max(0.0, min(remaining, interval_s)))
         except queue.Empty:
             pass
+
+        if on_idle is not None:
+            on_idle()
 
         if should_stop is not None and should_stop():
             return "stop", None
@@ -428,7 +474,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         config: RunnerConfig = RunnerConfig(), stderr=None, clock_ns: Callable[[], int] = time.monotonic_ns,
         should_stop: Callable[[], bool] | None = None, versions: dict | None = None,
         detector_takes_token: bool = False, watch_clock: Callable[[], float] = time.monotonic,
-        prepare: Callable[[], dict] | None = None) -> RunResult:
+        prepare: Callable[[], dict] | None = None, display_sink=None) -> RunResult:
     """저장 입력 한 번을 끝까지 처리한다. 예외를 밖으로 내지 않고 `RunResult`(종료 코드 포함)를 돌려준다.
 
     `source_factory(issuer, generation_provider)`는 실행기가 만든 단일 발급기와 `pipeline.current_generation`을
@@ -447,6 +493,11 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
       `model_ready`로 기록한다. 실패는 프레임 없는 사건(`ModelPrepareError`의 kind, 그 밖은 MODEL_LOAD_FAILED, 시간 초과는
       MODEL_LOAD_FAILED `prepare_timeout`)으로 적용·기록하고 프레임 없이 종료 1. 정지 요청·KeyboardInterrupt는 사건 없이
       정리한다(계획 r2 §4.2 표). 가짜 image_seq·job_seq를 만들지 않는다.
+    - `display_sink`(#138, 기본 None=꺼짐): 확인 창 전달 지점. 제어 흐름에서만 부르며 반환을 기다리지 않는 객체여야 한다.
+      ① terminal 응답마다 기록 **뒤**·B 지점 **앞**에 `on_outcome(outcome, current)`(current = `display_gate` 그리고 실시간이면
+      그 프레임 수신 epoch가 현재), ② 실시간 입력 항목마다 기록 뒤·수신기 실패 판정 앞에
+      `on_input(kind, detail, generation, generation_changed)`. 관측·valid·b_consumer·기록 내용은 바꾸지 않는다.
+      전달 지점 예외는 다른 예외처럼 실행 실패(1)로 정리된다.
     """
     err = stderr if stderr is not None else sys.stderr
     issuer = FrameIdIssuer(run_id or new_run_id())
@@ -457,6 +508,8 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
     log_ok = True
     worker: _DetectorWorker | None = None
     first_pending = True   # run 한 번에서 아직 첫 검출을 넘기지 않음(정지로 시작하지 않은 작업은 소모하지 않음)
+    live = False           # 실시간 소스(poll_input 있음)인가. 소스를 만든 뒤 정한다
+    transitions: collections.deque[int] = collections.deque()  # 실시간: 세대를 올린 경계의 PC 단조 시각(반복 감시)
 
     def fail_run(reason: str, message: str) -> None:
         """실행 수준 실패를 기록한다(종료 1)."""
@@ -468,6 +521,10 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         """terminal 응답을 기록하고, 소비 조건을 통과하면 그 자리에서 B 지점을 한 번 부른다."""
         _logged(log.log_outcome, outcome)
         _logged(log.sync, pipeline)
+
+        if display_sink is not None:
+            current = display_gate(pipeline, outcome) and (not live or source.frame_current(outcome.context.frame))
+            display_sink.on_outcome(outcome, current)
 
         if b_consumer is not None and b_gate(pipeline, outcome):
             result.b_calls += 1
@@ -501,6 +558,85 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         else:
             raise exc
 
+    def note_transition(now_ns: int) -> None:
+        """세대를 올린 경계를 세고, 창 안에서 상한을 넘으면 실행을 끝낸다(A 임시 개발값, 계획 결정 D5)."""
+        window_ns = int(config.live_transition_window_s * 1e9)
+        transitions.append(now_ns)
+
+        while transitions and now_ns - transitions[0] > window_ns:
+            transitions.popleft()
+
+        if len(transitions) > config.live_transition_limit:
+            fail_run("input_transition_storm", f"{len(transitions)} generation-changing input boundaries within "
+                                               f"{config.live_transition_window_s} s (limit {config.live_transition_limit})")
+            raise _StopRun()
+
+    def apply_live_inputs() -> None:
+        """실시간 소스의 경계·알림을 순서대로 코어에 반영한다(계획 live-link r3 §3.5 지점 A·B·C, 제어 흐름 전용).
+
+        되감기·재접속은 같은 설정으로 세대 전이, 프로필 변경은 새 `SourceProfile`로 전이, 상태가 있는 항목(수신 중단·첫 영상 없음·
+        QoS 비호환·시작 실패)은 `note_input_status`. 수신 중단은 입력 오류로 세지 않는다(계획 결정 D5 기본안, A 임시).
+        반영마다 기록(`live_input`)하고 소스에 반영 세대를 알린다.
+        """
+        for item in source.poll_input():
+            kind = item.kind
+            event = None
+
+            if kind in (BoundaryKind.RECONNECT, BoundaryKind.SIM_TIME_REWIND):
+                event = pipeline.change_settings(pipeline.settings, cause=GenerationCause(kind.value))
+            elif kind is BoundaryKind.PROFILE_CHANGED:
+                p = item.profile
+                profile = SourceProfile(source_id=pipeline.settings.source_id, width=p.width, height=p.height,
+                                        crop=None, calibration_id=p.calibration_id)
+                event = pipeline.change_settings(dataclasses.replace(pipeline.settings, profile=profile),
+                                                 cause=GenerationCause.PROFILE_CHANGED)
+
+            status_event = source.status_event(item)
+
+            if status_event is not None:
+                pipeline.note_input_status(status_event)
+                _logged(log.log_input_states, tracker.on_status(status_event))
+
+                if InputStatus(status_event.status) is not InputStatus.FRAME_TIMEOUT:
+                    result.input_errors += 1
+
+            result.live_inputs[kind.value] = result.live_inputs.get(kind.value, 0) + 1
+            _logged(log.write_live_input, {"input_kind": kind.value, "epoch": item.epoch, "detail": item.detail,
+                                           "event_monotonic_ns": item.event_monotonic_ns,
+                                           "generation": pipeline.current_generation(),
+                                           "generation_changed": event is not None})
+            _logged(log.sync, pipeline)
+            source.input_applied(item, pipeline.current_generation())
+
+            if display_sink is not None:
+                display_sink.on_input(kind.value, item.detail, pipeline.current_generation(), event is not None)
+
+            # 수신기 비정상 종료는 자동 회복되지 않으므로 실행 실패로 끝낸다(검토 r1 F1)
+            if kind is NoticeKind.RECEIVER_FAILED:
+                fail_run("receiver_failed", f"live receiver failed: {item.detail}")
+                raise _StopRun()
+
+            if event is not None:
+                note_transition(item.event_monotonic_ns)
+
+    def finish_published(job: JobContext, value, exc: BaseException | None) -> None:
+        """결과 공개 직전 처리(계획 live-link r3 §3.5 지점 C). 저장 입력은 `finish_detection` 그대로.
+
+        실시간이면 ① 입력을 먼저 반영하고 ② 작업 세대가 현재와 같은데 프레임의 수신 epoch가 현재가 아니면(세대를 안 바꾸는
+        수신 중단 경계) `complete` 대신 `JOB_ABORTED input_boundary`로 끝내 관측을 만들지 않는다. 세대가 바뀌었으면 기존
+        `complete`가 세대 폐기한다. 판정(②) 뒤에 생긴 입력은 다음 반영 지점에서 현재 관측을 비운다(계획의 한계).
+        """
+        if live:
+            apply_live_inputs()
+
+            if exc is None and job.generation == pipeline.current_generation() and not source.frame_current(job.frame):
+                result.input_boundary_aborts += 1
+                handle(pipeline.fail(job, InvalidationKind.JOB_ABORTED,
+                                     "input_boundary: frame receive epoch is no longer current"))
+                return
+
+        finish_detection(job, value, exc)
+
     def run_job(job: JobContext) -> None:
         """감시 끔(6a): detector를 제어 흐름에서 동기 호출한다."""
         token = CancelToken()
@@ -508,10 +644,10 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         try:
             value = detector(job, token) if detector_takes_token else detector(job)
         except BaseException as exc:
-            finish_detection(job, None, exc)
+            finish_published(job, None, exc)
             return
 
-        finish_detection(job, value, None)
+        finish_published(job, value, None)
 
     def discard_late(item) -> None:
         """terminal 뒤 유예 안에 돌아온 결과를 코어에 넘겨 duplicate 응답만 받고 버린다(기록·B 없음)."""
@@ -548,18 +684,22 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
 
         try:
             what, item = _wait_for_detection(worker.take, should_stop, watch_clock, started + limit,
-                                             config.stop_check_interval_s)
+                                             config.stop_check_interval_s,
+                                             on_idle=apply_live_inputs if live else None)
         except KeyboardInterrupt:
             token._cancel()
             handle(pipeline.fail(job, InvalidationKind.JOB_ABORTED, "interrupted"))
             raise
 
         if what == "result":
-            finish_detection(*item)
+            finish_published(*item)
             return None
 
-        # 정지 요청 또는 기한 초과: 취소 표지 → 즉시 terminal 1회 → 유예 동안 실제 반환 대기(멱등, 추가 terminal 없음)
+        # 정지 요청 또는 기한 초과: 취소 표지 → (실시간이면 입력 먼저 반영) → 즉시 terminal 1회 → 유예 동안 실제 반환 대기
         token._cancel()
+
+        if live:
+            apply_live_inputs()
 
         if what == "stop":
             handle(pipeline.fail(job, InvalidationKind.JOB_ABORTED, "stop_requested"))
@@ -665,16 +805,30 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
 
     try:
         source = source_factory(issuer, pipeline.current_generation)
+        live = callable(getattr(source, "poll_input", None))
         _logged(log.write_run_meta, pipeline, started_monotonic_ns=clock_ns(), versions=versions)
         consecutive_errors = 0
-        proceed = prepare is None or run_prepare()
+
+        # 실시간 표시 단계에서는 B 계산 소비를 허용하지 않는다(계획 결정 D13, reviewer 지시)
+        if live and b_consumer is not None:
+            fail_run("b_consumer_not_allowed", "live source does not allow b_consumer in the display stage")
+            proceed = False
+        else:
+            proceed = prepare is None or run_prepare()
 
         while proceed:
             if should_stop is not None and should_stop():
                 result.stop_reason = "stop_requested"
                 break
 
+            # 지점 A: 읽기 전에 입력 경계·알림을 반영한다
+            if live:
+                apply_live_inputs()
+
             item = source.read()
+
+            if item is None and live:
+                continue
 
             if isinstance(item, InputStatusEvent):
                 pipeline.note_input_status(item)
@@ -729,17 +883,22 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
     except _LogFailure as exc:
         log_ok = False
         fail_run("log_failure", f"log write failed: {exc}")
+    except _StopRun:
+        pass   # 사유는 이미 fail_run으로 남겼다
+    except LiveInputOverflow as exc:
+        fail_run("input_overflow", f"live input queue overflow: {exc}")
     except KeyboardInterrupt:
         fail_run("interrupted", "interrupted (KeyboardInterrupt)")
     except BaseException as exc:  # 소비자 실패·예상하지 못한 예외·SystemExit도 정리를 거쳐 1로 끝낸다
         fail_run("error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
     finally:
-        _finish(pipeline, log, tracker, source, config, clock_ns, result, log_ok, err, worker)
+        _finish(pipeline, log, tracker, source, config, clock_ns, result, log_ok, err, worker, live=live)
 
     return result
 
 
-def _finish(pipeline, log, tracker, source, config, clock_ns, result, log_ok, err, worker=None) -> None:
+def _finish(pipeline, log, tracker, source, config, clock_ns, result, log_ok, err, worker=None, *,
+            live: bool = False) -> None:
     """정리: 코어 close(유한 재시도) → worker 정리(감시 켬) → 중단 결과·남은 기록 → 소스 close.
 
     각 단계 실패는 보고하고 다음 단계를 계속한다.
@@ -806,6 +965,18 @@ def _finish(pipeline, log, tracker, source, config, clock_ns, result, log_ok, er
             result.stop_reason = result.stop_reason or "log_failure"
             result.errors.append(f"log write failed during cleanup: {type(exc).__name__}: {exc}")
 
+    # 실시간 소스 통계(수신·덮어쓰기·epoch·콜백 시간 등)를 한 번 기록한다
+    if live and source is not None:
+        try:
+            result.source_stats = source.stats()
+
+            if log_ok:
+                log.write_source_stats(result.source_stats)
+        except Exception as exc:
+            result.exit_code = 1
+            result.stop_reason = result.stop_reason or "log_failure"
+            result.errors.append(f"source stats failed: {type(exc).__name__}: {exc}")
+
     result.missing = log.missing(pipeline)
 
     if not log_ok or result.stalled:
@@ -851,4 +1022,4 @@ def stored_source_factory(kind: str, paths: list[str], source_id: str):
     return factory
 
 
-__all__ = ["CancelToken", "JobCancelled", "RunnerConfig", "RunResult", "apply_seek", "b_gate", "run", "stored_source_factory"]
+__all__ = ["CancelToken", "JobCancelled", "RunnerConfig", "RunResult", "apply_seek", "b_gate", "display_gate", "run", "stored_source_factory"]

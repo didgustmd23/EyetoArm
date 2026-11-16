@@ -264,3 +264,50 @@ class ResumeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HsvVIdentityTest(unittest.TestCase):
+    """선택 공통 키 hsv_v(#141)의 완료·재개 대조: 설정에 있을 때만 체크포인트 train_args와 비교한다."""
+
+    def resume_args(self, ckpt_hsv, common):
+        """재개 입력(체크포인트 hsv_v·기대 공통 값 지정)."""
+        args = {**COMMON, "project": "p", "name": "n", "model": "m"}
+        if ckpt_hsv is not None:
+            args["hsv_v"] = ckpt_hsv
+        mid = {"exists": True, "sha256": "c" * 64, "loadable": True, "epoch": 20, "optimizer_none": False,
+               "train_args": args}
+        return {"last": mid, "target_epochs": E, "common": common, "exp_project": "p", "exp_name": "n",
+                "attempts": [{"end_last_sha256": "c" * 64}],
+                "manifest": {"exp_id": "S1-08", "family": "yolov8n-seg", "initial_weights": {"sha256": "d" * 64}},
+                "candidate": {"exp_id": "S1-08", "family": "yolov8n-seg", "sha256": "d" * 64},
+                "job_state": {"state": "exited_cleaned"}}
+
+    def test_resume_hsv_v_mismatch_rejected(self):
+        """설정 hsv_v 0.6인데 체크포인트가 0.4이거나 hsv_v가 없으면 재개 거부, 0.6이면 허용."""
+        common = {**COMMON, "hsv_v": 0.6}
+
+        self.assertEqual(check_resume(**self.resume_args(0.6, common)), [])
+        for ck in (0.4, None):
+            with self.subTest(ckpt=ck):
+                reasons = check_resume(**self.resume_args(ck, common))
+                self.assertTrue(any("hsv_v" in r for r in reasons), reasons)
+
+    def test_resume_without_configured_hsv_v_unchanged(self):
+        """설정에 hsv_v가 없으면 체크포인트 hsv_v(기본 0.4)는 비교하지 않는다(기존 동작)."""
+        self.assertEqual(check_resume(**self.resume_args(0.4, COMMON)), [])
+
+    def test_completion_hsv_v_checked_only_when_configured(self):
+        """완료 판정: 설정 hsv_v 0.6이면 best·last train_args의 hsv_v가 0.6이어야 하고, 설정에 없으면 비교하지 않는다."""
+        common = {**COMMON, "hsv_v": 0.6}
+        good = {**stripped()["train_args"], "hsv_v": 0.6}
+        bad = {**stripped()["train_args"], "hsv_v": 0.4}
+
+        ok, _ = check_completion(evidence(common=common, best=stripped(train_args=good),
+                                          last=stripped(sha256="b" * 64, train_args=good)))
+        self.assertTrue(ok)
+        ok, reasons = check_completion(evidence(common=common, best=stripped(train_args=bad),
+                                                last=stripped(sha256="b" * 64, train_args=good)))
+        self.assertFalse(ok)
+        self.assertTrue(any("hsv_v" in r for r in reasons), reasons)
+        ok, _ = check_completion(evidence(best=stripped(train_args=bad), last=stripped(sha256="b" * 64, train_args=bad)))
+        self.assertTrue(ok)
