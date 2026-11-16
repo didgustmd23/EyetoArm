@@ -171,6 +171,19 @@ class JobOutcome:
 
 
 @dataclass(frozen=True)
+class InvalidationRecord:
+    """코어가 기록한 무효화 사건 하나와 그 평가 결과(#142 D1 안 A). frozen.
+
+    - `event`는 `invalidation_events`의 같은 객체, `applied`는 기록 당시 현재 세대 차단에 반영했는지(ignored면 False)다.
+    - 코어 `_record_event`가 사건마다 정확히 한 번 만든다. 판정·계수 의미를 새로 정하지 않고 기존 결과를 옮겨 둘 뿐이다.
+    - JobOutcome.applied(완료 관측의 현재 반영)와는 다른 개념이다.
+    """
+
+    event: CandidateInvalidationEvent
+    applied: bool
+
+
+@dataclass(frozen=True)
 class ProcessRecord:
     """처리 작업 기록 한 줄(A 상세설계 §9 「처리 기록」). 작업 5의 `pipeline_records.process_record`가 채운다.
 

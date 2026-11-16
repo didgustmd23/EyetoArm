@@ -40,6 +40,7 @@ from eyetoarm.common.types import (
     PlanarObservation,
 )
 from eyetoarm.vision.pipeline_types import (
+    InvalidationRecord,
     JobContext,
     JobOutcome,
     JobStatus,
@@ -247,6 +248,7 @@ class VisionPipeline:
         self._counters = PipelineCounters()
         self._queue_drops: list[QueueDropRecord] = []
         self._invalidation_events: list[CandidateInvalidationEvent] = []
+        self._invalidation_records: list[InvalidationRecord] = []
         self._event_keys: set[CandidateInvalidationEvent] = set()
 
         # 세대별 오류 차단선(이 job_seq 이하의 결과는 현재 관측이 될 수 없다)
@@ -316,6 +318,11 @@ class VisionPipeline:
     def invalidation_events(self) -> tuple[CandidateInvalidationEvent, ...]:
         """기록한 무효화 사건(적용·기록만 모두, 발생 순). 메모리 내 조회이며 외부 발행이 아니다."""
         return tuple(self._invalidation_events)
+
+    @property
+    def invalidation_records(self) -> tuple[InvalidationRecord, ...]:
+        """기록한 사건과 applied 판정 쌍(발생 순, `invalidation_events`와 1:1). 읽기 전용 조회(#142 D1)."""
+        return tuple(self._invalidation_records)
 
     @property
     def closed(self) -> bool:
@@ -722,6 +729,7 @@ class VisionPipeline:
     def _record_event(self, event: CandidateInvalidationEvent, *, applied: bool) -> None:
         """사건을 한 번 기록하고 kind별 applied/ignored 계수를 1 올린다."""
         self._invalidation_events.append(event)
+        self._invalidation_records.append(InvalidationRecord(event, applied))
         self._event_keys.add(event)
 
         counts = (self._counters.invalidation_applied_by_kind if applied
