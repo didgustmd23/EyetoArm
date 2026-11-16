@@ -23,6 +23,15 @@
 - **산출물:** 실제 발행 토픽, 메시지 헤더 프레임, TF 조회 결과와 미일치 항목.
 - **희망 시점:** 11/17 이후, 통합시험 전.
 
+**A 회신 (2026-11-16)**
+
+- **판정:** 동의합니다. C와 함께 확인하겠습니다.
+- **구체안:** 팔 이동 중 링크·그리퍼 영상과 CameraInfo가 계속 발행되는지, 촬영 시각의 SIM_TIME으로 조회한 TF가 영상과 일치하는지 공동 확인하고 결과를 기록하겠습니다.
+- **근거:** 현재 요청 CA-01, 링크 카메라 upper_arm_link 장착 결정.
+- **영향 담당:** A·C, 좌표 확인은 B 협력.
+- **결정 시점:** 공동 시험 일정은 C와 조율하겠습니다.
+- **미결 영향:** 공동 시험 전까지 이동 중 영상·TF 일치는 미검증입니다.
+
 ### CA-02 비상·이상 정지 후 재시작 입력 처리
 
 - **배경:** 정상 집기는 이동 중인 벨트에서 수행합니다. 정지 후 재검출은 정상 사이클의 매 집기 절차가 아니라 비상·이상 정지 후 재시작할 때만 필요합니다.
@@ -30,12 +39,67 @@
 - **산출물:** 재시작 이벤트 이후 유효한 프레임 판정 규칙 및 시각·세대 대응.
 - **희망 시점:** 11/18.
 
+**A 회신 (2026-11-16)**
+
+- **판정:** 동의합니다. C와 재시작 입력 처리를 함께 확인하겠습니다.
+- **구체안:** 비상·이상 정지 뒤 재시작할 때 이전 목표·관측을 폐기하고 새 프레임부터 처리하겠습니다. C가 전달할 재시작 시각과 A 프레임의 시각·세대 대응은 공동 확인하겠습니다.
+- **근거:** 현재 요청 CA-02, A 협업 요청 C-07.
+- **영향 담당:** A·C, 이전 목표 처리에는 B 협력.
+- **결정 시점:** 재시작 입력 연결 전에 C와 조율하겠습니다.
+- **미결 영향:** 실제 정지·재시작 연동은 공동 확인 전까지 미검증입니다.
+
 ### CA-03 A→C 같은 프로세스 내부 전달 계약
 
 - **배경:** 최신 A 설계는 A 파이프라인과 C를 같은 프로세스로 구성하고, A→C 표시 데이터는 객체·내부 대기열로 전달하는 방식입니다. 기존 ROS 토픽 요청은 이 결정과 맞지 않습니다.
 - **요청:** 별도 ROS 인터페이스를 만들지 않고 A→C에서 사용할 객체/호출 계약, 관측·결과·무효화 데이터의 필드와 시각·세대 정보, 전달 순서·스레드 사용 규칙을 공유해 주세요. 영상 대기열의 최신 우선 처리와 결과·무효화 순서 보존 방식도 확인하고 싶습니다.
 - **산출물:** C가 연결할 내부 인터페이스·자료 구조와 실행 순서, 대기열의 폐기·순서 규칙.
 - **희망 시점:** 11/17 내부 전달 계약 합의, 11/20 첫 표시 경로 통합 때 동작 확인.
+
+**A 회신 (2026-11-16)**
+
+- **판정:** 같은 프로세스 내부 전달 원칙에 동의합니다. 현재 구현된 자료형·처리 규칙을 공유하며, C 연결용 호출과 대기열은 아래 A 제안으로 협의하겠습니다.
+- **구체안:**
+
+  **1. 현재 A 호출 구조와 C 연결 위치**
+
+  현재 A 실행 진입점은 `pipeline_runner.run(...)`입니다. 입력 → `VisionPipeline.offer_frame(frame)` → `start_next()` → 검출 → `complete(...)` 또는 `fail(...)`에서 코어 판정·현재 상태 반영 → 기록 순으로 처리합니다. 검출 반환은 `PlanarObservation`과 표시 결과(`PlanarResult` 또는 `AiSegResult`)이고, terminal 응답은 `JobOutcome`입니다. `JobOutcome.context.frame`에 근거 `FramePacket`이 있습니다.
+
+  C 연결용 어댑터에 `publish_result(outcome: JobOutcome)`·`publish_invalidation(event: CandidateInvalidationEvent)`·`publish_view(frame, image, generation, job_seq)` 입구를 두는 안을 제안합니다. 이는 **새로 연결할 호출안이며 현재 구현된 공개 함수가 아닙니다.** A 제어 흐름이 코어 판정 뒤 호출하고, C 측 어댑터는 데이터 수신·대기열 인계만 하며 C의 네트워크 송신이나 영상 인코딩이 끝날 때까지 A를 기다리게 하지 않는 방향입니다. 이름·실제 시그니처·오류 반환 방식은 C와 맞춥니다.
+
+  **2. 전달 객체·필드**
+
+  | 구분 | 현재 자료형과 전달 내용 |
+  |---|---|
+  | 프레임·촬영 시각 | `FramePacket`: `run_id`, `source_id`, `image_seq`, `capture_generation`, `timestamp_ms`, `timestamp_base`, `ros_stamp_ns`, `received_monotonic_ns`, `optical_frame`, `width`, `height`, `crop`, `calibration_id`. 원본 영상은 `image`(BGR uint8, H×W×3) |
+  | 관측 | `PlanarObservation`: 위 근거 식별자와 `generation`, `job_seq`, `detector_config_id`, `pixel_basis`, `calibration_id`, `observed_face`, `calc_contour`, `display_mask_contour`, `candidate_count`, `selected_index`, `valid`, `reason`, `process_ms`, `method`, `model_id`, `class_name`, `confidence` |
+  | 검출·처리 결과 | `JobOutcome`: `context`, `status`, `observation`, `display_result`, `error`, `invalidation`, `applied`, `duplicate`. AI 인스턴스별 클래스·신뢰도·박스·윤곽·거부/잘림 정보는 `display_result`의 `AiSegResult.instances`에서 확인. 현재 AI 관측 단위 class/confidence는 None이며 관측은 항상 valid=False |
+  | 무효화 | `CandidateInvalidationEvent`: `run_id`, `source_id`, `kind`, `cause`, `event_monotonic_ns`, `generation`, `detector_config_id`, `job_seq`, `image_seq`. 프레임 없는 로딩/설정 오류 등은 해당 규칙에 따라 job_seq/image_seq를 None으로 두며 가짜 번호를 만들지 않음 |
+  | 표시 영상 | 주석 영상과 원본 프레임의 식별자·촬영 시각·처리 generation/job_seq를 함께 연결하는 안. 주석 영상 생성·C 전달 어댑터는 후속 구현이며 현재 `display_result`가 이미 그려진 영상이라는 뜻은 아님 |
+
+  **3. 시각·세대·소비 규칙**
+
+  Gazebo 촬영 시각은 원본 `header.stamp`의 SIM_TIME이며 `ros_stamp_ns`는 ns, `timestamp_ms`는 ms입니다. `received_monotonic_ns`와 사건의 `event_monotonic_ns`는 PC 단조 시각(ns)이고 SIM_TIME과 직접 빼지 않습니다. 원본 프레임의 `capture_generation`과 작업 시작 시점의 `generation`을 구분합니다. 설정 변경 후 같은 프레임을 재처리해도 원본 ID·촬영 시각은 유지하며 처리 generation/job_seq를 새로 부여합니다.
+
+  현재 상태로 채택된 최초 완료(`duplicate=False`, `status=COMPLETED`, `applied=True`)는 valid=False여도 무검출·보정 불일치 등 **현재 표시 상태를 갱신**하는 대상으로 전달하는 안입니다. 이전 유효 결과를 남겨 두지 않습니다. duplicate 응답·이전 세대·오류 차단선 이전의 늦은 완료는 현재 결과로 재발행하지 않습니다. B 계산 전달은 별도의 기존 `b_gate`에서 valid=True 및 소비 시점의 세대·설정·프로파일 일치를 검사하므로, C 표시 전달과 혼동하지 않습니다.
+
+  **4. 영상 대기열과 결과·무효화 순서**
+
+  A 코어의 검출 입력은 이미 **대기 프레임 1개·활성 작업 1개**이며, 새 입력은 처리 중 영상을 건드리지 않고 이전 대기 프레임만 교체합니다. `offer_frame`에서 영상 복사본을 소유하고 읽기 전용으로 표시합니다. 저장 입력 실행기는 현재 순차 read이므로, 이것을 실시간 카메라나 C 표시 대기열이 연결됐다는 의미로 보지 않습니다.
+
+  C 표시 연결은 **영상 최신 대기 1장**과 **결과·무효화 공통 순서 대기열**을 나누는 안입니다. 영상만 최신 우선으로 교체하고 폐기 수를 기록합니다. 결과·무효화는 A의 단일 제어 흐름에서 발생 순서대로 넣어 C가 같은 순서로 상태에 반영하며, 영상 교체 때문에 무효화가 사라지지 않게 합니다. A 코어의 세대·job_seq 차단선·중복 판정을 거친 상태를 전달하고, 이전 세대나 중복 사건으로 현재 상태를 다시 바꾸지 않습니다. 서로 다른 작업의 표시 순서를 영상 도착 시각만으로 다시 정렬하지 않습니다.
+
+  C가 보관 중인 영상·윤곽은 생산자가 덮어쓰지 않도록 복사 또는 소유권·수명을 정합니다(frozen 자료형만으로 ndarray 변경을 막을 수는 없음). 결과·무효화 대기열의 크기·포화/전달 실패 처리·종료 시 정리와 입력 유실/EOF의 표시 해제 통지는 C와 정해야 합니다. 이를 무한 적재나 무조건 무손실 보장이 구현된 것으로 표현하지 않습니다.
+
+  **5. 스레드·현재 구현 범위**
+
+  현재 감시를 켠 A 실행기는 검출 전용 worker 1개를 사용하고, 코어 변경·terminal 처리·기록·B 소비 판정은 A 제어 흐름에서 수행합니다. C 어댑터 호출도 A 제어 흐름에서 모아 발행하는 안이며, worker에서 직접 C 상태나 네트워크를 조작하지 않습니다. C의 asyncio 루프에는 C가 정한 스레드 안전 인계 방식으로 전달하고, C 명령 처리 흐름이 검출을 직접 기다리지 않도록 연결합니다. 정확한 진입점·루프 소유자·스레드 인계 호출은 C와 확인합니다.
+
+  현재 `run(..., b_consumer=...)`는 조건을 통과한 `(FramePacket, PlanarObservation)`을 B에 전달하는 지점이며 C 표시 콜백이 아닙니다. C 전용 콜백·표시 대기열·주석 영상·실제 같은 프로세스 통합은 미구현·미검증입니다. 카메라 ROS 수신, B→C ROS 액션, C→D 별도 표시 연결의 경계는 유지합니다.
+
+- **근거:** `src/eyetoarm/common/types.py`, `vision/pipeline_types.py`의 JobContext/JobOutcome, `vision/pipeline.py`의 수신·세대·무효화 규칙, `vision/pipeline_runner.py`의 run/b_gate/worker, A 상세설계 §3·§5.4·§9.
+- **영향 담당:** A·C. B 결과의 결합과 D 표시 소비에 영향을 주는 필드는 B·D도 확인합니다.
+- **결정 시점:** C 연결용 호출·입출력·대기열·스레드 인계 계약을 구현 전에 확인하고, 합의한 연결로 공동 시험하겠습니다.
+- **미결 영향:** 기존 A 저장 입력은 사용할 수 있습니다. C 연결용 호출과 대기열은 제안 단계이며 실제 A→C 전달 완료로 보고하지 않습니다.
 
 ## 3. B에게 요청 (C → B)
 
