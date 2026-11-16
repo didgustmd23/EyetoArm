@@ -730,9 +730,9 @@ B의 책임: 기준 자세 보정, 의도 판정(유지 시간·히스테리시�
 | `src/eyetoarm/transforms/b_stage.py` | **A가 부를 B 입구** `BStage.process(관측, 프레임)`: 촬영 시각 TF(`RosTfLookup`) → 판정 → C 목표(+`goal_id`·세대·시각 연결 키), `render_center()`로 center 영상 |
 | `scripts/b_live_view.py` | 시뮬레이션 링크 카메라에 B 좌표·판정을 겹쳐 보기, `--publish`로 `/b/center_overlay/image` |
 | `scripts/b_demo_synthetic.py` | ROS 없이 합성 영상으로 B 계산 확인 |
-| `tests/unit/test_b_transforms.py` | 렌즈 값·투영 왕복·판정·A 관측→C 목표·B 입구 30개 |
+| `tests/unit/test_b_transforms.py` | 렌즈 값·투영 왕복·판정·A 관측→C 목표·B 입구·A 실행기 연결·YOLO 클래스 이름 33개 |
 
-B→C 액션 필드 제안은 [B 협업 요청 §7](B담당_협업_요청_초안.md#7-c에게-액션-정의-제안-b--c)에 있습니다.
+A 실행기 연결(`b_consumer=stage.consume`)과 연결 전 확인 사항은 [B 협업 요청 §8](B담당_협업_요청_초안.md#8-연결-전-확인-main-코드-대조-2026-11-16), B→C 액션 필드 제안은 [B 협업 요청 §7](B담당_협업_요청_초안.md#7-c에게-액션-정의-제안-b--c)에 있습니다.
 
 ### 16.5 남은 일
 

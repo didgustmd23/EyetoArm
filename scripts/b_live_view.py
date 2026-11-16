@@ -9,7 +9,7 @@
 
 실행 (WSL, 시뮬레이션을 켠 뒤 새 터미널, 저장소 맨 위 폴더에서):
     source /opt/ros/jazzy/setup.bash
-    PYTHONPATH=src python3 scripts/b_live_view.py
+    PYTHONPATH=src:$PYTHONPATH python3 scripts/b_live_view.py   # source 뒤에. src만 쓰면 ROS 경로가 지워져 rclpy를 못 찾음
     # 창에서 s = 화면 저장, q = 끝내기
     # --publish 를 붙이면 주석 영상을 ROS 토픽으로도 보냄
 """

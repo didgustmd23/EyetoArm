@@ -1,6 +1,6 @@
 # B 담당 협업 요청 초안 (A·C)
 
-문서 버전 0.5 · 작성 B담당 · 2026-11-16
+문서 버전 0.6 · 작성 B담당 · 2026-11-16
 **목적:** B(보정·좌표)가 A·C와 **무엇을 주고받는지**, **누가 무엇을 맡는지**를 확정하기 위한 요청서입니다.
 
 > ### ✍️ 답하는 방법 (1분이면 끝나요)
@@ -11,7 +11,7 @@
 > 4. 저장 → add → commit → push 하면 끝!
 >
 > **A가 답할 곳:** §0, AB-4, AB-5
-> **C가 답할 곳:** §0, CB-1~CB-5, **§4.1 (IK-1~IK-4)**, §4.2, §4.3, **§7.5 (C-1~C-5)**
+> **C가 답할 곳:** §0, CB-1~CB-5, **§4.1 (IK-1~IK-4)**, §4.2, §4.3, **§7.5 (C-1~C-5)**, **§8 (C-6·C-7)**
 >
 > 파일 고치기가 번거로우면 단톡방에 `CB-3: 100 mm/s` 처럼 **번호: 답**으로 보내도 돼요.
 
@@ -403,3 +403,38 @@ B 코드는 지금 아래 사전을 만듭니다(`src/eyetoarm/transforms/grasp.
 | C-5 | 벨트 속도·방향을 C가 내부에서 쓰는지 (B는 보내지 않음, DB-02 결정 3) |
 
 답은 이 문서의 표 아래에 `👉 C 답:`으로 적거나 단톡방에 번호로 주세요.
+
+---
+
+## 8. 연결 전 확인 (main 코드 대조, 2026-11-16)
+
+main 코드(PR #62 기준)를 B 연결 관점에서 대조한 결과입니다. B 코드는 준비되어 있고(`BStage`), 아래가 채워져야 A→B→C가 실제로 이어집니다.
+
+### 8.1 연결 방법 (A 실행기)
+
+A 실행기 `vision/pipeline_runner.run()`에 이미 B 자리 `b_consumer(frame, obs)`가 있고, A 검사(`b_gate`)를 통과한 유효 관측만 들어옵니다. B는 같은 순서의 `BStage.consume(frame, obs)`를 제공합니다.
+
+```python
+stage = BStage.from_config(repo_root, CameraProfile.from_camera_info(info_msg), RosTfLookup(tf_buffer))
+stage.on_output = c_queue.put          # B 출력(결과·C 목표)을 C 쪽으로
+run(..., b_consumer=stage.consume)
+```
+
+### 8.2 A에게 확인 (A 답할 곳)
+
+| # | 현재 main 상태 | 질문 |
+|---|---|---|
+| A-1 | OpenCV·YOLO 검출 모두 관측이 항상 `valid=False`, `calc_contour=None`(표시용 1단계) → `b_gate`를 통과하지 못해 B가 불리지 않음 | 계산용 윗면 윤곽을 내는 유효 관측은 언제 나오나요? (11/18 연결 목표) |
+| A-2 | YOLO 분할 마스크는 **전체 물체 마스크**(옆면 포함). B는 윗면 평면(z = 105 mm)으로 투영해 길이를 재므로, 옆면이 섞이면 길이가 길게 나옴 | YOLO 경로에서 `calc_contour`에 넣을 윤곽은 윗면 윤곽인가요, 전체 마스크인가요? 전체 마스크라면 B가 보정할지 같이 정해요 |
+| A-3 | YOLO 클래스는 2클래스 `bolt`·`nut`(`coco_to_yolo_seg.py`) | B는 `bolt`·`nut`과 3클래스 이름(`BOLT_A`·`BOLT_B`·`NUT`)을 모두 받고, 규격은 길이로 다시 판정합니다. 다른 이름을 쓰면 알려 주세요 |
+| A-4 | 입력에서 `calibration_id`가 None → `SourceProfile.applies_to()`가 거짓 → B 호출 안 됨 | B가 `CameraProfile.calibration_id`(예: `cal-02deec24c525`)를 드리면 프레임·프로파일에 넣어 주실 수 있나요? |
+| A-5 | A 입력은 저장 사진·저장 영상만 있음. Gazebo 링크 카메라(ROS) 입력이 없어 `optical_frame`·`ros_stamp_ns`가 None | ROS 카메라 입력은 누가, 언제 만드나요? B는 이 두 값으로 촬영 시각 TF를 읽습니다 |
+| A-6 | `PlanarObservation`에 `part_track_id` 칸이 없음 | 같은 부품을 묶는 번호는 어디서 받나요? (없으면 B 목표의 `part_track_id`는 비어서 감) |
+
+### 8.3 C에게 확인 (§7.5에 추가)
+
+| # | 현재 main 상태 | 질문 |
+|---|---|---|
+| C-6 | 2026-11-15 결정: A 파이프라인과 C가 **같은 프로세스**, A→C 표시 데이터는 객체·내부 대기열. C 로봇 서버의 `sort_manager.py`(액션)는 아직 빈 파일 | B 출력(C 목표·center 영상)도 같은 내부 대기열로 받을까요, ROS 액션·토픽(`/b/center_overlay/image`)으로 받을까요? 액션 서버는 언제 시험 가능할까요? |
+| C-7 | 링크 카메라는 `upper_arm_link`에 붙어 팔과 같이 움직임(`sim_sort_cell.launch.py`의 `link_camera_xyz`·`link_camera_rpy`). 초기 대기 자세(`shoulder_pan` 0)에서는 정면 43° 아래를 보며 벨트 **y = −0.23 ~ +0.51 m**만 보임 → 들어오는 끝(−0.63 ~ −0.23)이 안 보여 미리 인식할 시간이 부족 | **감시 자세 제안:** `shoulder_pan` −0.60 rad(−34°), 나머지 관절은 초기값 → 벨트 **y = −0.63 ~ +0.14 m**가 보임(먼 끝에서 BOLT_A 18 mm ≈ 19 px). 부품을 기다릴 때 이 자세로 둘지, 카메라 장착 각도를 바꿀지 C·시뮬레이션 담당과 정해요 |
+

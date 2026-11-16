@@ -81,9 +81,30 @@ def _principal_axes(contour_mm: np.ndarray, m: dict) -> tuple[float, float, floa
     return float(pu.max() - pu.min()), float(pv.max() - pv.min()), math.degrees(theta) % 180.0
 
 
+def normalize_class(class_name: str | None) -> str | None:
+    """A(OpenCV·YOLO) 클래스 이름 → "bolt" / "nut" / None.
+
+    YOLO 2클래스(`bolt`·`nut`, `scripts/coco_to_yolo_seg.py`)와 3클래스 안(`BOLT_A`·`BOLT_B`·`NUT`)을 함께 받는다.
+    3클래스라도 규격은 B가 길이로 다시 판정한다(A 이름은 볼트/너트 구분에만 쓴다). 모르는 이름은 None(모양으로 추정).
+    """
+    if not class_name:
+        return None
+
+    name = str(class_name).strip().lower()
+
+    if name.startswith("bolt"):
+        return "bolt"
+
+    if name.startswith("nut"):
+        return "nut"
+
+    return None
+
+
 def _classify(class_name, length_m, width_m, aspect, specs) -> tuple[str, str | None]:
     """규격 판정. (spec, 무효 사유) — 사유가 None이면 유효."""
     s = specs["specs"]
+    class_name = normalize_class(class_name)
     is_bolt = class_name == "bolt" or (class_name is None and aspect >= specs["bolt_min_aspect"])
 
     if is_bolt:
@@ -152,7 +173,7 @@ def compute_work_result(contour_px, camera: CameraProfile, T_W_C: np.ndarray, sp
     if reason is None and cls_reason is not None:
         reason, owner = cls_reason, "B"
 
-    is_bolt = spec in ("BOLT_A", "BOLT_B") or (spec == UNRESOLVED and class_name == "bolt")
+    is_bolt = spec in ("BOLT_A", "BOLT_B") or (spec == UNRESOLVED and normalize_class(class_name) == "bolt")
     theta_valid = bool(is_bolt and aspect >= specs["bolt_min_aspect"])
 
     return WorkPlanarResult(
