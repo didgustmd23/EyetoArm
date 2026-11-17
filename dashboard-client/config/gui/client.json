@@ -1,0 +1,15 @@
+{
+  "tcp": {
+    "host": "127.0.0.1",
+    "port": 47090,
+    "max_line_bytes": 4096,
+    "readiness_poll_ms": 1000,
+    "status_watchdog_ms": 2000,
+    "connect_timeout_ms": 2000,
+    "reconnect_ms": 1500,
+    "readiness_timeout_ms": 1000,
+    "ack_timeout_ms": 1000,
+    "max_resend": 2,
+    "target_validity_ms": 5000
+  }
+}

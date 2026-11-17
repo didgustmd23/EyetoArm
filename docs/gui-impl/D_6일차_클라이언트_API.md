@@ -4,6 +4,8 @@
 
 ## 바로 실행하는 준비 조회
 
+2026-11-17 독립 배포 경로: GUI 정본은 [dashboard-client](../../dashboard-client/README.md)에 있으며 해당 폴더만 복사해 실행할 수 있다. 그 폴더에서 `$env:PYTHONPATH = (Resolve-Path .\src).Path`를 설정한 뒤 `python -m eyetoarm.gui --env-only --json`, `python -m eyetoarm.gui --host <서버 숫자 IP> --port 47090 --json`을 사용한다. 저장소의 기존 `src/eyetoarm/gui`는 호환 경로로 유지한다. 독립 실행의 GUI 설정은 dashboard-client 기준이고, 저장소 호환 경로 실행은 기존 공용 `config/gui/client.json`을 읽는다. 새 로그는 두 경우 모두 `dashboard-client/logs/gui/`이며 기존 공용 설정·로그는 이동하지 않는다. 아래 저장소 기반 API·실행 예제도 호환 경로에서 유지하며, 별도 asyncio `TcpClient` 소스는 독립 GUI 배포본에 포함하지 않는다.
+
 설치된 `eyetoarm` 환경의 Python을 사용하고 저장소 루트에서 `PYTHONPATH=src`를 설정한다. Windows PowerShell 예:
 
 ```powershell
@@ -73,7 +75,7 @@ B의 현재 `to_output_dict()`는 `center_w_mm`, `length_mm`, `width_mm`를 이�
 
 ## D 내부 표시 소비 API — 정식 전송 규격 아님
 
-구현: [display.py](../../src/eyetoarm/gui/display.py). 현재 `--demo`에서만 연결된다. 호출은 GUI 스레드에서 수행하며, 향후 별도 수신 worker가 필요하면 Qt queued signal 등 GUI 스레드 경계까지 함께 검증해야 한다. 이 API 이름과 인자는 C에 그대로 전송할 JSON 스키마가 아니다.
+구현: [display.py](../../dashboard-client/src/eyetoarm/gui/display.py). 현재 `--demo`에서만 연결된다. 호출은 GUI 스레드에서 수행하며, 향후 별도 수신 worker가 필요하면 Qt queued signal 등 GUI 스레드 경계까지 함께 검증해야 한다. 이 API 이름과 인자는 C에 그대로 전송할 JSON 스키마가 아니다.
 
 | API | D 내부 시험 의미 |
 |---|---|
