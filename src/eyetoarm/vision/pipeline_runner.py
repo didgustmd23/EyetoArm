@@ -42,11 +42,12 @@ from eyetoarm.common.types import (CandidateInvalidationEvent, FramePacket, Inpu
                                    InvalidationKind, PlanarObservation)
 from eyetoarm.inputs.base import FrameIdIssuer, new_run_id
 from eyetoarm.inputs.live_slot import BoundaryKind, LiveInputOverflow, NoticeKind
-from eyetoarm.vision.ai_result import AiJobConfigError, ModelPrepareError
+from eyetoarm.vision.ai_result import AiJobConfigError, AiSegResult, ModelPrepareError
 from eyetoarm.vision.handoff import HandoffClosed, HandoffError, HandoffFailed, HandoffState
 from eyetoarm.vision.pipeline import GenerationCause, VisionPipeline
 from eyetoarm.vision.pipeline_opencv import process_opencv
 from eyetoarm.vision.pipeline_records import InputStateTracker, PipelineLog
+from eyetoarm.vision.tracking import FrameKey, PartTracker, inputs_from_ai
 from eyetoarm.vision.pipeline_types import (JobContext, JobOutcome, JobStatus, PipelineCounters, PipelineSettings,
                                             SourceProfile)
 
@@ -189,6 +190,7 @@ class RunResult:
     input_boundary_aborts: int = 0  # 실시간 소스: 공개 직전 epoch가 현재가 아니라 JOB_ABORTED로 끝낸 작업 수(실패 아님)
     source_stats: dict | None = None  # 실시간 소스 통계(종료 때)
     handoff: dict | None = None  # A→C 연결부(#142) 종료 보고(handoff_sink=None이면 None)
+    tracking: dict | None = None  # 인스턴스 추적(#151) 종료 보고(part_tracker=None이면 None)
 
 
 def b_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
@@ -476,7 +478,8 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         config: RunnerConfig = RunnerConfig(), stderr=None, clock_ns: Callable[[], int] = time.monotonic_ns,
         should_stop: Callable[[], bool] | None = None, versions: dict | None = None,
         detector_takes_token: bool = False, watch_clock: Callable[[], float] = time.monotonic,
-        prepare: Callable[[], dict] | None = None, display_sink=None, handoff_sink=None) -> RunResult:
+        prepare: Callable[[], dict] | None = None, display_sink=None, handoff_sink=None,
+        part_tracker: PartTracker | None = None) -> RunResult:
     """저장 입력 한 번을 끝까지 처리한다. 예외를 밖으로 내지 않고 `RunResult`(종료 코드 포함)를 돌려준다.
 
     `source_factory(issuer, generation_provider)`는 실행기가 만든 단일 발급기와 `pipeline.current_generation`을
@@ -507,9 +510,22 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
       입력 대기 회차·검출/준비 대기 회차마다 `check()`. 연결부 실패(`HandoffFailed`·`HandoffClosed`)는 `handoff_failed`로
       원래 정지 사유를 덮지 않고 남기며 기존 유한 정리를 계속한다. 정리에서는 코어 close·기록 뒤 마지막 sync로 미전달 수를
       확정하고, 연결부가 OPEN일 때만 `RUN_END`를 넣는다. 관측·valid·b_consumer·display_sink·기록 내용은 바꾸지 않는다.
+    - `part_tracker`(#151 S2, 기본 None=추적 끔): A-6 1차 인스턴스 추적 **표시·기록 실험**(`vision.tracking.PartTracker`, 발급기는 진입점이
+      만들어 주입). 갱신은 제어 흐름 `handle()`에서 표시 공개 조건(`display_gate` 그리고 실시간이면 수신 epoch 현재)을 통과한 AI 결과마다
+      1회뿐이다(실패·중단·늦은·duplicate·세대 폐기·withheld는 갱신하지 않음). 실행 시작·끝(`run_start`·`run_end`), 세대 전이 입력 경계
+      (`reconnect`·`sim_time_rewind`·`profile_changed`), FRAME_TIMEOUT이 아닌 입력 사건(`input_status:<상태>`)에서 reset한다(FRAME_TIMEOUT은
+      보류, 이어진 재접속에서 reset). 추적 예외는 `tracking_failed` 기록·stderr·추적 끔으로 격리하며 종료 코드·코어 계수를 바꾸지 않는다
+      (그 기록 쓰기 실패는 기존 log_failure). `PartTracker`가 아닌 값은 소스를 만들기 전에 `tracker_contract`로 종료 1. B·공통 관측으로 전파하지 않는다.
     """
     err = stderr if stderr is not None else sys.stderr
     issuer = FrameIdIssuer(run_id or new_run_id())
+
+    # 추적기 계약(D11): 진입점이 발급기를 주입해 만든 PartTracker만 받는다. 소스·코어를 만들기 전에 끝낸다
+    if part_tracker is not None and not isinstance(part_tracker, PartTracker):
+        message = f"part_tracker must be PartTracker (issuer injected by the entry point): {type(part_tracker).__name__}"
+        err.write(f"run_pipeline: {message}\n")
+        return RunResult(exit_code=1, stop_reason="tracker_contract", run_id=issuer.run_id, errors=[message])
+
     pipeline = VisionPipeline(settings, run_id=issuer.run_id, clock_ns=clock_ns)
     result = RunResult(exit_code=0, stop_reason="", run_id=issuer.run_id)
     tracker = InputStateTracker(issuer.run_id, settings.source_id)
@@ -520,6 +536,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
     live = False           # 실시간 소스(poll_input 있음)인가. 소스를 만든 뒤 정한다
     transitions: collections.deque[int] = collections.deque()  # 실시간: 세대를 올린 경계의 PC 단조 시각(반복 감시)
     handoff_started = False  # start_run을 시도했는가(연결부 결합 여부)
+    tracking_failed: list[str] = []  # 추적 실패 latch: 첫 사유 1건. 비어 있지 않으면 이번 실행의 추적 호출(update·reset)을 더 하지 않는다
 
     def fail_run(reason: str, message: str) -> None:
         """실행 수준 실패를 기록한다(종료 1)."""
@@ -546,20 +563,79 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         if handoff_sink is not None:
             handoff_sink.note_input_status(event)
 
+    def tracking_failure(exc: BaseException, outcome: JobOutcome | None) -> None:
+        """추적 예외 격리(D10, S2 r1): **실행기 latch를 먼저 세워** 이번 실행의 추적 호출을 멈추고(내부 disable 성공 여부와 무관),
+        추적기 disable을 시도하고, stderr·`tracking_failed` 기록 1줄을 남긴다. 기록 쓰기 실패는 `_LogFailure`로 그대로 올린다(fail-stop)."""
+        if tracking_failed:
+            return
+
+        message = f"{type(exc).__name__}: {exc}"
+        tracking_failed.append(message)
+        disable_error = None
+
+        try:
+            part_tracker.disable(message)
+        except Exception as dexc:   # 끄기 자체가 실패해도 latch로 추적은 이미 멈춤
+            disable_error = f"{type(dexc).__name__}: {dexc}"
+
+        ids = {} if outcome is None else {"image_seq": outcome.context.frame.image_seq,
+                                           "job_seq": outcome.context.job_seq, "generation": outcome.context.generation}
+        extra = {} if disable_error is None else {"disable_error": disable_error}
+        result.errors.append(f"tracking_failed (tracking stopped for this run, run continues): {message}"
+                             + ("" if disable_error is None else f"; disable also failed: {disable_error}"))
+        _logged(log.write_tracking_failed, {"run_id": issuer.run_id, "source_id": pipeline.settings.source_id,
+                                            **ids, "error": message, **extra})
+
+    def reset_tracker(reason: str) -> None:
+        """경계에서 전 트랙 종료(§4.2). 예외는 추적 실패로 격리한다. latch 뒤에는 부르지 않는다."""
+        if part_tracker is None or tracking_failed:
+            return
+
+        try:
+            part_tracker.reset(reason)
+        except Exception as exc:
+            tracking_failure(exc, None)
+
+    def track(outcome: JobOutcome):
+        """공개 허용된 AI 결과 하나로 추적을 1회 갱신해 TrackFrame을 돌려준다(OpenCV 결과·추적 끔·예외는 None)."""
+        display = outcome.display_result
+
+        if part_tracker is None or tracking_failed or not isinstance(display, AiSegResult):
+            return None
+
+        ctx = outcome.context
+        f = ctx.frame
+
+        try:
+            key = FrameKey(run_id=f.run_id, source_id=f.source_id, image_seq=f.image_seq,
+                           capture_generation=f.capture_generation, generation=ctx.generation, job_seq=ctx.job_seq,
+                           detector_config_id=ctx.detector_config_id)
+            return part_tracker.update(key, f.timestamp_ms, inputs_from_ai(display))
+        except Exception as exc:
+            tracking_failure(exc, outcome)
+            return None
+
     def handle(outcome: JobOutcome) -> None:
-        """terminal 응답을 기록하고, 표시·연결부 전달 뒤 소비 조건을 통과하면 그 자리에서 B 지점을 한 번 부른다."""
+        """terminal 응답을 기록하고, (추적)·표시·연결부 전달 뒤 소비 조건을 통과하면 그 자리에서 B 지점을 한 번 부른다."""
         _logged(log.log_outcome, outcome)
         sync_records()
 
-        if display_sink is not None or handoff_sink is not None:
+        if display_sink is not None or handoff_sink is not None or part_tracker is not None:
             current = display_gate(pipeline, outcome) and (not live or source.frame_current(outcome.context.frame))
+            track_frame = track(outcome) if current else None
+
+            # 추적을 켠 실행만: 같은 작업 TrackFrame을 기록(process 뒤 1줄)·표시·연결부에 그대로 싣는다(S3)
+            if track_frame is not None:
+                _logged(log.write_ai_tracks, track_frame)
+
+            track_kw = {} if part_tracker is None else {"tracks": track_frame}
 
             if display_sink is not None:
-                display_sink.on_outcome(outcome, current)
+                display_sink.on_outcome(outcome, current, **track_kw)
 
             if handoff_sink is not None:
                 if current:
-                    handoff_sink.offer_result(outcome)
+                    handoff_sink.offer_result(outcome, **track_kw)
                 elif outcome.status is JobStatus.COMPLETED and outcome.applied and not outcome.duplicate:
                     # 코어는 현재 관측을 바꿨지만 공개하지 않는다(수신 epoch 경합). 연결부 현재 결과를 비운다(§2.4-2)
                     handoff_sink.clear("result_withheld")
@@ -629,10 +705,17 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
                 event = pipeline.change_settings(dataclasses.replace(pipeline.settings, profile=profile),
                                                  cause=GenerationCause.PROFILE_CHANGED)
 
+            if event is not None:
+                reset_tracker(kind.value)
+
             status_event = source.status_event(item)
 
             if status_event is not None:
                 note_status(status_event)
+
+                if InputStatus(status_event.status) is not InputStatus.FRAME_TIMEOUT:
+                    reset_tracker(f"input_status:{InputStatus(status_event.status).value}")
+
                 _logged(log.log_input_states, tracker.on_status(status_event))
 
                 if InputStatus(status_event.status) is not InputStatus.FRAME_TIMEOUT:
@@ -858,6 +941,8 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             handoff_started = True   # 실패해도 결합 여부는 정리에서 연결부 상태로 판단한다
             handoff_sink.start_run(pipeline)
 
+        reset_tracker("run_start")
+
         consecutive_errors = 0
 
         # 실시간 표시 단계에서는 B 계산 소비를 허용하지 않는다(계획 결정 D13, reviewer 지시)
@@ -886,6 +971,10 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
 
             if isinstance(item, InputStatusEvent):
                 note_status(item)
+
+                if InputStatus(item.status) is not InputStatus.FRAME_TIMEOUT:
+                    reset_tracker(f"input_status:{InputStatus(item.status).value}")
+
                 _logged(log.log_input_states, tracker.on_status(item))
                 sync_records()
                 status = InputStatus(item.status)
@@ -949,8 +1038,30 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
     except BaseException as exc:  # 소비자 실패·예상하지 못한 예외·SystemExit도 정리를 거쳐 1로 끝낸다
         fail_run("error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
     finally:
+        # 추적 종료(S2 r1 F1): 정리 전에 run_end reset을 같은 실패 규칙(latch·stderr·tracking_failed 1줄)으로 한다.
+        # 그 기록이 실패하면 기존 log_failure로 남기고 정리(_finish)는 그대로 계속한다
+        if part_tracker is not None:
+            try:
+                reset_tracker("run_end")
+            except _LogFailure as exc:
+                log_ok = False
+                fail_run("log_failure", f"log write failed: {exc}")
+            except BaseException as exc:   # 정리를 막지 않는다
+                fail_run("error", f"tracking cleanup: {type(exc).__name__}: {exc}")
+
         _finish(pipeline, log, tracker, source, config, clock_ns, result, log_ok, err, worker, live=live,
                 handoff=handoff_sink, handoff_started=handoff_started)
+
+        # 추적 보고(외부 호출이라 예외가 run 반환을 막지 않게)
+        if part_tracker is not None:
+            report = {"failed": tracking_failed[0] if tracking_failed else None}
+
+            try:
+                report = {**part_tracker.stats(), **report}
+            except Exception as exc:
+                report["stats_error"] = f"{type(exc).__name__}: {exc}"
+
+            result.tracking = report
 
     return result
 

@@ -46,6 +46,7 @@ from eyetoarm.vision.pipeline_records import JsonlRecorder, PipelineLog
 from eyetoarm.vision.pipeline_runner import RunnerConfig, run, stored_source_factory
 from eyetoarm.vision.pipeline_types import PipelineSettings
 from eyetoarm.vision.planar import load_config
+from eyetoarm.vision.tracking import PartTracker, PartTrackIdIssuer, TrackMode
 
 
 def _positive_int(text: str) -> int:
@@ -113,12 +114,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"두 번째부터의 검출 시간 상한(기본 {RunnerConfig.detect_timeout_s} s, 개발 초기값)")
     parser.add_argument("--no-detect-timeout", action="store_true",
                         help="검출 감시를 끈다(6a 동기 호출). 위 두 옵션과 함께 쓸 수 없다")
+    parser.add_argument("--tracking", action="store_true", help="--detector ai 전용. A-6 1차 실험: AI 검출 인스턴스 추적 번호를 붙인다(M2 휴리스틱, 표시·기록 전용, 팔 이동을 넘는 신원·중복 집기 방지 보장 없음, B로 보내지 않음). 기본 꺼짐")
 
     return parser
 
 
 def _check_detector_args(args) -> None:
     """검출 방식과 설정 인자 조합을 확인한다. 어긋나면 argparse 오류(종료 2)."""
+    if args.tracking and args.detector != "ai":
+        build_parser().error("--tracking is for --detector ai only")
+
     if args.detector == "ai":
         if args.ai_config is None:
             build_parser().error("--detector ai requires --ai-config")
@@ -240,6 +245,10 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
         err.write(f"run_pipeline: config error: {exc}\n")
         return 2
 
+    # 추적 opt-in(#151): 진입점이 프로세스당 발급기 1개를 만들어 주입한다
+    if args.tracking:
+        detector_kw["part_tracker"] = PartTracker(PartTrackIdIssuer(), mode=TrackMode.HEURISTIC)
+
     if args.detector == "ai":
         # AI 어댑터는 이때만 import한다(OpenCV 경로는 ai_detector도 불러오지 않음). 생성자는 I/O가 없다
         from eyetoarm.vision.ai_detector import AiSegDetector
@@ -250,7 +259,7 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
             inject["import_module"] = import_module
 
         det = AiSegDetector(config, **inject)
-        detector_kw = {"detector": det, "prepare": det.prepare}
+        detector_kw.update(detector=det, prepare=det.prepare)
 
     if args.ros_link:
         make = live_source_factory or _live_factory
