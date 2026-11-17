@@ -15,6 +15,7 @@ class LatestFrameServer:
     """Keep only each channel's newest packet; ROS callbacks never wait for TCP."""
     def __init__(self,host,port):
         self._lock=threading.Lock(); self._latest={}; self._revision={}; self._client=None; self._stop=threading.Event()
+        self._rx_count={name:0 for name in CAMERAS}; self._tx_count={name:0 for name in CAMERAS}
         self._listener=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         self._listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); self._listener.bind((host,port))
         self._listener.listen(1); self._listener.settimeout(.5)
@@ -22,6 +23,17 @@ class LatestFrameServer:
     def offer(self,channel,packet):
         with self._lock:
             self._latest[channel]=packet; self._revision[channel]=self._revision.get(channel,0)+1
+    def note_received(self,channel):
+        with self._lock: self._rx_count[channel]+=1
+    def report_rates(self):
+        previous=time.monotonic()
+        while not self._stop.wait(1.0):
+            now=time.monotonic(); elapsed=now-previous; previous=now
+            with self._lock:
+                rx,self._rx_count=self._rx_count,{name:0 for name in CAMERAS}
+                tx,self._tx_count=self._tx_count,{name:0 for name in CAMERAS}
+            rates=" ".join(f"{name}:rx={rx[name]/elapsed:.1f},tx={tx[name]/elapsed:.1f}" for name in CAMERAS)
+            print(f"[C video FPS] {rates}",flush=True)
     def _accept(self):
         while not self._stop.is_set():
             try: client,address=self._listener.accept()
@@ -44,7 +56,9 @@ class LatestFrameServer:
                 with self._lock:
                     packets=[(name,p,self._revision[name]) for name,p in self._latest.items()]
             for name,packet,revision in packets:
-                try: client.sendall(packet); sent_revision[name]=revision
+                try:
+                    client.sendall(packet); sent_revision[name]=revision
+                    with self._lock: self._tx_count[name]+=1
                 except OSError:
                     with self._lock:
                         if self._client is client: self._client=None
@@ -64,10 +78,11 @@ def main():
     from rclpy.executors import ExternalShutdownException
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import Image
-    relay=LatestFrameServer(args.host,args.port); bridge=CvBridge(); run_id=str(uuid.uuid4())
+    relay=LatestFrameServer(args.host,args.port); threading.Thread(target=relay.report_rates,daemon=True).start(); bridge=CvBridge(); run_id=str(uuid.uuid4())
     sequences={channel:0 for channel in CAMERAS}; rclpy.init(); node=rclpy.create_node("c_camera_display_relay")
     def subscribe(channel,topic):
         def on_image(message):
+            relay.note_received(channel)
             try:
                 image=bridge.imgmsg_to_cv2(message,desired_encoding="bgr8")
                 ok,encoded=cv2.imencode(".jpg",image,[cv2.IMWRITE_JPEG_QUALITY,args.quality])
