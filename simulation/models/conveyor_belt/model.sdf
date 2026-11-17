@@ -27,8 +27,8 @@
       <visual name="belt">
         <geometry><mesh><uri>model://conveyor_belt/meshes/belt.stl</uri></mesh></geometry>
         <material>
-          <ambient>0.072 0.078 0.084 1</ambient>
-          <diffuse>0.12 0.13 0.14 1</diffuse>
+          <ambient>0.036 0.240 0.072 1</ambient>
+          <diffuse>0.06 0.40 0.12 1</diffuse>
           <specular>0.3 0.3 0.3 1</specular>
           <pbr><metal><metalness>0.0</metalness><roughness>0.9</roughness></metal></pbr>
         </material>
