@@ -231,6 +231,71 @@ class GuiCase(unittest.TestCase):
         self.assertEqual(w.tally.counts()["NUT"], 1)
         self.assertEqual(w.tally.counts()["BOLT_A"], 1)
 
+    def test_operate_stage_card_shows_source_part_arrival_and_failure(self):
+        w = self.window
+        self.assertNotIn("→", w.bolt_stages.toolTip())   # 순서 강제 문구 없음
+        self.assertIn("도착 확인과 팔 복귀는 별개", w.bolt_stages.toolTip())
+        self.assertIn("도착 확인 사건만", w.count_note.text())
+        self.run_to_running()
+        epoch = w.tally.epoch
+        s = w.supplier
+        # 같은 부품: 복귀가 먼저, 도착 확인이 새 순번으로 늦게 옴 → 수량 +1, 복귀 표시 유지
+        w.feed_demo_event(s.make("PROGRESS", "P-0100", epoch, spec="BOLT_A", stage=0, robot="이동 중 집기"))
+        self.assert_operate_cards_unclipped(w, (1180, 760))   # 최소 창에서 확인
+        fits = lambda value: value.fontMetrics().horizontalAdvance(value.text()) <= value.width()
+        other_arrival = s.make("ARRIVED", "P-0099", epoch, spec="BOLT_B", bin="BOLT_B", verdict="OK")   # 더 이른 순번
+        w.feed_demo_event(s.make("PROGRESS", "P-0100", epoch, spec="BOLT_A", stage=3, robot="복귀"))
+        self.assertEqual(w.bolt_caption.text(), "볼트 P-0100 · BOLT_A · 도착 미확인")   # 복귀 강조와 별개로 도착 여부를 보임
+        self.assertTrue(fits(w.bolt_caption))
+        # 다른 부품의 (늦은) 도착은 그 부품만 센다. 현재 부품의 도착으로 표시하지 않는다
+        self.assertEqual(w.feed_demo_event(other_arrival).code, "지연 반영")
+        self.assertEqual(self.counts_text()["BOLT_B"], "1")
+        self.assertEqual(w.bolt_caption.text(), "볼트 P-0100 · BOLT_A · 도착 미확인")
+        self.assertEqual(self.counts_text()["BOLT_A"], "0")   # 복귀만으로 세지 않음
+        outcome = w.feed_demo_event(s.make("ARRIVED", "P-0100", epoch, spec="BOLT_A", bin="BOLT_A", verdict="OK"))
+        self.assertTrue(outcome.counted)
+        self.assertEqual(w.bolt_stages._current, 3)
+        self.assertEqual(self.counts_text()["BOLT_A"], "1")
+        self.assertEqual(w.bolt_caption.text(), "볼트 P-0100 · BOLT_A · 도착 확인")
+        self.assertIn("모의 사건", w.bolt_caption.toolTip())
+        # 미판정 부품의 도착은 정상 도착 확인으로 보이지 않는다
+        w.feed_demo_event(s.make("PROGRESS", "P-0300", epoch, spec="UNRESOLVED", stage=1))
+        w.feed_demo_event(s.make("ARRIVED", "P-0300", epoch, spec="UNRESOLVED", bin="BOLT_A", verdict="UNRESOLVED"))
+        self.assertTrue(w.bolt_caption.text().endswith("미판정 도착"))
+        self.assertEqual(self.counts_text()["BOLT_A"], "1")
+        # 긴 부품 ID: 한 줄 말줄임, 전체는 툴팁
+        long_id = "P-0200-아주-긴-부품-식별자-" * 3
+        w.feed_demo_event(s.make("PROGRESS", long_id, epoch, spec="BOLT_B", stage=0))
+        self.assertTrue(fits(w.bolt_caption))
+        self.assertIn("…", w.bolt_caption.text())
+        self.assertTrue(w.bolt_caption.text().endswith("도착 미확인"))
+        self.assertIn(long_id, w.bolt_caption.toolTip())
+        w.feed_demo_event(s.make("PROGRESS", "P-0100", epoch, spec="BOLT_A", stage=3, robot="복귀"))
+        # 출처·세대·경계(기존 모의 값만)와 공정 상세를 운영 화면에서도 본다
+        self.assertEqual(w.stage_scope.text(), f"모의 · 마지막 확인 단계 · 세대 {epoch} · 경계 {w.tally.boundary}")
+        self.assertIn(f"범위 {w.supplier.scope}", w.stage_scope.toolTip())
+        self.assertIn("로봇 복귀", w.stage_scope.toolTip())
+        self.assertIn("수동 MOVE", w.stage_scope.toolTip())
+        # 다른 부품의 너트 진행: 볼트 부품 도착을 너트에 붙이지 않음
+        w.feed_demo_event(s.make("PROGRESS", "P-0101", epoch, spec="NUT", stage=0))
+        self.assertIn("도착 미확인", w.nut_caption.toolTip())
+        # 같은 부품 실패: 그 부품만 실패·단계 미확인, 수량 +0
+        w.feed_demo_event(s.make("FAILED", "P-0101", epoch, reason="통과 미확인"))
+        self.assertEqual(w.nut_caption.text(), "너트 P-0101 · NUT · 실패")
+        self.assertIn("실패 · 통과 미확인", w.nut_caption.toolTip())
+        self.assertTrue(fits(w.nut_caption))
+        self.assertIsNone(w.nut_stages._current)
+        self.assertEqual(w.bolt_stages._current, 3)
+        self.assertEqual(self.counts_text()["NUT"], "0")
+        self.assertIn("실패 1건", w.stage_note.text())
+        # 단절: 마지막 값 유지 + 단계 미확인 + 출처 표시
+        w.sort_connection_button.click()
+        self.assertEqual(w.stage_scope.text(), "모의 · 연결 끊김 · 단계 미확인")
+        self.assertIsNone(w.bolt_stages._current)
+        self.assertEqual(self.counts_text()["BOLT_A"], "1")
+        for size in ((1180, 760), (1440, 960)):
+            self.assert_operate_cards_unclipped(w, size)
+
     def test_demo_cycle_stops_on_stop_disconnect_and_recovery_keeping_permissions(self):
         w = self.window
         self.run_to_running()
@@ -327,6 +392,7 @@ class GuiCase(unittest.TestCase):
             self.assertEqual({value.text() for value in window.count_values.values()}, {"—"})
             self.assertIn("단계 미확인", window.bolt_caption.text())
             self.assertIsNone(window.bolt_stages._current)
+            self.assertEqual(window.stage_scope.text(), "분류 진행 계약 미승인 · 실제 C 미확인")
             self.assertIsNone(window.feed_demo_event({"kind": "ARRIVED"}))
             for size in ((1180, 760), (1440, 960)):
                 self.assert_operate_cards_unclipped(window, size)

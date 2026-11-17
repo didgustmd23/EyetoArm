@@ -178,6 +178,8 @@ def event_error(event):
         return "규격 오류"
     if event["kind"] == "PROGRESS" and (not _int(event["stage"], 0) or event["stage"] >= len(stages_of(event["spec"]))):
         return "단계 오류"
+    if event["kind"] == "PROGRESS" and event["stage"] == stages_of(event["spec"]).index("도착"):
+        return "도착은 ARRIVED 사건으로만"
     if event["kind"] == "ARRIVED":
         spec, bin_, verdict = event["spec"], event["bin"], event["verdict"]
         if bin_ not in BINS or verdict not in ("OK", "WRONG_BIN", "UNRESOLVED"):
@@ -235,7 +237,7 @@ class SortTally:
         self.finals, self.failures, self._seen = {}, set(), {}
         self.conflict = False
         self.synchronized = True
-        self.display_seq = 0
+        self.display_seq = {"bolt": 0, "nut": 0}   # 종류별 표시 순서 수평선(스냅샷 경계 이상)
         self.display = {"bolt": None, "nut": None}
         self.fields = dict.fromkeys(DISPLAY_FIELDS)
         self.last_failure = None
@@ -280,7 +282,9 @@ class SortTally:
                 return Outcome("불일치", note="같은 사건 순번에 다른 내용 · 집계 미확인")
             return Outcome("중복", note="같은 사건 순번")
         within = seq <= self.boundary
-        late = within or seq < self.display_seq
+        # 표시 순서는 종류(볼트·너트)별로 따로 본다. 실패·격리는 지금 표시 중인 같은 부품의 종류만
+        group = self._group(event)
+        late = within or (group is not None and seq < self.display_seq[group])
         if not within:
             self._seen[seq] = event.copy()
         if kind == "PROGRESS":
@@ -299,6 +303,8 @@ class SortTally:
                 self.conflict = True
                 return Outcome("불일치", note="스냅샷 경계 이하인데 실패 집합에 없음 · 집계 미확인")
             self.failures.add(key)
+            if not late:
+                self._mark(part, seq, f"실패 · {event['reason']}")
             if seq > self.failure_seq:
                 self.last_failure = f"{part} · {event['reason']}"
                 self.failure_seq = seq
@@ -313,14 +319,39 @@ class SortTally:
             self.conflict = True
             return Outcome("불일치", note="스냅샷 경계 이하인데 집합에 없음 · 집계 미확인")
         self.finals[part] = category
+        kept = ""
         if kind == "ARRIVED" and not late:
-            self._show(event, stages_of(event["spec"]).index("도착"))
-        return Outcome("지연 반영" if late else "반영", True, f"{category} +1" + (" · 최신 단계 유지" if late else ""))
+            arrival = stages_of(event["spec"]).index("도착")
+            shown = self.display["nut" if event["spec"] == "NUT" else "bolt"]
+            if shown is not None and shown["part"] == part and shown["stage"] is not None and shown["stage"] > arrival:
+                # 같은 부품의 복귀가 먼저 왔다. 도착 확인은 수량만 올리고 표시 단계를 되돌리지 않는다
+                self.display_seq[group], kept = event["seq"], " · 복귀 표시 유지"
+            else:
+                self._show(event, arrival)
+        elif kind == "QUARANTINED" and not late:
+            self._mark(part, seq, "격리" + (f" · {event['reason']}" if event.get("reason") else ""))
+        return Outcome("지연 반영" if late else "반영", True, f"{category} +1" + (" · 최신 단계 유지" if late else kept))
+
+    def _group(self, event):
+        if "spec" in event:
+            return "nut" if event["spec"] == "NUT" else "bolt"
+        return next((g for g, shown in self.display.items() if shown is not None and shown["part"] == event["part"]), None)
 
     def _show(self, event, stage):
-        self.display_seq = event["seq"]
-        self.display["nut" if event["spec"] == "NUT" else "bolt"] = {"part": event["part"], "spec": event["spec"], "stage": stage}
+        group = self._group(event)
+        self.display_seq[group] = event["seq"]
+        self.display[group] = {"part": event["part"], "spec": event["spec"], "stage": stage}
         self.stage_known = True
+
+    def _mark(self, part, seq, outcome):
+        """지금 표시 중인 같은 부품만 실패·격리로 바꾼다(단계 미확인). 다른 부품 표시는 건드리지 않는다.
+
+        모의 의미: 같은 부품의 더 새 PROGRESS가 오면 그 단계로 다시 표시한다. C의 실패 후 재시도 정책을 정한 것이 아니다.
+        """
+        for group, shown in self.display.items():
+            if shown is not None and shown["part"] == part:
+                self.display[group] = dict(shown, stage=None, outcome=outcome)
+                self.display_seq[group] = seq
 
     def apply_snapshot(self, snapshot):
         """원자적 집계 스냅샷. 같은 범위만, 현재 수평선보다 낮은 경계는 거부. 수락하면 집합을 교체한다."""
@@ -350,7 +381,7 @@ class SortTally:
         self._seen = {}
         self.conflict = False
         self.synchronized = True
-        self.display_seq = max(self.display_seq, self.boundary)
+        self.display_seq = {group: max(seq, self.boundary) for group, seq in self.display_seq.items()}
         after = self.counts()
         lowered = [f"{key} {before[key]}→{after[key]}" for key in CATEGORIES if after[key] < before[key]]
         return Outcome("반영", True, ("감소·불일치 기록: " + ", ".join(lowered)) if lowered else f"경계 {self.boundary}")

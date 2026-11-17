@@ -14,9 +14,13 @@ from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QTcpSocket
 
 from eyetoarm.gui.diag import safe_text
 from eyetoarm.gui.records import SessionLog
+from eyetoarm import gui as _package
 from eyetoarm.tcp import protocol
 
-CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "gui" / "client.json"
+# 저장소 호환 브리지(src/eyetoarm/gui/__init__.py)가 명시한 경우에만 C·D 공용 설정을 쓴다.
+# 독립 번들은 주변 폴더를 탐색하지 않고 자기 config 만 쓴다
+_ROOT = getattr(_package, "_repository_root", None) or Path(__file__).resolve().parents[3]
+CONFIG_PATH = _ROOT / "config" / "gui" / "client.json"
 
 # client.json 을 읽지 못할 때 쓰는 값. TCP 명세 §9 초기값과 같다
 DEFAULTS = {"host": "127.0.0.1", "port": 47090, "max_line_bytes": 4096, "readiness_poll_ms": 1000,

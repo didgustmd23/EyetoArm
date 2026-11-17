@@ -250,6 +250,107 @@ class SortTallyTests(unittest.TestCase):
         self.assertEqual(self.tally.display["bolt"], {"part": "P2", "spec": "BOLT_B", "stage": 0})
         self.assertEqual(self.tally.fields["robot"], "이동 중 집기")
 
+    def test_same_part_arrival_after_return_counts_without_stage_rollback(self):
+        s = self.supplier
+        self.assertEqual(self.feed(s.make("PROGRESS", "P1", 1, spec="BOLT_A", stage=0)).code, "반영")
+        self.assertEqual(self.feed(s.make("PROGRESS", "P1", 1, spec="BOLT_A", stage=3, robot="복귀")).code, "반영")
+        outcome = self.feed(arrived(s, "P1", "BOLT_A"))   # 새 순번의 도착 확인이 복귀보다 늦게 옴
+        self.assertEqual((outcome.code, outcome.counted), ("반영", True))
+        self.assertIn("복귀 표시 유지", outcome.note)
+        self.assertEqual(self.counts()["BOLT_A"], 1)
+        self.assertEqual(self.tally.display["bolt"], {"part": "P1", "spec": "BOLT_A", "stage": 3})
+        # 다른 부품의 도착은 그 부품의 도착 단계를 보인다(부품 사이 단계 최댓값을 쓰지 않음)
+        self.assertEqual(self.feed(arrived(s, "P2", "BOLT_B")).code, "반영")
+        self.assertEqual(self.tally.display["bolt"], {"part": "P2", "spec": "BOLT_B", "stage": 2})
+
+    def test_progress_cannot_claim_arrival_stage(self):
+        s = self.supplier
+        for spec, stage in (("BOLT_A", 2), ("NUT", 1)):
+            outcome = self.feed(s.make("PROGRESS", "P1", 1, spec=spec, stage=stage))
+            self.assertEqual(outcome.code, "형식오류")
+            self.assertIn("ARRIVED", outcome.note)
+        self.assertEqual(self.tally.display, {"bolt": None, "nut": None})
+        self.assertEqual(sum(self.counts().values()), 0)
+
+    def test_failure_and_quarantine_mark_only_the_same_shown_part(self):
+        s = self.supplier
+        self.feed(s.make("PROGRESS", "P1", 1, spec="BOLT_A", stage=1))
+        self.feed(s.make("PROGRESS", "P2", 1, spec="NUT", stage=0))
+        self.assertEqual(self.feed(s.make("FAILED", "P1", 1, reason="부착 미확인")).code, "반영")
+        self.assertEqual(self.tally.display["bolt"], {"part": "P1", "spec": "BOLT_A", "stage": None, "outcome": "실패 · 부착 미확인"})
+        self.assertEqual(self.tally.display["nut"], {"part": "P2", "spec": "NUT", "stage": 0})   # 다른 부품은 그대로
+        self.feed(s.make("FAILED", "P9", 1, reason="판정 불가"))                                  # 표시 중이 아닌 부품
+        self.assertEqual(self.tally.display["nut"]["stage"], 0)
+        self.assertEqual(self.feed(s.make("QUARANTINED", "P2", 1, reason="규격 불명")).code, "반영")
+        self.assertEqual(self.tally.display["nut"]["outcome"], "격리 · 규격 불명")
+        self.assertIsNone(self.tally.display["nut"]["stage"])
+        self.assertEqual((self.counts()["QUARANTINE"], self.counts()["NUT"]), (1, 0))
+        # 모의 의미: 같은 부품의 더 새 진행이 오면 그 단계로 다시 표시(C 재시도 정책 아님)
+        self.feed(s.make("PROGRESS", "P1", 1, spec="BOLT_A", stage=3, robot="복귀"))
+        self.assertEqual(self.tally.display["bolt"], {"part": "P1", "spec": "BOLT_A", "stage": 3})
+
+    def test_arrival_after_failure_of_same_part_counts_and_clears_failure_display(self):
+        s = self.supplier
+        self.feed(s.make("PROGRESS", "P1", 1, spec="BOLT_A", stage=1))
+        self.feed(s.make("FAILED", "P1", 1, reason="부착 미확인"))
+        outcome = self.feed(arrived(s, "P1", "BOLT_A"))   # 실패 표시(stage None) 뒤 새 순번 도착
+        self.assertEqual((outcome.code, outcome.counted), ("반영", True))
+        self.assertEqual(self.counts()["BOLT_A"], 1)
+        self.assertEqual(self.tally.display["bolt"], {"part": "P1", "spec": "BOLT_A", "stage": 2})
+
+    def test_late_failure_does_not_mark_newer_display(self):
+        s = self.supplier
+        late = s.make("FAILED", "P1", 1, reason="집기 실패")
+        self.feed(s.make("PROGRESS", "P1", 1, spec="BOLT_A", stage=3, robot="복귀"))
+        self.assertEqual(self.feed(late).code, "지연 반영")
+        self.assertEqual(self.tally.display["bolt"]["stage"], 3)
+        self.assertNotIn("outcome", self.tally.display["bolt"])
+
+    def test_display_order_is_per_kind(self):
+        s = self.supplier
+        nut_progress = s.make("PROGRESS", "N1", 1, spec="NUT", stage=0)        # 순번 1
+        nut_arrival = arrived(s, "N1", "NUT")                                   # 순번 2
+        bolt_late = s.make("PROGRESS", "B0", 1, spec="BOLT_A", stage=1)         # 순번 3
+        nut_failure = s.make("FAILED", "N2", 1, reason="통과 미확인")            # 순번 4
+        self.feed(s.make("PROGRESS", "B1", 1, spec="BOLT_B", stage=1))          # 순번 5: 볼트 표시 수평선 5
+        self.feed(arrived(s, "B1", "BOLT_B"))                                   # 순번 6
+        # 더 이른 순번의 너트 사건이 늦게 와도 너트 칸은 아직 표시가 없으므로 반영(볼트 수평선과 무관)
+        self.assertEqual(self.feed(nut_progress).code, "반영")
+        outcome = self.feed(nut_arrival)
+        self.assertEqual((outcome.code, outcome.counted), ("반영", True))
+        self.assertEqual(self.tally.display["nut"], {"part": "N1", "spec": "NUT", "stage": 1})
+        self.assertEqual(self.tally.display["bolt"], {"part": "B1", "spec": "BOLT_B", "stage": 2})
+        self.assertEqual(self.tally.display_seq, {"bolt": 6, "nut": 2})
+        # 볼트는 자기 수평선 기준으로만 지연
+        self.assertEqual(self.feed(bolt_late).code, "지연")
+        # 표시 중이 아닌 너트 부품의 실패는 어느 칸의 수평선도 바꾸지 않음
+        self.assertEqual(self.feed(nut_failure).code, "반영")
+        self.assertEqual(self.tally.display_seq, {"bolt": 6, "nut": 2})
+        self.assertEqual(self.counts()["NUT"], 1)
+
+    def test_snapshot_boundary_raises_both_kinds_and_hides_covered_progress(self):
+        s = self.supplier
+        covered = s.make("PROGRESS", "N1", 1, spec="NUT", stage=0)              # 스냅샷 경계 안
+        self.feed(s.make("PROGRESS", "B1", 1, spec="BOLT_A", stage=1))
+        self.assertEqual(self.tally.apply_snapshot(s.snapshot(1)).code, "반영")
+        self.assertEqual(self.tally.display_seq, {"bolt": self.tally.boundary, "nut": self.tally.boundary})
+        self.assertEqual(self.feed(covered).code, "지연")                       # 경계 이하 진행은 표시하지 않음
+        self.assertIsNone(self.tally.display["nut"])
+        newer = s.make("PROGRESS", "N2", 1, spec="NUT", stage=0)
+        self.assertEqual(self.feed(newer).code, "반영")
+        self.assertEqual(self.tally.display["nut"]["part"], "N2")
+
+    def test_nut_pass_and_arrival_interleave_with_bolt_return(self):
+        s = self.supplier
+        self.feed(s.make("PROGRESS", "B1", 1, spec="BOLT_B", stage=1, robot="운반"))
+        self.feed(arrived(s, "B1", "BOLT_B"))
+        self.feed(s.make("PROGRESS", "N1", 1, spec="NUT", stage=0))                 # 팔 복귀 전 너트 통과
+        self.feed(s.make("PROGRESS", "B1", 1, spec="BOLT_B", stage=3, robot="복귀"))
+        self.feed(arrived(s, "N1", "NUT"))                                           # 복귀 중 너트 도착
+        self.assertEqual(self.tally.display["bolt"], {"part": "B1", "spec": "BOLT_B", "stage": 3})
+        self.assertEqual(self.tally.display["nut"], {"part": "N1", "spec": "NUT", "stage": 1})
+        self.assertEqual((self.counts()["BOLT_B"], self.counts()["NUT"]), (1, 1))
+
     def test_old_epoch_other_scope_unsynchronized_and_malformed_are_record_only(self):
         s = self.supplier
         good = arrived(s, "P1", "BOLT_A")

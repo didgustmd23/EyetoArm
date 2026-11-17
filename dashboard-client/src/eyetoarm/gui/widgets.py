@@ -19,7 +19,7 @@ import math
 import time
 from collections import deque
 
-from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QFrame, QHBoxLayout, QHeaderView, QLabel, QPushButton, QSizePolicy, QTableWidget,
@@ -273,15 +273,18 @@ class DisplayView(QWidget):
         self._arrivals.clear()
         self.update()
 
-    def set_clickable(self, tooltip: str) -> None:
-        """이 칸을 누를 수 있게 한다(보조 영상의 확대·복구). 키보드로도 고를 수 있다."""
-        self._clickable = True
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setToolTip(tooltip)
+    def set_clickable(self, tooltip: str | None) -> None:
+        """이 칸을 누를 수 있게 한다(보조 칸 ↔ 큰 칸 교체). 키보드로도 고를 수 있다. None 이면 끈다."""
+        self._clickable = tooltip is not None
+        if self._clickable:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            self.unsetCursor()
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus if self._clickable else Qt.FocusPolicy.NoFocus)
+        self.setToolTip(tooltip or "")
 
     def set_compact(self, compact: bool) -> None:
-        """작은 칸용 글자 크기·모서리를 쓸지. 확대하면 큰 칸처럼 그린다."""
+        """작은 칸용 글자 크기·모서리를 쓸지. 큰 칸 자리로 옮기면 큰 칸처럼 그린다."""
         if compact != self._compact:
             self._compact = compact
             self.update()
@@ -479,8 +482,9 @@ class DisplayStage(QWidget):
 
     배치(골격 문서 2026-11-13 사용자 화면 방향):
       탑뷰가 큰 바탕이고, 보조 2칸은 그 안쪽 오른쪽에 세로로 고정, 팝업은 가운데~왼쪽.
-    확대(사용자 지정): 보조 칸을 한 번 누르면 그 칸이 탑뷰 자리 전체로 커지고, 다시 누르면 제자리로 돌아간다.
-      한 번에 한 칸만 커진다. 다른 보조 칸을 누르면 커진 칸이 그쪽으로 바뀐다. 영상 수신·연결은 건드리지 않는다.
+    교체(사용자 지정 2026-11-16): 보조 칸을 누르면 그 영상이 큰 칸 자리로 가고, 큰 칸에 있던 영상이 누른 보조 칸
+      자리로 간다. 큰 칸을 가리는 겹친 확대는 없다. 위젯 자체를 자리만 바꾸므로 영상 수신·연결과
+      main·gripper·link(영상 출처별 위젯)는 그대로다.
     [이름] 화면 이름 「탑뷰·그리퍼·링크」는 표시 이름이다. 탑뷰 칸에 지금 오는 것은 D 임시 경로
       (Gazebo 창 캡처 또는 카메라 중계)이며, 정식 영상 3개는 C 표시 연결이 정해진 뒤에 온다.
     """
@@ -491,20 +495,34 @@ class DisplayStage(QWidget):
         self.main.setParent(self)
         self.gripper = DisplayView("그리퍼", compact=True)
         self.link = DisplayView("링크", compact=True)
-        self.expanded: DisplayView | None = None   # 지금 커져 있는 보조 칸. 없으면 None
+        self.slots: list[DisplayView] = [self.main, self.gripper, self.link]   # [큰 칸, 보조 위, 보조 아래]
         for view in (self.gripper, self.link):
             view.setParent(self)
             # [C 예정] 그리퍼·링크 영상은 C 표시 연결로만 온다. D 임시 경로에는 없다
             view.set_placeholder("empty", "C 표시 연결 미결")
-            view.set_clickable("누르면 이 화면을 크게 봅니다. 다시 누르면 제자리로 돌아갑니다.")
-            view.clicked.connect(lambda v=view: self.toggle_expanded(v))
+        for view in self.slots:
+            view.clicked.connect(lambda v=view: self.swap_to_main(v))
+        self._apply_clickable()
         self.popup = DetailPopup(self, demo=demo)
         self.setMinimumHeight(max(380, 72 + self.popup.sizeHint().height()))
 
-    def toggle_expanded(self, view: DisplayView) -> None:
-        """view 가 커져 있으면 제자리로, 아니면 view 를 키운다(다른 칸이 커져 있었다면 그 칸은 제자리로)."""
-        self.expanded = None if self.expanded is view else view
+    def swap_to_main(self, view: DisplayView) -> None:
+        """보조 칸의 view 를 큰 칸으로, 큰 칸에 있던 영상을 view 의 보조 칸 자리로 바꾼다. 큰 칸이면 무시."""
+        index = self.slots.index(view)
+        if index == 0:
+            return
+        previous = self.slots[0]
+        self.slots[0], self.slots[index] = view, previous
+        refocus = view.hasFocus()
+        self._apply_clickable()
         self._place(animate=True)
+        if refocus:   # 키보드로 바꿨으면 같은 보조 칸 자리(이제 이전 큰 영상)에 초점을 둔다
+            previous.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _apply_clickable(self) -> None:
+        self.slots[0].set_clickable(None)
+        for view in self.slots[1:]:
+            view.set_clickable("누르면 이 화면과 큰 화면의 자리를 바꿉니다.")
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -512,23 +530,24 @@ class DisplayStage(QWidget):
 
     def _place(self, animate: bool) -> None:
         width, height = self.width(), self.height()
-        self.main.setGeometry(0, 0, width, height)
         aux_width = max(170, min(300, int(width * 0.21)))
         aux_height = min(int(aux_width * 9 / 16), (height - 86) // 2)
         left = width - aux_width - 16
-        homes = {self.gripper: QRect(left, 52, aux_width, aux_height),
-                 self.link: QRect(left, 52 + aux_height + 10, aux_width, aux_height)}
-        if self.expanded is not None:
-            self.expanded.raise_()   # 커진 칸은 탑뷰 위, 나머지 보조 칸과 팝업 아래
-        for view, home in homes.items():
-            big = view is self.expanded
-            view.set_compact(not big)
-            target = QRect(0, 0, width, height) if big else home
+        targets = [QRect(0, 0, width, height), QRect(left, 52, aux_width, aux_height),
+                   QRect(left, 52 + aux_height + 10, aux_width, aux_height)]
+        self.slots[0].lower()   # 큰 칸은 맨 아래, 보조 칸과 팝업은 그 위
+        for index, (view, target) in enumerate(zip(self.slots, targets)):
+            view.set_compact(index > 0)
             if animate:
                 motion.move_geometry(view, target, theme.MS_POPUP)
             else:
+                tween = view.findChild(QPropertyAnimation, "geometry_motion")
+                if tween is not None:   # 교체 움직임 중 크기가 바뀌면 옛 목표로 가던 움직임을 멈춘다
+                    tween.stop()
+                    tween.setObjectName("")
+                    tween.deleteLater()
                 view.setGeometry(target)
-            if not big:
+            if index > 0:
                 view.raise_()
         popup_width = min(380, max(280, width - 48))
         self.popup.setGeometry(24, 56, popup_width, self.popup.sizeHint().height())
