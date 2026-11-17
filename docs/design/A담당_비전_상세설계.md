@@ -510,14 +510,14 @@ ros2 run tf2_ros tf2_echo base_link link_cam_optical_frame
 현재 화각으로 계산한 세로 화각은 약 44.72°이며, 이전의 “세로 화각 유지·가로 시야 25% 축소” 설명은
 중간 조정값에 해당합니다.
 
-사용자가 직접 열도록 자동 ROS 브리지·RViz 구독·창 실행은 추가하지 않습니다.
-필요 시 사용자가 `/overview_cam/image`를 수동으로 브리지하고 RViz의 Image 표시로 선택합니다.
+분류 launch에서 `/overview_cam/image`를 ROS `sensor_msgs/msg/Image`로 브리지합니다.
+RViz는 자동으로 띄우지 않으며, 사용자가 Image 표시를 추가해 해당 토픽을 선택합니다.
 설정 확정과 검증 완료는 구분합니다. 최종 설정으로 로봇 이동 중 가림·화면 경계·실측 수신률을 확인한 기록은
 아직 수집하지 않았으며, 이번 문서 갱신에서 Gazebo·RViz를 실행하지 않았습니다.
 
 #### 6.2.1 카메라 실행·표시 명령
 
-아래 명령은 WSL의 **서로 다른 터미널 3개**에서 사용자가 직접 실행합니다.
+아래 명령은 WSL의 서로 다른 터미널에서 사용자가 직접 실행합니다.
 Gazebo·브리지는 같은 `GZ_PARTITION`, 모든 ROS 프로그램은 같은 `ROS_DOMAIN_ID`를 사용합니다.
 설치된 ROS 2 Jazzy와 UR5e·Robotiq 관련 패키지가 필요합니다. 실행 설정이나 카메라 배치를 바꿨다면
 기존 Gazebo를 종료한 뒤 다시 실행해야 반영됩니다.
@@ -533,10 +533,10 @@ export GZ_PARTITION=eyetoarm_camera_preview
 ros2 launch scripts/sim_sort_cell.launch.py
 ```
 
-이 launch는 팔 카메라와 그리퍼 RGB-D의 ROS 브리지를 함께 실행합니다.
-CCTV는 Gazebo 토픽만 발행하므로 RViz에서 보려면 다음 수동 브리지가 필요합니다.
+이 launch는 팔 카메라, 그리퍼 RGB-D와 CCTV의 ROS 브리지를 함께 실행합니다.
+별도로 Gazebo만 실행하는 경우에는 다음 수동 브리지 명령을 사용할 수 있습니다.
 
-**터미널 2 — CCTV Gazebo→ROS 영상 브리지**
+**별도 Gazebo 실행 시에만 — CCTV Gazebo→ROS 영상 브리지**
 
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -550,7 +550,7 @@ ros2 run ros_gz_bridge parameter_bridge \
 `Creating GZ->ROS Bridge` 로그 이후 대기하는 것이 정상입니다. 이 프로그램은 영상 창을 열지 않습니다.
 브리지는 영상 확인 중 계속 실행해 둡니다. 생성 로그만으로 실제 영상 수신을 확인한 것은 아닙니다.
 
-**터미널 3 — RViz 영상 창**
+**터미널 2 — RViz 영상 창**
 
 ```bash
 source /opt/ros/jazzy/setup.bash
