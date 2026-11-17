@@ -81,9 +81,11 @@ def build_sort_goal(r: WorkPlanarResult, *, source_id: str, stamp_ns: int | None
 
     closing = _wrap_deg(r.theta_deg + 90.0)
     candidates = []
+    gx, gy = r.grasp_w_m if getattr(r, "grasp_w_m", None) else r.center_w_m   # 볼트 두 끝점 입력이면 축 가운데 Pb
+    grasp_pos = [mm(gx), mm(gy), mm(r.plane_z_m)]
 
     for yaw in (closing, _wrap_deg(closing + 180.0)):
-        candidates.append({"position_mm": observed, "orientation_xyzw": down_quat_xyzw(math.radians(yaw)),
+        candidates.append({"position_mm": grasp_pos, "orientation_xyzw": down_quat_xyzw(math.radians(yaw)),
                            "closing_yaw_deg": round(yaw, 1)})
 
     bin_ = frames["bins"][spec["bin"]]

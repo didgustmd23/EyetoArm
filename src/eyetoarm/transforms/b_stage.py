@@ -111,6 +111,7 @@ class BStage:
         self.run_epoch: int | None = None      # C 실행 세대 (C 상세설계 §16.5.2)
         self.on_output: Callable[[BOutput], None] | None = None   # B 출력 받을 곳 (C 대기열 등)
         self.last: BOutput | None = None
+        self.compute_budget_ms = 20.0          # B 계산 시간 상한 (A-7). 넘으면 C로 안 보냄(SKIP B_TIMEOUT). TF 대기는 RosTfLookup 0.05 s
         self._pending: dict[object, str] = {}   # part_track_id → 보낸 goal_id (결과 받을 때까지 다시 안 보냄)
         self._pending_epoch: int | None = None
 
@@ -139,6 +140,9 @@ class BStage:
         keys = correlation_keys(obs, frame)              # A 관측 → B → C·D 연결 키 (CB-05, D DB-01)
         goal.update(keys)
         goal.update({"goal_id": str(uuid.uuid4()), "sort_job_id": self.sort_job_id, "run_epoch": self.run_epoch})
+
+        if result.compute_ms > self.compute_budget_ms and goal.get("kind") != "SKIP":
+            goal["kind"], goal["reason"] = "SKIP", "B_TIMEOUT"
 
         self._dedupe(goal)
 

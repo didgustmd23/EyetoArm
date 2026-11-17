@@ -53,6 +53,8 @@ class WorkPlanarResult:
     compute_ms: float
     part_track_id: int | None = None
     image_seq: int | None = None
+    grasp_w_m: tuple[float, float] | None = None   # 집는 점 (볼트 두 끝점 입력: 축 가운데 Pb). None이면 center_w_m
+    method: str = "contour"                         # "contour" | "axis_endpoints"
 
 
 def load_specs(path: str | Path) -> dict:
@@ -131,6 +133,61 @@ def _classify(class_name, length_m, width_m, aspect, specs) -> tuple[str, str | 
     return UNRESOLVED, "NUT_SIZE_OUT_OF_RANGE"
 
 
+def class_plane_z(specs: dict, class_name: str | None, spec: str | None = None) -> float:
+    """종류별 기준 높이 (B 선택 2026-11-17). 볼트 축 105.0 mm, 너트 윗면 105.7 mm. 모르면 기본 plane_z."""
+    key = spec if spec in specs["specs"] else {"bolt": "BOLT_A", "nut": "NUT"}.get(normalize_class(class_name) or "")
+
+    return float(specs["specs"].get(key, {}).get("plane_z", specs["plane_z"])) if key else float(specs["plane_z"])
+
+
+def compute_bolt_from_endpoints(head_px, tip_px, camera: CameraProfile, T_W_C: np.ndarray, specs: dict,
+                                class_name: str | None = "bolt", observed_calibration_id: str | None = None,
+                                part_track_id: int | None = None, image_seq: int | None = None) -> WorkPlanarResult:
+    """볼트 머리 끝·축 끝 픽셀 두 점 → `WorkPlanarResult` (B 선택 2026-11-17, A-2).
+
+    - 두 점은 축 위의 점이라 높이 = 볼트 축 높이(105.0 mm). 그 평면으로 투영한다.
+    - 길이 = 두 점 거리(머리 포함 총길이), 각도 = 축 방향 [0, 180).
+    - 위치 `center_w_m` = 총길이 중점 Pa. 집는 점 `grasp_w_m` = 축 가운데 Pb = Pa에서 축 끝 쪽으로 머리 높이/2(3 mm).
+    """
+    t0 = time.perf_counter()
+    plane_z = class_plane_z(specs, "bolt")
+    reason, owner = None, None
+
+    if observed_calibration_id is not None and observed_calibration_id != camera.calibration_id:
+        reason, owner = "CALIBRATION_MISMATCH", "A"
+
+    pts = pixels_to_w(np.array([head_px, tip_px], dtype=np.float64).reshape(2, 2), camera.K, camera.dist, T_W_C, plane_z)
+    head, tip = pts[0], pts[1]
+    axis = tip - head
+    length = float(np.hypot(*axis))
+
+    if not np.isfinite(length) or length < 1e-4:
+        reason, owner = reason or "ENDPOINTS_INVALID", owner or "A"
+        unit = np.array([1.0, 0.0])
+    else:
+        unit = axis / length
+
+    pa = (head + tip) / 2.0
+    head_h = float(specs["specs"]["BOLT_A"].get("head_height", 0.006))
+    pb = pa + unit * head_h / 2.0
+    theta = math.degrees(math.atan2(unit[1], unit[0])) % 180.0
+    spec, cls_reason = _classify("bolt", length, 0.0, float("inf"), specs)
+
+    if reason is None and cls_reason is not None:
+        reason, owner = cls_reason, "B"
+
+    return WorkPlanarResult(
+        center_w_m=(float(pa[0]), float(pa[1])), plane_z_m=plane_z,
+        theta_deg=float(theta) if reason is None else None, theta_valid=reason is None,
+        spec=spec if reason is None else UNRESOLVED, class_name=class_name,
+        measured_length_m=length, measured_width_m=float(specs["specs"]["BOLT_A"]["shaft_diameter"]),
+        aspect_ratio=float("inf"), area_w_m2=0.0, contour_w_m=pts, valid=reason is None,
+        reason=reason, reason_owner=owner, calibration_id=camera.calibration_id, camera_frame=camera.frame_id,
+        compute_ms=(time.perf_counter() - t0) * 1000.0, part_track_id=part_track_id, image_seq=image_seq,
+        grasp_w_m=(float(pb[0]), float(pb[1])), method="axis_endpoints",
+    )
+
+
 def compute_work_result(contour_px, camera: CameraProfile, T_W_C: np.ndarray, specs: dict,
                         class_name: str | None = None, plane_z: float | None = None,
                         observed_calibration_id: str | None = None,
@@ -141,7 +198,7 @@ def compute_work_result(contour_px, camera: CameraProfile, T_W_C: np.ndarray, sp
     - `observed_calibration_id`: A 관측에 붙은 보정 식별자. 다르면 무효(책임 A).
     """
     t0 = time.perf_counter()
-    plane_z = specs["plane_z"] if plane_z is None else plane_z
+    plane_z = class_plane_z(specs, class_name) if plane_z is None else plane_z    # 너트 105.7, 볼트·모름 105.0 mm
     pts = np.asarray(contour_px, dtype=np.float64).reshape(-1, 2)
 
     reason, owner = None, None
@@ -201,6 +258,19 @@ def from_observation(obs, frame, camera: CameraProfile, T_W_C: np.ndarray, specs
 
     if obs.source_id != frame.source_id or obs.image_seq != frame.image_seq:
         raise ValueError("관측과 프레임의 source_id·image_seq가 다르다")
+
+    endpoints = getattr(obs, "axis_endpoints_px", None)     # B 선택: 볼트는 [머리 끝, 축 끝] 픽셀 (새 입력 계약, A 협의 중)
+
+    if obs.valid and endpoints is not None:
+        cam = camera
+
+        if str(getattr(obs.pixel_basis, "value", obs.pixel_basis)) == "undistorted" and np.any(camera.dist):
+            cam = CameraProfile(camera.width, camera.height, camera.K, np.zeros(5), camera.frame_id,
+                                camera.calibration_id)
+
+        head, tip = endpoints
+        return compute_bolt_from_endpoints(head, tip, cam, T_W_C, specs, class_name=obs.class_name or "bolt",
+                                           observed_calibration_id=obs.calibration_id, **ids)
 
     if not obs.valid or obs.calc_contour is None:
         empty = np.zeros((0, 2))
