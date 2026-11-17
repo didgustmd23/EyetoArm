@@ -431,3 +431,27 @@ class TestBDecisions(unittest.TestCase):
             g = {"kind": "PICK_PLACE", "part_track_id": None, "goal_id": gid}
             self.stage._dedupe(g)
             self.assertEqual(g["kind"], "PICK_PLACE")
+
+
+# ---------- B 정확도 확인 (시뮬레이션 정답과 비교) ----------
+class TestAccuracy(unittest.TestCase):
+    def test_load_truth_from_world(self):
+        from eyetoarm.transforms.accuracy import load_truth
+        t = {p.name: p for p in load_truth(ROOT / "simulation/worlds/sort_cell.sdf")}
+        self.assertEqual({k: v.spec for k, v in t.items()}, {"part_00": "BOLT_A", "part_01": "BOLT_B", "part_02": "NUT"})
+        np.testing.assert_allclose(t["part_01"].xy_m, (0.55 - 0.0154, -0.15), atol=1e-4)   # 머리 아래 원점 → 면적 중심
+        self.assertEqual(t["part_01"].theta_deg, 0.0)
+        self.assertIsNone(t["part_02"].theta_deg)
+
+    def test_match_and_summary(self):
+        from eyetoarm.transforms.accuracy import TruthPart, angle_error_deg, format_table, match, summarize
+        truth = [TruthPart("p0", "BOLT_B", (0.55, -0.15), 0.0)]
+        r = compute_work_result(to_px(bolt(0.046, 0.55, -0.15, 2.0)), CAM, T_W_C, SPECS)
+        far = dataclasses.replace(r, center_w_m=(0.10, 0.40))
+        rows = match([r, far], truth)
+        self.assertEqual([x["truth"] for x in rows], ["p0", None])
+        self.assertLess(rows[0]["dist_mm"], 25.0)
+        s = summarize(rows, truth)[0]
+        self.assertEqual((s["seen"], s["spec_ok_pct"]), (1, 100.0))
+        self.assertIn("| p0 | BOLT_B | 1 | 100 |", format_table([s]))
+        self.assertAlmostEqual(angle_error_deg(179.0, 1.0), 2.0)

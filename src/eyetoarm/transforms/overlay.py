@@ -156,6 +156,7 @@ def simple_part_contours(img: np.ndarray, cam: CameraProfile, T_W_C: np.ndarray,
     thr = max(float(np.median(vals)) + 40.0, 80.0)
     binary = ((gray > thr) & (mask > 0)).astype(np.uint8) * 255
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))   # 볼트 머리·몸통이 갈라지지 않게 (실습 5단계)
     found = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     contours = found[0] if len(found) == 2 else found[1]
 
