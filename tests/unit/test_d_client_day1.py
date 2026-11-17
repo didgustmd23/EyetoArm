@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "dashboard-client" / "src"))  # canonical D GUI; the old src/eyetoarm/gui was removed
 
 from eyetoarm.gui import diag  # noqa: E402
 from eyetoarm.gui.__main__ import main  # noqa: E402

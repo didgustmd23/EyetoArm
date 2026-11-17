@@ -12,10 +12,11 @@ import uuid
 from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(ROOT / "src"), str(ROOT / "robot_ws/src/robot_server_package")]
+sys.path[:0] = [str(ROOT / "dashboard-client" / "src"), str(ROOT / "robot_ws/src/robot_server_package")]
 from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
 from eyetoarm.gui.client import StatusLink
+from eyetoarm.tcp import protocol
 from eyetoarm.tcp.protocol import MoveTarget
 from robot_server_package.tcp_server import TcpServer
 from robot_server_package.command_log import CommandLog
@@ -44,6 +45,7 @@ class ActualC(unittest.TestCase):
         self.c_path.touch(exist_ok=False)
         self.ready = True
         self.hold = False
+        self.hold_s = 2   # fake executor waits this long for CANCEL before giving up
         self.executions = 0
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, name="day3-owned-C-loop")
@@ -66,7 +68,7 @@ class ActualC(unittest.TestCase):
                 return None
             await report("MOVING", goal_id=str(uuid.uuid4()), dispatch=dispatch)
             if self.hold:
-                await asyncio.wait_for(cancel.wait(), 2)
+                await asyncio.wait_for(cancel.wait(), self.hold_s)
                 await report("FAILED", stage="EXECUTION", code="CANCELLED")
             else:
                 await asyncio.sleep(0.03)
@@ -123,6 +125,12 @@ class ActualC(unittest.TestCase):
         sent = [row for row in audit if row["dir"] == "TX" and row.get("command_id") == command_id]
         self.assertTrue(any(base64.b64decode(row["raw_b64"]) == self.link.current_record.raw for row in sent))
         self.assertTrue(until(self.link.can_execute))
+        # Day7: the real C ACK on the original connection yields one local metric row; REACHED does not change it
+        latency, reason = self.link.current_record.ack_metric()
+        self.assertEqual((self.link.current_record.acceptance, reason), ("first_ack", ""))
+        metric = [row for row in audit if row["kind"] == "실행→ACK 지연"]
+        self.assertEqual([row["ack_latency_ms"] for row in metric], [latency])
+        self.assertTrue(0 <= latency < 3000)
 
     def test_cancel_updates_c_log_without_fake_stop_success(self):
         self.hold = True
@@ -143,6 +151,39 @@ class ActualC(unittest.TestCase):
         self.assertTrue(until(lambda: len(self.emissions) == 2))
         self.assertFalse(self.link.can_execute())
         self.assertEqual(self.emissions[-1]["not_ready_reasons"], ["SIM_PAUSED"])
+        # Day7 readiness lock: a not-ready C refuses the request locally; nothing reaches C
+        self.assertEqual(self.link.execute(self.target()), "")
+        self.assertFalse(any(row["dir"] == "TX" and row["kind"] == "MOVE" for row in self.link.log.rows()))
+        self.assertEqual(self.executions, 0)
+
+    def test_server_side_disconnect_reconnects_query_only_without_state_regression(self):
+        self.hold, self.hold_s = True, 10
+        states = []
+        self.link.command_changed.connect(lambda record: states.append(record.state))
+        command_id = self.link.execute(self.target())
+        self.assertTrue(until(lambda: self.link.current_record.state == "MOVING"))
+        def replies():   # exact JSONL audit, including repeated statuses hidden from the table
+            audit = [json.loads(line) for line in self.d_path.read_text(encoding="utf-8").splitlines()]
+            return sum(row["dir"] == "RX" and row.get("command_id") == command_id for row in audit)
+        before = replies()
+
+        async def drop_clients():   # C keeps running and keeps the command; only the D connection is cut
+            for session in list(self.server._sessions.values()):
+                session.writer.close()
+        asyncio.run_coroutine_threadsafe(drop_clients(), self.loop).result(timeout=3)
+        self.assertTrue(until(lambda: self.link.state != "connected"))
+        self.assertTrue(until(lambda: self.link.state == "connected"))
+        self.assertTrue(until(lambda: replies() > before))      # the new connection asked C about the same ID
+        record = self.link.current_record
+        self.assertEqual(record.state, "MOVING")
+        self.assertFalse(record.finished)                       # no invented REACHED/FAILED after the gap
+        moves = [row for row in self.link.log.rows() if row["dir"] == "TX" and row["kind"] == "MOVE"]
+        self.assertEqual(len(moves), 1)                          # reconnect queried, never re-sent MOVE
+        self.assertEqual(self.executions, 1)
+        self.assertTrue(self.link.cancel())                      # the same C command is still controllable
+        self.assertTrue(until(lambda: record.state == "FAILED"))
+        ranks = [protocol.STATE_RANK[state] for state in states if state]
+        self.assertEqual(ranks, sorted(ranks))                   # duplicate/old statuses never moved it back
 
 if __name__ == "__main__":
     unittest.main()

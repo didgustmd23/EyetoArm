@@ -7,6 +7,7 @@ import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+GUI_SRC = ROOT / "dashboard-client" / "src"   # canonical D GUI; old src/eyetoarm/gui removed
 
 
 class EntryPointTest(unittest.TestCase):
@@ -14,7 +15,7 @@ class EntryPointTest(unittest.TestCase):
         env = os.environ.copy()
         env.pop("PYTHONPATH", None)
         if module:
-            env["PYTHONPATH"] = str(ROOT / "src")
+            env["PYTHONPATH"] = str(GUI_SRC)
         return subprocess.run(
             [sys.executable, "-B", "-X", "utf8", *args], cwd=ROOT / "docs",
             env=env, capture_output=True, text=True, encoding="utf-8", timeout=15,
@@ -23,7 +24,7 @@ class EntryPointTest(unittest.TestCase):
     def test_direct_files_without_pythonpath_from_other_directory(self):
         for name in ("diag.py", "__main__.py"):
             with self.subTest(name=name):
-                result = self.run_cli([str(ROOT / "src/eyetoarm/gui" / name), "--env-only", "--json"])
+                result = self.run_cli([str(GUI_SRC / "eyetoarm/gui" / name), "--env-only", "--json"])
                 self.assertIn(result.returncode, (0, 4), result.stderr)
                 record = json.loads(result.stdout)
                 self.assertEqual(record["exit_code"], result.returncode)
@@ -33,7 +34,7 @@ class EntryPointTest(unittest.TestCase):
     def test_direct_files_share_help(self):
         for name in ("diag.py", "__main__.py"):
             with self.subTest(name=name):
-                result = self.run_cli([str(ROOT / "src/eyetoarm/gui" / name), "--help"])
+                result = self.run_cli([str(GUI_SRC / "eyetoarm/gui" / name), "--help"])
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("--env-only", result.stdout)
 
