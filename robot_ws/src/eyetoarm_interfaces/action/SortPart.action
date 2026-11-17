@@ -1,0 +1,36 @@
+# B -> C sort goal (/sort_part). Client: B, server: C. Fields: B collab request 7.2 / 0.1.
+# Units: position mm, orientation quaternion [x, y, z, w], time SIM_TIME ns. Frame: base_link (= world).
+
+# ---------- goal (sent by B) ----------
+string goal_id                   # same as ROS action goal UUID (C-3)
+string goal_kind                 # PICK_PLACE | PASS_THROUGH
+string sort_job_id               # issued by C at START
+int64 run_epoch                  # C run epoch
+string part_track_id             # A track id (empty if none)
+string part_class                # BOLT_A | BOLT_B | NUT
+string source_id
+int64 image_seq
+int64 capture_generation
+int64 generation
+int64 job_seq
+int64 capture_stamp_ns           # capture time
+string timestamp_base            # SIM_TIME
+string frame_id                  # base_link
+float64[3] observed_position_mm  # part position at capture time (C predicts pick-time position)
+GraspCandidate[] grasp_pose_candidates   # PICK_PLACE only, 2 candidates 180 deg apart (C chooses)
+float64 opening_width_mm         # PICK_PLACE only
+float64 approach_height_mm       # PICK_PLACE only
+float64 lift_height_mm           # PICK_PLACE only
+string place_bin                 # PICK_PLACE only: BOLT_A | BOLT_B
+float64[3] place_position_mm     # PICK_PLACE only
+float64[4] place_orientation_xyzw
+string calibration_id
+int64 valid_until_ns             # goal deadline (SIM_TIME). 0 = not set yet (C-9)
+---
+# ---------- result (returned by C) ----------
+string status                    # SUCCEEDED | FAILED | CANCELED | EXPIRED
+string reason                    # failure reason; passed bolts: MISSED
+int64 arrived_stamp_ns           # time placed in bin (SIM_TIME)
+---
+# ---------- feedback ----------
+string stage                     # ACCEPTED | PLANNING | EXECUTING | PLACING ...
