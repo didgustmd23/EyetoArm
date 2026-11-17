@@ -151,6 +151,64 @@ class DisplayModelTest(unittest.TestCase):
         self.assertIsNone(self.model.result)
         self.assertIsNone(self.model.matched_result())
 
+    def test_explicit_generation_transition_and_scope(self):
+        self.frame()
+        self.result(order=100)
+        args = dict(run_id="run", generation=2, order=1, detector_config_id="new")
+        for source, change in (("other", {}), ("link", {"run_id": "old"}),
+                               ("link", {"generation": True}), ("link", {"order": -1}),
+                               ("link", {"detector_config_id": ""})):
+            self.assertFalse(self.model.advance_generation(source, **dict(args, **change)))
+            self.assertIsNotNone(self.model.matched_result())
+        self.now = 2
+        self.assertTrue(self.model.advance_generation("link", **args))
+        self.assertIsNone(self.model.frame("link"))
+        self.assertIsNone(self.model.result)
+        frame = dict(source_id="link", image_seq=1, calibration_id="cal", run_id="run",
+                     capture_generation=1, detector_config_id="new", job_seq=2)
+        result = dict(frame, valid=True, center_w_mm=[1, 2])
+        self.assertTrue(self.model.ingest_frame("link", self.image, generation=2, **frame))
+        self.assertEqual(self.model.origins["link"]["received"], 0)
+        self.assertFalse(self.model.ingest_result(result, generation=2, order=1))
+        self.assertTrue(self.model.ingest_result(result, generation=2, order=2))
+        self.assertFalse(self.model.advance_generation("link", **dict(args, order=3)))
+        self.assertFalse(self.model.advance_generation("link", **dict(args, generation=1)))
+        self.assertEqual(self.model.matched_result()["center_w_mm"], [1, 2])
+        self.now = 4
+        self.assertIsNone(self.model.matched_result())
+        self.model.set_connected(False)
+        state = (dict(self.model.generations), dict(self.model.active_configs),
+                 dict(self.model.high_water), self.model.reason)
+        self.assertFalse(self.model.advance_generation("link", **dict(args, generation=3)))
+        self.assertEqual(state, (self.model.generations, self.model.active_configs,
+                                 self.model.high_water, self.model.reason))
+
+    def test_invalidation_removes_only_affected_annotated_frames(self):
+        args = dict(source_id="link", image_seq=1, calibration_id="cal", run_id="run",
+                    capture_generation=1, detector_config_id="config", job_seq=1, generation=1)
+        for variant in ("raw", "detect", "center"):
+            self.assertTrue(self.model.ingest_frame("link", self.image, variant=variant, **args))
+        newer = dict(args, image_seq=2, job_seq=2)
+        self.assertTrue(self.model.ingest_frame("link", self.image, variant="center", **newer))
+        self.assertTrue(self.model.invalidate("link", run_id="run", generation=1, order=1,
+                                              reason="old job", detector_config_id="config", job_seq=1))
+        self.assertIn(("link", "raw"), self.model.frames)
+        self.assertNotIn(("link", "detect"), self.model.frames)
+        self.assertIn(("link", "center"), self.model.frames)
+        self.assertFalse(self.model.ingest_frame("link", self.image, variant="detect", **args))
+        self.assertTrue(self.model.invalidate("link", run_id="run", generation=1, order=2,
+                                              reason="source error", detector_config_id="config"))
+        self.assertNotIn(("link", "center"), self.model.frames)
+        self.assertFalse(self.model.ingest_frame("link", self.image, variant="detect", **newer))
+        self.assertFalse(self.result(seq=2, order=3))
+        self.assertFalse(self.model.advance_generation("link", run_id="run", generation=1,
+                                                        order=4, detector_config_id="config"))
+        self.assertFalse(self.result(seq=2, order=4))
+        self.assertTrue(self.model.advance_generation("link", run_id="run", generation=2,
+                                                       order=1, detector_config_id="config"))
+        self.assertTrue(self.frame(seq=2, generation=2))
+        self.assertTrue(self.result(seq=2, generation=2, order=2))
+
     def test_same_job_cannot_replace_result_or_refresh_age(self):
         self.frame()
         self.result()

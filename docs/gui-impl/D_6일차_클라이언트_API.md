@@ -1,6 +1,6 @@
 # D 6일차 — A 시험 도구용 클라이언트 API
 
-2026-11-16 · 기준 `dbd2c0c`(이전 `fa56c70`) · 기존 TCP 1.1 API의 인계용 기준. 이 문서는 C 표시 프로토콜이나 A 환경 호환 승인이 아니다. API 변경 시 A에 변경 내용을 먼저 협의한다. Windows conda 환경과 A의 WSL 실행 환경은 별도다.
+2026-11-17 · 기준 `761c55d` + D 내부 표시 후속 변경(이전 `dbd2c0c`/`fa56c70`) · 기존 TCP 1.1 API의 인계용 기준. 이 문서는 C 표시 프로토콜이나 A 환경 호환 승인이 아니다. API 변경 시 A에 변경 내용을 먼저 협의한다. Windows conda 환경과 A의 WSL 실행 환경은 별도다.
 
 ## 바로 실행하는 준비 조회
 
@@ -79,15 +79,18 @@ B의 현재 `to_output_dict()`는 `center_w_mm`, `length_mm`, `width_mm`를 이�
 |---|---|
 | `begin_session(run_id, link_source_id)` | 공급자가 새 실행을 명시. D가 누락된 run을 생성하지 않음. 동일 실행의 재접속과 구분 |
 | `set_connected(bool)` | 단절 시 영상·현재 결과 제거. 같은 실행의 순서/무효화 기록은 보존 |
+| `advance_generation(source_id, run_id=..., generation=..., order=..., detector_config_id=...)` | 현재 연결·실행에서 이미 관측한 소스의 더 큰 처리 세대만 수락. 이전 영상·수치를 즉시 제거하되 새 세대 결과는 허용. 설정과 새 세대의 순서 경계를 기록. 같은/옛 세대·다른 run·미등록 source는 무변경 거부 |
 | `ingest_frame(channel, QImage, **envelope)` | channel은 link/gripper/fixed. link variant는 raw/detect/center. 공급자의 run/source/image_seq/capture_generation/generation/detector_config_id/job_seq/calibration_id를 보존하고 영상을 소유 복사 |
 | `ingest_result(dict, generation=..., order=...)` | D 내부 예제 사전의 정확한 식별자로 매칭. center_px는 제공될 때만, center_w_mm는 이미 mm. 수치/유효 flag 검사, 수락 시 복사 |
-| `invalidate(source_id, run_id=..., detector_config_id=..., generation=..., order=..., reason=..., job_seq=None)` | 같은 실행/소스의 적용 범위만 무효화. job이 있으면 해당 job까지 부활 금지. 프레임 없는 소스 오류는 job을 합성하지 않음 |
+| `invalidate(source_id, run_id=..., detector_config_id=..., generation=..., order=..., reason=..., job_seq=None)` | 같은 실행/소스의 적용 범위만 무효화. job이 있으면 해당 job까지 수치·detect/center 영상 부활 금지. 프레임 없는 소스 오류는 job을 합성하지 않으며 같은 세대의 결과·주석 영상을 차단. raw·다른 채널·영향받지 않은 최신 job은 보존 |
 | `set_mode(raw_or_detect_or_center)` | 모의 영상 종류 선택. C 송신/접수 확인 없음 |
 | `frame(channel)`, `matched_result()`, `has_matched_position()` | UI 표시용 조회. 마지막 것은 MOVE 허가가 아님. 반환값은 소비 모델 소유이므로 호출자가 수정하지 않음 |
 
 내부 모의 신선도 기본값은 로컬 원본 영상 수신 뒤 3초이며 C의 확정 TTL이 아니다. 동일 원본의 중복·재처리·종류 변경으로 수명을 늘리지 않는다. 새 run과 세대/무효화 순서는 호출자가 명시한다. 프레임 없는 무효화는 같은 소스의 새 처리 세대 또는 명시 새 세션 전까지 결과를 보수적으로 차단한다. 이 정책은 D 내부 시험 한계이며 실제 입력 복구 정책으로 상대에게 강제하지 않는다. 정식 adapter에는 생산 시각·전송 지연·재접속 재동기화 등 별도 합의가 필요하다.
 
-**지원하지 않는 대응(현재 모의 정책 한계):** 이 API는 A `CandidateInvalidationEvent`를 직접 받는 adapter가 아니다. 특히 `GENERATION_CHANGED`(프레임 없음)를 `invalidate(source, generation=새 세대, job_seq=None)`로 그대로 옮기면 안 된다. 현재 구현은 이 호출 뒤 같은 세대의 새 결과까지 차단하므로(다음 세대나 새 세션까지), 이전 세대를 정리하고 새 세대 결과를 허용해야 하는 세대 변경 의미와 다르다. 반대로 `MODEL_LOAD_FAILED` 같은 프레임 없는 오류도 새 세대 번호로 올 수 있으므로 세대 번호 크기로 둘을 추정하지 않으며 런타임도 그렇게 바꾸지 않았다. 실제 adapter는 사건 `kind`·`cause`와 A의 복구 조건을 구분해 매핑해야 하며, 그 규칙은 A·C 합의 항목이다. 실제 adapter는 없다.
+**세대 전환과 오류의 내부 구분(2026-11-17):** 명시적인 세대 전환은 `advance_generation`으로 시험한다. `order`는 공급자가 제공하는 소스·처리 세대 안의 순서이며, 전환을 수락한 뒤 결과의 order는 그 경계보다 커야 한다. 새 세대는 이전 세대의 높은 순번 때문에 거부하지 않으며 같은 세대 전환 재전달은 이후 정상 결과를 지우지 않는다. 원본 `(capture_generation, image_seq)`의 최초 수신 시각은 유지하므로 같은 원본의 세대 전환·재처리로 신선도를 연장하지 않는다.
+
+이 API는 A `CandidateInvalidationEvent`/`HandoffMessage`를 직접 받는 adapter가 아니다. `GENERATION_CHANGED`를 `invalidate(..., job_seq=None)`로 옮기면 새 세대까지 오류 차단하므로 사용하지 않는다. 반대로 `MODEL_LOAD_FAILED` 같은 프레임 없는 오류를 `advance_generation`만으로 처리하면 오류 차단이 누락된다. 세대 번호 크기로 사건 종류를 추정하지 않는다. 미등록 source의 전환·INPUT_STATUS/CLEAR/RUN_END와 재동기화 매핑, A의 적용된 범위·복구 조건, C의 전송 순번/선택 반영은 A·C 합의 후 adapter에서 검증해야 한다. 이번 변경은 D 내부 시험 연산을 분리한 것이며 실제 adapter와 C 전송 규격은 없다.
 
 Claude 재검토 보완: B 무효 결과의 좌표(계산 불가 시 `null` 원소, 판정 무효면 유한값 가능)는 정상적인 무효 입력으로 소비하여 이전 측정을 비우고 사유를 표시한다. 유효 결과의 수치 목록에는 null·NaN·무한대·bool을 허용하지 않는다. 내부 모형에서 같은 source/처리 generation의 detector_config_id는 고정하며, 설정 변경은 새 처리 generation으로 명시한다. 재접속이나 현재 결과 제거만으로 이 설정·순서 기록을 초기화하지 않는다. B 사전에는 전체 상관 필드가 없으므로 raw B 사전만 넣어 호환되었다고 판단하지 않는다.
 

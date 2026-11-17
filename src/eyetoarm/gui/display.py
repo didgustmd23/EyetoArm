@@ -91,6 +91,20 @@ class DisplayModel(QObject):
             self.reason = "새 세대 결과 대기"
         return True
 
+    def advance_generation(self, source_id, *, run_id, generation, order, detector_config_id):
+        """알려진 소스의 명시적 세대 전환만 수락한다. 소스 오류와 구분한다."""
+        if (not self.connected or not self.run_id or run_id != self.run_id or
+                not isinstance(source_id, str) or source_id not in self.generations or
+                type(generation) is not int or generation <= self.generations[source_id] or
+                type(order) is not int or order < 0 or
+                not isinstance(detector_config_id, str) or not detector_config_id):
+            return False
+        self._generation(source_id, generation)
+        self.active_configs[source_id] = detector_config_id
+        self.high_water[source_id] = order
+        self.changed.emit()
+        return True
+
     def ingest_frame(self, channel, image, *, source_id, image_seq, generation, calibration_id, run_id, capture_generation, detector_config_id, job_seq, variant="raw"):
         if not self.connected or channel not in ("link", "gripper", "fixed") or image is None or image.isNull():
             return False
@@ -103,6 +117,9 @@ class DisplayModel(QObject):
         if calibration_id is not None and (not isinstance(calibration_id, str) or not calibration_id):
             return False
         if channel == "link" and variant not in ("raw", "detect", "center"):
+            return False
+        if (channel == "link" and variant != "raw" and self.generations.get(source_id) == generation and
+                (source_id in self.blocked_sources or job_seq <= self.invalid_jobs.get(source_id, -1))):
             return False
         origin = self.origins.get(source_id)
         physical = (capture_generation, image_seq)
@@ -195,6 +212,9 @@ class DisplayModel(QObject):
             self.blocked_sources.add(source_id)
         else:
             self.invalid_jobs[source_id] = max(job_seq, self.invalid_jobs.get(source_id, -1))
+        self.frames = {key: frame for key, frame in self.frames.items()
+                       if not (key[0] == "link" and key[1] != "raw" and frame["source_id"] == source_id and
+                               (job_seq is None or frame["job_seq"] <= job_seq))}
         if self.result and self.result.get("source_id") == source_id and (job_seq is None or self.result["job_seq"] <= job_seq):
             self.result = None
         self.reason = str(reason) if reason else "무효화"

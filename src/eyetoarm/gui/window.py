@@ -354,14 +354,22 @@ class MainWindow(QMainWindow):
         stage_card = Card("공정 단계", "모의 · 실제 아님" if self.demo else "C 확인 전")
         stage_card.body.setSpacing(8)
         self.bolt_caption = label("볼트 · 단계 미확인", "Caption")
+        self.bolt_caption.setMinimumWidth(40)   # 긴 부품 ID가 카드를 넓히지 않게. 말줄임은 _fit_line
         stage_card.body.addWidget(self.bolt_caption)
         self.bolt_stages = StageStrip(["집기", "운반", "도착", "복귀"])
-        self.bolt_stages.setToolTip("이동 중 집기 → 운반 → 도착 확인 → 복귀. 정상 집기에서 벨트를 멈추는 뜻이 아닙니다.")
+        self.bolt_stages.setToolTip("종류별 가장 최근 부품 하나의 단계입니다. 각 단계는 C가 확인한 사건이 있을 때만 강조하며 순서를 강제하지 않습니다.\n"
+                                    "도착 확인과 팔 복귀는 별개입니다. 같은 부품의 도착 확인이 복귀 뒤에 와도 수량만 늘고 단계는 되돌아가지 않습니다.\n"
+                                    "정상 집기에서 벨트를 멈추는 뜻이 아닙니다.")
         stage_card.body.addWidget(self.bolt_stages)
         self.nut_caption = label("너트 · 단계 미확인", "Caption")
+        self.nut_caption.setMinimumWidth(40)
         stage_card.body.addWidget(self.nut_caption)
         self.nut_stages = StageStrip(["통과", "도착"])
         stage_card.body.addWidget(self.nut_stages)
+        # 전체 분류 상태(상단 「분류 상태」)·부품별 진행(이 카드)·수동 MOVE(TCP 1.1)는 서로 다른 근거다
+        self.stage_scope = label("모의 · 동기화 전" if self.demo else "분류 진행 계약 미승인 · 실제 C 미확인", "Caption", wrap=True)
+        self.stage_scope.setToolTip("부품별 진행의 출처·범위·세대·사건 경계. 전체 분류 상태는 상단 「분류 상태」, 수동 MOVE는 TCP 1.1 STATUS로 따로 봅니다.")
+        stage_card.body.addWidget(self.stage_scope)
         self.stage_note = label("모의 사건으로 확인된 단계만 강조합니다." if self.demo
                                 else "C가 확인한 단계만 강조합니다. 지금은 전부 미확인입니다.", "Caption", wrap=True)
         stage_card.body.addWidget(self.stage_note)
@@ -373,6 +381,8 @@ class MainWindow(QMainWindow):
             ("볼트 A 상자", NO_VALUE), ("볼트 B 상자", NO_VALUE), ("너트 상자", NO_VALUE), ("격리", NO_VALUE),
             ("오분류 / 미판정", NO_VALUE)])))
         self.count_values["EXCEPTION"].setToolTip("예외 도착: 오분류(WRONG_BIN) / 미판정(UNRESOLVED). 정상 상자 수량에는 포함하지 않습니다.")
+        self.count_note = label("도착 확인 사건만 셉니다. 팔 복귀와 별개입니다.", "Caption", wrap=True)
+        count_card.body.addWidget(self.count_note)
         count_card.body.addStretch(1)
 
         recent_card = Card("최근 TX/RX", self._live_tag)
@@ -691,11 +701,18 @@ class MainWindow(QMainWindow):
             current = tally.display[group]
             name = "볼트" if group == "bolt" else "너트"
             if show_stage and current is not None:
-                caption.setText(f"{name} · {current['part']} · {current['spec']} · 모의")
+                final = tally.finals.get(current["part"])   # 이 부품의 최종 범주만. 다른 부품의 도착으로 추정하지 않음
+                arrival = ("도착 미확인" if final is None else "도착 확인" if final in ("BOLT_A", "BOLT_B", "NUT") and final == current["spec"]
+                           else {"UNRESOLVED": "미판정 도착", "WRONG_BIN": "오분류 도착", "QUARANTINE": "격리"}.get(final, final))
+                outcome = current.get("outcome")   # 같은 부품의 실패·격리. 단계는 미확인으로 둔다
+                caption._full = f"{name} {current['part']} · {current['spec']} · " + (outcome.split(" · ")[0] if outcome else arrival)
+                caption.setToolTip(f"모의 사건 · {current['part']} · {current['spec']} · {outcome or arrival}")
                 strip.set_stage(current["stage"])
             else:
-                caption.setText(f"{name} · 단계 미확인" + (f" · 마지막 {current['part']}" if current else ""))
+                caption._full = f"{name} · 단계 미확인" + (f" · 마지막 {current['part']}" if current else "")
+                caption.setToolTip(caption._full)
                 strip.set_stage(None)
+            self._fit_line(caption)
         counts = tally.counts()
         for key, value in self.count_values.items():
             value.setText(f"{counts['WRONG_BIN']} / {counts['UNRESOLVED']}" if key == "EXCEPTION" else str(counts[key]))
@@ -713,6 +730,19 @@ class MainWindow(QMainWindow):
         holding = snapshot["holding"] if controller.connected and controller.synchronized and snapshot else "미확인"
         self.process_detail.setText(f"모의 공정 · 인식 {fields['recognition']} · 로봇 {fields['robot']} · 벨트 {fields['belt']}"
                                     f" · 그리퍼 {fields['gripper']} · 보유 {holding}\n{failure_text}")
+        # 운영 화면에도 같은 출처·상태·실패를 둔다(조작·설정 화면에만 있지 않게)
+        if not controller.connected:
+            scope = "모의 · 연결 끊김 · 단계 미확인"
+        elif not trusted or snapshot is None:
+            scope = "모의 · 동기화 전 · 단계 미확인"
+        elif snapshot["state"] == "RECOVERY_REQUIRED":
+            scope = "모의 · 복구 필요 · 단계 미확인"
+        else:
+            scope = f"모의 · 마지막 확인 단계 · 세대 {tally.epoch} · 경계 {tally.boundary}"
+        self.stage_scope.setText(scope)
+        self.stage_scope.setToolTip(f"모의 사건 출처 · 범위 {tally.scope} · 세대 {tally.epoch} · 스냅샷 경계 {tally.boundary}\n"
+                                    f"{self.process_detail.text()}\n"
+                                    "전체 분류 상태는 상단 「분류 상태」, 수동 MOVE는 TCP 1.1 STATUS로 따로 봅니다.")
 
     def _update_sort_controls(self):
         if self.sort_demo is None:
@@ -810,9 +840,18 @@ class MainWindow(QMainWindow):
         value.setText(value.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, width if width > 0 else 110))
         value.setToolTip(text)
 
+    @staticmethod
+    def _fit_line(value: QLabel) -> None:
+        """한 줄 라벨을 지금 폭에 맞춰 말줄임한다. 전체 문장은 value._full(툴팁에도 있음)."""
+        full = getattr(value, "_full", value.text())
+        width = value.width() if value.isVisible() else 0
+        value.setText(value.fontMetrics().elidedText(full, Qt.TextElideMode.ElideMiddle, width) if width > 0 else full)
+
     def _update_status(self) -> None:
         """250 ms 마다와 값 수신 때 부른다. 오래된 값은 현재값처럼 남기지 않는다."""
         link, view = self.link, self.view
+        for caption in (self.bolt_caption, self.nut_caption):   # 창 크기가 바뀌어도 부품 줄을 폭에 다시 맞춘다
+            self._fit_line(caption)
         self.source.setText("모의 데이터 · 실제 아님" if self.demo else
                             ("실제 C 서버" if link.state == "connected" else "C 서버 미연결"))
 
