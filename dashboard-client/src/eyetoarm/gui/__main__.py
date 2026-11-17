@@ -1,7 +1,7 @@
-"""D 1일차 진단 CLI.
+"""D 1일차 진단 CLI. 저장소 루트에서 실행한다(dashboard-client 폴더 안이면 PYTHONPATH=src).
 
-  PYTHONPATH=src python -m eyetoarm.gui --env-only
-  PYTHONPATH=src python -m eyetoarm.gui --host 127.0.0.1 --port 47090 --timeout 3 [--json]
+  PYTHONPATH=dashboard-client/src python -m eyetoarm.gui --env-only
+  PYTHONPATH=dashboard-client/src python -m eyetoarm.gui --host 127.0.0.1 --port 47090 --timeout 3 [--json]
 
 무ID GET_STATUS 한 줄만 보낸다. 동작 명령은 보내지 않는다.
 종료 코드: 0 유효 STATUS 수신(robot_ready 값과 무관, 출력의 [준비] 줄로 구분), 1 접속 실패,
