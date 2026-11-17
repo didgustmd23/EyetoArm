@@ -157,8 +157,8 @@ RViz 표시 이름은 `Link Camera`, `Gripper RGB`, `Gripper Depth`다.
 현재 확정값은 [A 상세설계 §6.2](../docs/design/A담당_비전_상세설계.md#62-고정-cctv-카메라-확정-설정)에 기록했다.
 설정 확정은 실제 로봇 이동 중 가림·화면 잘림이나 실측 15Hz 달성을 검증했다는 뜻은 아니다.
 
-사용자 요청에 따라 **이 카메라의 ROS 브리지·RViz 구독·자동 창 실행은 추가하지 않았다.**
-로봇이 움직여도 고정된 시점을 유지하며, 운영 검출·작업 좌표 계산에는 연결하지 않는다.
+현재 분류 launch는 `/overview_cam/image`를 ROS `sensor_msgs/msg/Image`로 브리지한다.
+이 카메라는 로봇이 움직여도 고정 시점을 유지하며, 운영 검출·작업 좌표 계산에는 연결하지 않는다.
 기존 `appearance_check_cam`은 외형 확인용으로 그대로 둔다.
 
 직접 확인하려면:
@@ -171,8 +171,8 @@ export GZ_PARTITION=eyetoarm_camera_preview
 ros2 launch scripts/sim_sort_cell.launch.py
 ```
 
-Gazebo 창의 `⋮` → **Image Display** → **`/overview_cam/image`**를 선택한다.
-월드·모델 XML과 시야 투영만 정적으로 검사했다. 실제 영상·팔 이동 중 가림·실측 Hz는 미확인이다.
+RViz에 Image 표시를 추가해 **`/overview_cam/image`**를 선택하거나 Gazebo 창의 `⋮` → **Image Display**에서 확인한다.
+브리지 추가 후 실제 영상 수신·팔 이동 중 가림·실측 Hz는 아직 확인하지 않았다.
 
 ## 외형·재질
 
