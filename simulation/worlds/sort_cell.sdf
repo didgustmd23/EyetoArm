@@ -50,9 +50,9 @@
     </include>
 
     <!-- 볼트 규격별 상자(로봇 작업 범위 안), 너트 상자(벨트 끝) -->
-    <include><uri>model://sort_bin_bolt_a</uri><name>bin_bolt_a</name><pose>0.12 0.45 0 0 0 0</pose></include>
-    <include><uri>model://sort_bin_bolt_b</uri><name>bin_bolt_b</name><pose>0.32 0.45 0 0 0 0</pose></include>
-    <include><uri>model://sort_bin_nut</uri><name>bin_nut</name><pose>0.55 0.76 0 0 0 1.5708</pose></include>
+    <include><uri>model://sort_bin_bolt_a</uri><name>bin_bolt_a</name><pose>0.72 -0.05 0 0 0 1.5708</pose></include>
+    <include><uri>model://sort_bin_bolt_b</uri><name>bin_bolt_b</name><pose>0.72 0.17 0 0 0 1.5708</pose></include>
+    <include><uri>model://sort_bin_nut</uri><name>bin_nut</name><pose>0.55 0.70 0 0 0 0</pose></include>
 
     <!-- 외형 확인용 부품(벨트 위). 볼트는 옆으로 눕힌 자세(축이 X) -->
     <include><uri>model://bolt_m6x12</uri><name>part_00</name><pose>0.55 -0.30 0.105 0 1.5708 0</pose></include>
