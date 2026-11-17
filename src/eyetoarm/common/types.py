@@ -6,12 +6,14 @@
 - 현재 쓰는 최소 자료형만 둔다. A 파이프라인 작업 1(계획 2026-11-15 r3)에서 초안 §3.1의
   `PixelBasis`·`Contour`, §3.3 `PlanarObservation`, §3.5 `CandidateInvalidationEvent`를 추가했다
   (계획 제안 단계, 영향 담당 확인 전). `WorkPlanarResult`(B 소유)·`PixelToSourceTransform`
-  (전달 방식 미결)은 아직 두지 않는다.
+  (전달 방식 미결)은 아직 두지 않는다. A-8(#157)에서 `PlanarObservation.axis_endpoints_px`(볼트 두 끝점)와
+  축 끝점 경로 유효 조건을 추가했다(B 요청·사용자 구현 지시, 다른 소비자 확인 전).
 - 담당별 확장(예: A 입력의 `source_ref`·`source_index`)은 각 모듈에서 이 클래스를 상속해 둔다.
 - 표준 라이브러리와 NumPy만 쓴다. Qt·ROS·OpenCV를 import하지 않는다.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import TypeAlias
@@ -91,6 +93,13 @@ class PixelBasis(str, Enum):
 # 기준 픽셀 좌표이며, 왜곡 보정 여부는 함께 담는 `PixelBasis`로 구분한다.
 Contour: TypeAlias = np.ndarray
 
+# 볼트 축 두 끝점(A-8, B 선택 2026-11-17): numpy shape (2, 2), float64. 행 0 = 머리 끝, 행 1 = 축 끝.
+# FramePacket 영상 전체 기준 픽셀(검출 ROI 오프셋·표시 축소를 복원한 값)이며 왜곡 보정 여부는 `PixelBasis`로 구분한다.
+AxisEndpoints: TypeAlias = np.ndarray
+
+# 축 끝점 경로의 관측면 예약어(A-8). 이 값은 끝점 경로에서만 쓰고 윤곽 경로에는 쓰지 않는다
+OBSERVED_FACE_AXIS = "axis"
+
 # `PlanarObservation.method` 허용 값(초안 §3.3)
 _OBSERVATION_METHODS = ("opencv", "ai")
 
@@ -119,14 +128,118 @@ def _owned_contour(points, name: str) -> Contour | None:
     return owned
 
 
+def _finite_coordinate(value) -> float:
+    """끝점 좌표 하나를 유한 float로 바꾼다. bool·문자열·복소수·None·변환 불가·비유한 값은 ValueError."""
+    # bool은 정수의 하위형이라 숫자로 승격되기 전에 먼저 거른다
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"axis_endpoints_px coordinate must not be bool: {value!r}")
+
+    if not isinstance(value, (int, float, np.integer, np.floating)):
+        raise ValueError(f"axis_endpoints_px coordinate must be a real number: {value!r}")
+
+    # 거대 정수는 float 변환에서 OverflowError가 난다 → ValueError로 통일
+    try:
+        number = float(value)
+    except (OverflowError, ValueError) as error:
+        raise ValueError(f"axis_endpoints_px coordinate is not representable as float64: {value!r}") from error
+
+    if not math.isfinite(number):
+        raise ValueError(f"axis_endpoints_px coordinate must be finite: {value!r}")
+
+    return number
+
+
+def _owned_endpoints(points) -> AxisEndpoints | None:
+    """축 끝점을 소유 복사본(float64 (2, 2), 읽기 전용)으로 만든다. None은 그대로, 형식·값이 다르면 ValueError.
+
+    NumPy 배열이면 dtype이 정수·실수일 때만 받는다(object·문자열·복소수·bool 배열은 값과 무관하게 거부).
+    Python 목록은 원소 단위로 검사해 bool이 섞인 목록이 숫자로 자동 승격되거나 거대 정수가 OverflowError로 새지 않게 한다.
+    float64로 바꾼 뒤 두 점이 같으면(길이 0) 거부한다. 픽셀 범위는 프레임 크기를 아는 A 코어가 검사한다.
+    """
+    if points is None:
+        return None
+
+    # NumPy 배열은 변환 전에 dtype부터 본다: 정수·실수만 허용(object·문자열·복소수·bool 등 거부, #157 I1 F1)
+    if isinstance(points, np.ndarray) and points.dtype.kind not in ("i", "u", "f"):
+        raise ValueError(f"axis_endpoints_px array dtype must be integer or float: {points.dtype}")
+
+    # 원래 원소를 보존한 object 배열로 형태를 먼저 본다(숫자 승격 전)
+    try:
+        cells = np.array(points, dtype=object)
+    except (ValueError, TypeError) as error:
+        raise ValueError(f"axis_endpoints_px must be a (2, 2) array: {error}") from error
+
+    if cells.shape != (2, 2):
+        raise ValueError(f"axis_endpoints_px must have shape (2, 2): {cells.shape}")
+
+    owned = np.array([[_finite_coordinate(cells[r, c]) for c in range(2)] for r in range(2)], dtype=np.float64)
+
+    if np.array_equal(owned[0], owned[1]):
+        raise ValueError("axis_endpoints_px head and tip must differ")
+
+    owned.setflags(write=False)
+
+    return owned
+
+
+def owned_axis_endpoints(points) -> AxisEndpoints | None:
+    """`PlanarObservation`과 같은 규칙으로 축 끝점을 검사해 소유 복사본을 돌려준다(None은 None, 어긋나면 ValueError).
+
+    A 코어가 생성 뒤 변조된 끝점을 다시 확인할 때 공통형 규칙을 따로 만들지 않고 이 함수를 쓴다(#157 I2 r1).
+    """
+    return _owned_endpoints(points)
+
+
+def check_axis_path(*, observed_face, calc_contour, axis_endpoints_px, class_name, valid) -> AxisEndpoints | None:
+    """축 끝점 경로(A-8) 조합 규칙을 검사하고 끝점 소유 복사본을 돌려준다. 어긋나면 ValueError.
+
+    `PlanarObservation` 생성자와 A 코어(생성 뒤 변조 재확인)가 같은 규칙을 쓰도록 한 곳에 둔다(#157 I2 r2).
+    - 끝점 형식·유한성·두 점 구분은 `owned_axis_endpoints`.
+    - 끝점이 있으면 관측면 `axis`, 클래스 None 또는 볼트 이름.
+    - 관측면 `axis`이면 `calc_contour`는 None, 유효(`valid is True`)이면 끝점 필수. 무효 axis의 끝점 None은 허용.
+    """
+    endpoints = _owned_endpoints(axis_endpoints_px)
+    is_axis = isinstance(observed_face, str) and observed_face == OBSERVED_FACE_AXIS
+
+    if endpoints is not None:
+        if not is_axis:
+            raise ValueError(f"axis_endpoints_px requires observed_face={OBSERVED_FACE_AXIS!r}")
+
+        if not _is_bolt_class(class_name):
+            raise ValueError(f"axis_endpoints_px is only for bolts: class_name={class_name!r}")
+
+    if is_axis and calc_contour is not None:
+        raise ValueError("axis observation must not carry calc_contour")
+
+    if is_axis and valid is True and endpoints is None:
+        raise ValueError("valid axis observation requires axis_endpoints_px")
+
+    return endpoints
+
+
+def _is_bolt_class(class_name) -> bool:
+    """축 끝점 경로에 쓸 수 있는 클래스인지: None(OpenCV·미지정) 또는 볼트 이름(소문자화 후 `bolt`로 시작)."""
+    if class_name is None:
+        return True
+
+    return isinstance(class_name, str) and class_name.strip().lower().startswith("bolt")
+
+
 @dataclass(frozen=True)
 class PlanarObservation:
-    """A 평면 관측 하나(초안 §3.3, A 상세설계 §5.2). 모든 필드에 기본값이 없다.
+    """A 평면 관측 하나(초안 §3.3, A 상세설계 §5.2). 기본값은 A-8 `axis_endpoints_px`(마지막, None) 하나뿐이다.
 
-    - 유효 조건: `valid=True`이면 `observed_face`·`calc_contour`·`selected_index`가 모두 None이
-      아니어야 한다. 하나라도 없으면 ValueError. 관측면이 미확정이면 `valid=False`·
-      `calc_contour=None`으로 둔다. `observed_face` 기본값을 `top_face`로 두지 않는다.
-    - 관측면이 None이면 `calc_contour`도 None이어야 한다(무효 관측 포함, 초안 §3.3 유효 조건·§7 예시 1-b).
+    - 유효 조건(윤곽 경로): `valid=True`이고 관측면이 `axis`가 아니면 `observed_face`·`calc_contour`·
+      `selected_index`가 모두 None이 아니어야 한다. 하나라도 없으면 ValueError. 관측면이 미확정이면
+      `valid=False`·`calc_contour=None`으로 둔다. `observed_face` 기본값을 `top_face`로 두지 않는다.
+      관측면 문자열은 자유 문자열로 받지만, 이는 기존 호출 호환일 뿐 계산용 윤곽이 실제 그 면인지에 대한
+      생산자 책임을 대신하지 않으며 전체 실루엣의 계산용 승격 허가가 아니다.
+    - 유효 조건(축 끝점 경로, A-8): `observed_face="axis"`이면 `calc_contour=None`이고, 유효이면
+      `axis_endpoints_px`·`selected_index`가 있어야 한다. `axis_endpoints_px`가 있으면 관측면은 `axis`,
+      `calc_contour`는 None, `class_name`은 None 또는 볼트 이름이어야 한다(너트·기타는 ValueError).
+      끝점은 float64 (2, 2) 독립·읽기 전용 복사본이며 행 0 = 머리 끝, 행 1 = 축 끝이다. 순서의 정확성과
+      픽셀 범위는 이 생성자가 검사하지 않는다(생산자 책임 / A 코어의 raw 범위 검사).
+    - 관측면이 None이면 `calc_contour`·`axis_endpoints_px`도 None이어야 한다(무효 관측 포함, 초안 §3.3 유효 조건·§7 예시 1-b).
     - 조건부 필드는 그 조건 밖에서 None이다: 유효 관측의 `reason`은 None, `method="opencv"`이면
       `class_name`·`confidence`·`model_id`는 None. 어기면 ValueError.
     - 무효 관측은 값이 없는 필드를 None으로 둔다. 단 `reason`은 무효 시 필수이며 비어 있지 않은
@@ -161,9 +274,10 @@ class PlanarObservation:
     class_name: str | None
     confidence: float | None
     model_id: str | None
+    axis_endpoints_px: AxisEndpoints | None = None
 
     def __post_init__(self) -> None:
-        """열거 값 정규화·유효 조건 검사·윤곽 소유 복사를 한다. 어긋나면 ValueError."""
+        """열거 값 정규화·유효 조건 검사·윤곽·끝점 소유 복사를 한다. 어긋나면 ValueError."""
         put = lambda k, v: object.__setattr__(self, k, v)  # noqa: E731
 
         # 열거·플래그 값 검사
@@ -183,9 +297,16 @@ class PlanarObservation:
         if self.observed_face is None and self.calc_contour is not None:
             raise ValueError("calc_contour requires observed_face")
 
-        # 유효 조건(초안 §3.3)
+        # 축 끝점 경로(A-8): 끝점 ⇔ 관측면 axis, 계산용 윤곽과 함께 쓰지 않음, 볼트(또는 미지정)만
+        put("axis_endpoints_px", check_axis_path(
+            observed_face=self.observed_face, calc_contour=self.calc_contour,
+            axis_endpoints_px=self.axis_endpoints_px, class_name=self.class_name, valid=self.valid))
+        is_axis = isinstance(self.observed_face, str) and self.observed_face == OBSERVED_FACE_AXIS
+
+        # 유효 조건(초안 §3.3, 축 경로는 calc_contour 대신 axis_endpoints_px)
         if self.valid:
-            missing = [k for k in ("observed_face", "calc_contour", "selected_index")
+            geometry = "axis_endpoints_px" if is_axis else "calc_contour"
+            missing = [k for k in ("observed_face", geometry, "selected_index")
                        if getattr(self, k) is None]
 
             if missing:
