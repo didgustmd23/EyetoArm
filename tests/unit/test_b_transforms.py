@@ -6,6 +6,7 @@
   (래스터화 없음). 그래서 B 계산은 수치 오차 수준(1e-6 m)으로 정답과 같아야 한다.
 - 설정 파일은 저장소의 config/robot/frames.yaml, config/calibration/part_specs.json을 쓴다.
 """
+import dataclasses
 import math
 import unittest
 from pathlib import Path
@@ -229,7 +230,7 @@ class TestObservationToGoal(unittest.TestCase):
         self.assertAlmostEqual(yaws[1] - yaws[0], 180.0, delta=0.2)
         self.assertAlmostEqual(goal["grasp_candidates"][0]["closing_yaw_deg"] % 180, 120.0, delta=0.2)  # 볼트 30° + 90°
         self.assertEqual(goal["place"]["bin"], "BOLT_B")
-        self.assertEqual(goal["place"]["position_mm"], [320.0, 450.0, 180.0])
+        self.assertEqual(goal["place"]["position_mm"], [720.0, 170.0, 180.0])
         self.assertEqual(goal["gripper_opening_mm"], 20.0)
         self.assertEqual(goal["capture_stamp"], {"base": "SIM_TIME", "ns": 94_264_000_000})
 
@@ -334,3 +335,99 @@ class TestAConnection(unittest.TestCase):
             self.assertEqual(normalize_class(name), want, name)
         r = compute_work_result(to_px(bolt(0.046, 0.55, 0, 10)), CAM, T_W_C, SPECS, class_name="BOLT_A")
         self.assertEqual(r.spec, "BOLT_B")    # A 이름이 BOLT_A여도 길이로 다시 판정
+
+
+# ---------- D 번호표·픽셀 중심, C 대기열 넘기기 ----------
+class TestHandoffAndKeys(unittest.TestCase):
+    def setUp(self):
+        self.stage = BStage.from_config(ROOT, CAM, StaticTfLookup(T_W_C))
+
+    def test_result_dict_keys_and_center_px(self):
+        px = to_px(bolt(0.046, 0.55, -0.05, 30)).astype(np.float32)
+        out = self.stage.process(make_obs(px), make_frame())
+        d = out.result_dict
+        for k in ("run_id", "capture_generation", "generation", "job_seq", "detector_config_id",
+                  "timestamp_ms", "timestamp_base", "capture_stamp_ns"):
+            self.assertEqual(d[k], out.goal[k], k)
+        self.assertEqual((d["run_id"], d["detector_config_id"], d["capture_stamp_ns"]), ("r1", "det", 94_264_000_000))
+        want = to_px(np.array([out.result.center_w_m]))[0]     # B 중심을 다시 사진에 찍은 자리
+        np.testing.assert_allclose(d["center_px"], want, atol=0.06)
+        self.assertLess(abs(d["center_px"][0] - 578.4) + abs(d["center_px"][1] - 371.2), 15)   # 대략 그 볼트 위
+
+    def test_center_px_none_without_tf(self):
+        stage = BStage.from_config(ROOT, CAM, lambda f: None)
+        out = stage.process(make_obs(to_px(bolt(0.046, 0.55, 0, 0)).astype(np.float32)), make_frame())
+        self.assertIsNone(out.result_dict["center_px"])
+
+    def test_make_c_handoff_threadsafe_and_drop_oldest(self):
+        import asyncio
+        import threading
+        from eyetoarm.transforms.b_stage import make_c_handoff
+
+        loop = asyncio.new_event_loop()
+        queue = loop.run_until_complete(self._make_queue(2))
+        handoff = make_c_handoff(loop, queue)
+        self.stage.on_output = handoff
+
+        bolt_px = to_px(bolt(0.046, 0.55, 0, 0)).astype(np.float32)
+
+        def worker():   # A 검출 스레드 흉내
+            for seq in range(1, 4):
+                self.stage.consume(make_frame(seq), make_obs(bolt_px, seq=seq))
+            self.stage.consume(make_frame(9), make_obs(None, valid=False, seq=9))   # SKIP → 안 넣음
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+        loop.run_until_complete(asyncio.sleep(0.01))
+        got = [queue.get_nowait()["image_seq"] for _ in range(queue.qsize())]
+        loop.close()
+        self.assertEqual(got, [2, 3])                       # 크기 2 → 가장 오래된 1번을 버림
+        self.assertEqual(handoff.stats, {"sent": 3, "skipped": 1, "dropped_old": 1})
+
+    @staticmethod
+    async def _make_queue(n):
+        import asyncio
+        return asyncio.Queue(maxsize=n)
+
+
+# ---------- B 결정 2026-11-17: 집는 구간·높이·같은 부품 한 번만 ----------
+class TestBDecisions(unittest.TestCase):
+    def setUp(self):
+        self.stage = BStage.from_config(ROOT, CAM, StaticTfLookup(T_W_C))
+
+    def test_heights_in_goal(self):
+        out = self.stage.process(make_obs(to_px(bolt(0.046, 0.55, -0.05, 20)).astype(np.float32)), make_frame())
+        self.assertEqual((out.goal["kind"], out.goal["approach_height_mm"], out.goal["lift_height_mm"]),
+                         ("PICK_PLACE", 205.0, 250.0))
+
+    def test_out_of_reach_skips(self):
+        from eyetoarm.transforms.grasp import build_sort_goal
+        r = compute_work_result(to_px(bolt(0.046, 0.55, -0.05, 20)), CAM, T_W_C, SPECS, class_name="bolt")
+        r = dataclasses.replace(r, center_w_m=(0.55, 0.50))          # 집는 구간(+0.45) 밖
+        g = build_sort_goal(r, source_id="link_cam", stamp_ns=1, frames=self.stage.frames, specs=SPECS)
+        self.assertEqual((g["kind"], g["reason"]), ("SKIP", "OUT_OF_REACH"))
+
+    def test_same_track_sent_once_until_release(self):
+        g1 = {"kind": "PICK_PLACE", "part_track_id": 7, "goal_id": "a"}
+        g2 = {"kind": "PICK_PLACE", "part_track_id": 7, "goal_id": "b"}
+        self.stage._dedupe(g1)
+        self.stage._dedupe(g2)
+        self.assertEqual((g1["kind"], g2["kind"], g2["reason"]), ("PICK_PLACE", "SKIP", "ALREADY_SENT"))
+        self.stage.release(7)
+        g3 = {"kind": "PICK_PLACE", "part_track_id": 7, "goal_id": "c"}
+        self.stage._dedupe(g3)
+        self.assertEqual(g3["kind"], "PICK_PLACE")
+
+    def test_new_epoch_clears_memory(self):
+        self.stage._dedupe({"kind": "PICK_PLACE", "part_track_id": 9, "goal_id": "a"})
+        self.stage.run_epoch = 2
+        g = {"kind": "PICK_PLACE", "part_track_id": 9, "goal_id": "b"}
+        self.stage._dedupe(g)
+        self.assertEqual(g["kind"], "PICK_PLACE")
+
+    def test_no_track_id_not_filtered(self):
+        for gid in ("a", "b"):
+            g = {"kind": "PICK_PLACE", "part_track_id": None, "goal_id": gid}
+            self.stage._dedupe(g)
+            self.assertEqual(g["kind"], "PICK_PLACE")

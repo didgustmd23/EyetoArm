@@ -1,6 +1,6 @@
 """B 분류 목표 — B 결과 하나를 C에게 넘길 목표(집기·놓기)로 바꾼다.
 
-근거: B 협업 요청 §4 C 회신(IK-1·IK-2·§4.2·§4.3·CB-4·CB-5), §6 DB-02 결정(2026-11-16).
+근거: B 협업 요청 §0 확정 표(C 회신), §6 DB-02 결정(2026-11-16).
 
 결정 요약
 1. 단위: 위치 mm, 방향 쿼터니언 [x, y, z, w].
@@ -42,7 +42,7 @@ def build_sort_goal(r: WorkPlanarResult, *, source_id: str, stamp_ns: int | None
     `kind`
     - `PICK_PLACE`: 볼트(BOLT_A/B). `grasp_candidates` 2개 + `place`.
     - `PASS_THROUGH`: 너트. 잡지 않음.
-    - `SKIP`: 무효·판정 불가. 잡지 않음 (`reason` 포함).
+    - `SKIP`: 무효·판정 불가·집는 구간 밖(`OUT_OF_REACH`). 잡지 않음 (`reason` 포함).
     """
     mm = lambda v: round(v * 1000.0, 1)
     goal = {
@@ -73,6 +73,12 @@ def build_sort_goal(r: WorkPlanarResult, *, source_id: str, stamp_ns: int | None
         goal["reason"] = "THETA_INVALID"
         return goal
 
+    zone = frames.get("pick_zone")
+
+    if zone and not (zone["y_min"] <= r.center_w_m[1] <= zone["y_max"]):
+        goal["reason"] = "OUT_OF_REACH"          # 집는 구간 밖 (B 결정 2026-11-17)
+        return goal
+
     closing = _wrap_deg(r.theta_deg + 90.0)
     candidates = []
 
@@ -88,6 +94,8 @@ def build_sort_goal(r: WorkPlanarResult, *, source_id: str, stamp_ns: int | None
         "kind": "PICK_PLACE",
         "grasp_candidates": candidates,
         "gripper_opening_mm": mm(spec["grasp_opening"]),
+        "approach_height_mm": mm(frames.get("heights", {}).get("approach", r.plane_z_m + 0.10)),
+        "lift_height_mm": mm(frames.get("heights", {}).get("lift", 0.25)),
         "place": {
             "bin": spec["bin"],
             "position_mm": [mm(bin_["center"][0]), mm(bin_["center"][1]), mm(place_z)],

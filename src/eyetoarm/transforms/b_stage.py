@@ -8,7 +8,7 @@ A는 관측 하나마다 이렇게 부른다 (A 협업 요청 B-07, B 상세설�
 A 실행기(`vision/pipeline_runner.run`)의 B 자리 `b_consumer(frame, obs)`에는 순서가 같은 `stage.consume`을 넣는다:
 
     run(..., b_consumer=stage.consume)      # A 검사(b_gate)를 통과한 유효 관측만 들어온다
-    stage.on_output = c_queue.put           # (선택) B 출력을 C 쪽으로 넘길 곳. 없으면 stage.last 에만 남긴다
+    stage.on_output = make_c_handoff(loop, sort_goal_queue)   # (선택) B 목표를 C asyncio 대기열로. 없으면 stage.last 에만 남긴다
     out.result        # WorkPlanarResult (m, B 내부)
     out.result_dict   # C·D 표시용 결과 (mm·deg, DB-01)
     out.goal          # C 목표 사전 (PICK_PLACE / PASS_THROUGH / SKIP, DB-02)
@@ -35,7 +35,7 @@ import yaml
 from eyetoarm.calibration.profile import CameraProfile
 from eyetoarm.transforms.grasp import build_sort_goal
 from eyetoarm.transforms.overlay import draw_guides, draw_results
-from eyetoarm.transforms.planar_transform import make_T, quat_to_rot
+from eyetoarm.transforms.planar_transform import make_T, quat_to_rot, w_to_image
 from eyetoarm.transforms.work_result import (
     UNRESOLVED, WorkPlanarResult, from_observation, load_specs, to_output_dict,
 )
@@ -111,6 +111,8 @@ class BStage:
         self.run_epoch: int | None = None      # C 실행 세대 (C 상세설계 §16.5.2)
         self.on_output: Callable[[BOutput], None] | None = None   # B 출력 받을 곳 (C 대기열 등)
         self.last: BOutput | None = None
+        self._pending: dict[object, str] = {}   # part_track_id → 보낸 goal_id (결과 받을 때까지 다시 안 보냄)
+        self._pending_epoch: int | None = None
 
     @classmethod
     def from_config(cls, root: str | Path, camera: CameraProfile, tf_lookup: TfLookup) -> "BStage":
@@ -134,19 +136,53 @@ class BStage:
 
         goal = build_sort_goal(result, source_id=frame.source_id, stamp_ns=frame.ros_stamp_ns,
                                frames=self.frames, specs=self.specs)
-        goal.update({                                   # C 상세설계 「goal 필드 (안)」의 연결 키
-            "goal_id": str(uuid.uuid4()),
-            "sort_job_id": self.sort_job_id,
-            "run_epoch": self.run_epoch,
-            "run_id": obs.run_id,
-            "capture_generation": obs.capture_generation,
-            "generation": obs.generation,
-            "job_seq": obs.job_seq,
-            "timestamp_ms": frame.timestamp_ms,
-            "timestamp_base": str(getattr(frame.timestamp_base, "value", frame.timestamp_base)),
-        })
+        keys = correlation_keys(obs, frame)              # A 관측 → B → C·D 연결 키 (CB-05, D DB-01)
+        goal.update(keys)
+        goal.update({"goal_id": str(uuid.uuid4()), "sort_job_id": self.sort_job_id, "run_epoch": self.run_epoch})
 
-        return BOutput(result, to_output_dict(result, frame.source_id), goal, T_W_C)
+        self._dedupe(goal)
+
+        result_dict = to_output_dict(result, frame.source_id)
+        result_dict.update(keys)
+        result_dict["center_px"] = self._center_px(result, T_W_C)
+
+        return BOutput(result, result_dict, goal, T_W_C)
+
+    def _dedupe(self, goal: dict) -> None:
+        """같은 부품(`part_track_id`)은 결과를 받을 때까지 한 번만 PICK_PLACE로 보낸다 (B 결정 2026-11-17).
+
+        `part_track_id`가 없으면(A-6 미정) 거르지 않는다. 영업 회차(`run_epoch`)가 바뀌면 기억을 비운다.
+        """
+        if self.run_epoch != self._pending_epoch:
+            self._pending.clear()
+            self._pending_epoch = self.run_epoch
+
+        track = goal.get("part_track_id")
+
+        if goal.get("kind") != "PICK_PLACE" or track is None:
+            return
+
+        if track in self._pending:
+            goal["kind"] = "SKIP"
+            goal["reason"] = "ALREADY_SENT"
+            return
+
+        self._pending[track] = goal["goal_id"]
+
+    def release(self, part_track_id) -> None:
+        """C 결과(성공·실패·만료·MISSED)를 받으면 부른다. 그 부품을 다시 보낼 수 있게 된다."""
+        self._pending.pop(part_track_id, None)
+
+    def _center_px(self, result: WorkPlanarResult, T_W_C: np.ndarray | None) -> list[float] | None:
+        """작업 좌표 중심 → 원본 사진 픽셀 [u, v] (D 표시용). 계산 못 하면 None."""
+        x, y = result.center_w_m
+
+        if T_W_C is None or not (np.isfinite(x) and np.isfinite(y)):
+            return None
+
+        uv = w_to_image(np.array([[x, y, result.plane_z_m]]), self.camera.K, self.camera.dist, T_W_C)[0]
+
+        return [round(float(uv[0]), 1), round(float(uv[1]), 1)] if np.isfinite(uv).all() else None
 
     def consume(self, frame, obs) -> BOutput:
         """A 실행기 `b_consumer(frame, obs)` 자리용. `process`를 부르고 결과를 `last`·`on_output`으로 넘긴다."""
@@ -186,6 +222,60 @@ class BStage:
             contour_w_m=np.zeros((0, 2)), valid=False, reason=reason, reason_owner=owner,
             calibration_id=self.camera.calibration_id, camera_frame=self.camera.frame_id, compute_ms=0.0,
             part_track_id=getattr(obs, "part_track_id", None), image_seq=obs.image_seq)
+
+
+def correlation_keys(obs, frame) -> dict:
+    """같은 사진·같은 세대인지 확인하는 번호표. C 목표와 D 표시 사전에 똑같이 붙인다."""
+    return {
+        "run_id": obs.run_id,
+        "capture_generation": obs.capture_generation,
+        "generation": obs.generation,
+        "job_seq": obs.job_seq,
+        "detector_config_id": getattr(obs, "detector_config_id", None),
+        "timestamp_ms": frame.timestamp_ms,
+        "timestamp_base": str(getattr(frame.timestamp_base, "value", frame.timestamp_base)),
+        "capture_stamp_ns": frame.ros_stamp_ns,
+    }
+
+
+SEND_KINDS = ("PICK_PLACE", "PASS_THROUGH")
+
+
+def make_c_handoff(loop, queue, kinds: tuple[str, ...] = SEND_KINDS) -> Callable[[BOutput], None]:
+    """B 출력 → C asyncio 대기열(`sort_goal_queue`)로 넘기는 함수를 만든다 (B→C 제안 1).
+
+        stage.on_output = make_c_handoff(loop, sort_goal_queue)
+
+    - A 검출 스레드에서 불려도 안전하게 `loop.call_soon_threadsafe`로 C 루프 안에서 넣는다.
+    - `kinds`에 없는 목표(`SKIP`)는 넣지 않는다.
+    - 대기열이 꽉 차면 가장 오래된 목표를 버리고 새 목표를 넣는다(벨트가 계속 움직이므로 새 것이 중요).
+    - 넘긴 수·버린 수는 돌려준 함수의 `stats`에 남는다.
+    """
+    import asyncio
+
+    stats = {"sent": 0, "skipped": 0, "dropped_old": 0}
+
+    def _put(goal: dict) -> None:
+        if queue.full():
+            try:
+                queue.get_nowait()
+                stats["dropped_old"] += 1
+            except asyncio.QueueEmpty:
+                pass
+
+        queue.put_nowait(goal)
+        stats["sent"] += 1
+
+    def handoff(out: BOutput) -> None:
+        if out.goal.get("kind") not in kinds:
+            stats["skipped"] += 1
+            return
+
+        loop.call_soon_threadsafe(_put, out.goal)
+
+    handoff.stats = stats  # type: ignore[attr-defined]
+
+    return handoff
 
 
 def goal_to_json(goal: dict) -> str:

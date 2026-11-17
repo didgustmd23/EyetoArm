@@ -682,7 +682,7 @@ B의 책임: 기준 자세 보정, 의도 판정(유지 시간·히스테리시�
 
 ## 16. 2026-11-16 확정 변경과 구현 (v1.6)
 
-앞 절과 다르면 이 절이 우선합니다. 근거: B 협업 요청 §4 C 회신, §6 DB-01·DB-02 B 답신, 시뮬레이션 실습 결과(2026-11-15~16).
+앞 절과 다르면 이 절이 우선합니다. 근거: B 협업 요청 §0 확정 표(C 회신), §6 DB-01·DB-02 B 답신, 시뮬레이션 실습 결과(2026-11-15~16).
 
 ### 16.1 바뀐 전제
 
@@ -727,12 +727,23 @@ B의 책임: 기준 자세 보정, 의도 판정(유지 시간·히스테리시�
 | `src/eyetoarm/transforms/work_result.py` | `from_observation()`: A `PlanarObservation` + `FramePacket` → `WorkPlanarResult`, `to_output_dict()`: mm 출력 |
 | `src/eyetoarm/transforms/grasp.py` | `build_sort_goal()`: B 결과 → C 목표 사전 |
 | `src/eyetoarm/transforms/overlay.py` | 중심점 주석 영상 그리기 |
-| `src/eyetoarm/transforms/b_stage.py` | **A가 부를 B 입구** `BStage.process(관측, 프레임)`: 촬영 시각 TF(`RosTfLookup`) → 판정 → C 목표(+`goal_id`·세대·시각 연결 키), `render_center()`로 center 영상 |
+| `src/eyetoarm/transforms/b_stage.py` | **A가 부를 B 입구** `BStage.process(관측, 프레임)`·`consume(frame, obs)`: 촬영 시각 TF(`RosTfLookup`) → 판정 → C 목표·D 표시 사전. 두 사전에 같은 연결 키(`correlation_keys`: `run_id`·`capture_generation`·`generation`·`job_seq`·`detector_config_id`·촬영 시각)를 붙이고, 표시 사전에는 `center_px`(원본 사진 픽셀 중심)도 넣음. `make_c_handoff(loop, queue)`로 C asyncio 대기열에 스레드 안전하게 넘김(SKIP 제외, 가득 차면 가장 오래된 것 버림). `render_center()`로 center 영상 |
 | `scripts/b_live_view.py` | 시뮬레이션 링크 카메라에 B 좌표·판정을 겹쳐 보기, `--publish`로 `/b/center_overlay/image` |
 | `scripts/b_demo_synthetic.py` | ROS 없이 합성 영상으로 B 계산 확인 |
-| `tests/unit/test_b_transforms.py` | 렌즈 값·투영 왕복·판정·A 관측→C 목표·B 입구·A 실행기 연결·YOLO 클래스 이름 33개 |
+| `tests/unit/test_b_transforms.py` | 렌즈 값·투영 왕복·판정·A 관측→C 목표·B 입구·A 실행기 연결·YOLO 클래스 이름·연결 키·center_px·C 대기열 넘기기·집는 구간·높이·같은 부품 41개 |
 
 A 실행기 연결(`b_consumer=stage.consume`)과 연결 전 확인 사항은 [B 협업 요청 §8](B담당_협업_요청_초안.md#8-연결-전-확인-main-코드-대조-2026-11-16), B→C 액션 필드 제안은 [B 협업 요청 §7](B담당_협업_요청_초안.md#7-c에게-액션-정의-제안-b--c)에 있습니다.
+
+### 16.4.1 B 결정 (2026-11-17)
+
+B 몫이라 B가 정한 값입니다. 자세한 표는 [B 협업 요청 §0.1](B담당_협업_요청_초안.md).
+
+| 항목 | 값 | 코드 |
+|---|---|---|
+| 집는 구간 | 벨트 y −0.45 ~ +0.45 m, 밖이면 `SKIP OUT_OF_REACH` | `frames.yaml` `pick_zone`, `grasp.build_sort_goal()` |
+| 높이 | 집기 0.105, 다가가기 0.205, 들어올리기 0.250, 놓기 0.180 m → 목표에 `approach_height_mm`·`lift_height_mm` | `frames.yaml` `heights` |
+| 상자 위치 | BOLT_A (0.72, −0.05)·BOLT_B (0.72, 0.17) 90° 돌림, NUT (0.55, 0.70) | `frames.yaml` `bins`, `sort_cell.sdf` |
+| 같은 부품 | 같은 `part_track_id`는 결과 전까지 한 번만(`SKIP ALREADY_SENT`), `run_epoch`가 바뀌면 초기화 | `BStage._dedupe()`·`release()` |
 
 ### 16.5 남은 일
 
