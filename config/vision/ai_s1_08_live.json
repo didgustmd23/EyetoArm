@@ -2,7 +2,7 @@
  "format_version": 1,
  "method": "ai",
  "model_family": "yolov8n-seg",
- "weights_path": "outputs/training/s1_clean_hsvv06_r1/S1-08_yolov8n-seg/weights/best.pt",
+ "weights_path": "models/vision/s1_08/best.pt",
  "weights_sha256": "99be54c285cd05a70ab70b22de676a6ab443cbaa8fd633aecc1dc54c421bc972",
  "class_map": {
   "0": "bolt",

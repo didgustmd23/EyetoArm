@@ -1,0 +1,38 @@
+{
+  "experiment": "S1-08",
+  "model_family": "yolov8n-seg",
+  "task": "instance_segmentation",
+  "weights": "best.pt",
+  "weights_size_bytes": 7041268,
+  "weights_sha256": "99be54c285cd05a70ab70b22de676a6ab443cbaa8fd633aecc1dc54c421bc972",
+  "class_map": {
+    "0": "bolt",
+    "1": "nut"
+  },
+  "runtime_config": "config/vision/ai_s1_08_live.json",
+  "training": {
+    "initial_weights": "official yolov8n-seg.pt",
+    "data": "bolt_nut_clean_train_r1",
+    "train_images": 1420,
+    "val_images": 162,
+    "test_images": 161,
+    "imgsz": 640,
+    "epochs": 50,
+    "batch": 16,
+    "seed": 0,
+    "hsv_v": 0.6
+  },
+  "original_tested_environment": {
+    "torch": "2.11.0+cu128",
+    "torchvision": "0.26.0+cu128",
+    "ultralytics": "8.4.211",
+    "numpy": "1.26.4",
+    "opencv": "4.6.0 (apt)"
+  },
+  "new_environment_note": "requirements.txt uses pip OpenCV 4.11.0.86; dependency dry-run verified, new-environment runtime not yet verified.",
+  "limits": [
+    "Display-only observations: valid=False, calc_contour=None.",
+    "Duplicate detections can fragment experimental tracking IDs.",
+    "No B/C operational integration or robot execution validation implied."
+  ]
+}

@@ -79,6 +79,10 @@ flowchart LR
 
 ## 개발 환경
 
+A 담당 Python 의존성은 새 가상환경에서 `pip install -r requirements.txt`로 설치합니다. ROS·Gazebo·드라이버 선행조건과 설치·확인 절차는 [A 개발환경 설치 안내](docs/setup/A_개발환경_설치.md)를 따릅니다. 새 환경은 pip OpenCV를 사용하며 기존 `.venv`는 유지합니다.
+
+현재 선택한 [S1-08 모델 가중치·실행 안내](models/vision/s1_08/README.md)는 저장소에 포함합니다. 학습 데이터와 전체 학습 출력은 포함하지 않습니다.
+
 | 구분 | 구성 |
 |---|---|
 | 호스트 | Windows 11(D 운영 GUI), WSL2 Ubuntu 24.04 LTS(A·B·C·ROS·Gazebo, Gazebo 창은 WSLg) |
