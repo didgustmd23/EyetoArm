@@ -1,9 +1,14 @@
 """D 운영 GUI 창: TCP 1.1 + 소켓 없는 4일차 분류 대역.
 
 실행 (Windows, conda 환경 eyetoarm, 저장소 루트에서):
-  set PYTHONPATH=src
-  python -m eyetoarm.gui.window            실제 C 서버(127.0.0.1:47090) + 화면에 떠 있는 Gazebo 창
-  python -m eyetoarm.gui.window --view camera  Gazebo 창 대신 카메라 중계(127.0.0.1:47091, gz_view_relay.py 필요)
+  set PYTHONPATH=dashboard-client/src
+  python -m eyetoarm.gui.window --host <C PC 숫자 IP>
+                                           실제 C 서버(명령 47090) + C 3채널 원본 영상(기본 view relay: 같은 IP 의
+                                           47092, 시제품 ETV1, C display_relay 필요. 다르면 --view-host/--view-port).
+  python -m eyetoarm.gui.window --view window  영상 대신 화면에 떠 있는 Gazebo 창(같은 PC 일 때만)
+  python -m eyetoarm.gui.window --view camera  D 임시 단일 카메라 중계(127.0.0.1:47091, gz_view_relay.py 필요)
+                                           링크 raw/detect/center 는 D 화면 표시 선택이다(C 송출 전환 아님).
+                                           C 는 지금 raw 만 보내므로 detect·center 는 수신 대기로 보이고, 측정값은 — 이다
   python -m eyetoarm.gui.window --demo     모의 분류 조작·상태 확인 (아무 것도 보내지 않음)
   python -m eyetoarm.gui.window --no-motion  모션 줄이기 상태로 시작
   python -m eyetoarm.gui.window --theme light  라이트 테마로 시작 (좌측 아래 「다크 / 라이트」로 실행 중 전환)
@@ -16,10 +21,11 @@
 │ 상태띠 유효STATUS │ 최근 준비 응답 수신 여부(실제)│ C · TCP 1.1 확정         │
 │ 상태띠 로봇 준비  │ robot_ready · 사유(실제)      │ C · TCP 1.1 확정         │
 │ 상태띠 분류 상태  │ 실제 모드 — / 모의 내부 상태   │ C · 부록 A 미승인        │
-│ 상태띠 표시 연결  │ Gazebo 화면 수신 상태(실제)   │ D 임시 경로(정식은 C·부록 B 미승인)│
-│ 메인 디스플레이   │ Gazebo 창 실제 화면(기본)     │ D 임시 경로 · gz_window.py│
-│                   │ 또는 카메라 중계(--view camera)│ D 임시 경로 · gz_view.py │
-│ 보조 영상 2칸     │ 실제 자리 / D 모의 영상       │ C 표시 연결 · 미결       │
+│ 상태띠 표시 연결  │ 3채널 각각의 신선도(relay)    │ C 시제품 ETV1(계약 미승인)│
+│ 메인·보조 3칸     │ 탑뷰·그리퍼·링크 raw(기본 relay)│ C display_relay · 47092  │
+│                   │ 또는 Gazebo 창(--view window)  │ D 임시 경로 · gz_window.py│
+│                   │ 또는 단일 중계(--view camera)  │ D 임시 경로 · gz_view.py │
+│ 링크 detect/center│ D 표시 선택 · 지금은 수신 대기 │ C 미송출 · 결과 미결     │
 │ 측정·보정 상세    │ 실제 — / D 모의 값            │ A·B 결과 → C 중계 · 미결 │
 │ 공정 단계 · 수량  │ 실제 미확인 · — / 모의 사건 집계│ C 도착 확인 · 미결       │
 │ START/STOP/RECOVER│ 실제 비활성 / 모의에서만 조작  │ C · 부록 A 미승인        │
@@ -46,20 +52,23 @@ if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from PySide6.QtCore import QIODevice, QSaveFile, QSettings, Qt, QTimer
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QMainWindow, QScrollArea, QStackedWidget,
     QVBoxLayout, QWidget,
 )
 
 from eyetoarm.gui import motion, theme
+from eyetoarm.gui.client import ACK_METRIC_BOUNDARY
 from eyetoarm.gui.gz_view_relay import DEFAULT_PORT as VIEW_PORT
+from eyetoarm.gui.relay_view import DEFAULT_PORT as RELAY_PORT
 from eyetoarm.gui.widgets import Card, DisplayStage, NavRail, RingProgress, StageStrip, StatusChip, TrafficTable, label, pill
 from eyetoarm.tcp.protocol import MoveTarget
 
 PAGES = ["조작·설정", "운영 대시보드", "평가·기록"]
 NOT_APPROVED = "TCP 명세 부록 A(분류 명령 개정 제안)가 C 승인 전입니다. 승인 전에는 실제 서버로 보내지 않습니다."
 NO_VALUE = "—"
+CHANNEL_NAMES = {"fixed": "탑뷰", "gripper": "그리퍼", "link": "링크"}
 
 
 class MainWindow(QMainWindow):
@@ -67,9 +76,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.link, self.view, self.demo = link, view, demo
         self.display = None
-        if demo:
+        # 3채널 표시 모델: 모의 영상(--demo) 또는 C 3채널 중계(--view relay, RelayViewReceiver)
+        self.relay = not demo and getattr(view, "is_relay", False) is True
+        if demo or self.relay:
             from eyetoarm.gui.display import DisplayModel
             self.display = DisplayModel(self)
+        self.mode_buttons: list = []
         self.sort_demo = self.tally = self.supplier = None
         self._sort_logged = None
         if demo:
@@ -149,7 +161,8 @@ class MainWindow(QMainWindow):
         if self.display is not None:
             self.view.display_session.connect(self.display.begin_session)
             self.view.display_frame.connect(self._on_display_frame)
-            self.view.display_result.connect(lambda result, generation, order: self.display.ingest_result(result, generation=generation, order=order))
+            if hasattr(self.view, "display_result"):   # C 중계는 결과를 보내지 않는다. 결과를 지어내지 않는다
+                self.view.display_result.connect(lambda result, generation, order: self.display.ingest_result(result, generation=generation, order=order))
             self.display.changed.connect(self._update_display)
             self.view.state_changed.connect(lambda state: self.display.set_connected(state == "connected"))
         if self.sort_demo is not None:
@@ -214,38 +227,37 @@ class MainWindow(QMainWindow):
         grid.setSpacing(14)
 
         self.setup_display_slot = QVBoxLayout()   # 이 화면이 보일 때 메인 디스플레이가 여기로 온다
-        display_card = Card("영상", "모의 · 실제 아님" if self.demo else "D 임시 경로")
+        display_card = Card("영상", "모의 · 실제 아님" if self.demo else "C 3채널 중계 시제품" if self.relay else "D 임시 경로")
         display_card.body.addLayout(self.setup_display_slot, 1)
         channel = QHBoxLayout()
         channel.addWidget(label("링크 채널", "Caption"))
-        for mode, name in (("raw", "raw 원본"), ("detect", "detect 검출"), ("center", "center 중심점")):
-            button = pill(name, tooltip="D 내부 모의 영상 선택" if self.demo else "C 표시 연결 형식 미결")
-            button.setEnabled(self.demo)
-            if self.demo:
-                button.clicked.connect(lambda _checked=False, m=mode: self.display.set_mode(m))
-            channel.addWidget(button)
+        self._add_mode_buttons(channel)
         channel.addStretch(1)
         display_card.body.addLayout(channel)
         grid.addWidget(display_card, 0, 0, 2, 2)
 
         link_card = Card("연결", "client.json 읽기 전용")
-        self._rows(link_card, [
+        source_value = self._rows(link_card, [
             ("명령 TCP (C 서버)", f"{self.link.host}:{self.link.port}"),
             ("준비 조회 주기", f"{self.link.config['readiness_poll_ms']} ms"),
             ("STATUS 유효 한도", f"{self.link.config['status_watchdog_ms']} ms"),
             ("재접속 간격", f"{self.link.config['reconnect_ms']} ms"),
             ("Gazebo 화면 원본", self.view.title),
-        ])
+        ])[-1]
+        # 긴 중계 주소(제목)가 카드를 넓히지 않게 줄임표로 맞춘다. 전체 문장은 툴팁에 둔다(_fit_line)
+        self._fit_labels = [self._elidable(source_value, self.view.title)]
         grid.addWidget(link_card, 0, 2)
 
         command_card = Card("모의 분류 조작" if self.demo else "명령 계약 상태", "실제 전송 없음" if self.demo else "D ↔ C")
         if not self.demo:
-            self._rows(command_card, [
+            rows = [
                 ("GET_STATUS (준비 조회)", "사용 중 · TCP 1.1"),
                 ("MOVE · CANCEL", "수동 확정 목표 · TCP 1.1"),
                 ("START · STOP · RECOVER", "부록 A 미승인 · 미전송"),
-                ("링크 채널 선택", "부록 B 미승인 · 미전송"),
-            ])
+                ("링크 채널 선택", "D 표시 선택 · C 요청 없음" if self.relay else "부록 B 미승인 · 미전송"),
+            ]
+            for value, (_name, text) in zip(self._rows(command_card, rows), rows):
+                self._fit_labels.append(self._elidable(value, text))   # 1180 폭에서도 칸을 넓히지 않게
         grid.addWidget(command_card, 1, 2)
         if self.demo:
             self.sort_detail = label("모의 분류 상태 대기", "Caption", wrap=True)
@@ -337,8 +349,18 @@ class MainWindow(QMainWindow):
         tools = QHBoxLayout()
         self.detail_button = pill("측정·보정 상세", checkable=True, tooltip="탑뷰 화면 위에 상세 팝업을 펼칩니다.")
         self.detail_button.toggled.connect(self.stage.popup.toggle)
+        # 팝업이 열려 있을 때만 켠다. 닫혀 있으면 Escape 는 입력칸 등 다른 위젯이 그대로 받는다
+        self.close_popup_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self.close_popup_shortcut.setEnabled(False)
+        self.close_popup_shortcut.activated.connect(self._close_detail_popup)
+        self.detail_button.toggled.connect(self.close_popup_shortcut.setEnabled)
         tools.addWidget(self.detail_button)
-        tools.addWidget(label(f"탑뷰 원본: {self.view.title}. 검출 주석이 없는 화면입니다.", "Caption"))
+        if self.relay:   # 링크가 큰 칸이든 보조 칸이든 운영 화면에서도 표시 종류를 고른다
+            tools.addWidget(label("링크 표시", "Caption"))
+            self._add_mode_buttons(tools)
+        view_caption = label(f"탑뷰 원본: {self.view.title}. 검출 주석이 없는 화면입니다.", "Caption")
+        self._fit_labels.append(self._elidable(view_caption, view_caption.text()))
+        tools.addWidget(view_caption, 1)
         tools.addStretch(1)
         holder_layout.addLayout(tools)
         holder_layout.addLayout(self.operate_display_slot, 1)
@@ -420,6 +442,9 @@ class MainWindow(QMainWindow):
             tools.addWidget(button)
         filters[0].setChecked(True)
         tools.addStretch(1)
+        log_card.body.addLayout(tools)
+        tools = QHBoxLayout()   # 동작 버튼은 둘째 줄. 한 줄이면 1180 폭에서 필터 버튼 글자가 잘린다
+        tools.addStretch(1)
         clear = pill("화면 비우기", tooltip="화면 표만 비웁니다. 세션 JSONL 파일과 모의 수량 집계는 유지합니다.")
         self.clear_records_button = clear
         clear.clicked.connect(lambda: self.traffic_full.setRowCount(0))
@@ -445,7 +470,13 @@ class MainWindow(QMainWindow):
         side = QVBoxLayout()
         side.setSpacing(14)
         metric_card = Card("평가", "측정 전")
-        self._rows(metric_card, [("사용자 실행 → ACK 지연", NO_VALUE), ("명령 성공률", NO_VALUE), ("위치 오차", NO_VALUE)])
+        self.ack_metric_value = self._rows(metric_card, [("사용자 실행 → ACK 지연", NO_VALUE), ("명령 성공률", NO_VALUE),
+                                                         ("위치 오차", NO_VALUE)])[0]
+        self.ack_metric_note = label("모의: 실제 ACK 없음 · 측정 안 함" if self.demo else "명령 없음", "Caption", wrap=True)
+        tip = "모의 분류는 TCP 를 쓰지 않아 측정하지 않습니다." if self.demo else ACK_METRIC_BOUNDARY
+        self.ack_metric_value.setToolTip(tip)
+        self.ack_metric_note.setToolTip(tip)
+        metric_card.body.addWidget(self.ack_metric_note)
         metric_card.body.addWidget(label("정답·관측이 없는 지표는 계산하지 않고 —로 둡니다.", "Caption", wrap=True))
         side.addWidget(metric_card)
         error_card = Card("명령·오류 상세", "TCP 1.1")
@@ -507,7 +538,37 @@ class MainWindow(QMainWindow):
                 f"code={record.code or '—'} / 시도={record.attempts}\n{record.detail or ''}")
         self.command_label.setText(text)
         self.error_detail.setText(text)
+        latency, reason = record.ack_metric()
+        self.ack_metric_value.setText(NO_VALUE if latency is None else f"{latency} ms")
+        self.ack_metric_value.setObjectName("Dim" if latency is None else "CardTitle")
+        self.ack_metric_value.style().polish(self.ack_metric_value)
+        self.ack_metric_note.setText(f"{record.command_id[:8]} · {reason or '같은 연결 첫 송신의 첫 ACK'}")
         self._update_command_controls()
+
+    def _add_mode_buttons(self, row) -> None:
+        """링크 raw/detect/center 표시 선택. 모의와 C 중계에서만 켠다. C 에 요청을 보내지 않는다."""
+        for mode, name in (("raw", "raw 원본"), ("detect", "detect 검출"), ("center", "center 중심점")):
+            tip = ("D 내부 모의 영상 선택" if self.demo else
+                   "D 화면의 표시 선택입니다. C 송출을 바꾸지 않으며 해당 영상이 오기 전에는 수신 대기로 보입니다."
+                   if self.relay else "C 표시 연결 형식 미결")
+            button = pill(name, tooltip=tip, checkable=True)   # 눌린 상태가 지금 고른 표시 종류다
+            button.setEnabled(self.display is not None)
+            button.setChecked(self.display is not None and self.display.mode == mode)
+            button._mode = mode
+            if self.display is not None:
+                button.clicked.connect(lambda _checked=False, m=mode: self._select_link_mode(m))
+            row.addWidget(button)
+            self.mode_buttons.append(button)
+
+    def _select_link_mode(self, mode: str) -> None:
+        self.display.set_mode(mode)   # D 화면 표시만 바뀐다. C 에 보내는 요청은 없다
+        for button in self.mode_buttons:   # 조작·설정과 운영 화면의 선택을 같게 맞춘다
+            button.setChecked(button._mode == mode)
+
+    def _close_detail_popup(self) -> None:
+        if self.detail_button.isChecked():
+            self.detail_button.setChecked(False)
+            self.detail_button.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
     def _on_log_error(self, text: str) -> None:
         self.log_notice.setText(f"로그 저장 오류: {text}" if text else "")
@@ -797,15 +858,20 @@ class MainWindow(QMainWindow):
     def _update_display(self):
         if self.display is None:
             return
+        tag = "C 중계 시제품" if self.relay else "D 모의"
         for channel, view in (("fixed", self.stage.main), ("gripper", self.stage.gripper), ("link", self.stage.link)):
             frame = self.display.frame(channel)
+            variant = self.display.mode if channel == "link" else "raw"
             if self.display.fresh(frame):
                 if getattr(view, "_display_item", None) is not frame:
                     view.show_frame(frame["image"])
                     view._display_item = frame
-                view.set_footer(f"D 모의 · {frame['source_id']} · 프레임 {frame['image_seq']} · 보정 {frame['calibration_id'] or NO_VALUE}")
+                view.set_footer(f"{tag} · {frame['source_id']} {variant} · 프레임 {frame['image_seq']} · "
+                                f"보정 {frame['calibration_id'] or NO_VALUE}")
+            elif self.relay and frame is not None and getattr(view, "_display_item", None) is frame:
+                view.set_stale(int(max(0.0, self.display.clock() - frame["received"]) * 1000))   # 마지막 모습은 노후로 표시
             else:
-                view.set_placeholder("empty", "D 모의 영상 미수신 또는 노후")
+                view.set_placeholder(*self._display_wait(channel, variant))
                 view._display_item = None
         result = self.display.matched_result()
         values = self.stage.popup.values
@@ -817,7 +883,8 @@ class MainWindow(QMainWindow):
             "theta": show(result.get("theta_deg")) if result and result.get("theta_valid") else NO_VALUE,
             "calibration": show(result.get("calibration_id")) if result else NO_VALUE,
             "frame": f"{result['source_id']} · {result['image_seq']}" if result else NO_VALUE,
-            "detail": f"D 모의 · {show(result.get('spec'))}" if result else self.display.reason,
+            "detail": (f"D 모의 · {show(result.get('spec'))}" if result else
+                       "C 시제품은 영상만 보냄 · 측정 결과 없음" if self.relay else self.display.reason),
         }
         for key, text in contents.items():
             self._set_elided(values[key], text)
@@ -827,6 +894,38 @@ class MainWindow(QMainWindow):
                   contents["calibration"], contents["detail"])
         for output, text in zip(self.input_values, inputs):
             self._set_elided(output, text)
+
+    def _display_wait(self, channel: str, variant: str) -> tuple[str, str]:
+        """3채널 칸의 빈 화면 사유. 다른 종류 영상으로 대신 채우지 않는다."""
+        if not self.relay:
+            return "empty", "D 모의 영상 미수신 또는 노후"
+        if self.view.state != "connected":
+            return "empty", "C 영상 중계 연결 안 됨"
+        if channel == "link" and variant != "raw":
+            return "waiting", f"링크 {variant} 표시 선택 · 수신 대기. C 중계는 지금 raw 만 보냅니다(raw 로 대신 보이지 않음)"
+        return "waiting", f"{CHANNEL_NAMES[channel]} 새 프레임 수신 대기 또는 노후"
+
+    def _relay_status(self) -> None:
+        """표시 연결 칩: TCP 연결만으로 정상 표시하지 않는다. 세 칸 각각의 신선한 프레임으로 판단한다."""
+        self._update_display()
+        errors = self.view.error_summary()   # 손상된 스트림이 카메라 없음처럼 보이지 않게 한다
+        note = " · 수신 오류 있음" if errors else ""
+        missing = [CHANNEL_NAMES[channel] for channel in ("fixed", "gripper", "link")
+                   if not self.display.fresh(self.display.frame(channel))]
+        if self.view.state != "connected":
+            self.chip_view.set_state("idle" if self.view.state == "disconnected" else "warn",
+                                     ("C 영상 중계 없음" if self.view.state == "disconnected" else "접속 중") + note)
+        elif not missing:
+            self.chip_view.set_state("ok", f"3채널 수신 · 링크 {self.display.mode}{note}")
+        else:
+            self.chip_view.set_state("warn" if len(missing) < 3 else "fail",
+                                     f"연결됨 · 대기/노후: {', '.join(missing)}{note}")
+        lines = [f"표시 연결: {self.chip_view._text}", f"C 영상 중계 {self.view.host}:{self.view.port}"]
+        if errors:
+            lines.append(errors)
+        if self.view.socket_error:
+            lines.append(f"마지막 연결 오류: {self.view.socket_error}")
+        self.chip_view.setToolTip("\n".join(lines))   # 모든 상태에서 갱신한다(끊김·접속 중 포함)
 
     @staticmethod
     def _set_elided(value: QLabel, text: str) -> None:
@@ -841,6 +940,14 @@ class MainWindow(QMainWindow):
         value.setToolTip(text)
 
     @staticmethod
+    def _elidable(value: QLabel, full: str) -> QLabel:
+        """한 줄 라벨이 레이아웃 최소 폭을 늘리지 않게 한다. 표시는 _fit_line 이 폭에 맞춰 줄인다."""
+        value._full = full
+        value.setToolTip(full)
+        value.setMinimumWidth(40)
+        return value
+
+    @staticmethod
     def _fit_line(value: QLabel) -> None:
         """한 줄 라벨을 지금 폭에 맞춰 말줄임한다. 전체 문장은 value._full(툴팁에도 있음)."""
         full = getattr(value, "_full", value.text())
@@ -850,7 +957,7 @@ class MainWindow(QMainWindow):
     def _update_status(self) -> None:
         """250 ms 마다와 값 수신 때 부른다. 오래된 값은 현재값처럼 남기지 않는다."""
         link, view = self.link, self.view
-        for caption in (self.bolt_caption, self.nut_caption):   # 창 크기가 바뀌어도 부품 줄을 폭에 다시 맞춘다
+        for caption in (self.bolt_caption, self.nut_caption, *self._fit_labels):   # 창 크기가 바뀌어도 폭에 다시 맞춘다
             self._fit_line(caption)
         self.source.setText("모의 데이터 · 실제 아님" if self.demo else
                             ("실제 C 서버" if link.state == "connected" else "C 서버 미연결"))
@@ -878,6 +985,9 @@ class MainWindow(QMainWindow):
         if self.demo:
             self._update_display()
             self.chip_view.set_state("ok" if self.view.state == "connected" and not self.view.is_stale() else "fail", "D 모의 화면")
+            return
+        if self.relay:
+            self._relay_status()
             return
 
         # 표시 연결 · 메인 디스플레이 [D 임시 경로]
@@ -924,11 +1034,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m eyetoarm.gui.window", description="D 운영 GUI (TCP 1.1 · 모의 분류)")
     parser.add_argument("--host", default=None, help="C 서버 숫자 IP (기본: config/gui/client.json)")
     parser.add_argument("--port", type=int, default=None)
-    parser.add_argument("--view", choices=("window", "camera"), default="window",
-                        help="메인 디스플레이 원본. window(기본): 화면에 떠 있는 Gazebo 창을 그대로. "
+    parser.add_argument("--view", choices=("relay", "window", "camera"), default="relay",
+                        help="메인 디스플레이 원본. relay(기본): C display_relay 의 3채널 원본 영상(시제품 ETV1, "
+                             "측정 결과 없음). window: 화면에 떠 있는 Gazebo 창을 그대로. "
                              "camera: Gazebo 카메라 영상 중계(2 Hz, WSL 에서 브리지와 gz_view_relay.py 필요)")
-    parser.add_argument("--view-host", default="127.0.0.1", help="--view camera 일 때 중계 주소")
-    parser.add_argument("--view-port", type=int, default=VIEW_PORT)
+    parser.add_argument("--view-host", default=None,
+                        help="중계 숫자 IP. 생략하면 relay 는 명령 서버 주소(--host 또는 client.json), camera 는 127.0.0.1")
+    parser.add_argument("--view-port", type=int, default=None,
+                        help=f"중계 포트 (기본: camera {VIEW_PORT}, relay {RELAY_PORT})")
     parser.add_argument("--demo", action="store_true", help="모의 분류 조작·상태·화면 확인. 소켓을 열지 않음")
     parser.add_argument("--no-motion", action="store_true", help="모션 줄이기 상태로 시작")
     parser.add_argument("--theme", choices=tuple(theme.PALETTES), default=None,
@@ -943,6 +1056,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.stable_count < 1 or args.stable_ms < 0:
         parser.error("stable-count는 1 이상, stable-ms는 0 이상이어야 합니다")
+    if not args.demo and args.view != "window":   # 창·소켓을 만들기 전에 중계 주소를 검사한다
+        import ipaddress
+        try:
+            if args.view_host is not None:
+                ipaddress.ip_address(args.view_host)
+        except ValueError:
+            parser.error(f"--view-host 는 숫자 IP 여야 합니다: {args.view_host!r}")
+        if args.view_port is not None and not 1 <= args.view_port <= 65535:
+            parser.error(f"--view-port 범위 밖: {args.view_port}")
 
     app = QApplication(sys.argv[:1])
     theme.apply(args.theme or str(settings().value("theme", "dark")))
@@ -962,9 +1084,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.view == "window":
             from eyetoarm.gui.gz_window import GzWindowCapture   # Win32 호출을 쓰므로 Windows 에서만 불러온다
             view = GzWindowCapture()
-        else:
+        elif args.view == "camera":
             from eyetoarm.gui.gz_view import GzViewReceiver
-            view = GzViewReceiver(args.view_host, args.view_port)
+            view = GzViewReceiver(args.view_host or "127.0.0.1", args.view_port or VIEW_PORT)
+        else:
+            from eyetoarm.gui.relay_view import RelayViewReceiver
+            # C 영상 중계는 보통 명령 서버와 같은 C PC 에서 돈다. 따로 주면 그 주소를 쓴다
+            view = RelayViewReceiver(args.view_host or link.host, args.view_port or RELAY_PORT)
     window = MainWindow(link, view, demo=args.demo)
     window.show()
     if args.page != 1:

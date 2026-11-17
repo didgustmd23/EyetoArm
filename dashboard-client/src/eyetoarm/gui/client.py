@@ -14,12 +14,10 @@ from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QTcpSocket
 
 from eyetoarm.gui.diag import safe_text
 from eyetoarm.gui.records import SessionLog
-from eyetoarm import gui as _package
 from eyetoarm.tcp import protocol
 
-# 저장소 호환 브리지(src/eyetoarm/gui/__init__.py)가 명시한 경우에만 C·D 공용 설정을 쓴다.
-# 독립 번들은 주변 폴더를 탐색하지 않고 자기 config 만 쓴다
-_ROOT = getattr(_package, "_repository_root", None) or Path(__file__).resolve().parents[3]
+# dashboard-client 폴더 자신의 config 만 쓴다. 저장소 안에서 실행해도 주변(저장소 공용) 설정을 찾지 않는다
+_ROOT = Path(__file__).resolve().parents[3]
 CONFIG_PATH = _ROOT / "config" / "gui" / "client.json"
 
 # client.json 을 읽지 못할 때 쓰는 값. TCP 명세 §9 초기값과 같다
@@ -29,7 +27,7 @@ DEFAULTS = {"host": "127.0.0.1", "port": 47090, "max_line_bytes": 4096, "readine
 
 
 def load_tcp_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
-    """[공용 설정 읽기] client.json 의 tcp 항목에서 D가 쓰는 키만 꺼낸다. 파일은 바꾸지 않는다.
+    """[설정 읽기] dashboard-client/config/gui/client.json 의 tcp 항목에서 D가 쓰는 키만 꺼낸다. 파일은 바꾸지 않는다.
 
     서버 전용 키(record_retention · command_log_path 등)는 C 소유이므로 읽지 않는다.
     """
@@ -97,10 +95,35 @@ class CommandRecord:
     rejected: bool = False
     cancel: str | None = None
     closed_unconfirmed: bool = False
+    requested_mono_ms: int | None = None   # 이 PC monotonic. 유효한 execute() 수락 시각
+    ack_latency_ms: int | None = None      # 첫 지표 한 번만 기록. 중복 ACK 로 바꾸지 않는다
 
     @property
     def finished(self):
         return self.closed_unconfirmed or self.rejected or self.state in protocol.FINAL_STATES
+
+    def ack_metric(self) -> tuple[int | None, str]:
+        """(사용자 실행→첫 ACK ms 또는 None, 숫자가 없는 사유). 정의는 ACK_METRIC_BOUNDARY."""
+        if self.ack_latency_ms is not None:
+            return self.ack_latency_ms, ""
+        if self.rejected:
+            return None, "미전송 또는 거부 · 측정 없음"
+        return None, ACK_METRIC_EXCLUDED.get(self.acceptance, "ACK 대기 중")
+
+
+# 사용자 실행→ACK 지표의 경계. 화면 툴팁과 세션 JSONL 에 같은 문장을 쓴다
+ACK_METRIC_BOUNDARY = ("시작: 사용자가 확정한 MOVE 실행 요청이 수락된 시각(새 GET_STATUS 준비 응답 대기 포함). "
+                       "끝: 같은 연결·첫 송신(재전송 없음)에 대한 첫 ACK 수신. "
+                       "REACHED 도달이나 서버 실행 시간이 아니며, 이 PC monotonic 시계로 잰다.")
+ACK_METRIC_EXCLUDED = {
+    "accepted_after_resend": "재전송 뒤 수락 · 측정 제외",
+    "accepted_by_status": "ACK 없이 상태로 수락 확인(재접속·PLANNING 등) · 측정 제외",
+    "unconfirmed": "수락 미확인 · 측정 없음",
+}
+
+
+def _now_ms() -> int:
+    return time.monotonic_ns() // 1_000_000
 
 
 _DEFAULT_LOG = object()
@@ -211,7 +234,7 @@ class StatusLink(QObject):
             raw = protocol.build_move(command_id, target)
         except (ValueError, TypeError, OverflowError):
             return ""
-        self.current_record = CommandRecord(command_id, target, raw, self._conn_id)
+        self.current_record = CommandRecord(command_id, target, raw, self._conn_id, requested_mono_ms=_now_ms())
         self._pending_move = True
         self.command_changed.emit(self.current_record)
         # An already outstanding readiness response predates this request: wait for it,
@@ -501,6 +524,7 @@ class StatusLink(QObject):
             record.acceptance = ("accepted_by_status" if record.conn_id != self._conn_id
                                  else "accepted_after_resend" if record.attempts > 1
                                  else "first_ack" if state == "ACK" else "accepted_by_status")
+            self._note_ack_metric(record)
         record.state, record.stage, record.code = state, status.get("stage"), status.get("code")
         record.detail, record.reach_error = status.get("detail"), status.get("reach_error")
         record.result = {"ACK": "수락 ACK · 도달 아님", "PLANNING": "계획 중", "MOVING": "이동 중",
@@ -511,6 +535,18 @@ class StatusLink(QObject):
             self._last_status_at = None
             self._fingerprint = None
             self._send_get_status()
+
+    def _note_ack_metric(self, record):
+        """수락이 처음 정해질 때 한 번: 원래 연결·첫 송신의 문자 그대로 ACK 만 숫자로 남긴다(로컬 기록 전용)."""
+        if record.ack_latency_ms is not None:
+            return
+        if record.acceptance == "first_ack" and record.attempts == 1 and record.requested_mono_ms is not None:
+            record.ack_latency_ms = max(0, _now_ms() - record.requested_mono_ms)
+            self._log("EV", "실행→ACK 지연", f"{record.ack_latency_ms} ms", command_id=record.command_id,
+                      ack_latency_ms=record.ack_latency_ms, metric_boundary=ACK_METRIC_BOUNDARY)
+        else:
+            self._log("EV", "실행→ACK 지연", record.ack_metric()[1], command_id=record.command_id,
+                      ack_latency_ms=None, acceptance=record.acceptance, metric_boundary=ACK_METRIC_BOUNDARY)
 
     def _log(self, direction, kind, summary, raw=b"", *, visible=True, **fields):
         now = time.time()

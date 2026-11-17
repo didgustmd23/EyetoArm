@@ -1,8 +1,8 @@
 # D 클라이언트 (Windows)
 
-이 폴더는 `dashboard-client`의 GUI 정본이다. 저장소의 기존 `eyetoarm.gui` 경로는 호환 브리지를 통해 이 정본을 사용한다. 독립 번들은 번들 루트에서 아래 명령을 실행한다.
+이 폴더는 `dashboard-client`의 GUI 정본이다. 기존 `src/eyetoarm/gui` 진입점은 제거하고 새 폴더만 사용한다. 독립 번들은 번들 루트에서 아래 명령을 실행한다.
 
-번들의 `config/gui/client.json`은 D 기본값만 포함한다. 기본 감사 기록은 번들의 `logs/gui/`에 저장되며 기존 저장소 로그는 그대로 남는다. 저장소 경유 실행(호환 브리지가 `_repository_root`를 명시)은 저장소의 C·D 공용 `config/gui/client.json`을 읽고, 기록은 번들 `logs/gui/`를 그대로 쓴다. 독립 번들은 주변 폴더를 찾지 않고 자기 설정만 읽는다. `--log-dir`의 상대 경로는 실행 디렉터리 기준이다. 번들 TCP protocol과 schema는 공유 원본의 복사본이므로 변경 시 동기화 검증이 필요하다.
+번들의 `config/gui/client.json`은 D 기본값만 포함한다. 기본 감사 기록은 번들의 `logs/gui/`에 저장되며 기존 저장소 로그는 그대로 남는다. 현재 실행 경로는 주변 폴더를 찾지 않고 자기 설정만 읽는다. 저장소의 C·D 공용 설정은 그대로 남는다. `--log-dir`의 상대 경로는 실행 디렉터리 기준이다. 번들 TCP protocol과 schema는 공유 원본의 복사본이므로 변경 시 동기화 검증이 필요하다.
 
 ## 현재 실행 경로
 
@@ -18,9 +18,11 @@ python -m eyetoarm.gui --env-only
 
 `widgets.py`는 실행 진입점이 아닌 화면 부품 모듈이다. 앱은 `python -m eyetoarm.gui.window`로 실행한다. `from eyetoarm.gui import motion, theme` 문법과 네임스페이스 패키지 구조를 경고를 숨기기 위해 바꾸지 않는다.
 
-WSL의 임시 단일 영상 중계는 저장소에서 기존 `python3 src/eyetoarm/gui/gz_view_relay.py` 또는 새 `python3 dashboard-client/src/eyetoarm/gui/gz_view_relay.py`로 실행할 수 있다. ROS 의존성은 WSL에 별도로 필요하며 정식 C→D 3영상 연결과 다르다.
+WSL의 임시 단일 영상 중계는 저장소 루트에서 `python3 dashboard-client/src/eyetoarm/gui/gz_view_relay.py`로 실행한다. ROS 의존성은 WSL에 별도로 필요하며 정식 C→D 3영상 연결과 다르다.
 
-실제 C 준비 조회·Gazebo 창 캡처는 `python -m eyetoarm.gui.window`, 임시 카메라 중계 수신은 `python -m eyetoarm.gui.window --view camera`로 실행한다. `--demo`는 소켓을 열지 않는다.
+실제 C 준비 조회·3채널 영상 수신은 `python -m eyetoarm.gui.window`가 기본이다. 명령 서버 IP를 영상에도 사용하며 영상 기본 포트는47092다. 별도 영상 서버는 `--view-host`/`--view-port`로 지정한다. C의 ETV1 시제품만 지원하며 정식 계약 확정과는 별개다. 기존 Gazebo 창 캡처는 `--view window`, 임시 EAV1 단일 카메라 중계는 `--view camera`로 선택한다. `--demo`는 소켓을 열지 않는다.
+
+링크 raw/detect/center는 조작·설정과 운영 화면에서 같은 표시 선택을 공유한다. 현재 C는 raw3채널만 송출하므로 detect/center 미수신 시 대기로 남고 raw로 대신하지 않는다. 서버에 종류 변경 요청을 보내거나 주석·측정 결과를 합성하지 않는다.
 
 폴더 교체 이후 3일차 작업에서 관련 `tests/`의 패키지 경로와 현재 GUI 시험을 갱신했다. 외부 설계 문서에는 이전 경로의 역사적 설명이 남아 있다. 테마 선택을 보존하기 위해 QSettings의 기존 `EyeToArms/d_client` 키는 유지한다.
 
@@ -74,7 +76,7 @@ Windows에서 D 단위·offscreen/대역 시험을 실행했다. Ubuntu에 임�
 
 2026-11-17 내부 소비 보완: 명시적인 세대 전환은 이전 영상·수치를 비우고 새 세대 결과를 허용한다. 프레임 없는 오류는 같은 세대의 결과와 detect/center 영상을 차단한다. 작업 범위의 무효화는 해당 주석 영상과 늦은 재전달도 차단하며 raw·다른 채널·더 최신 작업은 보존한다. 이 연산은 D 내부 API·시험에서만 사용하며 실제 A/C 사건을 자동 수신하지 않는다. 같은 원본의 세대 전환으로 최초 수신 시각이나 신선도를 연장하지 않는다.
 
-**정식 C→D 3영상 수신은 아직 미구현이다.** 연결 방식·포트·직렬화·선택 요청과 카메라 대응을 합의한 뒤 별도 수신 adapter와 실제 송출기로 검증해야 한다. `display.py`는 D 내부 시험 API이고 C의 전송 규격이나 승인된 메시지 스키마가 아니다. 기존 `--view camera`의 47091/EAV1 단일 영상 경로를 정식 3채널 경로로 해석하지 않는다.
+**정식 C→D 영상 계약은 미확정이다.** 최신 C `display_relay`의 ETV1/47092 raw3 시제품은 D의 기본 수신 경로로 연결하며, `relay_view.py`가 수신을 맡는다. 실제 카메라 송출·원격 PC와의 실사용 검증은 별도다. C의 detect/center·측정 결과·종류 변경 요청은 아직 없으며 `display.py`의 내부 소비 API를 승인된 전송 스키마로 간주하지 않는다. 기존 `--view camera`의 47091/EAV1 단일 영상 경로도 정식 3영상과 다르다.
 
 저장소의 `docs/gui-impl/D_6일차_클라이언트_API.md`와 `docs/design/D담당_협업_요청_초안.md`에 추가 설명이 있다. 이 문서는 독립 번들에 포함되지 않으며 협업 요청은 미발송이다.
 

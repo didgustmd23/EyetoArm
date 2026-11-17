@@ -4,21 +4,23 @@
 
 ## 바로 실행하는 준비 조회
 
-2026-11-17 독립 배포 경로: GUI 정본은 [dashboard-client](../../dashboard-client/README.md)에 있으며 해당 폴더만 복사해 실행할 수 있다. 그 폴더에서 `$env:PYTHONPATH = (Resolve-Path .\src).Path`를 설정한 뒤 `python -m eyetoarm.gui --env-only --json`, `python -m eyetoarm.gui --host <서버 숫자 IP> --port 47090 --json`을 사용한다. 저장소의 기존 `src/eyetoarm/gui`는 호환 경로로 유지한다. 독립 실행의 GUI 설정은 dashboard-client 기준이고, 저장소 호환 경로 실행은 기존 공용 `config/gui/client.json`을 읽는다. 새 로그는 두 경우 모두 `dashboard-client/logs/gui/`이며 기존 공용 설정·로그는 이동하지 않는다. 아래 저장소 기반 API·실행 예제도 호환 경로에서 유지하며, 별도 asyncio `TcpClient` 소스는 독립 GUI 배포본에 포함하지 않는다.
+2026-11-17 독립 배포 경로: GUI 정본은 [dashboard-client](../../dashboard-client/README.md)에 있으며 해당 폴더만 복사해 실행할 수 있다. 그 폴더에서 `$env:PYTHONPATH = (Resolve-Path .\src).Path`를 설정한 뒤 `python -m eyetoarm.gui --env-only --json`, `python -m eyetoarm.gui --host <서버 숫자 IP> --port 47090 --json`을 사용한다. 기존 `src/eyetoarm/gui` 진입점은 제거하고 새 폴더만 사용한다. GUI 설정과 새 로그는 `dashboard-client/config/gui/client.json`, `dashboard-client/logs/gui/` 기준이며 기존 공용 설정·로그는 이동하지 않는다. 별도 asyncio `TcpClient`는 저장소의 `src/eyetoarm/tcp`에 남아 있으며 독립 GUI 배포본에 포함하지 않는다.
 
-설치된 `eyetoarm` 환경의 Python을 사용하고 저장소 루트에서 `PYTHONPATH=src`를 설정한다. Windows PowerShell 예:
+설치된 `eyetoarm` 환경의 Python을 사용하고 저장소 루트에서 `PYTHONPATH=dashboard-client/src`를 설정한다. Windows PowerShell 예:
 
 ```powershell
-$env:PYTHONPATH = (Resolve-Path .\src).Path
+$env:PYTHONPATH = (Resolve-Path .\dashboard-client\src).Path
 & "C:\Users\user\anaconda3\envs\eyetoarm\python.exe" -m eyetoarm.gui --env-only --json
 & "C:\Users\user\anaconda3\envs\eyetoarm\python.exe" -m eyetoarm.gui --host 127.0.0.1 --port 47090 --timeout 3 --json
 ```
 
 두 번째 명령은 실제 주소로 GET_STATUS 한 번을 보내므로 C가 준비한 시험 서버에서 사용한다. MOVE/CANCEL/분류 명령은 보내지 않는다. 첫 번째 환경 검사도 서버에 접속하지 않는다. `robot_ready:false`라도 유효 STATUS를 수신하면 접속 진단은 성공이다. 종료 코드는 0 유효 STATUS, 1 접속 실패, 2 프로토콜 실패, 4 환경 불일치, 5 인자 오류다. 숫자 IP만 허용하며 localhost 이름은 거부한다. 정상 인자로 실행한 결과는 stdout JSON 한 건이며 자동 파일 저장은 하지 않는다. 인자 오류는 stderr와 종료 코드 5로 보고하며 JSON을 보장하지 않는다.
 
-WSL에서는 별도 확인된 Python 환경으로 `PYTHONPATH=src python3 -m eyetoarm.gui --host <C의 숫자IP> --port 47090 --json`을 사용한다. Windows 절대 Python 경로를 WSL에 적용하지 않는다. 실제 WSL 실행·주소·의존성 호환은 공동 시험 항목이다.
+WSL에서는 별도 확인된 Python 환경으로 `PYTHONPATH=dashboard-client/src python3 -m eyetoarm.gui --host <C의 숫자IP> --port 47090 --json`을 사용한다. Windows 절대 Python 경로를 WSL에 적용하지 않는다. 실제 WSL 실행·주소·의존성 호환은 공동 시험 항목이다.
 
 ## 도구에 포함할 지속 연결 API
+
+이 절의 별도 asyncio API를 사용할 때는 저장소 루트에서 `PYTHONPATH=src`를 설정한다.
 
 구현: [client.py](../../src/eyetoarm/tcp/client.py), [event_log.py](../../src/eyetoarm/tcp/event_log.py), [protocol.py](../../src/eyetoarm/tcp/protocol.py). 이 `TcpClient`는 Qt GUI의 `StatusLink`와 별도 구현이다. GUI의 연결을 재사용하거나 GUI와 동시에 같은 명령을 소유하는 구조로 가정하지 않는다.
 

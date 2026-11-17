@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "dashboard-client" / "src"))  # canonical D GUI
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from eyetoarm.gui.client import CommandRecord, StatusLink  # noqa: E402
@@ -279,6 +279,78 @@ class LinkTests(unittest.TestCase):
         requests = [json.loads(call.args[0]) for call in self.link._send.call_args_list]
         self.assertTrue(any(request.get("command_id") == command_id for request in requests))
         self.assertFalse(any(request["type"] == "MOVE" for request in requests))
+
+
+class AckMetricTests(unittest.TestCase):
+    """Day7 user execute -> first ACK metric on a controlled monotonic clock (local record only)."""
+    setUpClass = LinkTests.__dict__["setUpClass"]
+    tearDown = LinkTests.tearDown
+    start_move = LinkTests.start_move
+
+    def setUp(self):
+        self.clock = [1_000]
+        patcher = patch("eyetoarm.gui.client._now_ms", lambda: self.clock[0])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        LinkTests.setUp(self)
+
+    def status(self, command_id, state, **extra):
+        return wire({**READY, "robot_ready": False, "not_ready_reasons": ["COMMAND_ACTIVE"],
+                     "active_command_id": command_id, "command_id": command_id, "state": state, **extra})
+
+    def metric_rows(self):
+        return [row for row in self.link.log.rows() if row["kind"] == "실행→ACK 지연"]
+
+    def test_first_ack_measures_execute_including_readiness_wait(self):
+        command_id = self.link.execute(target())   # t=1000: request accepted, GET_STATUS first
+        self.clock[0] = 1_120
+        self.link._handle_line(wire({**READY, "server_time_ms": 2}))   # fresh readiness -> MOVE
+        self.clock[0] = 1_250
+        self.link._handle_line(self.status(command_id, "ACK"))
+        self.assertEqual(self.link.current_record.ack_metric(), (250, ""))
+        [row] = self.metric_rows()
+        self.assertEqual((row["dir"], row["command_id"], row["ack_latency_ms"]), ("EV", command_id, 250))
+        self.assertIn("REACHED", row["metric_boundary"])   # the boundary says what it is not
+
+    def test_duplicate_and_later_states_never_change_first_metric(self):
+        command_id = self.start_move()
+        self.clock[0] = 1_100
+        self.link._handle_line(self.status(command_id, "ACK"))
+        self.clock[0] = 9_000
+        self.link._handle_line(self.status(command_id, "ACK"))
+        self.link._handle_line(self.status(command_id, "PLANNING"))
+        self.link._handle_line(self.status(command_id, "REACHED", robot_ready=True, not_ready_reasons=[],
+                                          active_command_id=None))
+        self.assertEqual(self.link.current_record.ack_metric(), (100, ""))
+        self.assertEqual(len(self.metric_rows()), 1)
+
+    def test_no_ack_resend_reconnect_and_inferred_acceptance_have_no_number(self):
+        cases = {
+            "no_ack": lambda cid: [self.link._ack_timeout() for _ in range(3)],
+            "resend": lambda cid: (self.link._ack_timeout(), self.link._handle_line(self.status(cid, "ACK"))),
+            "reconnect": lambda cid: (self.link._drop("test"), self.link._on_connected(),
+                                      self.link._handle_line(self.status(cid, "ACK"))),
+            "planning_first": lambda cid: self.link._handle_line(self.status(cid, "PLANNING")),
+        }
+        expected = {"no_ack": "수락 미확인", "resend": "재전송 뒤 수락", "reconnect": "ACK 없이 상태로",
+                    "planning_first": "ACK 없이 상태로"}
+        for name, act in cases.items():
+            with self.subTest(name):
+                self.tearDown()
+                self.setUp()
+                command_id = self.start_move()
+                self.clock[0] = 1_050
+                act(command_id)
+                latency, reason = self.link.current_record.ack_metric()
+                self.assertIsNone(latency)
+                self.assertIn(expected[name], reason)
+                self.assertTrue(all(row["ack_latency_ms"] is None for row in self.metric_rows()))
+
+    def test_rejected_before_send_has_reason_not_number(self):
+        self.assertTrue(self.link.execute(target()))
+        self.link._handle_line(wire({**READY, "robot_ready": False, "not_ready_reasons": ["SIM_PAUSED"]}))
+        self.assertEqual(self.link.current_record.ack_metric(), (None, "미전송 또는 거부 · 측정 없음"))
+        self.assertEqual(self.metric_rows(), [])
 
 
 class SessionLogTests(unittest.TestCase):
