@@ -39,6 +39,7 @@ from eyetoarm.vision.ai_result import AiSegResult
 from eyetoarm.vision.live_view import draw_detections
 from eyetoarm.vision.pipeline import VisionPipeline
 from eyetoarm.vision.pipeline_types import DisplayResult, JobOutcome, JobStatus
+from eyetoarm.vision.tracking import TrackFrame, matches_job
 
 # 제어 대기열 용량(A 개발 기본값, 계약 §7 D3. C 확정값 아님)
 DEFAULT_CAPACITY = 64
@@ -129,6 +130,7 @@ class HandoffMessage:
     reason: str | None = None
     exit_code: int | None = None
     stop_reason: str | None = None
+    tracks: TrackFrame | None = None   # RESULT만: 같은 작업의 추적 결과(#151, 추적 켬일 때). 표시 실험 번호, 영상 참조 없음
 
 
 @dataclass(frozen=True)
@@ -140,6 +142,7 @@ class HandoffView:
     display: DisplayResult | None
     generation: int
     job_seq: int
+    tracks: TrackFrame | None = None   # 같은 RESULT의 TrackFrame(#151)
 
 
 @dataclass(frozen=True)
@@ -202,7 +205,7 @@ def annotate(view: HandoffView) -> np.ndarray:
     image = view.frame.image
 
     if isinstance(view.display, AiSegResult):
-        return draw_detections(image, view.display)[0]
+        return draw_detections(image, view.display, view.tracks)[0]
 
     return image.copy()
 
@@ -339,7 +342,7 @@ class AToCHandoff:
 
         return msg.msg_seq
 
-    def offer_result(self, outcome: JobOutcome) -> int:
+    def offer_result(self, outcome: JobOutcome, *, tracks: TrackFrame | None = None) -> int:
         """제출 조건(계약 §2.4-1)을 통과한 응답을 RESULT로 넣고 영상 칸을 같은 응답의 프레임으로 교체한다. msg_seq를 돌려준다.
 
         계약: 최초·현재 반영 완료(`COMPLETED`·applied·not duplicate)이고 그 관측이 결합한 코어의 현재 관측이어야 한다.
@@ -358,6 +361,9 @@ class AToCHandoff:
         if pipeline.current_observation is not outcome.observation:
             raise HandoffContractError("outcome is not the current core observation")
 
+        if tracks is not None and not matches_job(tracks, outcome.context):
+            raise HandoffContractError("tracks do not belong to this outcome's job")
+
         ctx = outcome.context
         f = ctx.frame
         obs = outcome.observation
@@ -373,7 +379,7 @@ class AToCHandoff:
                     timestamp_base=f.timestamp_base, ros_stamp_ns=f.ros_stamp_ns,
                     received_monotonic_ns=f.received_monotonic_ns, calibration_id=f.calibration_id,
                     detector_config_id=ctx.detector_config_id, generation=ctx.generation, job_seq=ctx.job_seq,
-                    observation=obs, display=outcome.display_result, display_only=not obs.valid)
+                    observation=obs, display=outcome.display_result, display_only=not obs.valid, tracks=tracks)
                 notify = self._enqueue(msg, clear=False)
             except HandoffError:
                 self._results_rejected += 1
@@ -381,7 +387,7 @@ class AToCHandoff:
 
             self._results_enqueued += 1
             self._current = (msg.msg_seq, ctx.generation, ctx.job_seq)
-            self._put_view(HandoffView(msg.msg_seq, f, outcome.display_result, ctx.generation, ctx.job_seq))
+            self._put_view(HandoffView(msg.msg_seq, f, outcome.display_result, ctx.generation, ctx.job_seq, tracks))
 
         self._call_notify(notify)
 

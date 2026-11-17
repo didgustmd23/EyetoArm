@@ -13,6 +13,10 @@
 - `input_state`: 입력 상태 구간 하나(`InputStateRecord`)
 - `model_ready`: AI 모델 준비 성공 1줄(준비 소요·model_source·버전·장치·환경, YOLO 연결 계획 r2 §4.6)
 - `ai_geometry`(선택, `log_geometry=True`): AI 완료 작업의 인스턴스 박스·다각형·조각/구멍 수. process 다음 줄
+- `ai_tracks`(#151 S3, 추적을 켠 실행에서 추적을 갱신한 작업마다 1줄, 그 process 뒤): 작업 식별자·mode·track_namespace·tracker_epoch·
+  updated·event·인스턴스별 instance_index/part_track_id/state/hits/reason. M2 표시 실험 값이며 신원·중복 집기 방지를 보장하지 않는다
+- `tracking_failed`(#151, 추적을 켠 실행에서 추적 예외가 난 경우 1줄): 사유·작업 식별자. 추적을 끄면 쓰지 않는다
+  (두 kind는 추가만이라 `format_version` 1 유지, 추적을 끈 실행의 기록은 그대로)
 - AI 작업의 클래스·점수·거부는 **기본으로** process의 `ai_instances`에 있다(옵션 없음). `format_version`은 키·kind를
   더한 것뿐이라 1을 유지한다(A 내부 제안, 저장소 안 소비자는 kind로 걸러 읽는 A 시험뿐)
 
@@ -54,6 +58,7 @@ from eyetoarm.vision.pipeline_types import (
     JobStatus,
     ProcessRecord,
 )
+from eyetoarm.vision.tracking import track_record
 
 FORMAT_VERSION = 1
 
@@ -268,6 +273,14 @@ class PipelineLog:
             raise TypeError(f"live_input record must be a dict: {type(record).__name__}")
 
         self._recorder.write("live_input", record)
+
+    def write_ai_tracks(self, tracks) -> None:
+        """추적 갱신 1줄(#151 S3, `ai_tracks`): 그 작업 process 줄 뒤. 추적을 끄면 쓰지 않는다. 번호는 표시 실험 값(신원 보장 없음)."""
+        self._recorder.write("ai_tracks", track_record(tracks))
+
+    def write_tracking_failed(self, record: dict) -> None:
+        """추적 예외 1줄(#151 D10, `tracking_failed`). 추적을 끈 사실과 사유·작업 식별자. 실행 결과·계수와 무관."""
+        self._recorder.write("tracking_failed", record)
 
     def write_source_stats(self, stats: dict) -> None:
         """실시간 소스 통계 1줄(`source_stats`, 종료 때)."""
