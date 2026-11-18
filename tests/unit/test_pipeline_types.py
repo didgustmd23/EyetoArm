@@ -206,18 +206,21 @@ class PlanarObservationTest(unittest.TestCase):
     """`PlanarObservation` 필드·유효 조건·윤곽 소유(초안 §3.3, 계획 작업 1)."""
 
     def test_observation_fields_follow_draft(self):
-        """관측 필드가 초안 §3.3 전 필드이며 기본값이 없다(`observed_face="top_face"` 기본값 금지)."""
+        """관측 필드가 초안 §3.3 전 필드이며 기본값이 없다(`observed_face="top_face"` 기본값 금지). 예외는 A-8 끝점 필드 하나(마지막, 기본 None)."""
         names = [f.name for f in dataclasses.fields(PlanarObservation)]
 
         self.assertEqual(names, [
             "run_id", "source_id", "image_seq", "capture_generation", "generation", "job_seq",
             "detector_config_id", "pixel_basis", "calibration_id", "observed_face", "calc_contour",
             "display_mask_contour", "candidate_count", "selected_index", "valid", "reason",
-            "process_ms", "method", "class_name", "confidence", "model_id",
+            "process_ms", "method", "class_name", "confidence", "model_id", "axis_endpoints_px",
         ])
 
         for f in dataclasses.fields(PlanarObservation):
-            self.assertIs(f.default, dataclasses.MISSING, f.name)
+            if f.name == "axis_endpoints_px":
+                self.assertIsNone(f.default, f.name)
+            else:
+                self.assertIs(f.default, dataclasses.MISSING, f.name)
 
     def test_valid_observation_requires_calc_face_and_selection(self):
         """`valid=True`인데 관측면·계산용 윤곽·선택 번호 중 하나가 None이면 거부하고, 무효 관측은 값이 없는 필드를 None으로 유지한다."""
@@ -345,6 +348,168 @@ class PlanarObservationTest(unittest.TestCase):
             with self.subTest(shape=bad.shape):
                 with self.assertRaises(ValueError):
                     PlanarObservation(**_observation_kwargs(display_mask_contour=bad))
+
+
+def _endpoints():
+    """머리 끝 → 축 끝 두 점(정수 목록, 전체 입력 영상 픽셀)."""
+    return [[100, 200], [300, 400]]
+
+
+def _axis_kwargs(**over):
+    """A-8 볼트 축 유효 관측 생성 인자(AI, 클래스 bolt). 키워드로 필드를 바꿀 수 있다."""
+    fields = {"valid": True, "observed_face": "axis", "calc_contour": None,
+              "axis_endpoints_px": _endpoints(), "selected_index": 0, "candidate_count": 1,
+              "method": "ai", "class_name": "bolt", "confidence": 0.9, "model_id": "m"}
+    fields.update(over)
+
+    return _observation_kwargs(**fields)
+
+
+class AxisEndpointObservationTest(unittest.TestCase):
+    """A-8 볼트 두 끝점 관측(#155 r1 §1~3, #157 T1). 기존 윤곽 경로는 그대로다."""
+
+    def test_axis_observation_is_valid_owned_readonly_float64(self):
+        """축 경로 유효 관측이 생성되고 끝점은 head→tip 순서의 float64 (2,2) 독립·읽기 전용 복사본이다(사례 #3)."""
+        source = np.array(_endpoints(), dtype=np.int64)
+        obs = PlanarObservation(**_axis_kwargs(axis_endpoints_px=source))
+
+        self.assertTrue(obs.valid)
+        self.assertIsNone(obs.calc_contour)
+        self.assertEqual(obs.axis_endpoints_px.dtype, np.float64)
+        self.assertEqual(obs.axis_endpoints_px.shape, (2, 2))
+        self.assertEqual(obs.axis_endpoints_px.tolist(), [[100.0, 200.0], [300.0, 400.0]])
+        self.assertFalse(obs.axis_endpoints_px.flags.writeable)
+        self.assertFalse(np.shares_memory(obs.axis_endpoints_px, source))
+
+        # 외부 배열을 나중에 고쳐도 관측은 변하지 않는다
+        source[0, 0] = 999
+        self.assertEqual(float(obs.axis_endpoints_px[0, 0]), 100.0)
+
+        # 관측 배열에 직접 쓸 수 없다
+        with self.assertRaises(ValueError):
+            obs.axis_endpoints_px[0, 0] = 1.0
+
+    def test_axis_accepts_bolt_names_or_none(self):
+        """축 경로 클래스는 볼트 이름(대소문자·BOLT_A/B) 또는 None(OpenCV)만 받는다(사례 #3)."""
+        for name in ("bolt", "Bolt", "BOLT_A", "BOLT_B"):
+            with self.subTest(class_name=name):
+                self.assertTrue(PlanarObservation(**_axis_kwargs(class_name=name)).valid)
+
+        opencv = PlanarObservation(**_axis_kwargs(method="opencv", class_name=None, confidence=None,
+                                                  model_id=None))
+        self.assertTrue(opencv.valid)
+
+        # 기존 method 규칙 유지: OpenCV 관측은 AI 전용 필드를 갖지 않는다
+        with self.assertRaises(ValueError):
+            PlanarObservation(**_axis_kwargs(method="opencv", class_name="bolt", confidence=None, model_id=None))
+
+    def test_axis_rejects_nut_or_other_class(self):
+        """너트·기타 클래스에 끝점을 주면 거부한다(사례 #5)."""
+        for name in ("nut", "NUT", "washer", ""):
+            with self.subTest(class_name=name):
+                with self.assertRaises(ValueError):
+                    PlanarObservation(**_axis_kwargs(class_name=name))
+
+    def test_axis_rejects_mixed_paths_and_missing_face(self):
+        """끝점+계산 윤곽, 관측면 없는 끝점, axis인데 끝점 없음(유효), axis+윤곽, 다른 관측면+끝점을 거부한다(사례 #6·#7·#7b·#7c)."""
+        cases = {
+            "endpoints_and_contour": _axis_kwargs(calc_contour=_square()),
+            "endpoints_without_face": _axis_kwargs(observed_face=None),
+            "axis_without_endpoints": _axis_kwargs(axis_endpoints_px=None),
+            "axis_with_contour_no_endpoints": _axis_kwargs(axis_endpoints_px=None, calc_contour=_square()),
+            "endpoints_with_top_face": _axis_kwargs(observed_face="top_face"),
+            "invalid_endpoints_without_face": _observation_kwargs(axis_endpoints_px=_endpoints()),
+        }
+
+        for label, kwargs in cases.items():
+            with self.subTest(case=label):
+                with self.assertRaises(ValueError):
+                    PlanarObservation(**kwargs)
+
+    def test_axis_requires_selected_index(self):
+        """축 경로 유효 관측도 선택 번호가 필수다(사례 #8)."""
+        with self.assertRaises(ValueError):
+            PlanarObservation(**_axis_kwargs(selected_index=None))
+
+    def test_bad_endpoint_values_are_value_errors(self):
+        """형식·값이 잘못된 끝점은 OverflowError·경고 없이 ValueError로 거부한다(사례 #9a)."""
+        bad = {
+            "three_points": [[0, 0], [1, 1], [2, 2]],
+            "three_coords": [[0, 0, 0], [1, 1, 1]],
+            "flat": [0, 0, 1, 1],
+            "one_point": [[0, 0]],
+            "deep": [[[0], [0]], [[1], [1]]],
+            "scalar": 5,
+            "empty": [],
+            "bool_all": [[True, False], [False, True]],
+            "bool_mixed": [[True, 0], [10, 10]],
+            "numpy_bool": np.array([[True, False], [False, True]]),
+            "string": [["1", "2"], ["3", "4"]],
+            "object": np.array([[1, 2], [3, None]], dtype=object),
+            "object_numeric": np.array([[1, 2], [3, 4]], dtype=object),
+            "string_array": np.array([["1", "2"], ["3", "4"]]),
+            "complex_array": np.array([[1, 2], [3, 4]], dtype=np.complex128),
+            "complex": [[1 + 1j, 2], [3, 4]],
+            "nan": [[np.nan, 1.0], [2.0, 3.0]],
+            "inf": [[np.inf, 1.0], [2.0, 3.0]],
+            "neg_inf": [[1.0, 2.0], [-np.inf, 3.0]],
+            "same_point": [[5, 5], [5, 5]],
+            "huge_int": [[10 ** 400, 0], [1, 1]],
+            "huge_neg_int": [[-(10 ** 400), 0], [1, 1]],
+            "overflow_float": [[1e308 * 10, 0.0], [1.0, 1.0]],
+            "same_after_float64": [[2 ** 53, 0], [2 ** 53 + 1, 0]],
+        }
+
+        for label, value in bad.items():
+            with self.subTest(case=label):
+                with np.errstate(all="raise"):
+                    with self.assertRaises(ValueError):
+                        PlanarObservation(**_axis_kwargs(axis_endpoints_px=value))
+
+    def test_invalid_axis_observation_may_carry_endpoints(self):
+        """무효 관측도 axis 관측면과 끝점을 진단용으로 가질 수 있고 사유 규칙은 그대로다(사례 #10)."""
+        obs = PlanarObservation(**_axis_kwargs(valid=False, reason="ENDPOINT_CLIPPED"))
+
+        self.assertFalse(obs.valid)
+        self.assertEqual(obs.axis_endpoints_px.shape, (2, 2))
+
+        with self.assertRaises(ValueError):
+            PlanarObservation(**_axis_kwargs(valid=False, reason=None))
+
+    def test_existing_contour_path_unchanged(self):
+        """기존 무효 표시 관측·윤곽 유효 관측(자유 관측면 문자열)은 끝점 없이 그대로 생성된다(사례 #1·#2·#4, 실루엣 승격 허가 아님)."""
+        invalid = PlanarObservation(**_observation_kwargs())
+        self.assertIsNone(invalid.axis_endpoints_px)
+
+        for face in ("face_x", "silhouette", "top_face"):
+            with self.subTest(face=face):
+                obs = PlanarObservation(**_observation_kwargs(
+                    valid=True, observed_face=face, calc_contour=_square(), selected_index=0, candidate_count=1))
+                self.assertIsNone(obs.axis_endpoints_px)
+
+        nut = PlanarObservation(**_observation_kwargs(
+            valid=True, observed_face="top_face", calc_contour=_square(), selected_index=0, candidate_count=1,
+            method="ai", class_name="nut", confidence=0.8, model_id="m"))
+        self.assertEqual(nut.class_name, "nut")
+
+        # 윤곽 경로에 axis 관측면 문자열을 쓰지 않는다
+        with self.assertRaises(ValueError):
+            PlanarObservation(**_observation_kwargs(
+                valid=True, observed_face="axis", calc_contour=_square(), selected_index=0, candidate_count=1))
+
+    def test_replace_keeps_and_revalidates_endpoints(self):
+        """`dataclasses.replace`는 끝점을 보존하고 새 값도 다시 검사한다."""
+        obs = PlanarObservation(**_axis_kwargs())
+
+        same = dataclasses.replace(obs, process_ms=2.0)
+        self.assertEqual(same.axis_endpoints_px.tolist(), obs.axis_endpoints_px.tolist())
+        self.assertFalse(same.axis_endpoints_px.flags.writeable)
+
+        with self.assertRaises(ValueError):
+            dataclasses.replace(obs, axis_endpoints_px=[[1, 1], [1, 1]])
+
+        with self.assertRaises(ValueError):
+            dataclasses.replace(obs, class_name="nut")
 
 
 class InvalidationEventTest(unittest.TestCase):

@@ -37,7 +37,9 @@ from eyetoarm.common.types import (
     FramePacket,
     InputStatusEvent,
     InvalidationKind,
+    PixelBasis,
     PlanarObservation,
+    check_axis_path,
 )
 from eyetoarm.vision.pipeline_types import (
     InvalidationRecord,
@@ -98,6 +100,40 @@ def _same_id(value, expected) -> bool:
     오류)가 일어나지 않고, `False == 0` 같은 느슨한 일치도 거부한다.
     """
     return type(value) is type(expected) and value == expected
+
+
+def _endpoints_ok(observation, width, height) -> bool:
+    """A-8 끝점 경로가 공통형 조합 규칙을 지키고, `raw` 끝점이면 전체 입력 영상 범위 안인지(#157 I2).
+
+    조합·형식은 공통형 `check_axis_path`를 그대로 쓴다(관측면 axis·calc_contour None·클래스 None/볼트·끝점 형식·유한성·
+    두 점 구분·유효 axis의 끝점 필수, 강제 숫자 변환 없음). 범위: 두 점 모두 0 ≤ u ≤ width − 1, 0 ≤ v ≤ height − 1.
+    `undistorted`는 범위를 보지 않는다(보정 뒤 범위 규칙 미결). 생성 뒤 변조된 값도 예외 없이 False로 돌려준다.
+    """
+    try:
+        points = check_axis_path(
+            observed_face=observation.observed_face, calc_contour=observation.calc_contour,
+            axis_endpoints_px=observation.axis_endpoints_px, class_name=observation.class_name,
+            valid=observation.valid)
+    except (TypeError, ValueError):
+        return False
+
+    if points is None:
+        return True
+
+    basis = observation.pixel_basis
+
+    if not isinstance(basis, str):
+        return False
+
+    if basis == PixelBasis.UNDISTORTED:
+        return True
+
+    if basis != PixelBasis.RAW:
+        return False
+
+    u, v = points[:, 0], points[:, 1]
+
+    return bool((u >= 0).all() and (u <= width - 1).all() and (v >= 0).all() and (v <= height - 1).all())
 
 
 @dataclass(frozen=True)
@@ -805,6 +841,11 @@ class VisionPipeline:
             bad.append("reason")
         elif not valid and (type(reason) is not str or not reason):
             bad.append("reason")
+
+        # A-8 끝점 경로: 공통형 조합 규칙 재확인 + raw이면 전체 입력 영상 범위(공통형은 프레임 크기를 모름, #157 I2).
+        # 끝점은 axis·볼트(또는 class None)·계산 윤곽 없음에서만, 유효 axis에는 필수(무효 axis의 끝점 None은 허용)
+        if not _endpoints_ok(observation, f.width, f.height):
+            bad.append("axis_endpoints_px")
 
         # 방식 일치(G3): OpenCV 설정 작업은 opencv 관측·PlanarResult, AI 설정 작업은 ai 관측·AiSegResult(시작 설정 해시)
         is_ai = isinstance(job.settings.detector_config, AiSegConfig)
