@@ -50,7 +50,7 @@ xacro 단독 기본 위치는 `-0.3400051 -0.0594480 0.0964437` m이며 해당 �
 
 로봇 포함 launch는 A 상세설계 §6.1의 센서 설정을 사용한 링크 카메라를 `upper_arm_link`에 고정하고,
 영상 `/link_cam/image`·보정 정보 `/link_cam/camera_info`·`/clock`을 ROS로 연결한다.
-광학 프레임은 `link_cam_optical_frame`, 설정은 1280×720 RGB, 15 Hz, 수평 화각 1.0 rad이다.
+광학 프레임은 `link_cam_optical_frame`, 설정은 1280×720 RGB, 40 Hz, 수평 화각 1.0 rad이다.
 Gazebo의 Image Display에서 `/link_cam/image`를 선택하거나 별도 터미널에서 확인한다.
 
 ```bash
@@ -98,7 +98,7 @@ ros2 launch scripts/sim_sort_cell.launch.py \
 | 위치 | `robotiq_85_base_link` 기준 `0 0 0.068` m, 광학 중심은 앞면 약 Z=0.0905m |
 | 자세 | `0 -1.57079632679 0` rad, 센서 +X를 그리퍼 +Z로 회전 |
 | 광학 프레임 | `gripper_cam_optical_frame` (Z 전방, X 오른쪽, Y 아래) |
-| 해상도·설정 주기 | 컬러·깊이 640×480, 15 Hz |
+| 해상도·설정 주기 | 컬러·깊이 640×480, 40 Hz |
 | 수평 화각·클립 | 60°, 0.05~5.0m |
 | 컬러 | `/gripper_cam/image` |
 | 깊이 | `/gripper_cam/depth_image` |
@@ -143,7 +143,7 @@ RViz 표시 이름은 `Link Camera`, `Gripper RGB`, `Gripper Depth`다.
 | 조준점 | 약 `(0.2, 0.1, 0.43)` m — 로봇·컨베이어를 포함한 작업 셀 중심 |
 | 시점 | 약 40.3° 내려다보는 경사 CCTV, 월드에 고정 |
 | 영상 | Gazebo `/overview_cam/image` |
-| 해상도·설정 주기 | 960×720 RGB (4:3), 15 Hz |
+| 해상도·설정 주기 | 960×720 RGB (4:3), 40 Hz |
 | 수평 화각·클립 | 약 57.49° (`1.0034063702` rad), 0.05~10.0m |
 | 광학 프레임 이름 | `overview_cam_optical_frame` |
 

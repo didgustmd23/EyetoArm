@@ -27,7 +27,7 @@
     <gazebo reference="link_cam_link">
       <sensor name="link_cam" type="camera">
         <always_on>1</always_on>
-        <update_rate>15</update_rate>
+        <update_rate>40</update_rate>
         <topic>link_cam/image</topic>
         <gz_frame_id>link_cam_optical_frame</gz_frame_id>
         <camera>
