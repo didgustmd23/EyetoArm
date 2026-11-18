@@ -10,6 +10,9 @@
 - `ModelPrepareError`: 모델 준비 실패의 분류(MODEL_LOAD_FAILED·MODEL_CONFIG_INVALID만).
 - `AiJobConfigError`: 작업 중 발견한 설정 불일치(MODEL_CONFIG_INVALID, 작업 값).
 - 거부 이름(`NON_TARGET_CLASS` 등)은 표시 결과 안의 A 내부 값이며 A §5.4 판정 사유 표에 넣지 않는다.
+- 축 후보 자격(#174 전환 단계 T, `_workspace/174_builder_a_multi_object_candidate_plan.md` r2 §5·r1 §2.1): 물체별 판정은
+  `axis_candidate_reason` 하나로만 한다. 집계(`AiSegResult.axis_valid_count`), 선택(`ai_convert.axis_selection`), 기록이 모두
+  이 함수를 쓴다. `axis_valid_count`는 **검출 단계의 픽셀 후보 수**이며 보정·세대·현재성 검사 뒤 B에 전달되는 수가 아니다.
 """
 from __future__ import annotations
 
@@ -34,6 +37,11 @@ _POLYGON_REQUIRED = (None, SMALL_MASK)
 _POLYGON_FORBIDDEN = (EMPTY_MASK,)
 
 _OUT_OF_SCOPE = (NON_TARGET_CLASS, LOW_CONFIDENCE)
+
+# 축 후보 제외 사유(#163 §4 표 이름, #174 물체별 적용). ai_convert가 같은 이름을 다시 내보낸다
+CONTOUR_CLIPPED = "CONTOUR_CLIPPED"
+MULTIPLE_CANDIDATES = "MULTIPLE_CANDIDATES"
+AXIS_EXTRACTION_ERROR = "AXIS_EXTRACTION_ERROR"
 _PREPARE_KINDS = (InvalidationKind.MODEL_LOAD_FAILED, InvalidationKind.MODEL_CONFIG_INVALID)
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")  # fullmatch로만 쓴다(끝 개행 거부, r1 F2)
 
@@ -181,6 +189,8 @@ class AiInstance:
     - `axis_reason`: 추출하지 않았거나 추출기가 무효를 낸 사유. 끝점과 동시에 있을 수 없다.
     - `axis_max_iou`: 같은 작업의 다른 비거부 볼트 마스크와의 최대 IoU(겹침 판정용, 다른 볼트가 없으면 0.0).
     - `axis_diag`: 추출기 진단값(수·문자열만, 기록용).
+    - `axis_overlap_with`(#174): 이 볼트와 마스크 IoU ≥ `AXIS_OVERLAP_IOU`인 다른 축 경로 볼트 index(오름차순·유일·자기 제외,
+      없으면 None). 축 경로가 다룬 인스턴스만 가진다. 겹침 당사자 판정(`axis_candidate_reason`)의 근거다.
     """
 
     index: int
@@ -198,6 +208,7 @@ class AiInstance:
     axis_reason: str | None = None
     axis_max_iou: float | None = None
     axis_diag: dict | None = None
+    axis_overlap_with: tuple[int, ...] | None = None
 
     @property
     def axis_evaluated(self) -> bool:
@@ -231,6 +242,25 @@ class AiInstance:
                 raise ValueError("axis_diag must be a dict or None")
 
             put("axis_diag", dict(self.axis_diag))
+
+        overlap = self.axis_overlap_with
+
+        if overlap is not None:
+            if not isinstance(overlap, (list, tuple)) or not overlap or not all(_is_int(v) and v >= 0 for v in overlap):
+                raise ValueError(f"axis_overlap_with must be a non-empty sequence of integers >= 0: {overlap!r}")
+
+            owned = tuple(int(v) for v in overlap)
+
+            if list(owned) != sorted(set(owned)):
+                raise ValueError(f"axis_overlap_with must be strictly increasing (unique): {overlap!r}")
+
+            if self.index in owned:
+                raise ValueError(f"axis_overlap_with must not contain the instance itself ({self.index})")
+
+            if not self.axis_evaluated:
+                raise ValueError("axis_overlap_with requires an axis-evaluated instance (endpoints or axis_reason)")
+
+            put("axis_overlap_with", owned)
 
     def __post_init__(self) -> None:
         """필드를 검증·정규화하고 polygon 허용 조합을 검사한다."""
@@ -329,6 +359,13 @@ class AiSegResult:
 
         put("instances", instances)
 
+        # 겹침 상대는 같은 결과의 축 경로 인스턴스여야 하고 관계는 대칭이다(#174)
+        for inst in instances:
+            for other in inst.axis_overlap_with or ():
+                if other >= len(instances) or inst.index not in (instances[other].axis_overlap_with or ()):
+                    raise ValueError(f"axis_overlap_with of instance {inst.index} must be symmetric and refer to "
+                                     f"existing instances: {inst.axis_overlap_with}")
+
         if not isinstance(self.model_id, str) or not self.model_id:
             raise ValueError(f"model_id must be a non-empty string: {self.model_id!r}")
 
@@ -357,6 +394,37 @@ class AiSegResult:
     def eligible_count(self) -> int:
         """eligible 인스턴스 수."""
         return sum(1 for i in self.instances if i.eligible)
+
+    @property
+    def axis_valid_indices(self) -> tuple[int, ...]:
+        """축 후보 자격을 통과한 인스턴스 index(원 순번 오름차순). 판정은 `axis_candidate_reason`만 쓴다."""
+        return tuple(i.index for i in self.instances if i.axis_evaluated and axis_candidate_reason(i) is None)
+
+    @property
+    def axis_valid_count(self) -> int:
+        """검출 단계의 픽셀 후보 수(보정·세대·현재성 검사 전). `candidate_count`(in_scope 수)와 다르다."""
+        return len(self.axis_valid_indices)
+
+
+def axis_candidate_reason(inst: AiInstance) -> str | None:
+    """축 경로 인스턴스 하나의 후보 자격(#174 단일 판정 함수). None이면 유효 후보, 아니면 제외 사유.
+
+    순서(#163 §4 표 순서를 물체별로): 잘림 CONTOUR_CLIPPED > 겹침 당사자 MULTIPLE_CANDIDATES > 위상·추출기 사유(`axis_reason`) >
+    끝점 없음 AXIS_EXTRACTION_ERROR. 검출 거부·볼트 아님은 축 경로에 들어오지 않으므로(`axis_evaluated` 거짓) ValueError.
+    """
+    if not inst.axis_evaluated:
+        raise ValueError(f"instance {inst.index} is not an axis candidate (not evaluated by the axis path)")
+
+    if inst.clipped:
+        return CONTOUR_CLIPPED
+
+    if inst.axis_overlap_with:
+        return MULTIPLE_CANDIDATES
+
+    if inst.axis_reason is not None:
+        return inst.axis_reason
+
+    return None if inst.axis_endpoints_px is not None else AXIS_EXTRACTION_ERROR
 
 
 class ModelPrepareError(Exception):
@@ -396,5 +464,5 @@ class AiJobConfigError(Exception):
         self.cause = cause
 
 
-__all__ = ["AiInstance", "AiJobConfigError", "AiSegResult", "EMPTY_MASK", "LOW_CONFIDENCE", "ModelPrepareError", "NON_TARGET_CLASS",
+__all__ = ["AXIS_EXTRACTION_ERROR", "CONTOUR_CLIPPED", "MULTIPLE_CANDIDATES", "axis_candidate_reason", "AiInstance", "AiJobConfigError", "AiSegResult", "EMPTY_MASK", "LOW_CONFIDENCE", "ModelPrepareError", "NON_TARGET_CLASS",
            "REJECTIONS", "RawSegOutput", "SMALL_MASK"]

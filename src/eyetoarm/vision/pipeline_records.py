@@ -51,7 +51,7 @@ from typing import Any
 
 from eyetoarm.common.types import CandidateInvalidationEvent, InputStatus, InputStatusEvent
 from eyetoarm.vision.ai_config import AiSegConfig
-from eyetoarm.vision.ai_result import AiSegResult
+from eyetoarm.vision.ai_result import AiSegResult, axis_candidate_reason
 from eyetoarm.vision.pipeline_types import (
     InputStateRecord,
     JobOutcome,
@@ -107,13 +107,15 @@ def process_record(outcome: JobOutcome, *, eval_run_id: str | None = None) -> Pr
         command_id=None, eval_run_id=_check_eval_run_id(eval_run_id),
         method="ai" if is_ai else "opencv", model_id=cfg.model_id if is_ai else None,
         infer_ms=ai.infer_ms if ai is not None else None,
-        ai_instances=None if ai is None else tuple(_instance_summary(i) for i in ai.instances))
+        ai_instances=None if ai is None else tuple(_instance_summary(i) for i in ai.instances),
+        axis_valid_count=ai.axis_valid_count if ai is not None and getattr(cfg, "axis_extractor", None) else None)
 
 
 def _instance_summary(inst) -> dict:
     """필수 AI 기록의 인스턴스 요약(다각형·박스 없음).
 
     축 끝점 경로(#168 opt-in)가 다룬 인스턴스만 `axis_*` 키를 더한다(끈 실행의 기록은 그대로). 끝점은 추출기 출력이며 정확도 승인이 아니다.
+    #174: 겹침 상대(`axis_overlap_with`)와 물체별 후보 자격(`axis_candidate_reason`, None = 유효 후보)을 더한다.
     """
     out = {"index": inst.index, "class_index": inst.class_index, "class_name": inst.class_name,
            "confidence": inst.confidence, "rejected": inst.rejected, "clipped": inst.clipped,
@@ -121,7 +123,9 @@ def _instance_summary(inst) -> dict:
 
     if getattr(inst, "axis_evaluated", False):
         out.update(axis_endpoints_px=None if inst.axis_endpoints_px is None else inst.axis_endpoints_px.tolist(),
-                   axis_reason=inst.axis_reason, axis_max_iou=inst.axis_max_iou, axis_diag=inst.axis_diag)
+                   axis_reason=inst.axis_reason, axis_max_iou=inst.axis_max_iou, axis_diag=inst.axis_diag,
+                   axis_overlap_with=None if inst.axis_overlap_with is None else list(inst.axis_overlap_with),
+                   axis_candidate_reason=axis_candidate_reason(inst))   # None = 유효 후보(#174, 단일 판정 함수)
 
     return out
 
@@ -153,7 +157,9 @@ def _plain(value: Any) -> Any:
         return value.value
 
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {f.name: _plain(getattr(value, f.name)) for f in dataclasses.fields(value)}
+        # metadata omit_if_none인 끝 필드(#174 axis_valid_count)는 None이면 키를 쓰지 않는다(기존 기록 바이트 호환)
+        return {f.name: _plain(getattr(value, f.name)) for f in dataclasses.fields(value)
+                if not (f.metadata.get("omit_if_none") and getattr(value, f.name) is None)}
 
     if isinstance(value, (list, tuple)):
         return [_plain(v) for v in value]
