@@ -23,6 +23,7 @@ import numpy as np
 
 from eyetoarm.vision.ai_result import AiSegResult
 from eyetoarm.vision.pipeline_types import JobOutcome, JobStatus
+from eyetoarm.vision.tracking import TrackAssignment, TrackFrame, TrackState, matches_job
 
 # 표시 기본값(A 개발 기본값). BGR. 초록 계열은 쓰지 않는다(작업 가능 신호로 오해 방지)
 MASK_ALPHA = 0.35
@@ -55,6 +56,7 @@ class ViewItem:
     generation: int
     conf_threshold: float | None
     reason: str | None          # 관측 reason(표시용 invalid 사유)
+    tracks: TrackFrame | None = None  # 같은 작업의 추적 결과(#151 S3, 추적을 켰을 때만). 표시 실험 번호
 
 
 @dataclass(frozen=True)
@@ -87,13 +89,17 @@ class DisplayBridge:
 
     # --- 제어 흐름(runner 스레드) ---
 
-    def on_outcome(self, outcome: JobOutcome, current: bool) -> None:
+    def on_outcome(self, outcome: JobOutcome, current: bool, *, tracks: TrackFrame | None = None) -> None:
         """terminal 응답 하나. `current`는 runner의 `display_gate`(+수신 epoch) 판정이다.
 
         duplicate는 무시한다. current면 칸을 교체한다. 그 밖(늦은·폐기·실패·중단)은 결과를 지우고 상태만 바꾼다.
+        `tracks`(#151, 선택)는 같은 작업의 TrackFrame이어야 하며(7개 식별자 대조) 아니면 ValueError(칸 무변). 칸 항목에 같이 둔다.
         """
         if outcome.duplicate:
             return
+
+        if tracks is not None and not matches_job(tracks, outcome.context):
+            raise ValueError("tracks do not belong to this outcome's job")
 
         with self._lock:
             if self._stopped:
@@ -106,7 +112,7 @@ class DisplayBridge:
                 self._set(ViewState.LIVE, "display-only detection (valid=False, not for robot)",
                           item=ViewItem(frame=ctx.frame, result=display if isinstance(display, AiSegResult) else None,
                                         job_seq=ctx.job_seq, generation=ctx.generation,
-                                        conf_threshold=conf, reason=getattr(obs, "reason", None)),
+                                        conf_threshold=conf, reason=getattr(obs, "reason", None), tracks=tracks),
                           last_frame=None)
                 self.shown += 1
                 return
@@ -203,13 +209,37 @@ def _color(class_index: int) -> tuple[int, int, int]:
     return CLASS_COLORS_BGR[class_index % len(CLASS_COLORS_BGR)]
 
 
-def draw_detections(image: np.ndarray, result: AiSegResult) -> tuple[np.ndarray, int]:
+def track_label(a: TrackAssignment | None) -> str:
+    """추적 판정 라벨(#151 S3): confirmed `#ID`, tentative `trk?`, ambiguous `amb`, 그 밖 빈 문자열. 표시 실험 번호다."""
+    if a is None:
+        return ""
+
+    if a.state is TrackState.CONFIRMED and a.part_track_id is not None:
+        return f"#{a.part_track_id}"
+
+    return {TrackState.TENTATIVE: "trk?", TrackState.AMBIGUOUS: "amb"}.get(a.state, "")
+
+
+def draw_detections(image: np.ndarray, result: AiSegResult, tracks: TrackFrame | None = None) -> tuple[np.ndarray, int]:
     """원본을 복사해 인스턴스를 그린 표시용 영상과 그린 대상 수를 돌려준다. **원본 배열은 바꾸지 않는다.**
+
+    `tracks`(선택, #151)가 있으면 그 결과와 같은 인스턴스 index 집합이어야 하며(아니면 ValueError) 라벨 끝에 `track_label`을 붙이고,
+    영상 왼쪽 위에 실험 표기(`TRACKING EXPERIMENTAL (<mode>) - ids display-only, no identity guarantee`)를 그린다. 그래서 이 영상만 받는
+    쪽(C 전달 `annotate`)에도 번호의 실험 상태가 남는다. tracks가 없으면 기존 그림과 같다.
+    색·채우기·거부/잘림 표기는 바꾸지 않는다(추적 성공을 초록 등 작업 가능 신호로 표시하지 않음).
 
     좌표는 `AiInstance`의 원본 픽셀 좌표(ROI 오프셋 반영 끝)를 그대로 쓴다(ROI를 다시 더하지 않음). 대상 범위(in_scope)
     인스턴스는 클래스 색으로 윤곽 다각형 반투명 채우기(α=`MASK_ALPHA`)·윤곽선·박스·`클래스 conf`를 그린다. 기하 거부(EMPTY/SMALL)는
     사유를 붙인다. 비대상 클래스·점수 미달은 그리지 않는다(수는 정보 줄에 따로).
     """
+    by_index = None
+
+    if tracks is not None:
+        by_index = {a.instance_index: a for a in tracks.assignments}
+
+        if set(by_index) != {i.index for i in result.instances}:
+            raise ValueError("tracks do not match the result's instance indexes")
+
     canvas = image.copy()
     fill = canvas.copy()
     drawn = 0
@@ -241,7 +271,13 @@ def draw_detections(image: np.ndarray, result: AiSegResult) -> tuple[np.ndarray,
         x1, y1, x2, y2 = (int(round(v)) for v in inst.box_xyxy)
         cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
         label = f"{inst.class_name} {inst.confidence:.2f}" + (f" {inst.rejected}" if inst.rejected else "")
+        tag = track_label(None if by_index is None else by_index.get(inst.index))
+        label += f" {tag}" if tag else ""
         _label(canvas, label, (x1, max(y1 - 4, 14)), color)
+
+    if tracks is not None:
+        _label(canvas, f"TRACKING EXPERIMENTAL ({tracks.mode.value}) - ids display-only, no identity guarantee",
+               (4, 16), STATE_COLORS_BGR["stale"], 0.45)
 
     return canvas, drawn
 
@@ -277,6 +313,16 @@ def _info_lines(snap: ViewSnapshot) -> list[str]:
                          "display result is not AI segmentation (not drawn)")
 
         lines.append(f"DISPLAY ONLY - observation valid=False ({item.reason}); not a robot target")
+
+        if item.tracks is not None:
+            t = item.tracks
+            n_id = sum(1 for a in t.assignments if a.state is TrackState.CONFIRMED)
+            n_tent = sum(1 for a in t.assignments if a.state is TrackState.TENTATIVE)
+            n_amb = sum(1 for a in t.assignments if a.state is TrackState.AMBIGUOUS)
+            state = "" if t.updated else f"  NOT UPDATED ({t.assignments[0].reason if t.assignments else '-'})"
+            lines.append(f"TRACKING EXPERIMENTAL ({t.mode.value}): display-only ids, no identity guarantee; "
+                         f"ids {n_id} tentative {n_tent} ambiguous {n_amb}  epoch {t.tracker_epoch}"
+                         + (f"  event {t.event}" if t.event else "") + state)
     else:
         lines.append("no current detection" + (" - showing LAST IMAGE (not current)" if snap.last_frame is not None
                                                else ""))
@@ -296,7 +342,7 @@ def render_view(snap: ViewSnapshot, max_width: int = 1600) -> np.ndarray:
 
     if item is not None:
         original = item.frame.image
-        overlay = draw_detections(original, item.result)[0] if item.result is not None else original.copy()
+        overlay = draw_detections(original, item.result, item.tracks)[0] if item.result is not None else original.copy()
         left, right = original.copy(), overlay
     elif snap.last_frame is not None:
         dim = (snap.last_frame.image.astype(np.float32) * 0.4).astype(np.uint8)
@@ -329,4 +375,5 @@ def render_view(snap: ViewSnapshot, max_width: int = 1600) -> np.ndarray:
     return np.vstack([header, pair])
 
 
-__all__ = ["DisplayBridge", "MASK_ALPHA", "ViewItem", "ViewSnapshot", "ViewState", "draw_detections", "render_view"]
+__all__ = ["DisplayBridge", "MASK_ALPHA", "ViewItem", "ViewSnapshot", "ViewState", "draw_detections", "render_view",
+           "track_label"]

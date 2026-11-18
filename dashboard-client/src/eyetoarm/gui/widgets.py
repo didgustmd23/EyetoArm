@@ -620,6 +620,7 @@ class TrafficTable(QTableWidget):
         self.setShowGrid(False)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.setTabKeyNavigation(False)   # Tab 이 표 칸 사이에 갇히지 않고 다음 컨트롤로 간다. 행 이동은 방향키
         header = self.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)

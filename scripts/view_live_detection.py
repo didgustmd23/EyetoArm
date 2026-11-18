@@ -42,6 +42,7 @@ from eyetoarm.vision.live_view import DisplayBridge, render_view  # noqa: E402
 from eyetoarm.vision.pipeline_records import JsonlRecorder, PipelineLog  # noqa: E402
 from eyetoarm.vision.pipeline_runner import RunnerConfig, run  # noqa: E402
 from eyetoarm.vision.pipeline_types import PipelineSettings  # noqa: E402
+from eyetoarm.vision.tracking import PartTracker, PartTrackIdIssuer, TrackMode  # noqa: E402
 
 WINDOW_NAME = "EyetoArm A live detection (display only)"
 QUIT_KEYS = (27, ord("q"), ord("Q"))
@@ -114,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--join-timeout", type=_positive_seconds, default=5.0, metavar="SEC",
                         help="정지 요청 뒤 runner 반환 대기 상한(기본 5 s, A 임시 개발값)")
     parser.add_argument("--exit-on-end", action="store_true", help="runner가 끝나면 창을 바로 닫는다")
+    parser.add_argument("--tracking", action="store_true", help="A-6 1차 실험: AI 검출 인스턴스 추적 번호를 붙인다(M2 휴리스틱, 표시·기록 전용, 팔 이동을 넘는 신원·중복 집기 방지 보장 없음, B로 보내지 않음). 기본 꺼짐")
 
     return parser
 
@@ -237,12 +239,18 @@ def main(argv=None, *, stderr=None, window=None, display_check=display_available
     stop = threading.Event()
     box: dict = {}
 
+    # 추적 opt-in(#151): 진입점이 프로세스당 발급기 1개를 만들어 주입한다(run·추적기는 만들지 않음)
+    track_kw = {}
+
+    if args.tracking:
+        track_kw["part_tracker"] = PartTracker(PartTrackIdIssuer(), mode=TrackMode.HEURISTIC)
+
     def runner_body(log) -> None:
         """runner 스레드: run 전체 → 표시 종료 알림. 예외도 남긴다."""
         try:
             box["result"] = run_fn(source_factory, settings, log, config=runner_config, stderr=err,
                                    versions={"opencv": cv2.__version__}, should_stop=stop_requested, detector=det,
-                                   prepare=det.prepare, display_sink=bridge)
+                                   prepare=det.prepare, display_sink=bridge, **track_kw)
             bridge.finish(box["result"].exit_code, box["result"].stop_reason)
         except BaseException as exc:   # run은 예외를 내지 않는 계약이지만 스레드에서 사라지지 않게 보존한다
             box["error"] = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"

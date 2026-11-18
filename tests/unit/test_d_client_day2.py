@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "dashboard-client" / "src"))  # canonical D GUI; the old src/eyetoarm/gui was removed
 
 from eyetoarm.gui.client import load_tcp_config, split_lines  # noqa: E402
 from eyetoarm.gui.gz_view_relay import HEADER, MAGIC, MAX_FRAME_BYTES, FrameParser, pack_frame  # noqa: E402

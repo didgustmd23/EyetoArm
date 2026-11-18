@@ -1,12 +1,14 @@
-# EyetoArm Python 의존성 (pip 설치 대상)
+# EyetoArm A 담당 Python 의존성 — WSL2 Ubuntu 24.04 / Python 3.12 / NVIDIA CUDA 12.8
 #
-# 기준: 프로젝트 계획 §2.5(Ubuntu 기본 Python + ROS·시스템 패키지 접근), A 1일차 단계 2 환경 확인 결과.
-# 이 파일은 pip로 설치할 항목만 적습니다. 아래 시스템 선행조건은 pip 대상이 아닙니다.
+# 설치: 새 가상환경을 활성화한 뒤 pip install -r requirements.txt
+# 안내: docs/setup/A_개발환경_설치.md
+# 사용자 결정 2026-11-17: 새 환경은 pip OpenCV 사용. 기존 .venv의 apt OpenCV 환경은 유지.
+# 이 파일은 Python 패키지를 설치합니다. ROS·Gazebo·드라이버는 아래 시스템 선행조건입니다.
 #
 # ── 시스템 선행조건 (apt / ROS, pip 대상 아님) ─────────────────────────────
 # - Ubuntu 24.04 기본 Python 3.12 (/usr/bin/python3)
-# - OpenCV: apt python3-opencv 4.6.0 사용(단계 2 확인 버전).
-#   pip opencv-python 계열을 추가로 설치하지 않습니다(설치 경로 중복 방지).
+# - 새 가상환경의 cv2는 아래 opencv-python을 사용합니다. apt OpenCV는 삭제하지 않습니다.
+#   opencv-python-headless/contrib 계열을 같은 가상환경에 추가하지 않습니다.
 # - ROS 2 Jazzy 시스템 패키지: rclpy, cv_bridge (/opt/ros/jazzy, setup 스크립트를 먼저 불러옴)
 # - pip와 venv 모듈: 단계 2 시점 이 PC에는 pip가 없었으나, 2026-11-12 apt로 설치됨
 #   (python3-pip 24.0+dfsg-1ubuntu1.3, python3.12-venv 3.12.3-1ubuntu0.17; dpkg 확인).
@@ -66,24 +68,35 @@
 # - GPU 렌더링: ~/.bashrc 에 export GALLIUM_DRIVER=d3d12, export MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
 #   (없으면 llvmpipe 소프트웨어 렌더링으로 Gazebo 카메라 Hz·RTF가 낮아짐)
 
-# 수치 계산. 단계 2에서 확인한 버전(apt python3-numpy 1.26.4)과 맞춤.
-numpy==1.26.4
+# ── A 담당 설치 항목 ─────────────────────────────────────────────────────
+# PyTorch 공식 CUDA 12.8 저장소. +cu128 버전을 지정해 CPU/다른 CUDA 빌드 선택을 막습니다.
+--extra-index-url https://download.pytorch.org/whl/cu128
 
-# ── 후속 구성 (기본 설치 항목 아님, 버전·라이선스·장치 미확정) ─────────────────
-# - AI 볼트/너트 분할: ultralytics, torch(PyTorch). 비교 후보 3개 YOLOv8n-seg·YOLO11n-seg·YOLO26n-seg
-#   (사용자 확정 2026-11-12). 설치 승인 2026-11-12: 저장소 .venv(--system-site-packages)에 설치,
-#   apt OpenCV 4.6 유지·pip opencv-python 미설치(ultralytics는 의존성을 분리해 설치).
-#   설치 완료 2026-11-12(reviewer 실행): torch 2.11.0+cu128, torchvision 0.26.0+cu128,
-#   ultralytics 8.4.211. NumPy 1.26.4·OpenCV 4.6.0은 apt 것 유지, GPU RTX 5080(cuda:0).
-#   설치 요지: torch·torchvision은 --index-url https://download.pytorch.org/whl/cu128,
-#   ultralytics는 --no-deps로 설치한 뒤 필요한 의존성(polars, ultralytics-thop,
-#   ultralytics-platform, nvidia-ml-py)을 따로 설치, numpy==1.26.4 제약 파일 적용.
-#   실행 시 YOLO_AUTOINSTALL=false 필수(자동 pip 설치로 opencv-python이 들어오는 것 방지).
-#   pip check의 "ultralytics requires opencv-python>=4.7.0"은 의도된 결과이며, 4.6.0에서는
-#   로드·추론만 확인했습니다(학습·증강 경로는 학습 시 확인).
-#   이 파일의 pip 설치 대상 줄로는 추가하지 않습니다(기본 설치 항목 아님).
-# - 사람 자세 모델: mediapipe(Pose Landmarker 후보) — 4주차 전 결정
-#
-# ── 개발 시험 의존성 ─────────────────────────────────────────────────────
-# - pytest: apt python3-pytest 7.4.4를 사용합니다(2026-11-12 단위시험 186건을 이것으로 실행).
-#   pip로 따로 설치하지 않습니다. .venv(--system-site-packages)에서도 같은 apt 패키지를 씁니다.
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+ultralytics==8.4.211
+ultralytics-thop==2.2.5
+ultralytics-platform==0.1.109
+polars==2.1.0
+nvidia-ml-py==13.615.71
+
+# NumPy 1.x 및 GUI 사용 가능한 OpenCV. 최신 OpenCV의 NumPy 2.x 요구를 피합니다.
+numpy==1.26.4
+opencv-python==4.11.0.86
+scipy==1.11.4
+matplotlib>=3.8,<4
+pillow>=10.2,<13
+requests>=2.31,<3
+psutil>=5.9.8,<8
+httpx==0.28.1
+PyYAML>=6.0.1,<7
+jsonschema>=4.10.3,<5
+
+# A 단위시험·정적 검사. Windows 운영 GUI의 PySide6는 포함하지 않습니다.
+pytest>=7.4.4,<9
+pyflakes>=3.2,<4
+
+# 모델 가중치·학습 데이터·ROS/Gazebo·NVIDIA 드라이버는 pip 설치 대상이 아닙니다.
+# 이전 apt OpenCV 4.6 + ultralytics --no-deps 구성은 기존 환경의 이력이며,
+# 이 파일로 새로 설치하는 환경은 일반 의존성 해석을 사용합니다(--no-deps 사용 금지).
+# mediapipe는 후속 사람 자세 단계에서 별도 결정합니다.
