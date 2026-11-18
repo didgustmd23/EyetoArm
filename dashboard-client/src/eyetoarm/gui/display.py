@@ -52,6 +52,15 @@ class DisplayModel(QObject):
             return False
         self.run_id = run_id
         self.link_source_id = link_source_id
+        self._clear_session("새 세션 결과 대기")
+        return True
+
+    def reset_session(self, reason):
+        """다른 서버로 옮길 때만 부른다. 이전 서버의 run_id·순서·결과 기록을 모두 버린다(같은 주소 재접속은 부르지 않는다)."""
+        self.run_id = self.link_source_id = None
+        self._clear_session(reason)
+
+    def _clear_session(self, reason):
         self.generations.clear()
         self.active_configs.clear()
         self.high_water.clear()
@@ -63,9 +72,8 @@ class DisplayModel(QObject):
         self.frame_marks.clear()
         self.origins.clear()
         self.result = None
-        self.reason = "새 세션 결과 대기"
+        self.reason = reason
         self.changed.emit()
-        return True
 
     def _config_conflict(self, source, generation, config):
         """같은 source·세대의 설정은 고정한다. 설정 변경은 세대 증가로만 한다."""

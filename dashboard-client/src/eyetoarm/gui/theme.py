@@ -128,6 +128,10 @@ QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QCheckBox {{ color: {DIM}; font-size: 12px; spacing: 8px; }}
 QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 5px; border: 1px solid {LINE}; background: {SURFACE_2}; }}
 QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT_INK}; }}
+QLineEdit {{ background: {SURFACE_2}; color: {TEXT}; border: 1px solid {DIM}; border-radius: 8px; padding: 4px 8px;
+            font-size: 13px; selection-background-color: {ACCENT}; selection-color: {ON_ACCENT}; }}
+QLineEdit:focus {{ border-color: {ACCENT_INK}; }}
+QLineEdit:disabled {{ color: {IDLE}; background: transparent; }}
 """
 
 

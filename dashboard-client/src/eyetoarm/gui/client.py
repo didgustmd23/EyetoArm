@@ -12,7 +12,7 @@ from typing import Any
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QTcpSocket
 
-from eyetoarm.gui.diag import safe_text
+from eyetoarm.gui.diag import safe_text, validate_target
 from eyetoarm.gui.records import SessionLog
 from eyetoarm.tcp import protocol
 
@@ -129,6 +129,20 @@ def _now_ms() -> int:
 _DEFAULT_LOG = object()
 
 
+def endpoint_error(host, port):
+    """접속 주소 검사. 문제가 없으면 "", 있으면 사유 문장을 돌려준다(host 빈칸은 거부).
+
+    숫자 IP만 받고(diag.validate_target 재사용) 0.0.0.0·::·멀티캐스트·브로드캐스트는 접속 주소로 쓰지 않는다."""
+    try:
+        validate_target(host, port, 1.0)
+    except ValueError as error:
+        return str(error)
+    address = ipaddress.ip_address(host)
+    if address.is_unspecified or address.is_multicast or address == ipaddress.IPv4Address("255.255.255.255"):
+        return f"접속 주소로 쓸 수 없는 IP: {host}"
+    return ""
+
+
 class StatusLink(QObject):
     """One Qt connection for readiness and command tracking."""
     state_changed = Signal(str)
@@ -167,11 +181,7 @@ class StatusLink(QObject):
         self._pending_move = False
         self._target_invalid = False
         self._last_command_at = 0.0
-        self._socket = QTcpSocket(self)
-        self._socket.connected.connect(self._on_connected)
-        self._socket.disconnected.connect(self._on_disconnected)
-        self._socket.readyRead.connect(self._on_ready_read)
-        self._socket.errorOccurred.connect(self._on_error)
+        self._socket = self._new_socket()
         self._poll = QTimer(self, interval=self.config["readiness_poll_ms"])
         self._poll.timeout.connect(self._send_get_status)
         self._retry = QTimer(self, interval=self.config["reconnect_ms"], singleShot=True)
@@ -183,9 +193,74 @@ class StatusLink(QObject):
         self._ack_deadline = QTimer(self, interval=self.config["ack_timeout_ms"], singleShot=True)
         self._ack_deadline.timeout.connect(self._ack_timeout)
 
+    def _new_socket(self):
+        sock = QTcpSocket(self)
+        sock.connected.connect(self._on_connected)
+        sock.disconnected.connect(self._on_disconnected)
+        sock.readyRead.connect(self._on_ready_read)
+        sock.errorOccurred.connect(self._on_error)
+        return sock
+
     def start(self):
         self._want = True
         self._open()
+
+    def _unconfirmed(self):
+        record = self.current_record
+        return (record is not None and record.state not in protocol.FINAL_STATES and not record.rejected
+                and (record.closed_unconfirmed or record.acceptance == "unconfirmed"))
+
+    def endpoint_busy(self, host=None, port=None, keep_unconfirmed=False):
+        """주소 적용을 거부할 이유(없으면 ""). host·port 가 지금과 다르면 다른 서버로 옮기는 것으로 보고 더 엄격히 본다.
+
+        keep_unconfirmed: 사용자가 「미확인 보존 후 전환」을 명시한 경우. 이전 서버가 끊겨 유효 STATUS 가 없을 때만
+        미확인 결과를 보존한 채 옮기도록 허용한다. 동작 중인 서버가 있으면 그 서버에서 결과를 확인해야 한다."""
+        record = self.current_record
+        if self._pending_move:
+            return "명령 전송 대기 중 · 끝난 뒤 바꾸세요"
+        changed = host is not None and (host, port) != (self.host, self.port)
+        if self._unconfirmed():
+            if not changed:
+                return "" if record.finished else "명령 결과 대기 중 · 끝난 뒤 바꾸세요"
+            if not keep_unconfirmed:
+                return "지금 서버의 명령 결과가 미확인 · 확인하거나 「미확인 보존 후 전환」을 선택하세요"
+            if self.state == "connected" or not self.is_stale():
+                return "지금 서버가 응답 중 · 그 서버에서 결과를 확인한 뒤 바꾸세요(보존 전환은 끊긴 서버만)"
+            return ""
+        if record is not None and not record.finished:
+            return "명령 처리 중이거나 결과 대기 중 · 끝난 뒤 바꾸세요"
+        active = (self.last_status or {}).get("active_command_id") if changed else None
+        if active:
+            return f"지금 서버가 명령 {str(active)[:8]} 실행 중이라고 보고 · 끝난 뒤 바꾸세요"
+        return ""
+
+    def set_endpoint(self, host, port, keep_unconfirmed=False):
+        """명시적 적용 때만 부른다. 검사 실패·명령 진행 중이면 연결과 주소를 그대로 두고 사유를 돌려준다."""
+        error = endpoint_error(host, port) or self.endpoint_busy(host, port, keep_unconfirmed)
+        if error:
+            return error
+        record = self.current_record
+        if (host, port) != (self.host, self.port) and self._unconfirmed():
+            # 기록은 지우지 않는다. 이전 서버 결과는 끝내 미확인으로 남기고 이 사실을 감사 기록에 남긴다
+            record.closed_unconfirmed = True
+            record.result = f"이전 서버 {self.host}:{self.port} 결과 미확인 보존 · 주소 변경"
+            self._log("EV", "미확인 보존 · 주소 변경", f"{record.result} → {host}:{port}", command_id=record.command_id)
+            self.command_changed.emit(record)
+        old = f"{self.host}:{self.port}"
+        self._drop("주소 적용 · 재접속")   # 준비 상태·버퍼를 비운다. 미확인 명령은 위에서 거부했다
+        self._retry.stop()
+        if (host, port) != (self.host, self.port):
+            # 옛 소켓의 늦은 신호가 새 연결 상태를 바꾸지 못하게 소켓을 통째로 바꾼다
+            old_socket, self._socket = self._socket, self._new_socket()
+            old_socket.blockSignals(True)
+            old_socket.abort()
+            old_socket.deleteLater()
+            self.host, self.port = host, port
+        self._last_disconnect_reason = None
+        self._log("EV", "주소 적용", f"{old} → {self.host}:{self.port}")
+        if self._want:
+            self._open()
+        return ""
 
     def stop(self):
         self._last_disconnect_reason = None
