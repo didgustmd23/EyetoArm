@@ -1,13 +1,13 @@
 # B 담당 협업 요청 초안 (A·C)
 
-문서 버전 0.10 · 작성 B담당 · 2026-11-17
+문서 버전 0.11 · 작성 B담당 · 2026-11-18
 **목적:** B(보정·좌표)가 A·C와 **무엇을 주고받는지**, **누가 무엇을 맡는지**를 확정하기 위한 요청서입니다.
 
 > ### ✍️ 답하는 방법
 > 남은 질문 줄 뒤에 `👉 A 답:` / `👉 C 답:`으로 적거나, 단톡방에 `C-6: 대기열 좋아요`처럼 **번호: 답**으로 보내 주세요.
 >
-> **A가 답할 곳:** §8.2 (A-1·A-2·A-6·A-7, 새 질문 **A-8**). A-1·A-2·A-7은 A 답을 받아 B 선택을 회신했습니다(§8.2 「B 선택」)
-> **C가 답할 곳:** §8.3 (C-9~C-12, C-14~C-16), §0.1은 확인만. C-1~C-7은 C 답(2026-11-16)을 받아 §0에 반영했습니다.
+> **A가 답할 곳:** §8.2 (A-1·A-6·A-7). A-1·A-2·A-7은 A 답을 받아 B 선택을 회신했습니다(§8.2 「B 선택」). A-8은 A 구현(`4edf845`, PR #84로 main 반영)으로 해결했습니다.
+> **C가 답할 곳:** §8.3 (C-9~C-12, C-15·C-16), §0.1은 확인만. C-1~C-7은 C 답(2026-11-16)을 받아 §0에 반영했습니다. C-14(인터페이스 패키지)는 B가 만들었습니다.
 >
 > v0.8(2026-11-16): A·C가 이미 답해 확정된 질문(옛 §0~§5)은 지우고 §0 표 한 장으로 줄였습니다. 원래 질문과 답 원문은 git 기록(PR #67 이전 버전)에 있습니다.
 
@@ -47,6 +47,8 @@ A·C 답(2026-11-12~16)으로 정해진 것입니다. 이 표의 내용은 A·C�
 | 표시 단위 (B→D) | B가 mm로 한 번 변환, D는 재변환 안 함. 너트는 `theta_valid=false`·`theta_deg=null` | D 확인 (DB-01) |
 | 보정 번호·카메라 이름 입력 | A의 링크 카메라 ROS 입력(`inputs/ros_image.py`)이 B `from_camera_info()`로 `calibration_id`를 만들고 `optical_frame`·`ros_stamp_ns`를 채움. 실제 값은 11/18 공동 시험에서 확인 | A 구현 (11/17 main) |
 | 클래스 이름 | B는 `bolt`·`nut`·`BOLT_A`·`BOLT_B`·`NUT`을 모두 받고 규격은 길이로 다시 판정 → A가 2/3클래스 중 무엇을 고르든 B 수정 불필요 | B 구현 |
+| 볼트 두 끝점 입력 (A-8) | 공통형 `PlanarObservation.axis_endpoints_px` [[머리 끝], [축 끝]] (원본 픽셀). 볼트는 `observed_face="axis"`면 `calc_contour` 없이 유효, `b_gate`도 같은 조건. B 코드는 수정 없이 맞음 | A 구현 `4edf845` (main 반영 2026-11-18) |
+| 액션 양식 (C-14) | `robot_ws/src/eyetoarm_interfaces`: `action/SortPart.action`, `msg/GraspCandidate.msg`. C 서버는 이 양식을 씀 | B 구현 `a361b0c` |
 
 ## 0.1 B가 정한 것 (2026-11-17) — 확인만 부탁드려요
 
@@ -65,9 +67,9 @@ B 몫(C 합의 「B 계산·C 확인」, C 요청 CB-02·CB-05)이라 B가 값�
 
 | 누구 | 남은 것 | 자세히 |
 |---|---|---|
-| A | 유효한 관측(계산용 윤곽), 윤곽 범위(윗면/전체·머리 포함), `part_track_id`, 실행 파일 B 연결(11/18) | §8.2 |
-| C | 인터페이스 패키지, 새 상자 위치 도달·충돌 확인, 목표 유효 허용 시간, `sort_job_id`·`run_epoch` 전달, 벨트 움직이기·감시 자세 시험 결과, 취소·재시작 규칙 | §8.3 |
-| B | ROS 액션 클라이언트(`/sort_part`) — C 인터페이스 패키지가 나오면, 목표 유효 기한 필드 — C-9 답이 나오면, 관측면 파일럿 뒤 `part_plane_z` 확정 | B 상세설계 §16.5 |
+| A | 실제 영상에서 유효한 관측(A-1: 볼트 두 끝점·너트 윗면 테두리 추출과 오차 검증), `part_track_id`(A-6), 실행 파일 B 연결(A-7, 11/18 저장 입력 시험) | §8.2 |
+| C | 새 상자 위치 도달·충돌 확인(C-15), 짧은 볼트 집는 점(C-16), 목표 유효 허용 시간(C-9), `sort_job_id`·`run_epoch` 전달(C-10), 벨트 움직이기·감시 자세 시험 결과(C-11), 취소·재시작 규칙(C-12) | §8.3 |
+| B | 목표 유효 기한 `valid_until_ns` — C-9 답이 나오면, B·C 액션 연결 시험(`/sort_part` 클라이언트는 완료, C 서버와 시험), 관측면 파일럿 뒤 기준 높이(`plane_z`) 확정 | B 상세설계 §16.5 |
 
 ---
 
@@ -254,7 +256,8 @@ A 실행기 `vision/pipeline_runner.run()`에 이미 B 자리 `b_consumer(frame,
 
 ```python
 stage = BStage.from_config(repo_root, CameraProfile.from_camera_info(info_msg), RosTfLookup(tf_buffer))
-stage.on_output = sort_part_client.send   # B 목표를 ROS 액션 /sort_part로 (C 답 C-1·C-6, B가 만들 예정)
+client = SortPartClient(node, stage)      # transforms/sort_part_client.py (B 구현 40ea046)
+stage.on_output = client.send             # B 목표를 ROS 액션 /sort_part로 (C 답 C-1·C-6). 결과가 오면 stage.release()
 run(..., b_consumer=stage.consume)
 ```
 
@@ -316,6 +319,8 @@ A-3(클래스 이름)·A-4(보정 번호)·A-5(ROS 카메라 입력)는 해결�
 - **실시간 입력 제한:** 현재 A 실행기의 실시간 `b_consumer` 거부(D13)는 유지합니다. 실제 계산용 입력의 합의·추출 검증과 실시간 수신·TF 시험 후 해제 여부를 별도로 정하며, 공동 시험을 이유로 자동 해제하지 않습니다.
 - **호출·실행 경계:** B 호출은 A 제어 흐름에서 동기로 실행되므로 TF 조회(현재 기본 대기 0.05 s)와 후속 처리의 시간 상한·실패 반환을 함께 정합니다. ROS 수신 executor를 막아 TF 조회가 스스로 지연되지 않도록 실행 구조를 확인합니다. 시험의 B 출력은 기록·검증용으로 받고, 실제 로봇 액션 송신은 B·C 연결 시험 단계로 분리합니다.
 
+**A-8 ✅ A 구현 (`4edf845`, PR #84로 main 반영 2026-11-18).** 제안 ①②③ 그대로 들어갔습니다. `axis_endpoints_px` 칸 추가, 볼트는 `observed_face="axis"`면 `calc_contour` 없이 유효, `b_gate`도 같은 조건. B 코드는 수정 없이 맞음(B 시험 54개와 `test_a8_axis_to_b.py` 통과, B담당 확인). 남은 것은 A-1(실제 영상에서 두 끝점 추출·오차 검증)입니다.
+
 **B 선택 (2026-11-17, A-1·A-2·A-7 답에 대한 회신).** A 후보 자료(`images/a_b_computation_reference/`, r1)를 보고 B가 계산 입력·기준을 정했습니다.
 
 | 항목 | B 선택 | 이유 |
@@ -329,7 +334,7 @@ A-3(클래스 이름)·A-4(보정 번호)·A-5(ROS 카메라 입력)는 해결�
 | B 호출 시간 상한 (A-7) | TF 대기 50 ms(`RosTfLookup`), B 계산 20 ms. TF 없음 `SKIP TF_UNAVAILABLE`, 계산 초과 `SKIP B_TIMEOUT`. 예외를 던지지 않고 결과로 돌려줌 | B 계산은 보통 1~2 ms |
 | 11/18 공동 시험 | A 제안 범위에 동의: 저장 입력·시험용 관측으로 A→B 배선, 식별자, 보정 번호, 촬영 시각 TF 대응만 확인. 실시간 호출 제한(D13)은 유지 | — |
 
-B 코드 반영: `work_result.compute_bolt_from_endpoints()`, `class_plane_z()`, `from_observation()`이 `axis_endpoints_px`를 받으면 두 점 경로로 계산, C 목표의 집는 후보 위치는 Pb, `BStage.compute_budget_ms`. 남은 A 일: 두 끝점·너트 윗면 테두리를 실제 RGB에서 뽑는 방법·오차 검증, 공통형에 `axis_endpoints_px` 추가와 유효 규칙 변경(**A-8**).
+B 코드 반영: `work_result.compute_bolt_from_endpoints()`, `class_plane_z()`, `from_observation()`이 `axis_endpoints_px`를 받으면 두 점 경로로 계산, C 목표의 집는 후보 위치는 Pb, `BStage.compute_budget_ms`. 남은 A 일: 두 끝점·너트 윗면 테두리를 실제 RGB에서 뽑는 방법·오차 검증(A-1). 공통형 `axis_endpoints_px` 추가와 유효 규칙 변경(A-8)은 완료(`4edf845`).
 
 ### 8.3 C에게 확인 → C-6·C-7 답 받음, 남은 것
 
@@ -343,7 +348,7 @@ C-6(전달 방식)·C-7(감시 자세)은 C 답을 §0에 옮겼습니다. C-8(�
 | C-10 | `sort_job_id`·`run_epoch`는 B가 어떻게 받나요? (액션 서버가 START 때 알려 주는 토픽·서비스, 또는 액션 goal에 C가 채움) |
 | C-11 | 벨트를 움직이게 하는 설정(시뮬레이션 모델)은 누가 만드나요? 감시 자세 시험 결과는 언제 나오나요? |
 | C-12 | 취소·중복 goal·C 재시작 때 C 동작 규칙. (높이는 B가 정함 §0.1. B 쪽은 같은 `part_track_id`를 결과 전까지 한 번만 보냄) |
-| C-14 | 인터페이스 패키지(`robot_ws/src/eyetoarm_interfaces`, `SortPart.action`)는 누가, 언제 만드나요? B 액션 클라이언트를 짜려면 필요합니다 |
+| ~~C-14~~ | ✅ **B가 만듦** (`a361b0c`): `robot_ws/src/eyetoarm_interfaces`의 `action/SortPart.action`·`msg/GraspCandidate.msg`. 필드는 §7.2 제안 그대로. C는 액션 서버에서 이 양식을 쓰면 됩니다. 바꿀 점이 있으면 알려 주세요 |
 | C-15 | 볼트 상자를 벨트 건너편으로 옮겼습니다(2026-11-17): BOLT_A (720, −50), BOLT_B (720, 170) mm, 90° 돌림. 먼 모서리 0.79~0.82 m, 놓는 높이 180 mm에서 팔이 닿는지, 벨트 위로 지날 때 충돌이 없는지 확인 부탁드립니다 |
 | C-16 | 볼트 집는 점은 **축 가운데 Pb**(머리 포함 중점에서 축 끝 쪽 3 mm, 높이 105 mm)로 보냅니다. 짧은 볼트(BOLT_A)는 축이 12 mm라 집게 손가락이 머리에 걸리지 않는지 확인 부탁드립니다 |
 
