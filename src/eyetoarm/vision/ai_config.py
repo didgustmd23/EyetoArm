@@ -9,6 +9,9 @@
 - `method` 키가 정규형에 있으므로 `PlanarConfig`(정규형에 method 없음)와 설정 ID 공간이 겹치지 않는다.
 - 필드 이름·범위는 계획의 **A 내부 제안**이다. `conf_threshold` 등 값은 운영 확정값이 아니며 설정 파일로 조절한다.
 - 1단계(표시용)는 `retina_masks=True`만 받는다. 마스크가 predict에 넘긴 crop 해상도로 나오므로 A는 ROI 오프셋만 더한다.
+- `axis_extractor`(#168, 선택 키, 기본 None=꺼짐): 볼트 축 두 끝점 추출기 opt-in. 현재 값은 `"m1"`(`vision/axis_endpoints.extract_m1`)
+  하나뿐이다. **None이면 정규 JSON에 넣지 않는다**(기존 설정 파일·설정 ID가 그대로다). 켠 설정은 다른 설정 ID가 된다.
+  켠 관측의 `valid=True`는 추출기 형식 조건 통과 뜻이며 정확도·운영 승인이 아니다(#167 K0 사용자 결정).
 """
 from __future__ import annotations
 
@@ -32,6 +35,10 @@ _DEVICE_RE = re.compile(r"cpu|[0-9]+")
 _CLASS_KEY_RE = re.compile(r"0|[1-9][0-9]*")
 _IMGSZ_STEP, _IMGSZ_MIN, _IMGSZ_MAX = 32, 32, 4096
 _MAX_DET_MAX = 1000
+
+# 볼트 축 끝점 추출기 선택 값(#168). None = 꺼짐
+AXIS_EXTRACTORS = ("m1",)
+_OPTIONAL_KEYS = frozenset({"axis_extractor"})
 
 
 def _is_int(v) -> bool:
@@ -144,6 +151,7 @@ class AiSegConfig:
     roi: tuple[int, int, int, int] | None
     min_mask_area_px: int
     border_margin_px: int
+    axis_extractor: str | None = None
     config_sha256: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -225,6 +233,10 @@ class AiSegConfig:
 
             put(name, int(value))
 
+        # 끝점 추출기 opt-in(#168): None 또는 AXIS_EXTRACTORS 중 하나
+        if self.axis_extractor is not None and self.axis_extractor not in AXIS_EXTRACTORS:
+            raise ValueError(f"axis_extractor must be null or one of {AXIS_EXTRACTORS}: {self.axis_extractor!r}")
+
         put("config_sha256", hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest())
 
     @property
@@ -247,6 +259,10 @@ class AiSegConfig:
 
         for key in _config_keys():
             if key == "weights_path":
+                continue
+
+            # 선택 키는 None이면 넣지 않는다(기존 설정 ID 보존, #168)
+            if key in _OPTIONAL_KEYS and getattr(self, key) is None:
                 continue
 
             value = getattr(self, key)
@@ -312,7 +328,7 @@ def load_ai_config(path: str | os.PathLike) -> AiSegConfig:
         raise ValueError("config must be a JSON object")
 
     keys = set(_config_keys())
-    missing, unknown = keys - doc.keys(), doc.keys() - keys
+    missing, unknown = keys - doc.keys() - _OPTIONAL_KEYS, doc.keys() - keys
 
     if missing or unknown:
         raise ValueError(f"config keys mismatch: missing={sorted(missing)} unknown={sorted(unknown)}")
@@ -320,4 +336,4 @@ def load_ai_config(path: str | os.PathLike) -> AiSegConfig:
     return AiSegConfig(**doc)
 
 
-__all__ = ["AiSegConfig", "FORMAT_VERSION", "MODEL_FAMILIES", "load_ai_config"]
+__all__ = ["AXIS_EXTRACTORS", "AiSegConfig", "FORMAT_VERSION", "MODEL_FAMILIES", "load_ai_config"]

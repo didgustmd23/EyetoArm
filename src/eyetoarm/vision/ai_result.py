@@ -174,6 +174,13 @@ class AiInstance:
     - 기하 있음(바깥 윤곽 점 3개 이상·면적 > 0)일 때만 polygon이 있고, 없으면 None·`clipped=False`다.
     - `rejected` None·`SMALL_MASK` → polygon 필수, `EMPTY_MASK` → None 필수, `NON_TARGET_CLASS`·`LOW_CONFIDENCE`
       → 둘 다 허용(기하 판정보다 앞서 걸림). 비대상·점수 미달도 클래스·점수·사유를 보존한다.
+
+    축 끝점 추출 결과(#168, 설정 `axis_extractor`를 켠 작업의 볼트 인스턴스만, 기본값은 모두 「평가 안 함」):
+    - `axis_endpoints_px`: 추출기가 형식 조건을 통과한 끝점(float64 (2, 2) 읽기 전용, 행 0 머리 끝·행 1 축 끝, 원본 프레임 픽셀).
+      이 값은 추출기 출력이며 정확도 승인이 아니다.
+    - `axis_reason`: 추출하지 않았거나 추출기가 무효를 낸 사유. 끝점과 동시에 있을 수 없다.
+    - `axis_max_iou`: 같은 작업의 다른 비거부 볼트 마스크와의 최대 IoU(겹침 판정용, 다른 볼트가 없으면 0.0).
+    - `axis_diag`: 추출기 진단값(수·문자열만, 기록용).
     """
 
     index: int
@@ -187,6 +194,43 @@ class AiInstance:
     hole_count: int
     clipped: bool
     rejected: str | None
+    axis_endpoints_px: np.ndarray | None = None
+    axis_reason: str | None = None
+    axis_max_iou: float | None = None
+    axis_diag: dict | None = None
+
+    @property
+    def axis_evaluated(self) -> bool:
+        """축 끝점 경로가 이 인스턴스를 다뤘는가(끝점 또는 사유가 있음)."""
+        return self.axis_endpoints_px is not None or self.axis_reason is not None
+
+    def _check_axis(self, put) -> None:
+        """축 끝점 필드(#168)를 검사·소유 복사한다."""
+        endpoints = self.axis_endpoints_px
+
+        if endpoints is not None:
+            owned = np.array(endpoints, dtype=np.float64, copy=True)
+
+            if owned.shape != (2, 2) or not np.all(np.isfinite(owned)):
+                raise ValueError(f"axis_endpoints_px must be finite (2, 2): {owned.shape}")
+
+            owned.setflags(write=False)
+            put("axis_endpoints_px", owned)
+
+        if self.axis_reason is not None and (not isinstance(self.axis_reason, str) or not self.axis_reason):
+            raise ValueError(f"axis_reason must be None or a non-empty string: {self.axis_reason!r}")
+
+        if endpoints is not None and self.axis_reason is not None:
+            raise ValueError("axis_endpoints_px and axis_reason are mutually exclusive")
+
+        if self.axis_max_iou is not None:
+            put("axis_max_iou", _finite(self.axis_max_iou, "axis_max_iou", lo=0.0, hi=1.0))
+
+        if self.axis_diag is not None:
+            if not isinstance(self.axis_diag, dict):
+                raise ValueError("axis_diag must be a dict or None")
+
+            put("axis_diag", dict(self.axis_diag))
 
     def __post_init__(self) -> None:
         """필드를 검증·정규화하고 polygon 허용 조합을 검사한다."""
@@ -240,6 +284,8 @@ class AiInstance:
 
         if self.rejected in _POLYGON_FORBIDDEN and polygon is not None:
             raise ValueError(f"rejected={self.rejected!r} must not carry a polygon")
+
+        self._check_axis(put)
 
     @property
     def in_scope(self) -> bool:
