@@ -33,6 +33,9 @@ from eyetoarm.transforms.live_tf_buffer import TfRewindReadiness
 from eyetoarm.vision.live_observation_state import SIM_TIME_REWIND, LiveObservationConfig, LiveObservationState
 
 
+_INIT_FAILURE_CLOSE_LIMIT_S = 1.0   # 생성 실패 때 이미 만든 부품을 닫는 상한(s, A 임시값)
+
+
 @dataclass(frozen=True)
 class RunFrame:
     """세션 slot에서 꺼낸 영상(출처 실행 표지 포함)."""
@@ -80,11 +83,26 @@ class LiveRunSession:
         self.cleanup_attempts = 0
         self.counts: dict[str, int] = {}
         self.tf = make_tf()
-        self.slot = make_slot(self._on_boundary)
-        self.dispatcher = make_dispatcher(self.state, self.tf)
-        self.readiness = TfRewindReadiness(self.state, clear=lambda: None, has_static=self.tf.has_static,
-                                           lookup=self.tf.lookup, world_frame=world_frame, static_pairs=static_pairs,
-                                           wait_limit_s=wait_limit_s, future_tolerance_ns=future_tolerance_ns)
+        self.dispatcher = None
+
+        try:
+            self.slot = make_slot(self._on_boundary)
+            self.dispatcher = make_dispatcher(self.state, self.tf)
+            self.readiness = TfRewindReadiness(self.state, clear=lambda: None, has_static=self.tf.has_static,
+                                               lookup=self.tf.lookup, world_frame=world_frame, static_pairs=static_pairs,
+                                               wait_limit_s=wait_limit_s, future_tolerance_ns=future_tolerance_ns)
+        except Exception:
+            # 부분 생성 실패(#180 #7): 이미 시작한 TF 묶음·만든 디스패처를 닫고 원래 예외를 올린다. 정리 실패는 원래 예외를 가리지 않는다
+            for part in (self.dispatcher, self.tf):
+                if part is None:
+                    continue
+
+                try:
+                    part.close(_INIT_FAILURE_CLOSE_LIMIT_S)
+                except Exception:  # noqa: BLE001 - 정리 경로: 원래 생성 실패를 그대로 올리는 것이 우선
+                    pass
+
+            raise
 
     def _count(self, key: str) -> None:
         with self._lock:
@@ -103,7 +121,12 @@ class LiveRunSession:
             self.state.run_end(self.reset_reason)
             return
 
-        self.state.on_rx_boundary(epoch, kind)
+        try:
+            self.state.on_rx_boundary(epoch, kind)
+        except Exception:
+            # 현재성 갱신 실패를 slot 계수로만 두면 이전 수락이 현재로 남는다(#180 #5). 상태를 닫고 slot에 알린다
+            self.state.fail("boundary_hook_error")
+            raise
 
     # ------------------------------------------------------------------ 제어 흐름
 
