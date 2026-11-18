@@ -21,6 +21,7 @@ setup(
         'console_scripts': [
             'tcp_server = robot_server_package.tcp_server:main',
             'display_relay = robot_server_package.display_relay:main',
+            'planning_scene_manager = robot_server_package.planning_scene_manager:main',
         ],
     },
 )
