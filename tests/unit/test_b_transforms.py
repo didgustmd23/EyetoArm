@@ -511,3 +511,30 @@ class TestEndpointInput(unittest.TestCase):
         stage.compute_budget_ms = -1.0                       # 항상 넘게 해서 확인
         out = stage.process(make_obs(to_px(bolt(0.046, 0.55, -0.05, 20)).astype(np.float32)), make_frame())
         self.assertEqual((out.goal["kind"], out.goal["reason"]), ("SKIP", "B_TIMEOUT"))
+
+
+class TestBCTestVectors(unittest.TestCase):
+    """C 요청 CB-02 시험값(`config/robot/b_c_test_vectors.json`)이 지금 B 코드 결과와 같은지."""
+
+    def test_vectors_match_build_sort_goal(self):
+        import json
+        from eyetoarm.transforms.grasp import build_sort_goal
+        from eyetoarm.transforms.work_result import WorkPlanarResult
+
+        data = json.loads((ROOT / "config/robot/b_c_test_vectors.json").read_text(encoding="utf-8"))
+        frames = yaml.safe_load((ROOT / "config/robot/frames.yaml").read_text(encoding="utf-8"))
+        specs = load_specs(ROOT / "config/calibration/part_specs.json")
+        m = lambda v: None if v is None else tuple(x / 1000.0 for x in v)
+
+        for case in data["cases"]:
+            with self.subTest(case["name"]):
+                i = case["input"]
+                r = WorkPlanarResult(
+                    center_w_m=m(i["center_mm"]), plane_z_m=i["plane_z_mm"] / 1000.0, theta_deg=i["theta_deg"],
+                    theta_valid=i["theta_deg"] is not None, spec=i["spec"], class_name=None, measured_length_m=0.0,
+                    measured_width_m=0.0, aspect_ratio=0.0, area_w_m2=0.0, contour_w_m=np.zeros((0, 2)), valid=True,
+                    reason=None, reason_owner=None, calibration_id="cal-test", camera_frame="link_cam_optical_frame",
+                    compute_ms=0.0, grasp_w_m=m(i["grasp_mm"]))
+                goal = build_sort_goal(r, source_id="link_cam", stamp_ns=1000, frames=frames, specs=specs)
+                for key, want in case["expected"].items():
+                    self.assertEqual(goal.get(key), want, key)

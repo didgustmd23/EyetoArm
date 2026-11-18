@@ -729,8 +729,11 @@ B의 책임: 기준 자세 보정, 의도 판정(유지 시간·히스테리시�
 | `src/eyetoarm/transforms/grasp.py` | `build_sort_goal()`: B 결과 → C 목표 사전 |
 | `src/eyetoarm/transforms/overlay.py` | 중심점 주석 영상 그리기 |
 | `src/eyetoarm/transforms/b_stage.py` | **A가 부를 B 입구** `BStage.process(관측, 프레임)`·`consume(frame, obs)`: 촬영 시각 TF(`RosTfLookup`) → 판정 → C 목표·D 표시 사전. 두 사전에 같은 연결 키(`correlation_keys`: `run_id`·`capture_generation`·`generation`·`job_seq`·`detector_config_id`·촬영 시각)를 붙이고, 표시 사전에는 `center_px`(원본 사진 픽셀 중심)도 넣음. `make_c_handoff(loop, queue)`로 C asyncio 대기열에 스레드 안전하게 넘김(SKIP 제외, 가득 차면 가장 오래된 것 버림). `render_center()`로 center 영상 |
-| `src/eyetoarm/transforms/sort_part_client.py` | **B → C 액션 클라이언트** `/sort_part`. `goal_to_msg()`: B 목표 사전 → `SortPart.Goal`. `SortPartClient.send`를 `stage.on_output`에 붙임. `SKIP`은 보내지 않고, C 서버가 없으면 기다리지 않고 건너뜀. 진행(`stage`)·결과(`status`·`reason`)를 기록하고, 결과가 오면 `stage.release(part_track_id)` |
+| `src/eyetoarm/transforms/sort_part_client.py` | **B → C 액션 클라이언트** `/sort_part`. `goal_to_msg()`: B 목표 사전 → `SortPart.Goal`. `SortPartClient.send`를 `stage.on_output`에 붙임. `SKIP`은 보내지 않고, C 서버가 없으면 기다리지 않고 건너뜀. 진행(`stage`)·결과(`status`·`reason`)를 기록하고, 결과가 오면 `stage.release(part_track_id)`. 같은 종류(`PICK_PLACE`/`PASS_THROUGH`)가 결과 대기 중이면 새 목표를 보내지 않음(`busy`, 팔 1대) |
 | `robot_ws/src/eyetoarm_interfaces/` | 액션 양식 `action/SortPart.action`, `msg/GraspCandidate.msg` (B 협업 요청 §7.2 필드, C-14) |
+| `config/robot/b_c_test_vectors.json` | B→C 시험값 4건(C 요청 CB-02): 알려진 입력 → B 목표. `test_b_transforms.py`가 B 코드 결과와 같은지 확인 |
+| `scripts/b_fake_sort_part_server.py` | 시험용 가짜 C `/sort_part` 서버(로봇 안 움직임, `--fail`로 실패 회신). C 서버가 나오면 안 씀 |
+| `scripts/b_send_test_goal.py` | 시험값을 B 클라이언트로 `/sort_part`에 보내는 B·C 연결 시험. 실행: `PYTHONPATH=src:$PYTHONPATH` (ROS 경로 유지) |
 | `scripts/b_live_view.py` | 시뮬레이션 링크 카메라에 B 좌표·판정을 겹쳐 보기, `--publish`로 `/b/center_overlay/image` |
 | `scripts/b_demo_synthetic.py` | ROS 없이 합성 영상으로 B 계산 확인 |
 | `tests/unit/test_b_transforms.py` | 렌즈 값·투영 왕복·판정·A 관측→C 목표·B 입구·A 실행기 연결·YOLO 클래스 이름·연결 키·center_px·C 대기열 넘기기·집는 구간·높이·같은 부품·두 끝점·종류별 높이·시간 상한 48개 |
