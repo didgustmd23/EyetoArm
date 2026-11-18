@@ -69,7 +69,11 @@ def goal_to_msg(goal: dict, goal_cls, candidate_cls):
 
 
 class SortPartClient:
-    """`stage.on_output = client.send` 로 붙인다. A 실행기 스레드에서 불려도 막히지 않는다."""
+    """`stage.on_output = client.send` 로 붙인다. A 실행기 스레드에서 불려도 막히지 않는다.
+
+    같은 종류(`PICK_PLACE` / `PASS_THROUGH`)의 목표가 C 결과를 기다리는 중이면 새 목표를 보내지 않는다(`busy`).
+    팔이 1대라 집기는 한 번에 하나(B 상세설계 §16.3 사이클). `part_track_id`(A-6)가 없어도 같은 볼트를 연달아 보내지 않는다.
+    """
 
     def __init__(self, node, stage=None, action_name: str = ACTION_NAME):
         from rclpy.action import ActionClient
@@ -86,7 +90,8 @@ class SortPartClient:
     # ---------- 보내기 ----------
     def send(self, out) -> bool:
         goal = out.goal if hasattr(out, "goal") else out
-        if goal.get("kind") not in SEND_KINDS:
+        kind = goal.get("kind")
+        if kind not in SEND_KINDS:
             self.stats["skip"] += 1
             return False
         if not self.client.server_is_ready():        # C 서버 없음 → 기다리지 않음
@@ -98,7 +103,14 @@ class SortPartClient:
         gid = msg.goal_id or str(_uuid.uuid4())
         msg.goal_id = gid
         with self._lock:
-            self.inflight[gid] = {"part_track_id": goal.get("part_track_id"), "stage": "SENT", "status": None}
+            busy = any(v["kind"] == kind for v in self.inflight.values())
+            if not busy:
+                self.inflight[gid] = {"kind": kind, "part_track_id": goal.get("part_track_id"),
+                                      "stage": "SENT", "status": None}
+        if busy:                                       # 같은 종류가 결과 대기 중 → 보내지 않음
+            self.stats["busy"] += 1
+            self._release(goal)                        # B 쪽 기억도 풀어 다음 사진에서 다시 보낼 수 있게
+            return False
         self.stats["sent"] += 1
 
         fut = self.client.send_goal_async(msg, feedback_callback=lambda fb: self._on_feedback(gid, fb),

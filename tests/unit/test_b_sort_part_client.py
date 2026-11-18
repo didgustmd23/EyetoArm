@@ -130,6 +130,45 @@ class SendTest(unittest.TestCase):
         c.send(GOAL)
         self.assertEqual((c.stats["rejected"], c.stage.released), (1, ["t7"]))
 
+    def test_busy_same_kind_not_sent_until_result(self):
+        ac = PendingActionClient()
+        c = make_client(ac)
+        self.assertTrue(c.send(dict(GOAL)))
+        second = dict(GOAL, goal_id="3f0c2a8e-1111-4a2b-9c3d-000000000002", part_track_id="t8")
+        self.assertFalse(c.send(second))                       # 팔 1대: 집기 대기 중 → 안 보냄
+        self.assertEqual((len(ac.sent), c.stats["busy"], c.stage.released), (1, 1, ["t8"]))
+        ac.finish(0)                                           # C 결과 도착
+        self.assertTrue(c.send(second))
+        self.assertEqual(len(ac.sent), 2)
+
+    def test_pass_through_not_blocked_by_pick(self):
+        ac = PendingActionClient()
+        c = make_client(ac)
+        self.assertTrue(c.send(dict(GOAL)))
+        nut = {"kind": "PASS_THROUGH", "goal_id": "3f0c2a8e-1111-4a2b-9c3d-000000000003", "spec": "NUT",
+               "observed_position_mm": [550.0, 0.0, 105.7]}
+        self.assertTrue(c.send(nut))                           # 종류가 다르면 보냄
+        self.assertEqual((len(ac.sent), c.stats["busy"]), (2, 0))
+
+
+class PendingActionClient(FakeActionClient):
+    """수락만 하고 결과는 `finish(i)`를 부를 때 오는 가짜 서버."""
+
+    def __init__(self):
+        super().__init__()
+        self._result_cbs = []
+
+    def send_goal_async(self, msg, feedback_callback=None, goal_uuid=None):
+        self.sent.append((msg, goal_uuid))
+        result = SimpleNamespace(result=SimpleNamespace(status="SUCCEEDED", reason=""))
+        pending = SimpleNamespace(add_done_callback=lambda cb: self._result_cbs.append((cb, result)))
+        handle = SimpleNamespace(accepted=True, get_result_async=lambda: pending)
+        return Future(handle)
+
+    def finish(self, i):
+        cb, result = self._result_cbs[i]
+        cb(Future(result))
+
 
 if __name__ == "__main__":
     unittest.main()

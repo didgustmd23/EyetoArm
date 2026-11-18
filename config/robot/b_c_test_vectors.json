@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "purpose": "B -> C 시험값 (C 요청 CB-02). 알려진 작업 좌표 입력 -> B가 만드는 C 목표. C는 같은 값으로 집기·놓기 변환을 맞춰 본다.",
+  "notes": [
+    "단위: 위치 mm, 각도 deg, 방향 쿼터니언 [x, y, z, w]. 기준 좌표 base_link (= world).",
+    "집는 점은 집게 가운데 G 기준. G -> tool0 오프셋은 적용 전 값이다(C가 적용, CB-5).",
+    "grasp_candidates는 180° 다른 후보 2개, C가 고른다. 쿼터니언 부호가 반대여도 같은 방향이다.",
+    "SKIP 목표는 C로 보내지 않는다. 여기서는 B가 거르는지 확인용.",
+    "config/robot/frames.yaml·config/calibration/part_specs.json이 바뀌면 이 파일도 다시 만든다. 시험: tests/unit/test_b_transforms.py"
+  ],
+  "cases": [
+    {
+      "name": "bolt_a_along_x",
+      "input": {"spec": "BOLT_A", "center_mm": [550.0, -100.0], "grasp_mm": [553.0, -100.0], "theta_deg": 0.0, "plane_z_mm": 105.0},
+      "expected": {
+        "kind": "PICK_PLACE", "reason": null, "frame_id": "base_link",
+        "observed_position_mm": [550.0, -100.0, 105.0],
+        "grasp_candidates": [
+          {"position_mm": [553.0, -100.0, 105.0], "orientation_xyzw": [0.707107, 0.707107, 0.0, 0.0], "closing_yaw_deg": 90.0},
+          {"position_mm": [553.0, -100.0, 105.0], "orientation_xyzw": [0.707107, -0.707107, 0.0, 0.0], "closing_yaw_deg": -90.0}
+        ],
+        "gripper_opening_mm": 20.0, "approach_height_mm": 205.0, "lift_height_mm": 250.0,
+        "place": {"bin": "BOLT_A", "position_mm": [720.0, -50.0, 180.0], "orientation_xyzw": [0.707105, 0.707108, 0.0, 0.0]}
+      }
+    },
+    {
+      "name": "bolt_b_along_y",
+      "input": {"spec": "BOLT_B", "center_mm": [550.0, 200.0], "grasp_mm": [550.0, 203.0], "theta_deg": 90.0, "plane_z_mm": 105.0},
+      "expected": {
+        "kind": "PICK_PLACE", "reason": null, "frame_id": "base_link",
+        "observed_position_mm": [550.0, 200.0, 105.0],
+        "grasp_candidates": [
+          {"position_mm": [550.0, 203.0, 105.0], "orientation_xyzw": [0.0, -1.0, 0.0, 0.0], "closing_yaw_deg": -180.0},
+          {"position_mm": [550.0, 203.0, 105.0], "orientation_xyzw": [1.0, 0.0, 0.0, 0.0], "closing_yaw_deg": 0.0}
+        ],
+        "gripper_opening_mm": 20.0, "approach_height_mm": 205.0, "lift_height_mm": 250.0,
+        "place": {"bin": "BOLT_B", "position_mm": [720.0, 170.0, 180.0], "orientation_xyzw": [0.707105, 0.707108, 0.0, 0.0]}
+      }
+    },
+    {
+      "name": "nut_center",
+      "input": {"spec": "NUT", "center_mm": [550.0, 0.0], "grasp_mm": null, "theta_deg": null, "plane_z_mm": 105.7},
+      "expected": {"kind": "PASS_THROUGH", "reason": null, "frame_id": "base_link", "observed_position_mm": [550.0, 0.0, 105.7]}
+    },
+    {
+      "name": "bolt_out_of_reach",
+      "input": {"spec": "BOLT_B", "center_mm": [550.0, 500.0], "grasp_mm": null, "theta_deg": 0.0, "plane_z_mm": 105.0},
+      "expected": {"kind": "SKIP", "reason": "OUT_OF_REACH", "frame_id": "base_link", "observed_position_mm": [550.0, 500.0, 105.0]}
+    }
+  ]
+}
