@@ -39,7 +39,7 @@ import math
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
 
@@ -77,12 +77,17 @@ _STATUS_OF = {
 
 @dataclass(frozen=True)
 class CameraProfileInfo:
-    """수신한 `CameraInfo`의 식별 정보. `calibration_id`는 B `from_camera_info`가 만든 값이다."""
+    """수신한 `CameraInfo`의 식별 정보. `calibration_id`는 B `from_camera_info`가 만든 값이다.
+
+    `camera`(#171 R1, 선택): 같은 CameraInfo에서 만든 B `CameraProfile`(K·왜곡) 원본. 같음 비교·repr에는 넣지 않는다(경계 판정은
+    지금처럼 식별 정보로만 한다. `calibration_id`가 K·왜곡·해상도 해시라 내용이 다르면 식별 정보도 다르다).
+    """
 
     calibration_id: str
     width: int
     height: int
     frame_id: str
+    camera: object | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -205,7 +210,8 @@ class GenerationMirror:
 
 _STATS_KEYS = ("received", "accepted", "overwritten", "duplicate_stamp", "stale_epoch", "stale_after_rewind",
                "rewind_filter_released", "frame_id_mismatch", "boundaries", "notices", "taken", "resume_boundaries",
-               "graph_change_absorbed", "graph_change_during_gap", "rewind_merged_into_resume")
+               "graph_change_absorbed", "graph_change_during_gap", "rewind_merged_into_resume",
+               "boundary_hook_errors")
 
 
 class LiveFrameSlot:
@@ -217,11 +223,17 @@ class LiveFrameSlot:
     """
 
     def __init__(self, config: LiveSlotConfig, *, generation: GenerationMirror,
-                 clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
-        """설정·세대 사본·PC 단조 시계를 받는다. 시작 시각을 한 번 읽는다(첫 영상 제한시간 기준)."""
+                 clock_ns: Callable[[], int] = time.monotonic_ns,
+                 boundary_hook: Callable[[int, BoundaryKind], None] | None = None) -> None:
+        """설정·세대 사본·PC 단조 시계를 받는다. 시작 시각을 한 번 읽는다(첫 영상 제한시간 기준).
+
+        `boundary_hook(epoch, kind)`(#171 R1, 선택, 기본 None): 경계마다 **이 잠금 안에서** epoch를 올린 직후 부른다(잠금 순서
+        slot → 훅 쪽 잠금). 훅은 이 slot의 잠금을 다시 잡거나 오래 막으면 안 된다. 예외는 잡아서 `boundary_hook_errors`로 센다.
+        """
         self._config = config
         self._generation = generation
         self._clock_ns = clock_ns
+        self._boundary_hook = boundary_hook
         self._cond = threading.Condition()
 
         # epoch(R1~R3)
@@ -569,6 +581,13 @@ class LiveFrameSlot:
         """epoch를 올리고 같은 잠금 안에서 경계를 대기열에 넣는다."""
         self._rx_epoch += 1
         self._stats["boundaries"] += 1
+
+        if self._boundary_hook is not None:
+            try:
+                self._boundary_hook(self._rx_epoch, kind)
+            except Exception:  # 훅 결함이 수신을 멈추지 않게 한다. 수는 stats로 드러낸다
+                self._stats["boundary_hook_errors"] += 1
+
         self._push(LiveInput(kind=kind, epoch=self._rx_epoch, detail=detail, event_monotonic_ns=now, profile=profile))
 
     def _notice(self, kind: NoticeKind, detail: str, now: int) -> None:

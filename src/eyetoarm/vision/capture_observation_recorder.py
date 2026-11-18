@@ -2,7 +2,7 @@
 
 근거: `_workspace/168_a_to_b_real_path_implementation_spec.md` §3, `transforms/b_stage.py`(`BStage.consume`·`render_center`).
 
-- `AToBCaptureRecorder.wrap(consume)`은 실행기 `b_consumer` 자리 함수다. `b_admit`(= `b_gate`)를 통과한 관측마다 실행기가 부른다.
+- `CaptureObservationRecorder.wrap(consume)`은 실행기 `b_consumer` 자리 함수다. `b_admit`(= `b_gate`)를 통과한 관측마다 실행기가 부른다.
   같은 `FramePacket`(관측을 만든 그 프레임)으로 `consume`을 부르고, **같은 `BOutput`**으로 `render_center(frame.image, [out])`를
   불러 원본 크기 주석 프레임을 만든다. 입력 배열은 바꾸지 않는다(호출 전후 지문 비교, 다르면 예외 → 실행 실패).
 - 주석 영상 정책: B 결과에 `T_W_C`가 있을 때만 PNG를 쓴다. `T_W_C`가 없으면(TF 없음·시간 초과 → B SKIP) 그럴듯한 위치를
@@ -11,9 +11,9 @@
 - `valid=True` 관측은 추출기 형식 조건 통과 뜻이다. 기록에 `valid_meaning`으로 명시한다(정확도·운영 승인 아님, #167 K0).
 - 출력 폴더는 새로 만든다(이미 있으면 FileExistsError). 파일은 덮어쓰지 않는다(`open(..., "x")`).
 - C·D로 보내지 않는다. `stage.on_output`을 쓰지 않는다.
-- A→B 경계는 입력 봉투(`vision/a_to_b_envelope.AToBEnvelope`, 버전 명시)다. 촬영 정보·TF는 녹화 메타 레코드에서 만들고 프레임·관측과
+- A→B 경계는 입력 봉투(`vision/observation_envelope.ObservationEnvelope`, 버전 명시)다. 촬영 정보·TF는 녹화 메타 레코드에서 만들고 프레임·관측과
   대조한다. 봉투 오류는 B를 부르지 않고 `b_input_rejected`로 기록한다(실행 끝 판정에서 종료 1). 봉투 전체는 B 입구 어댑터
-  (`transforms/a_to_b_envelope_adapter.AToBEnvelopeAdapter`)로 간다. 어댑터는 계산에 frame·관측만 쓰고 확장은 받아서 돌려준다. TF는 봉투 것
+  (`transforms/observation_envelope_adapter.ObservationEnvelopeAdapter`)로 간다. 어댑터는 계산에 frame·관측만 쓰고 확장은 받아서 돌려준다. TF는 봉투 것
   (`EnvelopeTfLookup`)만 쓴다. 지금 A는 확장 필드를 만들지 않는다. 받은 확장·미지원·계산 사용 여부는 `b_adapter`로 기록한다(기록 키는 기존 계약 문자열 유지).
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
-from eyetoarm.vision.a_to_b_envelope import AToBEnvelopeError, CaptureInfo, CaptureTf, make_a_to_b_envelope
+from eyetoarm.vision.observation_envelope import ObservationEnvelopeError, CaptureInfo, CaptureTf, make_observation_envelope
 
 VALID_MEANING = "extractor-format (not accuracy/operational approval)"
 
@@ -91,13 +91,13 @@ class _Jsonl:
         self._stream.close()
 
 
-class AToBCaptureRecorder:
+class CaptureObservationRecorder:
     """B 결과(`b_outputs.jsonl`)·주석 영상(`annotated/*.png`)·terminal 응답(`frames.jsonl`) 기록기."""
 
     def __init__(self, out_dir: str, stage, meta, adapter, extension_source=None) -> None:
         """출력 폴더를 새로 만든다(있으면 FileExistsError).
 
-        `meta`는 CaptureMeta, `adapter`는 그 stage의 AToBEnvelopeAdapter. `extension_source(frame, obs)`는 봉투에 실을 확장 사전을 주는
+        `meta`는 CaptureMeta, `adapter`는 그 stage의 ObservationEnvelopeAdapter. `extension_source(frame, obs)`는 봉투에 실을 확장 사전을 주는
         주입 지점이다(기본 None = 확장 없음; A는 아직 확장을 생산하지 않는다).
         """
         self._meta = meta
@@ -139,11 +139,11 @@ class AToBCaptureRecorder:
 
     # ---- b_consumer ----
     def envelope(self, frame, obs):
-        """녹화 메타 레코드로 촬영 정보·TF를 만들어 봉투를 검사한다. 오류는 AToBEnvelopeError."""
+        """녹화 메타 레코드로 촬영 정보·TF를 만들어 봉투를 검사한다. 오류는 ObservationEnvelopeError."""
         record = self._meta.frames.get(getattr(frame, "source_index", -1))
 
         if record is None:
-            raise AToBEnvelopeError(f"no capture meta for source_index {getattr(frame, 'source_index', None)}")
+            raise ObservationEnvelopeError(f"no capture meta for source_index {getattr(frame, 'source_index', None)}")
 
         cam = self._meta.camera
         capture = CaptureInfo(stamp_ns=record.stamp_ns, optical_frame=record.frame_id, calibration_id=cam.calibration_id,
@@ -153,7 +153,7 @@ class AToBCaptureRecorder:
 
         extensions = None if self._extension_source is None else self._extension_source(frame, obs)
 
-        return make_a_to_b_envelope(frame, obs, capture=capture, camera=cam, tf=tf, world_frame=self._meta.world_frame,
+        return make_observation_envelope(frame, obs, capture=capture, camera=cam, tf=tf, world_frame=self._meta.world_frame,
                             extensions=extensions)
 
     def wrap(self, consume: Callable) -> Callable:
@@ -164,7 +164,7 @@ class AToBCaptureRecorder:
 
             try:
                 env = self.envelope(frame, obs)
-            except AToBEnvelopeError as exc:
+            except ObservationEnvelopeError as exc:
                 self.rejected += 1
                 self._b.write({"kind": "b_input_rejected", "input": _frame_keys(frame, obs), "error": str(exc)})
                 return None
@@ -237,4 +237,4 @@ class AToBCaptureRecorder:
         self._frames.close()
 
 
-__all__ = ["AToBCaptureRecorder", "VALID_MEANING"]
+__all__ = ["CaptureObservationRecorder", "VALID_MEANING"]

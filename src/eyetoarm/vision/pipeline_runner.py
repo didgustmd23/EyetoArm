@@ -232,6 +232,46 @@ def b_admit(pipeline: VisionPipeline, outcome: JobOutcome, live_source=None) -> 
     return live_source is None or bool(live_source.frame_current(outcome.context.frame))
 
 
+def b_skip_reason(pipeline: VisionPipeline, outcome: JobOutcome, live_source=None) -> str | None:
+    """`b_admit`가 거부한 이유(통과면 None). 실시간 관측 기록 연결(#173)이 계산을 건너뛴 사유를 남길 때 쓴다. 판정은 `b_admit`과 같다."""
+    if b_admit(pipeline, outcome, live_source):
+        return None
+
+    obs = outcome.observation
+    ctx = outcome.context
+
+    if outcome.duplicate:
+        return "duplicate"
+
+    if outcome.status is JobStatus.DISCARDED_GENERATION:
+        return "generation_discarded"
+
+    if outcome.status is not JobStatus.COMPLETED or not outcome.applied:
+        return f"job_{outcome.status.value.lower()}"
+
+    if not isinstance(obs, PlanarObservation) or obs.valid is not True:
+        return "invalid_observation"
+
+    if pipeline.closed:
+        return "pipeline_closed"
+
+    if ctx.generation != pipeline.current_generation():
+        return "generation_discarded"
+
+    profile = pipeline.settings.profile
+
+    if profile is None or not profile.applies_to(ctx.frame):
+        return "calibration_mismatch"
+
+    if pipeline.current_observation is not obs:
+        return "not_current_observation"
+
+    if live_source is not None and not live_source.frame_current(ctx.frame):
+        return "rx_epoch_stale"
+
+    return "b_gate_rejected"
+
+
 def display_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
     """표시 조건(#138 실시간 검출 확인 창). 최초 현재 적용 결과만 그린다.
 
@@ -491,7 +531,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         should_stop: Callable[[], bool] | None = None, versions: dict | None = None,
         detector_takes_token: bool = False, watch_clock: Callable[[], float] = time.monotonic,
         prepare: Callable[[], dict] | None = None, display_sink=None, handoff_sink=None,
-        part_tracker: PartTracker | None = None) -> RunResult:
+        part_tracker: PartTracker | None = None, live_observation_sink=None) -> RunResult:
     """저장 입력 한 번을 끝까지 처리한다. 예외를 밖으로 내지 않고 `RunResult`(종료 코드 포함)를 돌려준다.
 
     `source_factory(issuer, generation_provider)`는 실행기가 만든 단일 발급기와 `pipeline.current_generation`을
@@ -528,6 +568,12 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
       (`reconnect`·`sim_time_rewind`·`profile_changed`), FRAME_TIMEOUT이 아닌 입력 사건(`input_status:<상태>`)에서 reset한다(FRAME_TIMEOUT은
       보류, 이어진 재접속에서 reset). 추적 예외는 `tracking_failed` 기록·stderr·추적 끔으로 격리하며 종료 코드·코어 계수를 바꾸지 않는다
       (그 기록 쓰기 실패는 기존 log_failure). `PartTracker`가 아닌 값은 소스를 만들기 전에 `tracker_contract`로 종료 1. B·공통 관측으로 전파하지 않는다.
+    - `live_observation_sink`(#173, 기본 None=꺼짐): **실시간 소스 전용 기록 전용 시험 연결**(`vision.live_observation_link`).
+      D13은 그대로다: 실시간 소스의 `b_consumer`는 여전히 `b_consumer_not_allowed`로 거부한다. 이 연결부는 B를 이 제어 흐름에서
+      부르지 않고, terminal 응답마다 기록·표시 뒤에 `offer(outcome, skip_reason, rx_epoch)`(skip_reason = `b_skip_reason`, 통과면
+      None)로 넘길 뿐이다(전용 디스패처가 대기 1개 최신 우선·검사 ①②③으로 처리). 실시간 입력 항목은 반영·`input_applied` 뒤
+      `on_live_input(item, generation)`으로 넘긴다. 저장 입력과 함께 주거나 `b_consumer`와 함께 주면 `live_observation_contract`로
+      종료 1. 연결부는 호출자가 만들고 닫는다(run은 닫지 않음).
     """
     err = stderr if stderr is not None else sys.stderr
     issuer = FrameIdIssuer(run_id or new_run_id())
@@ -656,6 +702,11 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             result.b_calls += 1
             b_consumer(outcome.context.frame, outcome.observation)
 
+        # 실시간 관측 기록 연결(#173): 판정 사유와 수신 epoch만 넘기고 B는 전용 디스패처가 부른다(D13: b_consumer 아님)
+        if live_observation_sink is not None and live:
+            reason = b_skip_reason(pipeline, outcome, source)
+            live_observation_sink.offer(outcome, reason, source.frame_epoch(outcome.context.frame))
+
     def finish_detection(job: JobContext, value, exc: BaseException | None) -> None:
         """detector 반환·예외를 terminal로 정확히 한 번 보낸다(동기·worker 경로 공통 분류).
 
@@ -740,6 +791,9 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
                                            "generation_changed": event is not None})
             sync_records()
             source.input_applied(item, pipeline.current_generation())
+
+            if live_observation_sink is not None:
+                live_observation_sink.on_live_input(item, pipeline.current_generation())
 
             if display_sink is not None:
                 display_sink.on_input(kind.value, item.detail, pipeline.current_generation(), event is not None)
@@ -960,6 +1014,9 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         # 실시간 표시 단계에서는 B 계산 소비를 허용하지 않는다(계획 결정 D13, reviewer 지시)
         if live and b_consumer is not None:
             fail_run("b_consumer_not_allowed", "live source does not allow b_consumer in the display stage")
+            proceed = False
+        elif live_observation_sink is not None and (not live or b_consumer is not None):
+            fail_run("live_observation_contract", "live_observation_sink requires a live source and no b_consumer")
             proceed = False
         else:
             proceed = prepare is None or run_prepare()
@@ -1266,4 +1323,4 @@ def stored_source_factory(kind: str, paths: list[str], source_id: str):
     return factory
 
 
-__all__ = ["CancelToken", "JobCancelled", "RunnerConfig", "RunResult", "apply_seek", "b_admit", "b_gate", "display_gate", "run", "stored_source_factory"]
+__all__ = ["CancelToken", "JobCancelled", "RunnerConfig", "RunResult", "apply_seek", "b_admit", "b_gate", "b_skip_reason", "display_gate", "run", "stored_source_factory"]
