@@ -113,8 +113,13 @@ class SortPartClient:
             return False
         self.stats["sent"] += 1
 
-        fut = self.client.send_goal_async(msg, feedback_callback=lambda fb: self._on_feedback(gid, fb),
-                                          goal_uuid=_uuid_msg(gid))
+        try:
+            fut = self.client.send_goal_async(msg, feedback_callback=lambda fb: self._on_feedback(gid, fb),
+                                              goal_uuid=_uuid_msg(gid))
+        except Exception as exc:                     # 보내는 순간 실패해도 대기 표시를 남기지 않는다 (B-10)
+            self.stats["error"] += 1
+            self._finish(gid, goal, "ERROR", f"send: {type(exc).__name__}: {exc}")
+            return False
         fut.add_done_callback(lambda f: self._on_accepted(gid, goal, f))
         return True
 
@@ -125,7 +130,12 @@ class SortPartClient:
                 self.inflight[gid]["stage"] = fb.feedback.stage
 
     def _on_accepted(self, gid: str, goal: dict, fut) -> None:
-        handle = fut.result()
+        try:
+            handle = fut.result()
+        except Exception as exc:                     # 송신 실패·취소: 대기 표시를 지우고 부품을 풀어 준다 (A 요청 B-10)
+            self.stats["error"] += 1
+            self._finish(gid, goal, "ERROR", f"send: {type(exc).__name__}: {exc}")
+            return
         if not handle.accepted:
             self.stats["rejected"] += 1
             self._finish(gid, goal, "REJECTED", "")
@@ -133,7 +143,12 @@ class SortPartClient:
         handle.get_result_async().add_done_callback(lambda f: self._on_result(gid, goal, f))
 
     def _on_result(self, gid: str, goal: dict, fut) -> None:
-        res = fut.result().result
+        try:
+            res = fut.result().result
+        except Exception as exc:                     # 결과 받기 실패: 위와 같이 정리 (B-10)
+            self.stats["error"] += 1
+            self._finish(gid, goal, "ERROR", f"result: {type(exc).__name__}: {exc}")
+            return
         self.stats[res.status or "UNKNOWN"] += 1
         self._finish(gid, goal, res.status, res.reason)
 
