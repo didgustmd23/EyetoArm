@@ -24,10 +24,17 @@
   위상 판정은 같은 마스크에서 잰 `component_count`·`hole_count`(RETR_CCOMP, M1 내부 판정과 같은 기준)로 M1과 같은 순서에서 먼저 한다:
   화소 수(`area_px`) ≥ M1 `min_pixels`이면 조각 2개 이상 → MASK_FRAGMENTED, 구멍 1개 이상 → MASK_HOLE. 볼트 겹침 IoU도 래스터로 잰다.
   대상: 볼트 클래스, 거부 없음, 잘리지 않음. 끝점에는 ROI 오프셋만 더한다(원본 프레임 픽셀, RAW). 마스크는 결과·관측에 남기지 않는다.
-- 관측(`observation_from_ai`)은 #163 §4 표 순서의 첫 사유 하나를 쓴다: CALIBRATION_MISMATCH > 비거부 볼트 0개면 기존 표시 사유 >
-  CONTOUR_CLIPPED > MULTIPLE_CANDIDATES(볼트 마스크 IoU ≥ 0.5) > MULTIPLE_OBJECTS(비거부 볼트 2개 이상, (a) 유일할 때만) >
+- 관측(`observation_from_ai`)의 사유 이름과 순서는 #163 §4 표를 따른다(#174부터 프레임 전체가 아니라 물체별로 적용, 아래 단계 T): CALIBRATION_MISMATCH > 비거부 볼트 0개면 기존 표시 사유 >
+  CONTOUR_CLIPPED > MULTIPLE_CANDIDATES(볼트 마스크 IoU ≥ 0.5) > MULTIPLE_OBJECTS(유효 후보 2개 이상) >
   추출기 사유(MASK_FRAGMENTED·MASK_HOLE·AXIS_HEAD_AMBIGUOUS·AXIS_ORDER_INCONSISTENT·AXIS_VIEW_OBLIQUE·ENDPOINTS_INVALID 등) >
   AXIS_EXTRACTION_ERROR. 남은 경우(유일한 볼트의 추출 성공)만 `valid=True, observed_face="axis"`이다.
+- **#174 전환 단계 T(물체별 후보 자격)**: 근거 `_workspace/174_builder_a_multi_object_candidate_plan.md` r2 §5(r1 §2).
+  위 표 순서를 프레임 전체가 아니라 볼트마다 적용한다(`ai_result.axis_candidate_reason` 하나로 판정). 잘림·겹침 당사자(IoU ≥ 0.5 쌍의
+  양쪽)·추출 실패 볼트만 빠지고 떨어진 독립 볼트는 남는다. 보정 불일치는 지금처럼 프레임 단위로 먼저 막는다.
+  - 유효 후보 1개: 다른 물체가 보여도 그 볼트로 기존 단일 관측(`selected_index` = 원 index)을 만든다.
+  - 2개 이상: `MULTIPLE_OBJECTS` 무효(최종 목록 형식 B-09 합의 전이라 B를 부르지 않고 임의로 고르지 않는다). 후보는 기록에 남는다.
+  - 0개: 대표 사유 하나를 무효 사유로 쓴다(CONTOUR_CLIPPED > MULTIPLE_CANDIDATES > 가장 작은 index의 추출기 사유). **대표 사유는
+    진단·표시용**이며 유효 판정·B 호출은 후보별 자격으로만 정한다. 후보별 사유는 인스턴스 기록에 있다.
 - 이 `valid=True`는 **추출기 형식 조건 통과** 뜻이다. 정확도·운영 승인이 아니다(K0). 무효를 유효로 바꾸거나 polygon·이전 결과로
   대체하지 않는다. `#163`의 `AXIS_PROFILE_MISMATCH`는 M1에 구현되어 있지 않아 쓰지 않는다. 너트는 기존 사유(윗면 미구현) 그대로다.
 """
@@ -43,21 +50,20 @@ from eyetoarm.common.types import FramePacket, PixelBasis, PlanarObservation
 from eyetoarm.common.types import OBSERVED_FACE_AXIS
 from eyetoarm.vision.ai_config import AiSegConfig
 from eyetoarm.vision.axis_endpoints import MODEL_DERIVED, extract_m1
-from eyetoarm.vision.ai_result import (EMPTY_MASK, LOW_CONFIDENCE, NON_TARGET_CLASS, SMALL_MASK, AiInstance,
-                                       AiJobConfigError, AiSegResult, RawSegOutput)
+from eyetoarm.vision.ai_result import (AXIS_EXTRACTION_ERROR, CONTOUR_CLIPPED, EMPTY_MASK, LOW_CONFIDENCE,
+                                       MULTIPLE_CANDIDATES, NON_TARGET_CLASS, SMALL_MASK, AiInstance, AiJobConfigError,
+                                       AiSegResult, RawSegOutput, axis_candidate_reason)
 from eyetoarm.vision.pipeline_types import JobContext, SourceProfile
 from eyetoarm.vision.pixel_map import validate_roi
 from eyetoarm.vision.planar import _check_frame
 
 CALIBRATION_MISMATCH = "CALIBRATION_MISMATCH"
 TOP_FACE_UNRESOLVED = "TOP_FACE_UNRESOLVED"
-CONTOUR_CLIPPED = "CONTOUR_CLIPPED"
 NO_OBJECT = "NO_OBJECT"
 
 # 축 끝점 경로 프레임 사유(#163 §4 표)
-MULTIPLE_CANDIDATES = "MULTIPLE_CANDIDATES"
+# (CONTOUR_CLIPPED·MULTIPLE_CANDIDATES·AXIS_EXTRACTION_ERROR는 물체별 자격 함수와 함께 ai_result에 있다)
 MULTIPLE_OBJECTS = "MULTIPLE_OBJECTS"
-AXIS_EXTRACTION_ERROR = "AXIS_EXTRACTION_ERROR"
 AXIS_OVERLAP_IOU = 0.5   # #163 §4 「볼트 마스크끼리 IoU ≥ 0.5」(명세 상수, #159 결과로 정하지 않음)
 
 # 기록에 남길 추출기 진단 키(수·문자열만)
@@ -128,6 +134,11 @@ def _extract_axis(inst: AiInstance, offset: np.ndarray, crop_wh: tuple[int, int]
         return mask, None, est.reason or AXIS_EXTRACTION_ERROR, diag
 
     return mask, est.endpoints_px + offset.astype(np.float64), None, diag
+
+
+def overlaps(iou: float) -> bool:
+    """겹침 당사자 판정 술어(#163 §4 「IoU ≥ 0.5」, 경계 0.5 포함)."""
+    return iou >= AXIS_OVERLAP_IOU
 
 
 def _iou(a: np.ndarray, b: np.ndarray) -> float:
@@ -254,10 +265,12 @@ def convert(raw: RawSegOutput, frame: FramePacket, config: AiSegConfig, *,
 
         instances.append(inst)
 
-    # 볼트끼리 겹침(#163 §4 MULTIPLE_CANDIDATES): 비거부 볼트 polygon 래스터 쌍의 최대 IoU(래스터가 없는 볼트는 polygon을 새로 그림)
+    # 볼트끼리 겹침(#163 §4 MULTIPLE_CANDIDATES): 비거부 볼트 polygon 래스터 쌍의 최대 IoU(래스터가 없는 볼트는 polygon을 새로 그림).
+    # #174: IoU ≥ AXIS_OVERLAP_IOU인 쌍은 양쪽 모두 상대 index를 `axis_overlap_with`에 남긴다(겹침 당사자). 잘린 볼트도 쌍에 든다
     if config.axis_extractor is not None:
         bolts = [k for k, inst in enumerate(instances) if inst.axis_evaluated]
         best = {k: 0.0 for k in bolts}
+        partners: dict[int, list[int]] = {k: [] for k in bolts}
         shapes = {k: rasters[k] if k in rasters else rasterize_polygon(instances[k].polygon, offset, crop_wh)
                   for k in bolts}
 
@@ -266,8 +279,13 @@ def convert(raw: RawSegOutput, frame: FramePacket, config: AiSegConfig, *,
                 iou = _iou(shapes[a], shapes[b])
                 best[a], best[b] = max(best[a], iou), max(best[b], iou)
 
+                if overlaps(iou):
+                    partners[a].append(b)
+                    partners[b].append(a)
+
         for k in bolts:
-            instances[k] = dataclasses.replace(instances[k], axis_max_iou=best[k])
+            instances[k] = dataclasses.replace(instances[k], axis_max_iou=best[k],
+                                               axis_overlap_with=tuple(sorted(partners[k])) or None)
 
     t1 = time.perf_counter_ns()
     post_ms = (t1 - t0) / 1e6
@@ -303,21 +321,24 @@ def axis_selection(result: AiSegResult, frame: FramePacket, profile: SourceProfi
     if not bolts:
         return None, display_reason(result, frame, profile)
 
-    if any(i.clipped for i in bolts):
-        return None, CONTOUR_CLIPPED
+    # 물체별 자격(#174): 집계(`result.axis_valid_indices`)와 같은 함수 결과만 쓴다
+    reasons = [(i, axis_candidate_reason(i)) for i in bolts]
+    valid = [i for i, r in reasons if r is None]
 
-    if any((i.axis_max_iou or 0.0) >= AXIS_OVERLAP_IOU for i in bolts):
-        return None, MULTIPLE_CANDIDATES
+    if len(valid) == 1:
+        return valid[0], None
 
-    if len(bolts) >= 2:
-        return None, MULTIPLE_OBJECTS
+    if len(valid) >= 2:
+        return None, MULTIPLE_OBJECTS   # B-09 합의 전: 기록만, 임의 선택·B 호출 없음
 
-    only = bolts[0]
+    # 유효 0개: 대표 사유(진단용). 표 순서 앞선 것, 추출기 사유끼리는 가장 작은 index
+    found = [r for _, r in reasons]
 
-    if only.axis_endpoints_px is None:
-        return None, only.axis_reason or AXIS_EXTRACTION_ERROR
+    for first in (CONTOUR_CLIPPED, MULTIPLE_CANDIDATES):
+        if first in found:
+            return None, first
 
-    return only, None
+    return None, found[0]
 
 
 def observation_from_ai(job: JobContext, result: AiSegResult) -> PlanarObservation:
@@ -357,5 +378,5 @@ def observation_from_ai(job: JobContext, result: AiSegResult) -> PlanarObservati
         method="ai", class_name=None, confidence=None, model_id=result.model_id)
 
 
-__all__ = ["AXIS_EXTRACTION_ERROR", "AXIS_OVERLAP_IOU", "MULTIPLE_CANDIDATES", "MULTIPLE_OBJECTS", "axis_selection", "convert",
+__all__ = ["AXIS_EXTRACTION_ERROR", "AXIS_OVERLAP_IOU", "MULTIPLE_CANDIDATES", "MULTIPLE_OBJECTS", "axis_selection", "convert", "overlaps",
            "crop_frame", "display_reason", "observation_from_ai", "rasterize_polygon"]

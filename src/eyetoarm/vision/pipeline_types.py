@@ -194,6 +194,8 @@ class ProcessRecord:
     - AI 기록(YOLO 연결 계획 r2 §4.6, A §9): `method`("opencv"·"ai", 시작 설정 기준), `model_id`(AI만), `infer_ms`
       (AI 완료의 predict 호출 ms), `ai_instances`(AI 완료의 인스턴스별 클래스·점수·거부·잘림·면적 dict 튜플, 다각형 없음).
       모두 기본값 None인 끝 필드다. 실패·중단·세대 폐기에는 인스턴스가 없다.
+    - `axis_valid_count`(#174): 축 경로를 켠 AI 완료 작업의 **픽셀 후보 수**(`AiSegResult.axis_valid_count`). 보정·세대·현재성
+      검사 뒤 B로 간 수가 아니다(그것은 `valid`와 B 제출 기록으로 본다). None이면 기록 줄에 키를 쓰지 않는다(축 경로를 끈 기록 호환).
     """
 
     run_id: str
@@ -220,6 +222,7 @@ class ProcessRecord:
     model_id: str | None = None
     infer_ms: float | None = None
     ai_instances: tuple | None = None
+    axis_valid_count: int | None = field(default=None, metadata={"omit_if_none": True})
 
     def __post_init__(self) -> None:
         """명령 ID를 만들지 않는다는 계약과 eval_run_id 형식(None 또는 비어 있지 않은 문자열)을 검사한다."""

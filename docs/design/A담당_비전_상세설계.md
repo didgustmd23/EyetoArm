@@ -1,6 +1,6 @@
 # A 담당 비전 상세설계
 
-문서 버전 1.9 · 설계 초안 · 2026-11-12 · 고정 CCTV 설정 확정 갱신 2026-11-13 · 파이프라인 작업 1~3 상태 갱신 2026-11-15
+문서 버전 1.24 · 설계 초안 · 다중 물체 후보 처리 계획·A→B 입력 봉투 갱신 2026-11-18
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
@@ -50,6 +50,8 @@
 | 1.20 (A-6 추적 1차 구현 상태) | 2026-11-17 | 사용자 지시(reviewer 전달 #151 「A-6 추적 1차 구현 명세」): §4 표와 §13.1 「추적 방식」 끝에 A 내부 인스턴스 추적 **표시·기록 실험**(`vision/tracking.py`, 실행기 선택 인자 `part_tracker`, CLI `--tracking`, JSONL `ai_tracks`·`tracking_failed`, 확인 창·A→C 연결부 `tracks`) 구현 상태만 기록. 공통형 `PlanarObservation.part_track_id`·B 전파·B 중복 방지 연결 없음, A-6 전체 완료 아님. 특징점 보조(2026-11-12 확정 방향)는 연속 자료 검증 뒤 2차 |
 | 1.21 (일일 일정 현행화) | 2026-11-17 | 사용자 요청 「일정표 정리」: §11.1에 실제 진행과 남은 일을 분리하고 11-18~22 작업 목표를 갱신. 학습·실시간 입력·내부 전달·추적 구현과 실연결 검증 범위를 구분하고 A→C ROS 토픽 계획을 같은 프로세스 내부 전달로 정정. 확정 기한과 다른 담당 계약은 변경하지 않음 |
 | 1.22 (A-8 두 끝점 관측 구현 상태) | 2026-11-17 | 사용자 지시(reviewer 전달 #157 「구현 명세 전달」, 계획 `_workspace/155_builder_a8_contract_plan.md` r1): §5.2에 `PlanarObservation.axis_endpoints_px`·축 끝점 경로 유효 조건·A 코어 raw 범위 검사의 미커밋 구현 상태만 기록. `b_gate`·D13·실제 생산자·B 소스 무변. 시험용 관측의 저장 입력 B 연결까지이며 실제 RGB 추출·운영 유효화·B 외 소비자 확인은 아님 |
+| 1.23 (다중 물체의 평면 관측) | 2026-11-18 | §5.2에 물체별 검사와 후보 수에 따른 A→B 전달 계획 추가. 복수 후보 전달과 대상 선택·실행 경계는 A 협업 요청 B-09·C-09에서 확인 |
+| 1.24 (A→B 입력 봉투) | 2026-11-18 | 사용자 요청 「봉투 형식 추가」: §5.2에 현재 구현된 A→B 입력 봉투 `ObservationEnvelope`(`eyetoarm.b_input/1`)의 필드·생성 시 대조·B 입구 어댑터·실시간 공급·한계를 기록. 코드·B 문서 무변, B 확인 전 |
 | 1.14 (링크 카메라 장착 확정) | 2026-11-15 | 사용자 재확인: 링크 카메라 장착 부모는 upper_arm_link. §1·§6.1·§12의 베이스/어깨 선택·base_link 권장 문구를 현재 결정으로 대체. 이전 base_link XML·사본 측정은 시험 이력으로 보존. 팔 이동 중 촬영 시각 TF·보정·가림 검증은 별도 |
 
 ## 1. 목적과 적용 범위
@@ -224,6 +226,72 @@ ROS의 원본 영상 stamp는 정답과의 대응을 위해 나노초 정밀도�
 **자료형 구현(2026-11-15, A 생산 측·B/D 확인 전):** 공통 초안 §3.3의 `PlanarObservation`을 추가했습니다. `valid=True`이면 `observed_face`·`calc_contour`·`selected_index`가 필수이고 `reason=None`입니다. 무효 관측은 비어 있지 않은 문자열 사유가 필수이며 None·빈 문자열·비문자열은 거부합니다(F1 수정 확인). `observed_face=None`이면 `calc_contour=None`이어야 합니다. 윤곽은 float32 (N, 2) 독립 복사·읽기 전용으로 보관하고, OpenCV 관측의 AI 전용 필드는 None입니다. 이는 생성·불변조건 검증이며 실제 검출기가 계산용 관측을 생산하거나 B가 소비하는 경로의 구현 완료가 아닙니다.
 
 **A-8 볼트 두 끝점 관측 구현(2026-11-17, 미커밋, #157 · B 외 소비자 확인 전):** B 선택(B 협업 요청 §8.2 「B 선택」)에 따라 볼트는 머리 끝·축 끝 픽셀 두 점, 너트는 기존 `top_face` + 윗면 바깥 테두리 `calc_contour`입니다. 공통형에 마지막 필드 `axis_endpoints_px`(기본 None, float64 (2, 2), 행 0 = 머리 끝·행 1 = 축 끝, 전체 입력 영상 픽셀, 독립 복사·읽기 전용)와 관측면 예약어 `axis`를 추가했습니다. 끝점이 있으면 `axis`·`calc_contour = None`·볼트(또는 class None)만, 유효 axis는 끝점·`selected_index` 필수이며 조합 규칙은 공통 함수 `check_axis_path` 하나로 생성자와 A 코어가 함께 씁니다. A 코어(`_observation_mismatches`)는 생성 뒤 변조까지 다시 확인하고, `raw` 끝점이 `0 ≤ u ≤ width − 1`, `0 ≤ v ≤ height − 1` 밖이면 `adapter_contract_violation:axis_endpoints_px`로 실패 처리합니다(`undistorted` 범위 규칙 미결). `b_gate`는 윤곽을 직접 보지 않으므로 바꾸지 않았습니다. 시험용 관측(알려진 18/46 mm 볼트·r 5 mm 너트 윗면을 고정 자세로 투영)으로 A 코어 → `b_gate` → 실제 `BStage`(고정 TF) 저장 입력 연결, 내부 전달 RESULT의 끝점 보존, 재처리 시 새 검출 출력만 반영, JSONL 처리 기록 키 무변(끝점은 `calc_contour`처럼 기록하지 않음)을 확인했습니다. 실제 RGB에서 두 끝점(머리/끝 구분)·너트 윗면을 뽑는 생산, 그 오차·순서 뒤바뀜 검증, 운영 유효 관측, 실시간 B 호출 제한(D13) 해제는 하지 않았습니다. 머리 끝은 가상 축 기준점이라 영상에서 직접 보인다고 보장하지 않으며, 기준 높이 105.0/105.7 mm는 B 설정값으로 A 계약에 넣지 않았습니다.
+
+#### A→B 입력 봉투 (현재 구현)
+
+**현재 전달 형식(2026-11-18 기준, 구현 `vision/observation_envelope.py`, 커밋 ad932da 포함 · B 확인 전).** B-07에서 합의한 「`FramePacket`과 A 관측형을 넘기고 식별자를 보존」을 한 묶음으로 만든 것이 `ObservationEnvelope`입니다. 버전 이름은 `eyetoarm.b_input/1`이며 다른 버전은 받지 않습니다. 생성 함수 `make_observation_envelope`만 봉투를 만들고, 어긋난 값은 고치지 않고 `ObservationEnvelopeError`로 거부합니다(B를 부르지 않고 기록).
+
+| 필드 | 타입 | 내용 |
+| --- | --- | --- |
+| `version` | `str` | `"eyetoarm.b_input/1"` |
+| `frame` | `FramePacket` | 원본 영상과 프레임 정보(§5.1). 봉투가 복사하지 않음 |
+| `observation` | `PlanarObservation` | 관측 하나(이 절). 볼트 끝점은 관측 안에 그대로 둠 |
+| `capture` | `CaptureInfo` | `stamp_ns`(촬영 시각, `SIM_TIME` ns), `optical_frame`, `calibration_id`, `width`·`height`(CameraInfo 해상도) |
+| `tf` | `CaptureTf \| None` | `parent`(world 프레임), `child`(광학 프레임), `stamp_ns`, `T_W_C`(float64 4×4 강체, 읽기 전용). 그 촬영 시각 TF가 없으면 None이고 B는 TF_UNAVAILABLE로 처리 |
+| `correlation` | 매핑 | B `correlation_keys`로 계산해 고정: `run_id`, `capture_generation`, `generation`, `job_seq`, `detector_config_id`, `timestamp_ms`, `timestamp_base`, `capture_stamp_ns` |
+| `extensions` | 매핑 | 이름 있는 선택 항목. 정의된 이름은 `ai_instances`(인스턴스 목록·RAW polygon), `tracking`(`part_track_id`)뿐이며 **A는 아직 채우지 않음** |
+| `unsupported` | 매핑 | 모르는 확장 이름의 내용을 JSON 정규 문자열로 보존. 해석·계산 사용 안 함 |
+
+- **생성 시 대조:** 관측 ↔ 프레임 식별자·보정 번호, 프레임 ↔ 촬영 정보(시각·광학 프레임·크기·보정 번호), 카메라 프로파일 ↔ 촬영 정보, TF ↔ 촬영 시각·광학 프레임·world 프레임, `T_W_C` 강체 여부.
+- **B 입구:** `transforms/observation_envelope_adapter.ObservationEnvelopeAdapter`가 봉투 전체를 받습니다. 봉투 TF를 그 소비 동안만 B TF 조회 자리에 걸고(같은 프레임·같은 시각만, 50 ms 초과는 None), B 계산은 지금 계약대로 `BStage.consume(frame, observation)`만 부릅니다. 확장은 결과에 그대로 돌려줄 뿐 계산에 쓰지 않습니다. 이 어댑터는 B 파일을 바꾸지 않으려고 A가 새 파일로 둔 **B 검토 대상 제안**이며 B 승인 전입니다.
+- **실시간:** `vision/live_observation_envelope.make_live_envelope`가 프레임의 `ros_stamp_ns`로 정확 촬영 시각 TF를 한 번 조회해(최신값 대체 없음, 상한 초과·시각 불일치·조회 실패는 `tf=None`) 같은 봉투를 만듭니다. #173 기록 전용 경로에만 연결되어 있고, 일반 실시간 실행의 B 소비는 D13으로 거부됩니다.
+- **기록:** `to_record()`는 JSON 안전 요약(영상은 지문·모양만)이며 pickle·ROS 메시지 직렬화를 쓰지 않습니다.
+- **한계:** 봉투에는 관측이 **하나**만 들어갑니다. 다중 후보는 아래 전환 순서에 따라 유효 후보 1개일 때만 이 봉투로 보내고, 목록 형식은 B-09 합의 뒤 정합니다. B-09의 TF 위치 미결(U-4)은 이 봉투가 이미 촬영 시각 TF를 프레임 공통으로 묶는다는 점을 기준으로 확인합니다.
+
+#### 같은 프레임의 다중 물체 후보
+
+**설계 방향(2026-11-18, 구현 전).** A는 같은 프레임에 보이는 물체마다 계산에 쓸 영상 좌표를 검사합니다. 볼트는 전체 입력 영상의 원본 픽셀 기준으로 머리 끝·축 끝을 순서대로 제공합니다(`axis_endpoints_px`). 너트 후보는 기존 윗면 외곽 계약을 따르며, 계산용 윗면을 확보하지 못한 검출은 표시·진단에 남깁니다.
+
+- **프레임 공통 정보:** 같은 `FramePacket`의 영상, `run_id`·`source_id`·`image_seq`·`capture_generation`, 촬영 시각(`ros_stamp_ns` 등), 보정 ID와 광학 프레임, 처리 세대·작업 순번·검출 설정 ID를 보존합니다. 프레임 보정 정보나 현재성이 맞지 않으면 후보 전달을 차단합니다.
+- **물체별 정보:** 프레임 안의 인스턴스 인덱스, 클래스, 신뢰도, 픽셀 좌표 기준, 계산용 점 또는 윤곽을 묶습니다. 검출 거부·잘림·끝점 추출 실패는 해당 물체에 적용합니다. 겹쳐 구분하기 어려운 후보를 보류하고 떨어져 있는 유효 후보는 남깁니다.
+- **계산·선택:** B가 촬영 시각의 TF와 보정을 사용해 후보별 작업 좌표와 볼트 각도를 계산하고, 작업 범위와 우선순위를 평가해 물체 하나를 고르는 안을 협의합니다. C는 선택된 물체의 집기 시점 위치 예측과 도달·충돌·경로 검사를 맡습니다. 벨트 속도 설정과 실제 집기 시점 예측은 기존 B·C 협업 회신을 따릅니다.
+
+**목표 전달 형식:** 프레임 정보와 영상은 한 번 묶고, 그 안에 같은 프레임의 유효 물체 관측 목록을 넣습니다. 유효 후보 1개와 2개 이상에서 같은 자료형을 씁니다. 후보 수에 따른 계산·비교·선택은 B가 처리합니다.
+
+##### 후보 목록의 필드와 타입 (B-09 협의안)
+
+같은 프로세스에서 읽기 전용 파이썬 객체를 전달합니다. 아래 이름과 타입은 구현 전 협의안입니다. 프레임 공통 데이터는 `FrameObservations`에 한 번 보관하고, 후보마다 `ObjectObservation`을 하나 둡니다.
+
+| `FrameObservations` 변수 | 타입 | 의미 |
+| --- | --- | --- |
+| `version` | `str` | 새 목록 형식 식별자 후보 `eyetoarm.frame_observations/1` |
+| `frame` | `FramePacket` | 기존 프레임을 재사용합니다. `image`는 BGR `uint8`의 NumPy 배열 `(H, W, 3)`이며 영상과 `run_id`·`source_id`·`image_seq`·`capture_generation`은 후보마다 복제하지 않습니다. |
+| `capture` | `CaptureInfo` | `stamp_ns: int`(촬영 시각 ns), `optical_frame: str`, `calibration_id: str`, `width: int`, `height: int` |
+| `camera` | `CameraProfile` | 해당 프레임의 CameraInfo에서 얻는 보정 정보. 보정 ID·해상도·광학 프레임을 `capture`와 대조합니다. |
+| `tf` | `CaptureTf \| None` | 프레임 공통 TF. 있으면 `parent: str`, `child: str`, `stamp_ns: int`, `T_W_C: np.ndarray`(float64 `(4, 4)`, 카메라 광학 프레임 → TF 부모 프레임). 실시간 B 계산은 값이 있고 촬영 시각·광학 프레임이 일치할 때만 허용합니다. |
+| `generation`, `job_seq` | 각각 `int` | 처리 세대와 작업 순번. `frame.capture_generation`과 구분합니다. |
+| `detector_config_id` | `str` | 이 후보들을 만든 검출 설정 ID |
+| `candidates` | `tuple[ObjectObservation, ...]` | **유효 후보 1개 이상**. 원래 인스턴스 인덱스 순서로 담습니다. 순서는 집기 우선순위와 별개입니다. 0개일 때는 계산 호출을 생략합니다. |
+
+| `ObjectObservation` 변수 | 타입 | 의미 |
+| --- | --- | --- |
+| `instance_index` | `int` | 해당 프레임의 원래 검출 인덱스(0 이상, 목록 안에서 유일). 실행 간 또는 프레임 간 추적 ID와 구분합니다. |
+| `class_name` | `str` | 검출 클래스. 현재 `bolt` 또는 `nut`. 볼트 규격 판정은 B가 합니다. |
+| `confidence` | `float` | AI 검출 신뢰도(유한, 0~1). |
+| `pixel_basis` | `PixelBasis` | 현재 AI에서 `RAW`. 어긋난 좌표계의 값으로 대신 계산하지 않습니다. |
+| `observed_face` | `Literal["axis", "top_face"]` | 볼트 축 또는 윗면. 아랫줄의 두 기하 필드를 구분합니다. |
+| `axis_endpoints_px` | `AxisEndpoints \| None` | 볼트 `axis`일 때 필수. NumPy float64 `(2, 2)`, 행 0 머리 끝, 행 1 축 끝, 열은 `[u, v]`. |
+| `calc_contour` | `Contour \| None` | 윗면 `top_face`일 때 필수. NumPy float32 `(N, 2)`, 최소 3점, 열은 `[u, v]`. |
+
+후보마다 `axis_endpoints_px`와 `calc_contour` 중 관측면에 맞는 하나만 채웁니다. 좌표 배열은 전처리 ROI를 되돌린 전체 프레임 기준의 유한한 값으로 전달하고, 입력 영상과 좌표 배열의 수신 측 변경을 금지합니다. TF를 묶는 위치와 조회 책임은 B-09에서 확인합니다. 결과 대응에는 `run_id`·`source_id`·`image_seq`·`generation`·`job_seq`와 `instance_index`를 사용합니다. 물체별 제외 사유는 A 진단에 기록하고 유효 후보 목록에는 넣지 않습니다.
+
+| A 검사 후 유효 후보 | 목표 동작 |
+| --- | --- |
+| 0개 | B 계산 호출을 생략하고 물체별 제외 사유를 남깁니다. |
+| 1개 | 원래 인스턴스 인덱스를 보존한 관측 1개를 같은 프레임의 목록에 담습니다. B는 해당 후보의 좌표와 유효성을 계산합니다. |
+| 2개 이상 | 같은 형식으로 모든 유효 후보를 보냅니다. B는 각 후보의 좌표와 유효성을 계산한 뒤 선택 기준을 적용합니다. |
+
+**전환 순서:** B가 목록을 받기 전에는 물체별 검사와 유효 후보 1개의 기존 `PlanarObservation` 전달까지 적용합니다. 이때 `selected_index`는 원래 인스턴스 인덱스입니다. 복수 유효 후보는 기록으로 남깁니다. 목록 계약이 합의되면 후보 1개와 복수 후보 모두 동일한 목록 경로로 전달합니다. 판정용 유효 후보 수는 기존 `candidate_count`와 구분해 기록합니다. 후보 목록 형식·대상 우선순위·실행 불가 시 다음 후보 처리 규칙은 [A 협업 요청 B-09·C-09](A담당_협업_요청_초안.md)에서 확인합니다. 실제 Gazebo 시험에서는 150프레임 모두 `MULTIPLE_OBJECTS`였고 두 볼트 모두 끝점 추출에 실패했습니다. 후보 선별 규칙과 끝점 추출 성능을 각각 검증합니다.
 
 B가 사용하는 좌표는 명시된 기준에 맞춰 전달합니다. **왜곡 보정과 Homography의 순서·픽셀 기준을 B와 고정**하고 같은 보정을 두 번 적용하지 않습니다. B는 작업 평면으로 옮긴 윤곽에서 중심·장축을 계산합니다. 픽셀 각도를 작업대 각도로 간주하지 않습니다.
 
@@ -670,7 +738,7 @@ ros2 topic hz /overview_cam/image
 - **시간:** imgsz마다 새 프로세스·새 모델에서, Gazebo 영상 200장을 미리 메모리에 읽은 뒤 첫 호출 1회 → 워밍업 10회 → 본 측정 200회(`predict` 반환까지, batch 1, retina 마스크)로 쟀습니다. P95는 본 측정 200회 값입니다. 첫 호출(cold) 값(2.25~2.68 s)은 **계측 준비 뒤의 첫 `predict` 시간**입니다. 같은 순서의 경계 확인(2026-11-16, S1-01 가중치)에서 PyTorch CUDA 지연 초기화는 그 직전의 최대 메모리 초기화 호출에서 일어났습니다(약 0.11 s, 이 구간은 기록되지 않음). 첫 `predict`에는 CPU에 있던 모델의 GPU 이동·predictor 생성·첫 커널 준비가 들어갔습니다. 따라서 cold 값은 프로세스 시작부터의 전체 시작 지연이 아닙니다. GPU 최대는 `torch.cuda.max_memory_allocated`(텐서 할당) 기준 640/1280 값이며 장치 전체 사용량이 아닙니다. 다른 세션 gz sim·ax_ws는 0이었습니다. WSL2의 `nvidia-smi`는 GPU 사용 프로세스를 보고하지 않아 다른 GPU 부하가 없었다는 근거로 쓰지 않습니다.
 - **원자료:** `outputs/training/s1_legacy/`(등록·평가 JSON·요약), `outputs/s1_candidates/`(학습 원본), 모두 Git 제외. 해석·후보 선택·Gazebo 도입 판단은 사용자 결정 전입니다.
 
-**실패 처리.** 유효한 대상 후보가 없으면 `NO_OBJECT`, 구분할 근거가 없는 복수 후보는 `MULTIPLE_OBJECTS`입니다. 최고 신뢰도·최대 면적 후보를 무조건 선택하지 않습니다. 경계 잘림은 공통 `CONTOUR_CLIPPED` 검사로 처리합니다. 마스크가 측면·그림자를 포함한 전체 실루엣이거나 윗면 일부가 가려졌다고 판단되면 `TOP_FACE_UNRESOLVED`입니다. 모델·가중치 로딩 실패(`MODEL_LOAD_FAILED`), 클래스 매핑 등 설정 오류(`MODEL_CONFIG_INVALID`), 추론 예외(`INFERENCE_ERROR`), 현재 작업 중단(`JOB_ABORTED`)은 정상 무검출과 구분해 원인을 기록합니다. 이들은 관측 결과를 만들지 않으며, 추론 예외·중단은 §9의 처리 예외·중단 건수로 집계합니다. 네 경우 모두 §5.4 「비전 처리 오류와 이동 후보 무효화」의 이벤트로 D에게 알려 현재 이동 후보와 송신 전 확정 스냅샷을 무효화하고, 이전 유효 결과를 현재 결과로 재사용하지 않습니다. 프레임이 생성되기 전 로딩에 실패했다면 가상의 프레임 ID를 만들지 않습니다. 다음 정상 결과가 §5.4의 복구 조건을 만족하기 전까지 실행을 다시 허용하지 않습니다.
+**실패 처리.** 검출 대상이 없으면 `NO_OBJECT`입니다. 기존 AI 단일 축 경로는 복수 볼트를 `MULTIPLE_OBJECTS`로 처리합니다. 변경 계획에서는 §5.2의 물체별 검사 뒤 유효 후보 수를 사용합니다. 최고 신뢰도·최대 면적 후보를 무조건 선택하지 않습니다. 경계 잘림은 `CONTOUR_CLIPPED` 검사로 처리하며, 변경 계획에서는 해당 물체에 적용합니다. 마스크가 측면·그림자를 포함한 전체 실루엣이거나 윗면 일부가 가려졌다고 판단되면 `TOP_FACE_UNRESOLVED`입니다. 모델·가중치 로딩 실패(`MODEL_LOAD_FAILED`), 클래스 매핑 등 설정 오류(`MODEL_CONFIG_INVALID`), 추론 예외(`INFERENCE_ERROR`), 현재 작업 중단(`JOB_ABORTED`)은 정상 무검출과 구분해 원인을 기록합니다. 이들은 관측 결과를 만들지 않으며, 추론 예외·중단은 §9의 처리 예외·중단 건수로 집계합니다. 네 경우 모두 §5.4 「비전 처리 오류와 이동 후보 무효화」의 이벤트로 D에게 알려 현재 이동 후보와 송신 전 확정 스냅샷을 무효화하고, 이전 유효 결과를 현재 결과로 재사용하지 않습니다. 프레임이 생성되기 전 로딩에 실패했다면 가상의 프레임 ID를 만들지 않습니다. 다음 정상 결과가 §5.4의 복구 조건을 만족하기 전까지 실행을 다시 허용하지 않습니다.
 
 추론 오류가 발생했다고 검출 방식을 자동 변경하지 않습니다. 운영 채택 결정 또는 명시적 설정 변경으로 OpenCV 경로를 선택할 때는 세대를 증가시키고 이전 결과를 폐기합니다. 두 방식 모두 A가 로봇 명령을 직접 발생시키지 않습니다.
 

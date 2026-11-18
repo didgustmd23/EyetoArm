@@ -11,12 +11,16 @@
   머리 끝면 **테두리의 가장 바깥 투영점**에 가까워 축선 위 기준점과 다르다(#159 X0). 비교 기준선 전용.
 - M1(`extract_m1`): 축선 위 기준점 근사.
   1. M0과 같은 주축·머리 판정 뒤, 축을 따라 1 px 단면마다 폭·중점을 잰다.
-  2. 머리 계단(폭이 머리·축 폭 중간값 아래로 내려가는 곳)을 찾아 순서 일관성을 본다.
+  2. 머리 계단(폭이 머리·축 폭 중간값 아래로 내려가는 곳)을 찾아 순서 일관성을 본다. 계단은 **머리 쪽 첫 넓은 단면부터 끊김 없이
+     이어진 넓은 구간의 끝 + 1**이다(#177 C1). 축 끝 쪽의 고립된 넓은 단면은 계단으로 보지 않는다(#176: 1 px 양자화로 생긴 고립 단면
+     하나가 계단을 축 끝까지 밀어 `AXIS_ORDER_INCONSISTENT`가 되던 결함).
   3. 화면 축척 k = 머리 지름 px(머리 구간 단면 폭 최댓값) / 10 mm. 직교 투영에서 끝면 타원의 장축은 기울기와 무관하다.
   4. 기울기 α(축과 화면 평면 사이 각): 머리 끝면은 축 방향 반지름 c = r_head·sinα·k인 반타원으로 보인다.
      폭이 머리 지름에 처음 닿기 전 단면들의 폭 부족 면적 = c·b·(2 − π/2)(b = 지름/2)에서 c를 잰다.
      (실루엣 길이 L·cosα + R·sinα만으로는 α = 0과 α ≈ 2·atan(R/L)을 구분하지 못한다.)
      종류는 기울기를 뺀 총길이 (g − R·sinα)/cosα로 고른다(BOLT_A 18 / BOLT_B 46 mm).
+     c가 머리 반지름(px) 이상이라 sinα를 1로 자른 경우(#177 T1)는 `tilt_clamped=True`이고 총길이·종류는 None이다(cosα ≈ 0으로 나눈
+     거짓 큰 수를 남기지 않는다). 판정은 그대로 기울기 90°로 `AXIS_VIEW_OBLIQUE`다.
   5. 축 중심선(축 구간 단면 중점의 직선 적합) 위에서, 실루엣 양 끝을 끝면 테두리 돌출(r·sinα·k)만큼 안쪽으로 옮긴다.
      반화소 보정은 하지 않는다(규칙 K·G1과 같은 「정수 = 화소 중심」 규약, 극값 화소 중심을 실루엣 끝으로 본다).
 - 원근(끝마다 다른 축척)과 끝면 면취의 세부는 무시한다. 오차는 단계 (i) 오프라인 진단에서 따로 잰다.
@@ -193,10 +197,20 @@ def extract_m1(mask, model: AxisModel = MODEL_DERIVED) -> AxisEstimate:
     shaft_w = float(np.median(width[shaft_far]))
     diag.update(head_width_px=head_w, shaft_width_px=shaft_w, length_px=span + 1.0)
 
-    # 2. 머리 계단: 폭이 (머리+축)/2 이상인 마지막 단면의 다음
+    # 2. 머리 계단(#177 C1): 폭이 (머리+축)/2 이상인 단면 중 머리 쪽 첫 단면부터 끊김 없이 이어진 구간의 끝 + 1.
+    #    이어짐 = 인덱스가 1씩 이어지는 넓은 단면. 빈 단면(filled=False)과 문턱 미만 단면은 모두 끊김이며 허용 끊김은 0개다.
+    #    첫 넓은 단면이 0번이 아니어도(머리 끝 둥근 테두리 단면) 그 단면부터 센다. 문턱·max_head_step_frac은 바꾸지 않는다
     thresh = (head_w + shaft_w) / 2.0
     wide = filled & (width >= thresh)
-    step = int(np.nonzero(wide)[0].max()) + 1 if wide.any() else 0
+    wide_idx = np.nonzero(wide)[0]
+
+    if wide_idx.size == 0:
+        step = 0
+    else:
+        gaps = np.nonzero(np.diff(wide_idx) != 1)[0]
+        run_end = int(wide_idx[gaps[0]]) if gaps.size else int(wide_idx[-1])
+        step = run_end + 1
+
     step_frac = step / n_bins
     diag["head_step_frac"] = step_frac
 
@@ -215,14 +229,22 @@ def extract_m1(mask, model: AxisModel = MODEL_DERIVED) -> AxisEstimate:
     front = filled & (np.arange(n_bins) < first_full)
     deficit = float(np.clip(head_d_px - width[front], 0.0, None).sum())
     cap_px = deficit / (head_d_px / 2.0 * (2.0 - math.pi / 2.0))
-    sin_a = min(1.0, cap_px / (model.head_diameter_mm / 2.0 * k))
+    sin_raw = cap_px / (model.head_diameter_mm / 2.0 * k)
+    clamped = sin_raw >= 1.0
+    sin_a = 1.0 if clamped else sin_raw
     alpha = math.asin(sin_a)
     g_mm = (span + 1.0) / k
     rim_mm = model.head_diameter_mm / 2.0 + model.tip_radius_mm
-    total_est_mm = (g_mm - rim_mm * sin_a) / max(math.cos(alpha), 1e-9)
-    cls = "BOLT_A" if total_est_mm < model.class_split_mm else "BOLT_B"
+
+    # T1(#177): sinα를 1로 자르면 cosα ≈ 0이라 총길이·종류를 정할 수 없다. 거짓 큰 수 대신 None과 잘림 표시를 남긴다
+    if clamped:
+        total_est_mm, cls = None, None
+    else:
+        total_est_mm = (g_mm - rim_mm * sin_a) / math.cos(alpha)
+        cls = "BOLT_A" if total_est_mm < model.class_split_mm else "BOLT_B"
+
     diag.update(head_diameter_px=head_d_px, scale_px_per_mm=k, head_cap_px=cap_px, tilt_deg=math.degrees(alpha),
-                observed_length_mm=g_mm, total_length_est_mm=total_est_mm, class_est=cls)
+                tilt_clamped=clamped, observed_length_mm=g_mm, total_length_est_mm=total_est_mm, class_est=cls)
 
     if math.degrees(alpha) > model.max_tilt_deg:
         return _invalid("M1", "AXIS_VIEW_OBLIQUE", diag)
