@@ -56,14 +56,14 @@ class SlotHookTest(unittest.TestCase):
         self.assertEqual([i.epoch for i in slot.poll_inputs()], [1, 2])
 
     def test_hook_error_counted_not_raised(self):
-        """훅 예외는 수신을 멈추지 않고 boundary_hook_errors로 센다."""
+        """훅 예외는 수신을 멈추지 않고 boundary_hook_errors로 세며, 경계 뒤에 치명 알림 BOUNDARY_HOOK_FAILED를 넣는다(#180 #5)."""
         def bad(epoch, kind):
             raise RuntimeError("boom")
 
         slot = self.make_slot(bad)
         slot.on_camera_info(CameraProfileInfo("cal-a", 640, 480, "f"))
         self.assertEqual(slot.stats()["boundary_hook_errors"], 1)
-        self.assertEqual(len(slot.poll_inputs()), 1)
+        self.assertEqual([i.kind.value for i in slot.poll_inputs()], ["profile_changed", "boundary_hook_failed"])
 
     def test_hook_closes_live_observation_state(self):
         """T-k 결합: 실제 슬롯 경계가 LiveObservationState를 즉시 닫는다(제어 흐름 반영 전)."""

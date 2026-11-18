@@ -63,6 +63,7 @@ class NoticeKind(str, Enum):
     RECEIVER_FAILED = "receiver_failed"
     QOS_INCOMPATIBLE = "qos_incompatible"
     REWIND_FILTER_RELEASED = "rewind_filter_released"
+    BOUNDARY_HOOK_FAILED = "boundary_hook_failed"   # #180 #5: 경계 훅 예외(치명, 연결부가 상태를 fail-stop)
 
 
 # 경계·알림 → 코어에 알릴 입력 상태(None이면 상태 사건이 아님: 세대 전이 또는 기록만)
@@ -72,6 +73,7 @@ _STATUS_OF = {
     NoticeKind.START_FAILED: InputStatus.SOURCE_UNAVAILABLE,
     NoticeKind.RECEIVER_FAILED: InputStatus.SOURCE_UNAVAILABLE,
     NoticeKind.QOS_INCOMPATIBLE: InputStatus.SOURCE_UNAVAILABLE,
+    NoticeKind.BOUNDARY_HOOK_FAILED: InputStatus.SOURCE_UNAVAILABLE,
 }
 
 
@@ -211,7 +213,7 @@ class GenerationMirror:
 _STATS_KEYS = ("received", "accepted", "overwritten", "duplicate_stamp", "stale_epoch", "stale_after_rewind",
                "rewind_filter_released", "frame_id_mismatch", "boundaries", "notices", "taken", "resume_boundaries",
                "graph_change_absorbed", "graph_change_during_gap", "rewind_merged_into_resume",
-               "boundary_hook_errors")
+               "boundary_hook_errors", "camera_info_invalid")
 
 
 class LiveFrameSlot:
@@ -228,7 +230,8 @@ class LiveFrameSlot:
         """설정·세대 사본·PC 단조 시계를 받는다. 시작 시각을 한 번 읽는다(첫 영상 제한시간 기준).
 
         `boundary_hook(epoch, kind)`(#171 R1, 선택, 기본 None): 경계마다 **이 잠금 안에서** epoch를 올린 직후 부른다(잠금 순서
-        slot → 훅 쪽 잠금). 훅은 이 slot의 잠금을 다시 잡거나 오래 막으면 안 된다. 예외는 잡아서 `boundary_hook_errors`로 센다.
+        slot → 훅 쪽 잠금). 훅은 이 slot의 잠금을 다시 잡거나 오래 막으면 안 된다. 예외는 잡아서 `boundary_hook_errors`로 세고,
+        그 경계 뒤에 치명 알림 `BOUNDARY_HOOK_FAILED`(입력 상태 SOURCE_UNAVAILABLE)를 넣는다(#180 #5).
         """
         self._config = config
         self._generation = generation
@@ -388,6 +391,26 @@ class LiveFrameSlot:
             self._profile = info
             self._boundary(BoundaryKind.PROFILE_CHANGED, f"calibration_id {info.calibration_id}", self._clock_ns(),
                            profile=info)
+
+    def on_camera_info_invalid(self, detail: str) -> None:
+        """해석할 수 없는 `CameraInfo`(잘못된 K 등)를 받았다(#180 #1, #178 결함 1).
+
+        이전 프로필로 계속 `calibration_id`를 달지 않도록, 프로필이 있으면 지우고 프로필 없음 `PROFILE_CHANGED` 경계를 만든다
+        (A 상세설계 §5.4: 보정 변경은 세대 전이, 이후 프레임은 보정 없음). 이미 프로필이 없으면 경계 없이 계수만 올린다
+        (연속 무효가 경계를 쏟아내지 않게). 다시 유효한 CameraInfo가 오면 `on_camera_info`가 새 경계를 만든다.
+        """
+        with self._cond:
+            if self._closed:
+                return
+
+            self._stats["camera_info_invalid"] += 1
+
+            if self._profile is None:
+                return
+
+            self._profile = None
+            self._boundary(BoundaryKind.PROFILE_CHANGED, f"camera_info invalid (profile cleared): {detail}",
+                           self._clock_ns(), profile=None)
 
     def on_publisher_snapshot(self, gids: frozenset) -> None:
         """영상 발행자 GID 집합을 받는다(R9). 수신 중 확정 집합과 다른 비지 않은 집합이면 RECONNECT(흡수 창 안이면 흡수)."""
@@ -582,13 +605,21 @@ class LiveFrameSlot:
         self._rx_epoch += 1
         self._stats["boundaries"] += 1
 
+        hook_error = None
+
         if self._boundary_hook is not None:
             try:
                 self._boundary_hook(self._rx_epoch, kind)
-            except Exception:  # 훅 결함이 수신을 멈추지 않게 한다. 수는 stats로 드러낸다
+            except Exception as exc:  # 훅 결함이 수신을 멈추지 않게 한다. 수를 세고 아래에서 치명 알림으로 올린다(#180 #5)
                 self._stats["boundary_hook_errors"] += 1
+                hook_error = f"{type(exc).__name__}: {exc}"
 
         self._push(LiveInput(kind=kind, epoch=self._rx_epoch, detail=detail, event_monotonic_ns=now, profile=profile))
+
+        # 훅이 상태(현재성) 갱신에 실패했으면 이전 수락이 현재로 남을 수 있다. 실행기·연결부가 알도록 경계 뒤에 알린다
+        if hook_error is not None:
+            self._notice(NoticeKind.BOUNDARY_HOOK_FAILED,
+                         f"boundary hook failed at epoch {self._rx_epoch} ({kind.value}): {hook_error}", now)
 
     def _notice(self, kind: NoticeKind, detail: str, now: int) -> None:
         """epoch 없는 알림을 넣는다."""

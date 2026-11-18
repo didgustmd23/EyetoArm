@@ -239,10 +239,15 @@ class LiveLinkSource:
             pass
 
     def handle_camera_info(self, message) -> bool:
-        """`CameraInfo`를 식별 정보로 바꿔 넘긴다. 잘못된 K 등으로 만들 수 없으면 False(경계 없음)."""
+        """`CameraInfo`를 식별 정보로 바꿔 넘긴다. 잘못된 K 등으로 만들 수 없으면 False.
+
+        해석 실패는 버리지 않는다(#180 #1): slot이 이전 프로필을 지우고 프로필 없음 경계를 만들며 `camera_info_invalid`를 센다
+        (`LiveFrameSlot.on_camera_info_invalid`). 그래서 이후 영상이 이전 `calibration_id`를 달지 않는다.
+        """
         try:
             info = profile_info(message)
-        except (AttributeError, TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError) as exc:
+            self._slot.on_camera_info_invalid(f"{type(exc).__name__}: {exc}")
             return False
 
         self._slot.on_camera_info(info)
@@ -517,8 +522,10 @@ class RclpyTransport:
         if not self._closing and self._source is not None:
             try:
                 self._source.handle_receiver_failed(f"receiver stopped unexpectedly: {error or 'spin returned'}")
-            except Exception:
-                pass
+            except Exception as exc:
+                # 무시해도 결과가 유효로 바뀌지 않는다(#180 #10): 원인은 바로 위 `spin_error`에 이미 남았고, 알림이 빠져도
+                # 영상이 끊겨 slot의 FRAME_TIMEOUT 경계가 나온다. 알림 실패 사유만 원인 뒤에 덧붙여 보존한다
+                self.spin_error = f"{self.spin_error or 'spin returned'}; notify failed: {type(exc).__name__}: {exc}"
 
     def close(self, limit_s: float) -> None:
         """한도 안에서 단계별로 정리한다(검토 r1 F2): executor 종료 → 수신 스레드 join → 노드 해제 → (소유한) 컨텍스트 종료.

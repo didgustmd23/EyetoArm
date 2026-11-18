@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import signal
@@ -105,14 +106,19 @@ def gpu_sample(cmd: list, timeout_s: float) -> tuple[dict | None, str | None]:
         return None, f"unparsable output {out.stdout[:80]!r}"
 
 
-def group_rss_kib(token: str, proc: ProcFS, uid: int, floor: int | None) -> int:
-    """토큰 자기 작업 프로세스 RSS 합(kB). 공유 메모리(데이터로더 fork 등)를 중복 계산할 수 있는 참고값이다."""
+def group_rss_kib(token: str, proc: ProcFS, uid: int, floor: int | None, *, failed: list | None = None) -> int:
+    """토큰 자기 작업 프로세스 RSS 합(kB). 공유 메모리(데이터로더 fork 등)를 중복 계산할 수 있는 참고값이다.
+
+    읽기에 실패한 pid(조사와 읽기 사이에 끝난 프로세스 등)는 합에서 빠진다. 이 합은 중단 판정에 쓰지 않는 참고값이라 실패를
+    전파하지 않지만, 과소 집계가 드러나도록 `failed` 목록이 주어지면 그 pid를 넣는다(#180 #11).
+    """
     total = 0
     for pid in own_processes(token, proc, uid, floor)[0]:
         try:
             total += proc.rss_kib(pid)
         except (OSError, ValueError, IndexError):
-            pass
+            if failed is not None:
+                failed.append(pid)
     return total
 
 
@@ -407,7 +413,9 @@ class _Batch:
             if elapsed - last_sample >= self.watch["watch_interval_s"]:
                 last_sample = elapsed
                 gpu, gpu_err = gpu_sample(self.gpu_cmd, self.watch["monitor_cmd_timeout_s"])
-                rss = group_rss_kib(token, self.proc, self.uid, floor)
+                rss_failed: list = []
+                rss = group_rss_kib(token, self.proc, self.uid, floor, failed=rss_failed)
+                summary["rss_read_failures"] = summary.get("rss_read_failures", 0) + len(rss_failed)
                 try:
                     others = self.other_counter()
                 except Exception:
@@ -421,7 +429,8 @@ class _Batch:
                 if watch_fail is None:
                     try:
                         append_jsonl(watch_path, {"elapsed_s": round(elapsed, 2), "mem_available_kib": mem,
-                                                  "group_rss_kib": rss, "other_sessions": others,
+                                                  "group_rss_kib": rss, "rss_read_failures": len(rss_failed),
+                                                  "other_sessions": others,
                                                   "gpu": gpu, "gpu_error": gpu_err})
                     except (OSError, ValueError) as exc:
                         watch_fail = f"{type(exc).__name__}: {exc}"   # 첫 실패만 남기고 표본 생략
@@ -632,6 +641,20 @@ def run_train(cfg: TrainingConfig, *, repo_root: str, run_set: str, argv: list, 
     return _run(batch, [(c, None, None, 0) for c in cfg.candidates])
 
 
+def _resume_sha_refusal(path: str, expected: str | None) -> str | None:
+    """재개 체크포인트를 열기 전 sha256 대조. 문제가 있으면 사유, 없으면 None(파일 읽기 실패도 사유)."""
+    if not expected:
+        return "no recorded end_last_sha256 for last.pt in attempts.jsonl"
+    try:
+        with open(path, "rb") as f:
+            got = hashlib.sha256(f.read()).hexdigest()
+    except OSError as exc:
+        return f"cannot read last.pt: {type(exc).__name__}: {exc}"
+    if got != expected:
+        return f"last.pt sha256 {got[:12]} != last attempt record {expected[:12]}"
+    return None
+
+
 def run_resume(cfg: TrainingConfig, *, repo_root: str, run_set: str, exp_id: str, argv: list, child_factory,
                inspect_fn, stop: StopFlag, poll_s: float = 0.5, versions: dict | None = None,
                git: dict | None = None, mem_reader=None, gpu_cmd=None, proc: ProcFS | None = None,
@@ -649,6 +672,14 @@ def run_resume(cfg: TrainingConfig, *, repo_root: str, run_set: str, exp_id: str
     exp_dir = os.path.join(batch.run_set_dir, f"{cand.exp_id}_{cand.family}")
     last_path = os.path.join(exp_dir, "weights", "last.pt")
     attempts = _read_jsonl(os.path.join(exp_dir, "attempts.jsonl"))
+
+    # pickle 기반 체크포인트는 기록된 기대 sha와 대조한 뒤에만 연다(#180 #8, 규약 §10 출처 검증). inspect_fn이 torch.load를 한다
+    refused = _resume_sha_refusal(last_path, attempts[-1].get("end_last_sha256") if attempts else None)
+    if refused:
+        batch.result.rc = 2
+        batch.result.errors.append(f"resume refused before loading: {refused}")
+        return batch.result
+
     reasons = check_resume(last=inspect_fn(last_path), target_epochs=cfg.train_args()["epochs"],
                            common=_expected_common(cfg), exp_project=batch.run_set_dir,
                            exp_name=os.path.basename(exp_dir), attempts=attempts,

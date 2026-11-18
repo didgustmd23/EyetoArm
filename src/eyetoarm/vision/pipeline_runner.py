@@ -762,9 +762,10 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             if kind in (BoundaryKind.RECONNECT, BoundaryKind.SIM_TIME_REWIND):
                 event = pipeline.change_settings(pipeline.settings, cause=GenerationCause(kind.value))
             elif kind is BoundaryKind.PROFILE_CHANGED:
-                p = item.profile
-                profile = SourceProfile(source_id=pipeline.settings.source_id, width=p.width, height=p.height,
-                                        crop=None, calibration_id=p.calibration_id)
+                p = item.profile   # None = 해석할 수 없는 CameraInfo로 프로필 무효(#180 #1) → 보정 없음 설정으로 전이
+                profile = None if p is None else SourceProfile(source_id=pipeline.settings.source_id, width=p.width,
+                                                               height=p.height, crop=None,
+                                                               calibration_id=p.calibration_id)
                 event = pipeline.change_settings(dataclasses.replace(pipeline.settings, profile=profile),
                                                  cause=GenerationCause.PROFILE_CHANGED)
 

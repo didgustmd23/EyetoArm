@@ -48,6 +48,9 @@ from eyetoarm.vision.live_observation_envelope import LiveCaptureTfLookup, make_
 from eyetoarm.vision.live_observation_events import LiveObservationEventWriter
 from eyetoarm.vision.live_observation_state import (SIM_TIME_REWIND, LiveObservationConfig, LiveObservationState)
 
+PROFILE_CHANGED = "profile_changed"             # `inputs.live_slot.BoundaryKind.PROFILE_CHANGED` 값(#180 r1 L1)
+BOUNDARY_HOOK_FAILED = "boundary_hook_failed"   # `inputs.live_slot.NoticeKind.BOUNDARY_HOOK_FAILED` 값(#180 #5, 입력 모듈 import 없이 비교)
+
 LIVE_OBSERVATION_CONFIG_STATUS = "test_only"
 NON_OK_TF = frozenset({"unavailable", "late", "stamp_mismatch", "no_stamp", "invalid_stamp"})
 _CONFIG_KEYS = {"status", "world_frame", "tf_wait_limit_s", "static_pairs", "future_tolerance_ns", "write_capacity",
@@ -149,6 +152,10 @@ class LiveObservationLink:
         - `stage_factory(camera)` → `(BStage, ObservationEnvelopeAdapter)`. B 단계의 `on_output`은 None이어야 한다.
         - `render(stage, frame, out)` → PNG bytes | None(같은 프레임 주석).
         """
+        # 설정 검사는 파일을 열기 전에 한다(#180 #7: 검사 실패가 기록 파일 핸들을 남기지 않게)
+        if type(config.skip_queue_capacity) is not int or config.skip_queue_capacity <= 0:
+            raise ValueError(f"skip_queue_capacity must be a positive int: {config.skip_queue_capacity!r}")
+
         self.run_id = run_id
         self.config = config
         self.tf = tf
@@ -163,8 +170,6 @@ class LiveObservationLink:
         self._skip_lock = threading.Lock()
         self._skip_cond = threading.Condition(self._skip_lock)
         self._skip_queue: list[dict] = []
-        if type(config.skip_queue_capacity) is not int or config.skip_queue_capacity <= 0:
-            raise ValueError(f"skip_queue_capacity must be a positive int: {config.skip_queue_capacity!r}")
         self._skip_capacity = config.skip_queue_capacity
         self._skip_inflight = 0                   # 기록 스레드가 꺼내 쓰는 중인 수
         self.skip_total = 0
@@ -174,6 +179,7 @@ class LiveObservationLink:
         self.skip_overflow_at: int | None = None  # 처음 포화된 기록 번호(1부터)
         self._skip_stop = False
         self._skip_thread: threading.Thread | None = None
+        self.skip_crash: str | None = None        # 기록 스레드의 예기치 않은 예외(#180 #6)
         self.skip_write_threads: set[str] = set()
         self._probe_cond = threading.Condition()
         self._probe: tuple | None = None          # (frame, epoch) 최신 우선 1칸
@@ -199,6 +205,7 @@ class LiveObservationLink:
                                            wait_limit_s=config.tf_wait_limit_s,
                                            future_tolerance_ns=config.future_tolerance_ns)
         self._calibration_id: str | None = None
+        self.camera_cleared = False                # 프로필 없음 경계 뒤 카메라 「없음」 표시(#180 r1 L1)
         self.reset_reason: str | None = None
         self.ended = None
         self._cleanup_done: set[str] = set()
@@ -249,7 +256,12 @@ class LiveObservationLink:
             self.state.run_end(self.reset_reason)
             return
 
-        self.state.on_rx_boundary(epoch, kind)
+        try:
+            self.state.on_rx_boundary(epoch, kind)
+        except Exception:
+            # 현재성 갱신 실패를 계수로만 두면 이전 수락이 계속 현재로 남는다(#180 #5). 상태를 닫고 slot에 알린다(slot이 치명 알림)
+            self.state.fail("boundary_hook_error")
+            raise
 
     @property
     def reset_pending(self) -> bool:
@@ -263,6 +275,10 @@ class LiveObservationLink:
         """코어에 반영된 실시간 입력 항목. 경계면 그 경계의 보정 번호·세대로 반영 완료를 알린다(되감기 제외)."""
         kind = getattr(item.kind, "value", item.kind)
 
+        if kind == BOUNDARY_HOOK_FAILED:   # slot 경계 훅 실패(#180 #5): 현재성을 믿을 수 없으므로 fail-stop
+            self.state.fail("boundary_hook_error")
+            return
+
         if item.epoch is None or kind == SIM_TIME_REWIND:
             return
 
@@ -270,7 +286,13 @@ class LiveObservationLink:
 
         if profile is not None:
             self._calibration_id = profile.calibration_id
+            self.camera_cleared = False
             self.dispatcher.set_camera(profile.camera)
+        elif kind == PROFILE_CHANGED:
+            # 프로필 없음 경계(해석할 수 없는 CameraInfo, #180 r1 L1): 이전 보정 번호를 현재로 두지 않는다. 디스패처의 대기 카메라
+            # 교체는 None을 받지 않으므로 카메라는 「없음」으로 표시하고, 그동안 `offer`가 제출을 막는다(유효 프로필이 오면 해제)
+            self._calibration_id = None
+            self.camera_cleared = True
 
         self.state.on_applied(item.epoch, generation, self._calibration_id)
 
@@ -301,6 +323,9 @@ class LiveObservationLink:
                                      detail=f"open attempt queued (last={last}, replaced={replaced})")
 
         token = self.state.token
+
+        if self.camera_cleared or token.calibration_id is None:   # 프로필 없음(L1): 보정 없는 프레임끼리 일치해도 제출하지 않는다
+            return self._record_skip("link", "calibration_unavailable", frame, ids)
 
         if frame.calibration_id != token.calibration_id:
             return self._record_skip("link", "calibration_mismatch", frame, ids,
@@ -402,7 +427,30 @@ class LiveObservationLink:
         return reason
 
     def _skip_loop(self) -> None:
-        """건너뜀 기록 스레드: 큐를 꺼내 쓰고, 멈춤 요청 뒤 남은 것을 비우고 파일을 닫는다."""
+        """건너뜀 기록 스레드 최상단(#180 #6): 예기치 않은 예외도 `skip_write_error`·`state.fail`로 드러내고 파일을 닫는다.
+
+        이 경우 `skip_crash`가 남아 정리 단계 「skips」가 성공으로 처리되지 않는다(`cleanup_confirmed` 거짓).
+        """
+        try:
+            self._skip_loop_body()
+        except Exception as exc:
+            msg = f"{type(exc).__name__}: {exc}"
+
+            with self._skip_cond:
+                self.skip_crash = msg
+                self.skip_write_error = self.skip_write_error or msg
+                self._skip_inflight = 0
+
+            self.state.fail("skip_writer_error")
+        finally:
+            if not self._skip_fh.closed:
+                try:
+                    self._skip_fh.close()
+                except OSError as exc:
+                    self.skip_write_error = self.skip_write_error or f"close: {type(exc).__name__}: {exc}"
+
+    def _skip_loop_body(self) -> None:
+        """큐를 꺼내 쓰고, 멈춤 요청 뒤 남은 것을 비우고 파일을 닫는다."""
         while True:
             with self._skip_cond:
                 while not self._skip_queue and not self._skip_stop:
@@ -503,7 +551,13 @@ class LiveObservationLink:
 
                 return True
 
-            return _join(self._skip_thread, limit_s)
+            if not _join(self._skip_thread, limit_s):
+                return False
+
+            if self.skip_crash is not None:   # 스레드는 끝났지만 비정상 종료(#180 #6): 정리 확인으로 치지 않는다
+                raise RuntimeError(f"skip writer crashed: {self.skip_crash}")
+
+            return True
 
         steps = (("probe", probe_close), ("dispatcher", lambda: self.dispatcher.close(limit_s)),
                  ("writer", writer_close), ("tf", lambda: self.tf.close(limit_s)), ("skips", skip_close))
