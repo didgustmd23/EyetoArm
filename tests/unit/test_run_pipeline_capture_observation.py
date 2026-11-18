@@ -1,4 +1,4 @@
-"""`run_pipeline.py` 저장 입력 실제 A→B 경로(#168, `--a-to-b-capture-meta`/`--a-to-b-out`) CLI 시험.
+"""`run_pipeline.py` 저장 입력 실제 A→B 경로(#168, `--capture-meta`/`--observation-out`, 별칭 `--a-to-b-capture-meta`/`--a-to-b-out`) CLI 시험.
 
 근거: `_workspace/168_a_to_b_real_path_implementation_spec.md` §2·§3·「검증 및 완료 기준」.
 
@@ -338,6 +338,53 @@ class DefaultAndArgsTest(Base):
         self.assertEqual(self.consume_calls, [])
 
 
+class OptionAliasTest(Base):
+    """역할 이름 옵션(`--capture-meta`·`--observation-out`)과 #168 옵션(`--a-to-b-capture-meta`·`--a-to-b-out`)은 같은 옵션이다."""
+
+    def test_new_names_same_result_as_old(self):
+        """새 이름으로 실행해도 B 1회·같은 b_output 형식(봉투 버전·valid_meaning 기록 식별자 유지)이다."""
+        c = self.case()
+        argv = ["--images", *c.images, "--detector", "ai", "--ai-config", c.ai, "--log", c.log, "--no-detect-timeout",
+                "--capture-meta", c.write_meta(c.meta()), "--observation-out", c.out]
+        model = model_with(lambda: [bolt_mask()])
+        err = io.StringIO()
+        code = self.mod.main(argv, stderr=err, model_factory=lambda path: model)
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertEqual(self.consume_calls, [(0, 0, 0)])
+        o = c.b_outputs()[0]
+        self.assertEqual((o["kind"], o["b_input"]["version"]), ("b_output", "eyetoarm.b_input/1"))
+        self.assertEqual(o["valid_meaning"], "extractor-format (not accuracy/operational approval)")
+
+    def test_parser_maps_both_names_to_one_dest(self):
+        """두 이름이 같은 dest로 들어가고, 섞어 써도 짝으로 인정된다(옛 이름 + 새 이름)."""
+        parser = self.mod.build_parser()
+        for meta_opt, out_opt in (("--capture-meta", "--observation-out"), ("--a-to-b-capture-meta", "--a-to-b-out"),
+                                  ("--capture-meta", "--a-to-b-out")):
+            with self.subTest(meta_opt=meta_opt, out_opt=out_opt):
+                ns = parser.parse_args(["--images", "x.png", "--log", "l.jsonl", meta_opt, "m.json", out_opt, "o"])
+                self.assertEqual((ns.capture_meta, ns.observation_out), ("m.json", "o"))
+        for new, old in (("--synthetic-observation-fixture", "--synthetic-a-to-b-fixture"),
+                         ("--synthetic-observation-out", "--synthetic-a-to-b-out")):
+            a = parser.parse_args(["--images", "x.png", "--log", "l.jsonl", new, "f"])
+            b = parser.parse_args(["--images", "x.png", "--log", "l.jsonl", old, "f"])
+            self.assertEqual(vars(a), vars(b))
+
+    def test_new_name_conflicts_still_argument_errors(self):
+        """새 이름도 실시간·추적 결합 금지(D13 포함)가 같은 인자 오류(2)다."""
+        c = self.case()
+        meta = c.write_meta(c.meta())
+        for extra in (["--tracking"], ):
+            with self.assertRaises(SystemExit) as cm:
+                self.mod.main(["--images", c.images[0], "--detector", "ai", "--ai-config", c.ai, "--log", c.log,
+                               "--capture-meta", meta, "--observation-out", c.out, *extra], stderr=io.StringIO())
+            self.assertEqual(cm.exception.code, 2)
+        with self.assertRaises(SystemExit) as cm:
+            self.mod.main(["--ros-link", "--detector", "ai", "--ai-config", c.ai, "--log", c.log,
+                           "--capture-meta", meta, "--observation-out", c.out], stderr=io.StringIO())
+        self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(self.consume_calls, [])
+
+
 class InvalidObservationTest(Base):
     """추출 무효·복수: B 0, 사유 기록, 주석 영상 없음."""
 
@@ -479,12 +526,12 @@ class EnvelopeRejectionTest(Base):
 
     def test_rejected_envelope_not_sent(self):
         """봉투 검사가 실패하면(시험 주입) BStage.consume 0회, b_input_rejected 1줄, 주석 영상 0, summary 문제 기록, 종료 1이다."""
-        from eyetoarm.vision import a_to_b_capture_recorder
-        from eyetoarm.vision.a_to_b_envelope import AToBEnvelopeError
+        from eyetoarm.vision import capture_observation_recorder
+        from eyetoarm.vision.observation_envelope import ObservationEnvelopeError
 
         c = self.case()
 
-        with mock.patch.object(a_to_b_capture_recorder, "make_a_to_b_envelope", side_effect=AToBEnvelopeError("injected binding error")):
+        with mock.patch.object(capture_observation_recorder, "make_observation_envelope", side_effect=ObservationEnvelopeError("injected binding error")):
             code, err = self.cli(c, c.write_meta(c.meta()))
 
         self.assertEqual(code, 1, err)
@@ -520,7 +567,7 @@ class ExtensionDeliveryTest(Base):
         model = model_with(lambda: [bolt_mask()])
         argv = ["--images", *c.images, "--detector", "ai", "--ai-config", c.ai, "--log", c.log, "--no-detect-timeout",
                 "--a-to-b-capture-meta", c.write_meta(c.meta()), "--a-to-b-out", c.out]
-        code = self.mod.main(argv, stderr=err, model_factory=lambda p: model, a_to_b_extension_source=source)
+        code = self.mod.main(argv, stderr=err, model_factory=lambda p: model, extension_source=source)
 
         self.assertEqual(code, 0, err.getvalue())
         o = c.b_outputs()[0]
@@ -542,7 +589,7 @@ class ExtensionDeliveryTest(Base):
                 "--a-to-b-capture-meta", c.write_meta(c.meta()), "--a-to-b-out", c.out]
         bad = {"tracking": {"binding": {"image_seq": 0, "job_seq": 9, "generation": 0, "capture_stamp_ns": STAMP0},
                             "part_track_id": 1}}
-        code = self.mod.main(argv, stderr=err, model_factory=lambda p: model, a_to_b_extension_source=lambda f, o: bad)
+        code = self.mod.main(argv, stderr=err, model_factory=lambda p: model, extension_source=lambda f, o: bad)
 
         self.assertEqual(code, 1, err.getvalue())
         self.assertEqual(self.consume_calls, [])
@@ -571,7 +618,7 @@ class BadExtensionRunContinuesTest(Base):
 
         argv = ["--images", *c.images, "--detector", "ai", "--ai-config", c.ai, "--log", c.log, "--no-detect-timeout",
                 "--a-to-b-capture-meta", c.write_meta(c.meta()), "--a-to-b-out", c.out]
-        code = self.mod.main(argv, stderr=err, model_factory=lambda p: model, a_to_b_extension_source=source)
+        code = self.mod.main(argv, stderr=err, model_factory=lambda p: model, extension_source=source)
 
         self.assertEqual(code, 1, err.getvalue())
         lines = c.b_outputs()

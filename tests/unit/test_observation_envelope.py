@@ -1,4 +1,4 @@
-"""A→B 입력 봉투(`vision/a_to_b_envelope`, #168 「전달 자료의 확장성」) 단위시험.
+"""A→B 입력 봉투(`vision/observation_envelope`, #168 「전달 자료의 확장성」) 단위시험.
 
 근거: `_workspace/168_a_to_b_real_path_implementation_spec.md` 「전달 자료의 확장성」·「확장 봉투 시험」.
 - 필수 필드 전달, 선택 확장의 추가·부재, 모르는 확장의 무해한 처리(이름만 남기고 내용 버림), 잘못된 버전·타입·좌표 기준·
@@ -14,9 +14,9 @@ from eyetoarm.calibration.profile import from_fov
 from eyetoarm.common.types import PixelBasis, PlanarObservation
 from eyetoarm.transforms.b_stage import correlation_keys
 from eyetoarm.transforms.planar_transform import look_at
-from eyetoarm.transforms.a_to_b_envelope_adapter import AToBEnvelopeAdapter, EnvelopeTfLookup
-from eyetoarm.vision.a_to_b_envelope import (A_TO_B_ENVELOPE_VERSION, AToBEnvelopeError, CaptureInfo, CaptureTf, SUPPORTED_EXTENSIONS,
-                                     make_a_to_b_envelope)
+from eyetoarm.transforms.observation_envelope_adapter import ObservationEnvelopeAdapter, EnvelopeTfLookup
+from eyetoarm.vision.observation_envelope import (OBSERVATION_ENVELOPE_VERSION, ObservationEnvelopeError, CaptureInfo, CaptureTf, SUPPORTED_EXTENSIONS,
+                                     make_observation_envelope)
 from test_pipeline import RUN_ID, frame
 
 W, H = 320, 240
@@ -74,7 +74,7 @@ def build(f=None, obs=None, **kw):
     args = dict(capture=capture(), camera=CAM, tf=tf())
     args.update(kw)
 
-    return make_a_to_b_envelope(f, obs, **args)
+    return make_observation_envelope(f, obs, **args)
 
 
 class RequiredFieldsTest(unittest.TestCase):
@@ -88,7 +88,7 @@ class RequiredFieldsTest(unittest.TestCase):
 
         self.assertIs(env.frame, f)
         self.assertIs(env.observation, obs)
-        self.assertEqual(env.version, A_TO_B_ENVELOPE_VERSION)
+        self.assertEqual(env.version, OBSERVATION_ENVELOPE_VERSION)
         self.assertEqual(dict(env.correlation), correlation_keys(obs, f))
         self.assertFalse(env.tf.T_W_C.flags.writeable)
         np.testing.assert_array_equal(env.tf.T_W_C, T)
@@ -109,7 +109,7 @@ class RequiredFieldsTest(unittest.TestCase):
 
 
 class BindingErrorTest(unittest.TestCase):
-    """버전·타입·좌표 기준·stamp 결합 오류는 명시적 AToBEnvelopeError."""
+    """버전·타입·좌표 기준·stamp 결합 오류는 명시적 ObservationEnvelopeError."""
 
     def test_version_and_types(self):
         """다른 버전, 프레임·관측·촬영 정보 타입 오류는 거부된다."""
@@ -118,14 +118,14 @@ class BindingErrorTest(unittest.TestCase):
         for name, kw in (("version", dict(version="eyetoarm.a_to_b_envelope/2")), ("capture_type", dict(capture={"stamp_ns": 1})),
                          ("tf_type", dict(tf={"T": T}))):
             with self.subTest(case=name):
-                with self.assertRaises(AToBEnvelopeError):
+                with self.assertRaises(ObservationEnvelopeError):
                     build(f, **kw)
 
-        with self.assertRaises(AToBEnvelopeError):
-            make_a_to_b_envelope("frame", make_obs(f), capture=capture(), camera=CAM, tf=tf())
+        with self.assertRaises(ObservationEnvelopeError):
+            make_observation_envelope("frame", make_obs(f), capture=capture(), camera=CAM, tf=tf())
 
-        with self.assertRaises(AToBEnvelopeError):
-            make_a_to_b_envelope(f, {"valid": True}, capture=capture(), camera=CAM, tf=tf())
+        with self.assertRaises(ObservationEnvelopeError):
+            make_observation_envelope(f, {"valid": True}, capture=capture(), camera=CAM, tf=tf())
 
     def test_frame_capture_camera_mismatches(self):
         """촬영 시각·광학 프레임·크기·보정 번호·카메라 프로파일·영상 모양·관측 식별자가 어긋나면 거부된다."""
@@ -140,14 +140,14 @@ class BindingErrorTest(unittest.TestCase):
 
         for name, kw in cases.items():
             with self.subTest(case=name):
-                with self.assertRaises(AToBEnvelopeError):
+                with self.assertRaises(ObservationEnvelopeError):
                     build(f, **kw)
 
-        with self.assertRaises(AToBEnvelopeError):
+        with self.assertRaises(ObservationEnvelopeError):
             build(make_frame(image=np.zeros((H, W + 1, 3), np.uint8)))
 
         g = make_frame()
-        with self.assertRaises(AToBEnvelopeError):
+        with self.assertRaises(ObservationEnvelopeError):
             build(g, make_obs(g, image_seq=5))
 
     def test_tf_binding_errors(self):
@@ -159,7 +159,7 @@ class BindingErrorTest(unittest.TestCase):
                          ("stamp", dict(stamp_ns=STAMP + 66_000_000)), ("rigid", dict(T_W_C=bad)),
                          ("shape", dict(T_W_C=np.eye(3)))):
             with self.subTest(case=name):
-                with self.assertRaises(AToBEnvelopeError):
+                with self.assertRaises(ObservationEnvelopeError):
                     build(tf=tf(**kw))
 
 
@@ -200,7 +200,7 @@ class ExtensionTest(unittest.TestCase):
 
         for bad in ({"x": float("nan")}, {"x": object()}):
             with self.subTest(bad=bad):
-                with self.assertRaises(AToBEnvelopeError):
+                with self.assertRaises(ObservationEnvelopeError):
                     build(f, obs, extensions={"depth_map": bad})
 
     def test_malformed_known_extension_rejected(self):
@@ -229,12 +229,12 @@ class ExtensionTest(unittest.TestCase):
 
         for name, ext in cases.items():
             with self.subTest(case=name):
-                with self.assertRaises(AToBEnvelopeError):
+                with self.assertRaises(ObservationEnvelopeError):
                     build(f, obs, extensions=ext)
 
 
 class StrictNumberTest(unittest.TestCase):
-    """확장·TF 수치는 변환 전에 형을 검사하고 변환 오류를 모두 AToBEnvelopeError로 정리한다(#168 F3 실패 우선 회귀)."""
+    """확장·TF 수치는 변환 전에 형을 검사하고 변환 오류를 모두 ObservationEnvelopeError로 정리한다(#168 F3 실패 우선 회귀)."""
 
     def inst_ext(self, obs, **item_over):
         """ai_instances 확장 하나(항목 일부 덮어쓰기)."""
@@ -245,17 +245,17 @@ class StrictNumberTest(unittest.TestCase):
         return {"ai_instances": {"binding": binding(obs), "pixel_basis": "raw", "items": [item]}}
 
     def test_bad_confidence_values(self):
-        """confidence가 거대 정수(10**400)·문자열·bool·복소수·NaN·None이면 OverflowError 등이 새지 않고 AToBEnvelopeError다."""
+        """confidence가 거대 정수(10**400)·문자열·bool·복소수·NaN·None이면 OverflowError 등이 새지 않고 ObservationEnvelopeError다."""
         f = make_frame()
         obs = make_obs(f)
 
         for bad in (10 ** 400, "0.9", True, 0.5 + 0j, float("nan"), None):
             with self.subTest(confidence=repr(bad)[:20]):
-                with self.assertRaises(AToBEnvelopeError):
+                with self.assertRaises(ObservationEnvelopeError):
                     build(f, obs, extensions=self.inst_ext(obs, confidence=bad))
 
     def test_bad_polygon_values(self):
-        """polygon 좌표가 문자열·bool·복소수·비유한·거대 정수·들쭉날쭉·문자열 dtype 배열이면 조용히 변환하지 않고 AToBEnvelopeError다."""
+        """polygon 좌표가 문자열·bool·복소수·비유한·거대 정수·들쭉날쭉·문자열 dtype 배열이면 조용히 변환하지 않고 ObservationEnvelopeError다."""
         f = make_frame()
         obs = make_obs(f)
         cases = {
@@ -272,7 +272,7 @@ class StrictNumberTest(unittest.TestCase):
 
         for name, poly in cases.items():
             with self.subTest(case=name):
-                with self.assertRaises(AToBEnvelopeError):
+                with self.assertRaises(ObservationEnvelopeError):
                     build(f, obs, extensions=self.inst_ext(obs, polygon_px=poly))
 
         # 정상 정수·실수·numpy 정수 배열은 받는다
@@ -280,7 +280,7 @@ class StrictNumberTest(unittest.TestCase):
         self.assertEqual(env.extensions["ai_instances"]["items"][0]["polygon_px"].dtype, np.float64)
 
     def test_bad_binding_and_tracking_types(self):
-        """결합 키·추적 번호에 bool(True == 1)·문자열이 오면 AToBEnvelopeError다."""
+        """결합 키·추적 번호에 bool(True == 1)·문자열이 오면 ObservationEnvelopeError다."""
         f = make_frame()
         obs = make_obs(f)
 
@@ -290,18 +290,18 @@ class StrictNumberTest(unittest.TestCase):
                                                         "part_track_id": 1}}),
                           ("track_bool", {"tracking": {"binding": binding(obs), "part_track_id": True}})):
             with self.subTest(case=name):
-                with self.assertRaises(AToBEnvelopeError):
+                with self.assertRaises(ObservationEnvelopeError):
                     build(f, obs, extensions=ext)
 
     def test_tf_matrix_strict(self):
-        """TF 행렬에 문자열·bool 원소가 있으면 AToBEnvelopeError다(float 자동 변환 없음)."""
+        """TF 행렬에 문자열·bool 원소가 있으면 ObservationEnvelopeError다(float 자동 변환 없음)."""
         rows = T.tolist()
         rows[0][3] = str(rows[0][3])
 
-        with self.assertRaises(AToBEnvelopeError):
+        with self.assertRaises(ObservationEnvelopeError):
             build(tf=tf(T_W_C=rows))
 
-        with self.assertRaises(AToBEnvelopeError):
+        with self.assertRaises(ObservationEnvelopeError):
             build(tf=tf(T_W_C=np.eye(4, dtype=bool)))
 
 
@@ -331,7 +331,7 @@ class AdapterTest(unittest.TestCase):
                                         "depth_hint": [1, 2]})
         lookup = EnvelopeTfLookup()
         seen = {}
-        adapter = AToBEnvelopeAdapter(self.stage(lookup, seen), lookup)
+        adapter = ObservationEnvelopeAdapter(self.stage(lookup, seen), lookup)
         result = adapter.consume(env)
 
         self.assertEqual(result.output, "out")
@@ -350,15 +350,15 @@ class AdapterTest(unittest.TestCase):
         """봉투가 아닌 값은 거부(B 미호출)하고, stage의 tf_lookup이 어댑터 것이 아니면 생성 단계에서 거부한다."""
         lookup = EnvelopeTfLookup()
         seen = {}
-        adapter = AToBEnvelopeAdapter(self.stage(lookup, seen), lookup)
+        adapter = ObservationEnvelopeAdapter(self.stage(lookup, seen), lookup)
 
-        with self.assertRaises(AToBEnvelopeError):
+        with self.assertRaises(ObservationEnvelopeError):
             adapter.consume({"frame": None})
 
         self.assertEqual(seen, {})
 
         with self.assertRaises(ValueError):
-            AToBEnvelopeAdapter(self.stage(EnvelopeTfLookup(), {}), lookup)
+            ObservationEnvelopeAdapter(self.stage(EnvelopeTfLookup(), {}), lookup)
 
 
 if __name__ == "__main__":

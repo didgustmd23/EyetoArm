@@ -27,20 +27,20 @@
       source /opt/ros/jazzy/setup.bash
       PYTHONPATH=src .venv/bin/python scripts/run_pipeline.py --ros-link --detector ai \\
           --ai-config config/vision/ai_s1_01_live.json --log _workspace/evidence/live/run.jsonl --max-frames 300
-- **A→B 저장 입력 시험 연결(#166, synthetic/test-only):** `--synthetic-a-to-b-fixture JSON --synthetic-a-to-b-out PATH`이면(저장 입력
+- **A→B 저장 입력 시험 연결(#166, synthetic/test-only):** `--synthetic-observation-fixture JSON --synthetic-observation-out PATH`(별칭 `--synthetic-a-to-b-fixture`·`--synthetic-a-to-b-out`)이면(저장 입력
   `--images`/`--video` 전용) fixture의 합성 관측을 실행기 detector 자리에 넣고, fixture의 `CameraProfile`·TF로 만든
   `BStage`의 `consume`을 `run(..., b_consumer=...)`에 넘긴다. 관측은 코어 검사 → `b_gate` → B 순서를 그대로 지난다.
   제품 AI/OpenCV 검출은 이 모드에서 돌지 않으며(모델을 불러오지 않음) 그 관측은 여전히 valid=False다. `stage.on_output`은
   연결하지 않는다(C·로봇 송신 없음). `--ros-link`(D13)·`--tracking`과 함께 쓸 수 없다(인자 오류 2). 기록·B 출력 파일이 이미
   있으면 덮어쓰지 않고 2로 끝낸다. 실행 뒤 B 호출 수가 fixture의 valid 레코드 수와 다르면 1이다. 합성 fixture 통과는 실제
   RGB 검출·끝점 추출·mm 정확도·실시간 B 허용의 증거가 아니다.
-- **A→B 저장 입력 실제 경로(#168, opt-in):** `--a-to-b-capture-meta META --a-to-b-out DIR`(저장 입력 `--images`/`--video`·`--detector ai`
+- **A→B 저장 입력 실제 경로(#168, opt-in):** `--capture-meta META --observation-out DIR`(별칭 `--a-to-b-capture-meta`·`--a-to-b-out`, 저장 입력 `--images`/`--video`·`--detector ai`
   전용, AI 설정 `axis_extractor` 필수). 관측은 **실제 AI 검출 + 볼트 끝점 추출기(M1)**에서 나오고, 메타는 원본 CameraInfo·
   프레임별 촬영 시각·그 시각 `world→optical_frame` TF만 준다(관측 주입 없음). B 입력은 `run(..., b_consumer=...)`의 `b_gate`
   통과 관측과 그 원본 프레임이며, B 결과와 같은 `BOutput`의 주석 영상(`render_center`)을 DIR에 새로 쓴다. `valid=True`는 추출기
   형식 조건 통과 뜻이며 정확도·운영 승인이 아니다(#167 K0). `stage.on_output`은 연결하지 않는다(C·D·로봇 송신 없음).
-  `--ros-link`(D13)·`--tracking`·`--synthetic-a-to-b-*`과 함께 쓸 수 없다(인자 오류 2). 메타·출력 오류는 2.
-  A→B 경계는 버전 명시형 입력 봉투(`vision/a_to_b_envelope`, `eyetoarm.b_input/1`)이며 봉투 오류는 B 없이 기록하고 1로 끝낸다.
+  `--ros-link`(D13)·`--tracking`·`--synthetic-observation-*`과 함께 쓸 수 없다(인자 오류 2). 메타·출력 오류는 2.
+  A→B 경계는 버전 명시형 입력 봉투(`vision/observation_envelope`, `eyetoarm.b_input/1`)이며 봉투 오류는 B 없이 기록하고 1로 끝낸다.
 - 종료 코드: 0 정상(EOF·max-frames·정지 요청), 1 실행 실패(입력 없음·기록 실패·중단·close 실패·검출 시간 초과·멈춤 등),
   2 인자·설정 오류.
 """
@@ -129,16 +129,22 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"두 번째부터의 검출 시간 상한(기본 {RunnerConfig.detect_timeout_s} s, 개발 초기값)")
     parser.add_argument("--no-detect-timeout", action="store_true",
                         help="검출 감시를 끈다(6a 동기 호출). 위 두 옵션과 함께 쓸 수 없다")
-    parser.add_argument("--synthetic-a-to-b-fixture", metavar="JSON", default=None,
+    # 관측 전달 옵션: 역할 이름이 기본, #166/#168 이름(--synthetic-a-to-b-*, --a-to-b-*)은 같은 옵션의 별칭으로 유지한다
+    parser.add_argument("--synthetic-observation-fixture", "--synthetic-a-to-b-fixture", dest="synthetic_fixture",
+                        metavar="JSON", default=None,
                         help="시험 전용(synthetic/test-only): 합성 관측 fixture로 A→B 저장 입력 연결을 확인한다. "
-                             "--images/--video와만, --synthetic-a-to-b-out 필수. 실제 검출·실시간 B 허용이 아니다")
-    parser.add_argument("--synthetic-a-to-b-out", metavar="PATH", default=None,
-                        help="--synthetic-a-to-b-fixture 전용: B 시험 출력 JSONL(새 파일만, 덮어쓰지 않음)")
-    parser.add_argument("--a-to-b-capture-meta", metavar="JSON", default=None,
+                             "--images/--video와만, --synthetic-observation-out 필수. 실제 검출·실시간 B 허용이 아니다 "
+                             "(별칭 --synthetic-a-to-b-fixture)")
+    parser.add_argument("--synthetic-observation-out", "--synthetic-a-to-b-out", dest="synthetic_out", metavar="PATH",
+                        default=None,
+                        help="--synthetic-observation-fixture 전용: B 시험 출력 JSONL(새 파일만, 덮어쓰지 않음) "
+                             "(별칭 --synthetic-a-to-b-out)")
+    parser.add_argument("--capture-meta", "--a-to-b-capture-meta", dest="capture_meta", metavar="JSON", default=None,
                         help="저장 입력 실제 A→B 경로(opt-in): 녹화 메타(CameraInfo·촬영 시각·그 시각 TF). "
-                             "--images/--video·--detector ai(axis_extractor 설정)와만, --a-to-b-out 필수")
-    parser.add_argument("--a-to-b-out", metavar="DIR", default=None,
-                        help="--a-to-b-capture-meta 전용: B 결과·주석 영상 출력 폴더(새 폴더만)")
+                             "--images/--video·--detector ai(axis_extractor 설정)와만, --observation-out 필수 "
+                             "(별칭 --a-to-b-capture-meta)")
+    parser.add_argument("--observation-out", "--a-to-b-out", dest="observation_out", metavar="DIR", default=None,
+                        help="--capture-meta 전용: B 결과·주석 영상 출력 폴더(새 폴더만) (별칭 --a-to-b-out)")
     parser.add_argument("--tracking", action="store_true", help="--detector ai 전용. A-6 1차 실험: AI 검출 인스턴스 추적 번호를 붙인다(M2 휴리스틱, 표시·기록 전용, 팔 이동을 넘는 신원·중복 집기 방지 보장 없음, B로 보내지 않음). 기본 꺼짐")
 
     return parser
@@ -172,26 +178,26 @@ def _check_source_args(args, ros_available) -> None:
         build_parser().error("--ros-reliability is for --ros-link only")
 
     # 실제 A→B 경로(#168): 저장 입력·AI 전용. 실시간 B 금지(D13)·추적·시험 fixture와 결합 금지
-    if args.a_to_b_capture_meta is not None or args.a_to_b_out is not None:
+    if args.capture_meta is not None or args.observation_out is not None:
         if args.ros_link:
-            build_parser().error("--a-to-b-capture-meta/--a-to-b-out are not allowed with --ros-link (D13: no B in live)")
-        if args.a_to_b_capture_meta is None or args.a_to_b_out is None:
-            build_parser().error("--a-to-b-capture-meta and --a-to-b-out must be given together")
-        if args.synthetic_a_to_b_fixture is not None or args.synthetic_a_to_b_out is not None:
-            build_parser().error("--a-to-b-capture-meta cannot be combined with --synthetic-a-to-b-fixture/--synthetic-a-to-b-out")
+            build_parser().error("--capture-meta/--observation-out are not allowed with --ros-link (D13: no B in live)")
+        if args.capture_meta is None or args.observation_out is None:
+            build_parser().error("--capture-meta and --observation-out must be given together")
+        if args.synthetic_fixture is not None or args.synthetic_out is not None:
+            build_parser().error("--capture-meta cannot be combined with --synthetic-observation-fixture/--synthetic-observation-out")
         if args.tracking:
-            build_parser().error("--a-to-b-capture-meta cannot be combined with --tracking")
+            build_parser().error("--capture-meta cannot be combined with --tracking")
         if args.detector != "ai":
-            build_parser().error("--a-to-b-capture-meta requires --detector ai")
+            build_parser().error("--capture-meta requires --detector ai")
 
     # 시험 B 연결(#166): 저장 입력 전용. 실시간 입력의 B 소비 금지(D13)·추적과 B 결합 금지를 인자 단계에서 막는다
-    if args.synthetic_a_to_b_fixture is not None or args.synthetic_a_to_b_out is not None:
+    if args.synthetic_fixture is not None or args.synthetic_out is not None:
         if args.ros_link:
-            build_parser().error("--synthetic-a-to-b-fixture/--synthetic-a-to-b-out are not allowed with --ros-link (D13: no B in live)")
-        if args.synthetic_a_to_b_fixture is None or args.synthetic_a_to_b_out is None:
-            build_parser().error("--synthetic-a-to-b-fixture and --synthetic-a-to-b-out must be given together")
+            build_parser().error("--synthetic-observation-fixture/--synthetic-observation-out are not allowed with --ros-link (D13: no B in live)")
+        if args.synthetic_fixture is None or args.synthetic_out is None:
+            build_parser().error("--synthetic-observation-fixture and --synthetic-observation-out must be given together")
         if args.tracking:
-            build_parser().error("--synthetic-a-to-b-fixture cannot be combined with --tracking")
+            build_parser().error("--synthetic-observation-fixture cannot be combined with --tracking")
 
 
 def build_runner_config(args) -> RunnerConfig:
@@ -266,12 +272,12 @@ class _StopSignals:
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _prepare_synthetic_a_to_b(args, err):
+def _prepare_synthetic_observation(args, err):
     """시험 B 연결 준비: fixture 읽기·입력 지문 확인·출력 경로 확인. 실패하면 (None, 2)."""
-    from eyetoarm.vision.synthetic_a_to_b_fixture import FixtureError, check_inputs, load_fixture
+    from eyetoarm.vision.synthetic_observation_fixture import FixtureError, check_inputs, load_fixture
 
     try:
-        fixture = load_fixture(args.synthetic_a_to_b_fixture)
+        fixture = load_fixture(args.synthetic_fixture)
         paths = list(args.images) if args.images else [args.video]
         inputs = check_inputs(fixture, paths, args.source_id)
     except (OSError, FixtureError) as exc:
@@ -279,7 +285,7 @@ def _prepare_synthetic_a_to_b(args, err):
         return None, 2
 
     # 출력은 덮어쓰지 않는다(기록·B 출력 둘 다, 열기 전에 확인)
-    for path in (args.log, args.synthetic_a_to_b_out):
+    for path in (args.log, args.synthetic_out):
         if Path(path).exists():
             err.write(f"run_pipeline: synthetic-a-to-b output exists, refusing to overwrite: {path}\n")
             return None, 2
@@ -288,11 +294,11 @@ def _prepare_synthetic_a_to_b(args, err):
 
 
 def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_available=None,
-         live_source_factory=None, b_stage_hook=None, a_to_b_extension_source=None) -> int:
+         live_source_factory=None, b_stage_hook=None, extension_source=None) -> int:
     """CLI 진입점. 종료 코드를 돌려준다.
 
     `b_stage_hook(stage)`는 시험 주입 지점이다(시험 B 연결에서 만든 BStage를 run 전에 받음, 기본 None).
-    `a_to_b_extension_source(frame, obs)`는 실제 A→B 경로 봉투에 실을 확장 사전을 주는 시험 주입 지점이다(기본 None = 확장 없음).
+    `extension_source(frame, obs)`는 실제 A→B 경로 봉투에 실을 확장 사전을 주는 시험 주입 지점이다(기본 None = 확장 없음).
 
     `ros_available`(rclpy 확인 대체)·`live_source_factory`(`(source_id, reliability) → 소스 팩토리`)는 시험 주입 지점이다.
 
@@ -311,14 +317,14 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
     synthetic = None
     capture = None
 
-    if args.a_to_b_capture_meta is not None:
-        capture, code = _prepare_a_to_b_capture(args, err)
+    if args.capture_meta is not None:
+        capture, code = _prepare_capture_observation(args, err)
 
         if capture is None:
             return code
 
-    if args.synthetic_a_to_b_fixture is not None:
-        synthetic, code = _prepare_synthetic_a_to_b(args, err)
+    if args.synthetic_fixture is not None:
+        synthetic, code = _prepare_synthetic_observation(args, err)
 
         if synthetic is None:
             return code
@@ -334,7 +340,7 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
                    else capture[0].source_profile if capture is not None else None)
 
         if capture is not None and config.axis_extractor is None:
-            raise ValueError("--a-to-b-capture-meta requires an AI config with axis_extractor (e.g. \"m1\")")
+            raise ValueError("--capture-meta requires an AI config with axis_extractor (e.g. \"m1\")")
         settings = PipelineSettings(source_id=args.source_id, mode=args.mode, detector_config=config, profile=profile)
     except (OSError, ValueError) as exc:
         err.write(f"run_pipeline: config error: {exc}\n")
@@ -345,7 +351,7 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
         detector_kw["part_tracker"] = PartTracker(PartTrackIdIssuer(), mode=TrackMode.HEURISTIC)
 
     if synthetic is not None:
-        return _run_synthetic_a_to_b(args, settings, runner_config, detector_kw, synthetic, err, b_stage_hook)
+        return _run_synthetic_observation(args, settings, runner_config, detector_kw, synthetic, err, b_stage_hook)
 
     if args.detector == "ai":
         # AI 어댑터는 이때만 import한다(OpenCV 경로는 ai_detector도 불러오지 않음). 생성자는 I/O가 없다
@@ -360,8 +366,8 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
         detector_kw.update(detector=det, prepare=det.prepare)
 
     if capture is not None:
-        return _run_a_to_b_capture(args, settings, runner_config, detector_kw, capture, err, b_stage_hook,
-                              a_to_b_extension_source)
+        return _run_capture_observation(args, settings, runner_config, detector_kw, capture, err, b_stage_hook,
+                              extension_source)
 
     if args.ros_link:
         make = live_source_factory or _live_factory
@@ -399,19 +405,19 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
     return result.exit_code
 
 
-def _prepare_a_to_b_capture(args, err):
+def _prepare_capture_observation(args, err):
     """실제 경로 준비: 메타 읽기·입력 지문·출력 경로 확인. 실패하면 (None, 2)."""
     from eyetoarm.vision.capture_meta import CaptureMetaError, check_capture_inputs, load_capture_meta
 
     try:
-        meta = load_capture_meta(args.a_to_b_capture_meta)
+        meta = load_capture_meta(args.capture_meta)
         paths = list(args.images) if args.images else [args.video]
         inputs = check_capture_inputs(meta, paths, args.source_id)
     except (OSError, CaptureMetaError) as exc:
         err.write(f"run_pipeline: capture meta error: {exc}\n")
         return None, 2
 
-    for path in (args.log, args.a_to_b_out):
+    for path in (args.log, args.observation_out):
         if Path(path).exists():
             err.write(f"run_pipeline: output exists, refusing to overwrite: {path}\n")
             return None, 2
@@ -419,8 +425,8 @@ def _prepare_a_to_b_capture(args, err):
     return (meta, inputs), 0
 
 
-def _run_a_to_b_capture(args, settings, runner_config, detector_kw, capture, err, b_stage_hook,
-                   a_to_b_extension_source=None) -> int:
+def _run_capture_observation(args, settings, runner_config, detector_kw, capture, err, b_stage_hook,
+                   extension_source=None) -> int:
     """저장 입력 실제 A→B 경로(#168). 실제 AI 검출기·끝점 추출기 관측을 `b_gate` 뒤 BStage로 보내고 주석 영상을 쓴다.
 
     호출 경로: 저장 소스 → `CaptureMetaSource`(일치 프레임에만 촬영 메타) → 실행기 → `AiSegDetector`(convert 안 M1) →
@@ -429,9 +435,9 @@ def _run_a_to_b_capture(args, settings, runner_config, detector_kw, capture, err
     """
     from eyetoarm.transforms.b_stage import BStage
     from eyetoarm.vision.ai_detector import AiSegDetector
-    from eyetoarm.vision.a_to_b_capture_recorder import VALID_MEANING, AToBCaptureRecorder
-    from eyetoarm.transforms.a_to_b_envelope_adapter import AToBEnvelopeAdapter, EnvelopeTfLookup
-    from eyetoarm.vision.a_to_b_envelope import A_TO_B_ENVELOPE_VERSION
+    from eyetoarm.vision.capture_observation_recorder import VALID_MEANING, CaptureObservationRecorder
+    from eyetoarm.transforms.observation_envelope_adapter import ObservationEnvelopeAdapter, EnvelopeTfLookup
+    from eyetoarm.vision.observation_envelope import OBSERVATION_ENVELOPE_VERSION
     from eyetoarm.vision.capture_meta import CaptureMetaSource
 
     meta, inputs = capture
@@ -461,8 +467,8 @@ def _run_a_to_b_capture(args, settings, runner_config, detector_kw, capture, err
         return holder["source"]
 
     try:
-        recorder = AToBCaptureRecorder(args.a_to_b_out, stage, meta, AToBEnvelopeAdapter(stage, tf_lookup),
-                                   extension_source=a_to_b_extension_source)
+        recorder = CaptureObservationRecorder(args.observation_out, stage, meta, ObservationEnvelopeAdapter(stage, tf_lookup),
+                                   extension_source=extension_source)
     except OSError as exc:
         err.write(f"run_pipeline: cannot create a-to-b-out: {exc}\n")
         return 2
@@ -497,7 +503,7 @@ def _run_a_to_b_capture(args, settings, runner_config, detector_kw, capture, err
         source = holder.get("source")
         recorder.summary({"exit_code": exit_code, "runner_exit_code": result.exit_code,
                           "stop_reason": result.stop_reason, "run_id": result.run_id, "frames": result.frames,
-                          "runner_b_calls": result.b_calls, "b_input_version": A_TO_B_ENVELOPE_VERSION,
+                          "runner_b_calls": result.b_calls, "b_input_version": OBSERVATION_ENVELOPE_VERSION,
                           "capture_id": meta.capture_id,
                           "capture_meta_sha256": meta.sha256, "inputs_sha256": inputs,
                           "detector_config_id": settings.detector_config_id,
@@ -522,7 +528,7 @@ def _run_a_to_b_capture(args, settings, runner_config, detector_kw, capture, err
     return exit_code
 
 
-def _run_synthetic_a_to_b(args, settings, runner_config, detector_kw, synthetic, err, b_stage_hook) -> int:
+def _run_synthetic_observation(args, settings, runner_config, detector_kw, synthetic, err, b_stage_hook) -> int:
     """시험 B 연결 실행(#166, synthetic/test-only). 제품 검출기 대신 fixture 관측을 detector 자리에 넣는다.
 
     관측 주입 경계: `run(detector=FixtureDetector)` — 실행기가 시작한 작업마다 detector로 불리고, 반환 관측은 코어
@@ -530,7 +536,7 @@ def _run_synthetic_a_to_b(args, settings, runner_config, detector_kw, synthetic,
     BStage·기록 파일은 이 함수가 만들고 닫는다. `stage.on_output`은 None으로 둔다(C·로봇 송신 없음).
     """
     from eyetoarm.transforms.b_stage import BStage
-    from eyetoarm.vision.synthetic_a_to_b_fixture import (TEST_MODE_LABEL, SyntheticAToBRecorder, FixtureDetector, FixtureStampedSource,
+    from eyetoarm.vision.synthetic_observation_fixture import (TEST_MODE_LABEL, SyntheticObservationRecorder, FixtureDetector, FixtureStampedSource,
                                                 FixtureTfLookup)
 
     fixture, inputs = synthetic
@@ -556,7 +562,7 @@ def _run_synthetic_a_to_b(args, settings, runner_config, detector_kw, synthetic,
               f"fixture_sha256={fixture.sha256} (not real detection, no C/robot output)\n")
 
     try:
-        recorder = SyntheticAToBRecorder(args.synthetic_a_to_b_out, fixture)
+        recorder = SyntheticObservationRecorder(args.synthetic_out, fixture)
     except OSError as exc:
         err.write(f"run_pipeline: cannot open synthetic-a-to-b output: {exc}\n")
         return 2

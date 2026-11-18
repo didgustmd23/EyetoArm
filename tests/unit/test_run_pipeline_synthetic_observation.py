@@ -31,7 +31,7 @@ from eyetoarm.transforms.b_stage import StaticTfLookup
 from eyetoarm.transforms.planar_transform import look_at, w_to_image
 from eyetoarm.vision import pipeline_runner
 from eyetoarm.vision.ai_config import load_ai_config
-from eyetoarm.vision.synthetic_a_to_b_fixture import FIXTURE_FORMAT, TEST_MODE_LABEL
+from eyetoarm.vision.synthetic_observation_fixture import FIXTURE_FORMAT, TEST_MODE_LABEL
 from eyetoarm.vision.planar import load_config
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -169,7 +169,7 @@ def load_cli():
     return mod
 
 
-class SyntheticAToBBase(unittest.TestCase):
+class SyntheticObservationBase(unittest.TestCase):
     """CLI 실행 도우미와 b_gate·B·C 감시."""
 
     def setUp(self):
@@ -242,7 +242,7 @@ class SyntheticAToBBase(unittest.TestCase):
         self.assertEqual(self.c_calls, [])
 
 
-class DefaultRegressionTest(SyntheticAToBBase):
+class DefaultRegressionTest(SyntheticObservationBase):
     """§6-1 기본 회귀: opt-in 없으면 BStage를 만들지 않고 B 호출 0, 표시용 무효 관측 그대로."""
 
     def test_default_run_builds_no_bstage_and_keeps_invalid_observations(self):
@@ -271,7 +271,7 @@ class DefaultRegressionTest(SyntheticAToBBase):
                 self.assertEqual(ctx.exception.code, 2)
 
 
-class BoltSuccessTest(SyntheticAToBBase):
+class BoltSuccessTest(SyntheticObservationBase):
     """§6-2 시험 성공 경로: 합성 볼트 끝점 하나 → run() → b_gate → B 정확히 1회."""
 
     def test_bolt_reaches_b_once_through_gate_with_same_keys(self):
@@ -307,7 +307,7 @@ class BoltSuccessTest(SyntheticAToBBase):
         self.assertEqual(self.c_calls, [])
 
 
-class NutPathTest(SyntheticAToBBase):
+class NutPathTest(SyntheticObservationBase):
     """§6-3 너트 경로: top_face 윗면 바깥 테두리 fixture가 윤곽 경로로 B에 도달(볼트와 별도)."""
 
     def test_nut_top_face_reaches_b_contour_path(self):
@@ -333,7 +333,7 @@ class NutPathTest(SyntheticAToBBase):
         self.assert_no_b(c)
 
 
-class InvalidAndMismatchTest(SyntheticAToBBase):
+class InvalidAndMismatchTest(SyntheticObservationBase):
     """§6-4 무효·불일치: B 호출 0, 오류·거부 이유 기록, b_gate를 우회하지 않음."""
 
     def run_case(self, records=None, *, n=1, fixture_over=None, extra=(), detector="opencv", mutate=None):
@@ -455,7 +455,7 @@ class InvalidAndMismatchTest(SyntheticAToBBase):
         self.assertFalse(os.path.exists(c.log))
 
 
-class TfPathTest(SyntheticAToBBase):
+class TfPathTest(SyntheticObservationBase):
     """§6-5 TF 경로: 고정 자세만 StaticTfLookup, 촬영 시각 TF 정확 일치, 없음·다른 시각·50 ms 초과는 B SKIP."""
 
     def test_fixed_camera_uses_static_lookup(self):
@@ -529,7 +529,7 @@ class TfPathTest(SyntheticAToBBase):
         self.assert_no_b(c)
 
 
-class ComputeBudgetTest(SyntheticAToBBase):
+class ComputeBudgetTest(SyntheticObservationBase):
     """§6-6 B 계산 제한: 정상 20 ms 이내, 초과는 B_TIMEOUT SKIP."""
 
     def test_normal_compute_within_budget(self):
@@ -558,7 +558,7 @@ class ComputeBudgetTest(SyntheticAToBBase):
         self.assertEqual((goal["kind"], goal["reason"]), ("SKIP", "B_TIMEOUT"))
 
 
-class LiveForbiddenTest(SyntheticAToBBase):
+class LiveForbiddenTest(SyntheticObservationBase):
     """§6-7 실시간 금지: --ros-link와 시험 B 옵션 조합은 argparse 오류(2), B 0."""
 
     def test_ros_link_with_synthetic_fixture_is_argument_error(self):
@@ -586,7 +586,7 @@ class LiveForbiddenTest(SyntheticAToBBase):
         self.assertEqual(ctx.exception.code, 2)
 
 
-class NoCOutputTest(SyntheticAToBBase):
+class NoCOutputTest(SyntheticObservationBase):
     """§6-8 C 미연결: on_output None, C/ROS action 송신 0, rclpy를 불러오지 않음."""
 
     def test_on_output_none_and_no_c_or_ros(self):
@@ -612,7 +612,7 @@ class NoCOutputTest(SyntheticAToBBase):
         self.assert_no_b(c)
 
 
-class ContinuityTest(SyntheticAToBBase):
+class ContinuityTest(SyntheticObservationBase):
     """§6-9 연속성·무결성: 반복 실행 결과 고정, 출력 덮어쓰기 거부, 시험 표시."""
 
     STABLE = ("run_id", "capture_generation", "generation", "job_seq", "detector_config_id", "kind", "source_id")

@@ -163,7 +163,7 @@ class FixtureRecord:
 
 
 @dataclass(frozen=True)
-class SyntheticAToBFixture:
+class SyntheticObservationFixture:
     """검사를 마친 fixture 전체."""
 
     path: str
@@ -250,7 +250,7 @@ def _observation(raw, source: SourceProfile, basis: PixelBasis, where: str) -> d
     return obs
 
 
-def load_fixture(path: str) -> SyntheticAToBFixture:
+def load_fixture(path: str) -> SyntheticObservationFixture:
     """fixture JSON을 읽어 검사한다. 어긋나면 FixtureError(형식·내용), 파일 오류는 OSError."""
     with open(path, "rb") as f:
         data = f.read()
@@ -372,7 +372,7 @@ def load_fixture(path: str) -> SyntheticAToBFixture:
         records.append(FixtureRecord(index, seq, stamp, T, _observation(raw["observation"], profile, basis,
                                                                         f"{where}.observation")))
 
-    return SyntheticAToBFixture(path=str(path), sha256=hashlib.sha256(data).hexdigest(), fixture_id=fixture_id, run_id=run_id,
+    return SyntheticObservationFixture(path=str(path), sha256=hashlib.sha256(data).hexdigest(), fixture_id=fixture_id, run_id=run_id,
                         inputs_sha256=tuple(inputs), source_profile=profile, pixel_basis=basis, camera=camera,
                         camera_motion=motion, tf_mode=tf["mode"], static_T_W_C=static_T, records=tuple(records))
 
@@ -388,7 +388,7 @@ def file_sha256(path: str) -> str:
     return h.hexdigest()
 
 
-def check_inputs(fixture: SyntheticAToBFixture, paths: list[str], source_id: str) -> list[str]:
+def check_inputs(fixture: SyntheticObservationFixture, paths: list[str], source_id: str) -> list[str]:
     """입력 파일 순서·지문과 소스 ID가 fixture와 같은지 확인하고 지문 목록을 돌려준다. 다르면 FixtureError."""
     if source_id != fixture.source_profile.source_id:
         raise FixtureError(f"--source-id {source_id!r} != fixture source.source_id "
@@ -410,7 +410,7 @@ class FixtureStampedSource:
     대응 레코드가 없는 프레임은 촬영 시각 없이 보정 번호만 붙이고 넘긴다(detector가 누락으로 실패시킨다).
     """
 
-    def __init__(self, inner, fixture: SyntheticAToBFixture) -> None:
+    def __init__(self, inner, fixture: SyntheticObservationFixture) -> None:
         """감쌀 소스와 fixture."""
         self._inner = inner
         self._fixture = fixture
@@ -440,7 +440,7 @@ class FixtureStampedSource:
 class FixtureDetector:
     """detector 자리(`run(detector=...)`)에 넣는 합성 관측 공급기. 작업마다 레코드를 정확히 한 번 쓴다."""
 
-    def __init__(self, fixture: SyntheticAToBFixture) -> None:
+    def __init__(self, fixture: SyntheticObservationFixture) -> None:
         """fixture와 사용 기록."""
         self._fixture = fixture
         self.used: list[int] = []   # 쓴 레코드의 image_seq
@@ -480,7 +480,7 @@ class FixtureTfLookup:
     이는 반환 뒤 판정이다(블로킹 조회를 중간에 끊지 않음, 저장 fixture 조회는 즉시 끝남).
     """
 
-    def __init__(self, fixture: SyntheticAToBFixture, *, timeout_s: float = TF_WAIT_LIMIT_S,
+    def __init__(self, fixture: SyntheticObservationFixture, *, timeout_s: float = TF_WAIT_LIMIT_S,
                  clock: Callable[[], float] = time.monotonic) -> None:
         """fixture로 조회 함수를 고른다."""
         self.timeout_s = timeout_s
@@ -541,10 +541,10 @@ def _plain(value):
     return getattr(value, "value", value) if not isinstance(value, (str, int, float, bool, type(None))) else value
 
 
-class SyntheticAToBRecorder:
+class SyntheticObservationRecorder:
     """B 시험 출력 JSONL(덮어쓰지 않음). 줄마다 `mode: synthetic/test-only`."""
 
-    def __init__(self, path: str, fixture: SyntheticAToBFixture) -> None:
+    def __init__(self, path: str, fixture: SyntheticObservationFixture) -> None:
         """새 파일을 만든다(이미 있으면 FileExistsError)."""
         self._stream = open(path, "x", encoding="utf-8")
         self._fixture = fixture
@@ -590,5 +590,5 @@ class SyntheticAToBRecorder:
         self._stream.close()
 
 
-__all__ = ["SyntheticAToBFixture", "SyntheticAToBRecorder", "FIXTURE_FORMAT", "FixtureDetector", "FixtureError",
+__all__ = ["SyntheticObservationFixture", "SyntheticObservationRecorder", "FIXTURE_FORMAT", "FixtureDetector", "FixtureError",
            "FixtureStampedSource", "FixtureTfLookup", "TEST_MODE_LABEL", "check_inputs", "load_fixture"]

@@ -29,7 +29,7 @@ from typing import Any, Callable
 import numpy as np
 
 from eyetoarm.inputs.base import FrameIdIssuer, FramePacket, InputStatus, InputStatusEvent, TimestampBase
-from eyetoarm.inputs.live_slot import (CameraProfileInfo, GenerationMirror, LiveFrameSlot, LiveInput, LiveSlotConfig,
+from eyetoarm.inputs.live_slot import (BoundaryKind, CameraProfileInfo, GenerationMirror, LiveFrameSlot, LiveInput, LiveSlotConfig,
                                        NoticeKind, TakeStatus)
 
 # 허용 영상 인코딩(계획 §3.2). 그 밖은 DECODE_FAILED
@@ -134,7 +134,7 @@ def profile_info(message) -> CameraProfileInfo:
 
     profile = from_camera_info(message)
 
-    return CameraProfileInfo(calibration_id=profile.calibration_id, width=profile.width, height=profile.height,
+    return CameraProfileInfo(calibration_id=profile.calibration_id, width=profile.width, height=profile.height, camera=profile,
                              frame_id=profile.frame_id)
 
 
@@ -151,6 +151,8 @@ class LiveLinkSource:
     - `transport_factory(source) → transport`: 수신 연결. 기본은 `RclpyTransport`. 시험은 가짜를 넣는다.
     - 생성자가 연결을 시작한다(모델 준비 동안에도 최신 칸만 갱신). 시작 실패는 예외가 아니라 첫 `poll_input`의 알림과
       이후 `read()`의 `SOURCE_UNAVAILABLE "closed"`로 알린다.
+    - `frame_epoch(frame)`(#171 R1): 그 프레임을 받은 수신 epoch(모르면 None). 제어 흐름 전용(잠금 없는 표를 읽음).
+    - `boundary_hook(epoch, kind)`(#171 R1, 선택): 수신 경계마다 slot 잠금 안에서 부른다(`LiveFrameSlot` 설명). 기본 None이면 기존과 같다.
     - 제어 흐름 메서드는 한 스레드에서 차례로 부른다. 수신 메서드(`handle_*`)는 수신 스레드에서 부른다.
     """
 
@@ -158,7 +160,8 @@ class LiveLinkSource:
                  config: LiveSourceConfig | None = None,
                  transport_factory: Callable[["LiveLinkSource"], object] | None = None,
                  convert: Callable[[object], np.ndarray] = default_convert,
-                 clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
+                 clock_ns: Callable[[], int] = time.monotonic_ns,
+                 boundary_hook: Callable[[int, BoundaryKind], None] | None = None) -> None:
         """설정을 받아 상태기를 만들고 수신 연결을 시작한다."""
         if not isinstance(source_id, str) or not source_id:
             raise ValueError(f"source_id must be a non-empty string: {source_id!r}")
@@ -169,7 +172,8 @@ class LiveLinkSource:
         self._convert = convert
         self._clock_ns = clock_ns
         self._mirror = GenerationMirror(generation_provider())
-        self._slot = LiveFrameSlot(self._config.slot, generation=self._mirror, clock_ns=clock_ns)
+        self._slot = LiveFrameSlot(self._config.slot, generation=self._mirror, clock_ns=clock_ns,
+                                   boundary_hook=boundary_hook)
         self._epochs: collections.OrderedDict[int, int] = collections.OrderedDict()
         self._callback_ns: collections.deque[int] = collections.deque(maxlen=1000)
         self._callback_lock = threading.Lock()
@@ -352,6 +356,13 @@ class LiveLinkSource:
         epoch = self._epochs.get(frame.image_seq) if frame.run_id == self._issuer.run_id else None
 
         return epoch is not None and self._slot.is_current_epoch(epoch)
+
+    def frame_epoch(self, frame: FramePacket) -> int | None:
+        """그 프레임을 받은 수신 epoch(#171 R1). 이 실행이 조립한 최근 프레임만 알고, 모르면 None. 제어 흐름 전용."""
+        if frame.run_id != self._issuer.run_id:
+            return None
+
+        return self._epochs.get(frame.image_seq)
 
     def stats(self) -> dict:
         """수신·조립 통계(콜백 시간 최대·P95 ns, 발행자 offered 신뢰성 포함)."""
