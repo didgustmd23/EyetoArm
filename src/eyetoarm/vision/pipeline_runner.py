@@ -220,6 +220,18 @@ def b_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
             and (obs.job_seq, obs.image_seq, obs.generation) == (ctx.job_seq, ctx.frame.image_seq, ctx.generation))
 
 
+def b_admit(pipeline: VisionPipeline, outcome: JobOutcome, live_source=None) -> bool:
+    """B 지점 호출 조건(#168): `b_gate` 그리고 실시간 소스면 그 프레임 수신 epoch가 현재(`frame_current`)여야 한다.
+
+    `b_gate`의 의미는 바꾸지 않는다. 저장 입력은 `live_source=None`이라 `b_gate`와 같다. 실시간 소스의 B 소비는 여전히
+    D13으로 실행 시작 때 거부되므로(`b_consumer_not_allowed`), 실시간 분기는 D13 해제 전 대비 조건이다(지금은 도달하지 않음).
+    """
+    if not b_gate(pipeline, outcome):
+        return False
+
+    return live_source is None or bool(live_source.frame_current(outcome.context.frame))
+
+
 def display_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
     """표시 조건(#138 실시간 검출 확인 창). 최초 현재 적용 결과만 그린다.
 
@@ -640,7 +652,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
                     # 코어는 현재 관측을 바꿨지만 공개하지 않는다(수신 epoch 경합). 연결부 현재 결과를 비운다(§2.4-2)
                     handoff_sink.clear("result_withheld")
 
-        if b_consumer is not None and b_gate(pipeline, outcome):
+        if b_consumer is not None and b_admit(pipeline, outcome, source if live else None):
             result.b_calls += 1
             b_consumer(outcome.context.frame, outcome.observation)
 
@@ -1254,4 +1266,4 @@ def stored_source_factory(kind: str, paths: list[str], source_id: str):
     return factory
 
 
-__all__ = ["CancelToken", "JobCancelled", "RunnerConfig", "RunResult", "apply_seek", "b_gate", "display_gate", "run", "stored_source_factory"]
+__all__ = ["CancelToken", "JobCancelled", "RunnerConfig", "RunResult", "apply_seek", "b_admit", "b_gate", "display_gate", "run", "stored_source_factory"]

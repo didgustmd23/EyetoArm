@@ -15,16 +15,34 @@
 관측(1단계 표시용, 계획 §4.4): 항상 `valid=False`. 관측면·계산 윤곽·선택·표시 마스크·관측 단위 class_name·confidence는 None이다.
 인스턴스별 클래스·점수는 `AiSegResult`에 있다. reason 우선순위는 CALIBRATION_MISMATCH > TOP_FACE_UNRESOLVED(eligible이 있으면
 개수와 무관, Q2 개발 구현안) > CONTOUR_CLIPPED(거부 없이 잘림) > NO_OBJECT.
+
+볼트 축 끝점 opt-in(#168, 설정 `axis_extractor="m1"`, 기본 꺼짐). 근거: `_workspace/168_a_to_b_real_path_implementation_spec.md`,
+#163 명세 r1 §3~§5(`_workspace/163_builder_axis_endpoint_b_input_spec.md`), #167 계획 r2 K0 사용자 결정.
+- 끝점은 `convert` 안에서 한 번만 계산한다(#163 §5 위치). M1 입력은 **표시 polygon(`AiInstance.polygon`)의 래스터**다(#168 명세 §1,
+  #167 r2 W1). 래스터 규약(`rasterize_polygon`): polygon에서 ROI 오프셋을 빼 crop 좌표 정수 꼭짓점(화소 중심, `pixel_map` 잠정 규약)으로
+  두고 `cv2.drawContours(..., thickness=FILLED)`로 경계 화소를 포함해 채운다. polygon은 가장 큰 바깥 윤곽 하나라 조각·구멍이 없으므로,
+  위상 판정은 같은 마스크에서 잰 `component_count`·`hole_count`(RETR_CCOMP, M1 내부 판정과 같은 기준)로 M1과 같은 순서에서 먼저 한다:
+  화소 수(`area_px`) ≥ M1 `min_pixels`이면 조각 2개 이상 → MASK_FRAGMENTED, 구멍 1개 이상 → MASK_HOLE. 볼트 겹침 IoU도 래스터로 잰다.
+  대상: 볼트 클래스, 거부 없음, 잘리지 않음. 끝점에는 ROI 오프셋만 더한다(원본 프레임 픽셀, RAW). 마스크는 결과·관측에 남기지 않는다.
+- 관측(`observation_from_ai`)은 #163 §4 표 순서의 첫 사유 하나를 쓴다: CALIBRATION_MISMATCH > 비거부 볼트 0개면 기존 표시 사유 >
+  CONTOUR_CLIPPED > MULTIPLE_CANDIDATES(볼트 마스크 IoU ≥ 0.5) > MULTIPLE_OBJECTS(비거부 볼트 2개 이상, (a) 유일할 때만) >
+  추출기 사유(MASK_FRAGMENTED·MASK_HOLE·AXIS_HEAD_AMBIGUOUS·AXIS_ORDER_INCONSISTENT·AXIS_VIEW_OBLIQUE·ENDPOINTS_INVALID 등) >
+  AXIS_EXTRACTION_ERROR. 남은 경우(유일한 볼트의 추출 성공)만 `valid=True, observed_face="axis"`이다.
+- 이 `valid=True`는 **추출기 형식 조건 통과** 뜻이다. 정확도·운영 승인이 아니다(K0). 무효를 유효로 바꾸거나 polygon·이전 결과로
+  대체하지 않는다. `#163`의 `AXIS_PROFILE_MISMATCH`는 M1에 구현되어 있지 않아 쓰지 않는다. 너트는 기존 사유(윗면 미구현) 그대로다.
 """
 from __future__ import annotations
 
+import dataclasses
 import time
 
 import cv2
 import numpy as np
 
 from eyetoarm.common.types import FramePacket, PixelBasis, PlanarObservation
+from eyetoarm.common.types import OBSERVED_FACE_AXIS
 from eyetoarm.vision.ai_config import AiSegConfig
+from eyetoarm.vision.axis_endpoints import MODEL_DERIVED, extract_m1
 from eyetoarm.vision.ai_result import (EMPTY_MASK, LOW_CONFIDENCE, NON_TARGET_CLASS, SMALL_MASK, AiInstance,
                                        AiJobConfigError, AiSegResult, RawSegOutput)
 from eyetoarm.vision.pipeline_types import JobContext, SourceProfile
@@ -35,6 +53,88 @@ CALIBRATION_MISMATCH = "CALIBRATION_MISMATCH"
 TOP_FACE_UNRESOLVED = "TOP_FACE_UNRESOLVED"
 CONTOUR_CLIPPED = "CONTOUR_CLIPPED"
 NO_OBJECT = "NO_OBJECT"
+
+# 축 끝점 경로 프레임 사유(#163 §4 표)
+MULTIPLE_CANDIDATES = "MULTIPLE_CANDIDATES"
+MULTIPLE_OBJECTS = "MULTIPLE_OBJECTS"
+AXIS_EXTRACTION_ERROR = "AXIS_EXTRACTION_ERROR"
+AXIS_OVERLAP_IOU = 0.5   # #163 §4 「볼트 마스크끼리 IoU ≥ 0.5」(명세 상수, #159 결과로 정하지 않음)
+
+# 기록에 남길 추출기 진단 키(수·문자열만)
+_DIAG_KEYS = ("pixels", "components", "holes", "width_ratio", "head_step_frac", "tilt_deg", "class_est",
+              "total_length_est_mm", "scale_px_per_mm")
+
+
+def _is_bolt(name: str) -> bool:
+    """볼트 클래스 이름인가(공통형 A-8 규칙과 같음: 소문자화 후 `bolt`로 시작)."""
+    return name.strip().lower().startswith("bolt")
+
+
+def _diag(diag: dict) -> dict:
+    """추출기 진단에서 기록용 수·문자열만 고른다."""
+    out = {}
+
+    for key in _DIAG_KEYS:
+        value = diag.get(key)
+
+        if isinstance(value, str) or (isinstance(value, (int, float, np.integer, np.floating))
+                                      and not isinstance(value, bool) and np.isfinite(value)):
+            out[key] = value.item() if isinstance(value, np.generic) else value
+
+    return out
+
+
+def rasterize_polygon(polygon_px: np.ndarray, offset: np.ndarray, crop_wh: tuple[int, int]) -> np.ndarray:
+    """표시 polygon(원본 프레임 픽셀) → crop 크기 bool 마스크(#168 래스터 규약, 모듈 설명).
+
+    꼭짓점은 정수 화소 중심이어야 한다(convert가 정수 윤곽에 정수 ROI 오프셋을 더해 만든 값). 정수가 아니면 ValueError.
+    """
+    local = np.asarray(polygon_px, dtype=np.float64) - np.asarray(offset, dtype=np.float64)
+    points = np.rint(local)
+
+    if not np.array_equal(points, local):
+        raise ValueError("polygon vertices must be integer pixel centers for rasterization")
+
+    w, h = crop_wh
+    canvas = np.zeros((h, w), np.uint8)
+    cv2.drawContours(canvas, [points.astype(np.int32).reshape(-1, 1, 2)], -1, 1, thickness=cv2.FILLED)
+
+    return canvas.astype(bool)
+
+
+def _extract_axis(inst: AiInstance, offset: np.ndarray, crop_wh: tuple[int, int]):
+    """비거부·비잘림 볼트 인스턴스 하나 → (래스터 마스크 또는 None, 끝점 또는 None, 사유 또는 None, 진단).
+
+    위상(조각·구멍)은 인스턴스 계수로 M1과 같은 순서에서 먼저 판정한다. 추출기·래스터 예외는 AXIS_EXTRACTION_ERROR로 막는다.
+    """
+    topo = {"pixels": int(inst.area_px), "components": inst.component_count, "holes": inst.hole_count}
+
+    if inst.area_px >= MODEL_DERIVED.min_pixels:
+        if inst.component_count > 1:
+            return None, None, "MASK_FRAGMENTED", topo
+
+        if inst.hole_count > 0:
+            return None, None, "MASK_HOLE", topo
+
+    try:
+        mask = rasterize_polygon(inst.polygon, offset, crop_wh)
+        est = extract_m1(mask)
+    except Exception as exc:  # noqa: BLE001 - 관측 예외로 새지 않게(#163 §4)
+        return None, None, AXIS_EXTRACTION_ERROR, {"error": f"{type(exc).__name__}: {exc}"[:200]}
+
+    diag = {**_diag(est.diag), **topo}
+
+    if not est.valid:
+        return mask, None, est.reason or AXIS_EXTRACTION_ERROR, diag
+
+    return mask, est.endpoints_px + offset.astype(np.float64), None, diag
+
+
+def _iou(a: np.ndarray, b: np.ndarray) -> float:
+    """두 bool 마스크의 IoU."""
+    union = np.count_nonzero(a | b)
+
+    return 0.0 if union == 0 else float(np.count_nonzero(a & b)) / union
 
 
 def crop_frame(frame: FramePacket, config: AiSegConfig) -> tuple[np.ndarray, tuple[int, int]]:
@@ -107,6 +207,7 @@ def convert(raw: RawSegOutput, frame: FramePacket, config: AiSegConfig, *,
     targets = set(config.target_classes)
     offset = np.array([ox, oy], np.float32)
     instances = []
+    rasters: dict[int, np.ndarray] = {}   # 축 경로 볼트의 polygon 래스터(겹침 IoU용, 결과에 남기지 않음)
 
     for i in range(raw.count):
         cls = int(raw.class_index[i])
@@ -134,11 +235,39 @@ def convert(raw: RawSegOutput, frame: FramePacket, config: AiSegConfig, *,
 
         x1, y1, x2, y2 = (float(v) for v in raw.boxes_xyxy[i])
 
-        instances.append(AiInstance(
+        inst = AiInstance(
             index=i, class_index=cls, class_name=name, confidence=conf,
             box_xyxy=(x1 + ox, y1 + oy, x2 + ox, y2 + oy),
             polygon=None if points is None else points.astype(np.float32) + offset,
-            area_px=area, component_count=components, hole_count=holes, clipped=clipped, rejected=rejected))
+            area_px=area, component_count=components, hole_count=holes, clipped=clipped, rejected=rejected)
+
+        # 축 끝점(#168 opt-in): 비거부 볼트만, 입력은 표시 polygon 래스터. 잘린 볼트는 추출하지 않고 CONTOUR_CLIPPED
+        if config.axis_extractor is not None and rejected is None and _is_bolt(name):
+            if clipped:
+                inst = dataclasses.replace(inst, axis_reason=CONTOUR_CLIPPED)
+            else:
+                raster, endpoints, reason, diag = _extract_axis(inst, offset, crop_wh)
+                inst = dataclasses.replace(inst, axis_endpoints_px=endpoints, axis_reason=reason, axis_diag=diag)
+
+                if raster is not None:
+                    rasters[i] = raster
+
+        instances.append(inst)
+
+    # 볼트끼리 겹침(#163 §4 MULTIPLE_CANDIDATES): 비거부 볼트 polygon 래스터 쌍의 최대 IoU(래스터가 없는 볼트는 polygon을 새로 그림)
+    if config.axis_extractor is not None:
+        bolts = [k for k, inst in enumerate(instances) if inst.axis_evaluated]
+        best = {k: 0.0 for k in bolts}
+        shapes = {k: rasters[k] if k in rasters else rasterize_polygon(instances[k].polygon, offset, crop_wh)
+                  for k in bolts}
+
+        for a_pos, a in enumerate(bolts):
+            for b in bolts[a_pos + 1:]:
+                iou = _iou(shapes[a], shapes[b])
+                best[a], best[b] = max(best[a], iou), max(best[b], iou)
+
+        for k in bolts:
+            instances[k] = dataclasses.replace(instances[k], axis_max_iou=best[k])
 
     t1 = time.perf_counter_ns()
     post_ms = (t1 - t0) / 1e6
@@ -164,13 +293,59 @@ def display_reason(result: AiSegResult, frame: FramePacket, profile: SourceProfi
     return NO_OBJECT
 
 
+def axis_selection(result: AiSegResult, frame: FramePacket, profile: SourceProfile | None):
+    """축 끝점 경로의 프레임 판정(#163 §4 표 순서). (선택 인스턴스 또는 None, 무효 사유 또는 None)."""
+    if profile is None or not profile.applies_to(frame):
+        return None, CALIBRATION_MISMATCH
+
+    bolts = [i for i in result.instances if i.axis_evaluated]
+
+    if not bolts:
+        return None, display_reason(result, frame, profile)
+
+    if any(i.clipped for i in bolts):
+        return None, CONTOUR_CLIPPED
+
+    if any((i.axis_max_iou or 0.0) >= AXIS_OVERLAP_IOU for i in bolts):
+        return None, MULTIPLE_CANDIDATES
+
+    if len(bolts) >= 2:
+        return None, MULTIPLE_OBJECTS
+
+    only = bolts[0]
+
+    if only.axis_endpoints_px is None:
+        return None, only.axis_reason or AXIS_EXTRACTION_ERROR
+
+    return only, None
+
+
 def observation_from_ai(job: JobContext, result: AiSegResult) -> PlanarObservation:
-    """작업과 AI 표시 결과로 표시용 무효 관측을 만든다. 결과 설정 해시가 작업 시작 설정과 다르면 AiJobConfigError."""
+    """작업과 AI 표시 결과로 관측을 만든다. 결과 설정 해시가 작업 시작 설정과 다르면 AiJobConfigError.
+
+    `axis_extractor`가 꺼진 설정은 표시용 무효 관측(기존과 같음). 켠 설정은 `axis_selection`으로 유일한 볼트의 추출기 출력만
+    계약 관측(`observed_face="axis"`)으로 만들고, 나머지는 첫 사유를 실은 무효 관측이다.
+    """
     if result.config_sha256 != job.detector_config_id:
         raise AiJobConfigError(f"display result config {result.config_sha256[:12]} != job start config "
                                f"{job.detector_config_id[:12]}")
 
     f = job.frame
+
+    if getattr(job.settings.detector_config, "axis_extractor", None) is not None:
+        chosen, reason = axis_selection(result, f, job.settings.profile)
+        valid = chosen is not None
+
+        return PlanarObservation(
+            run_id=f.run_id, source_id=f.source_id, image_seq=f.image_seq,
+            capture_generation=f.capture_generation, generation=job.generation, job_seq=job.job_seq,
+            detector_config_id=job.detector_config_id, pixel_basis=PixelBasis.RAW,
+            calibration_id=f.calibration_id, observed_face=OBSERVED_FACE_AXIS if valid else None, calc_contour=None,
+            display_mask_contour=None, candidate_count=result.candidate_count,
+            selected_index=chosen.index if valid else None, valid=valid, reason=reason,
+            process_ms=result.process_ms, method="ai", class_name=chosen.class_name if valid else None,
+            confidence=chosen.confidence if valid else None, model_id=result.model_id,
+            axis_endpoints_px=chosen.axis_endpoints_px if valid else None)
 
     return PlanarObservation(
         run_id=f.run_id, source_id=f.source_id, image_seq=f.image_seq,
@@ -182,4 +357,5 @@ def observation_from_ai(job: JobContext, result: AiSegResult) -> PlanarObservati
         method="ai", class_name=None, confidence=None, model_id=result.model_id)
 
 
-__all__ = ["convert", "crop_frame", "display_reason", "observation_from_ai"]
+__all__ = ["AXIS_EXTRACTION_ERROR", "AXIS_OVERLAP_IOU", "MULTIPLE_CANDIDATES", "MULTIPLE_OBJECTS", "axis_selection", "convert",
+           "crop_frame", "display_reason", "observation_from_ai", "rasterize_polygon"]

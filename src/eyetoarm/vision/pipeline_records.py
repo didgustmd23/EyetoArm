@@ -111,10 +111,19 @@ def process_record(outcome: JobOutcome, *, eval_run_id: str | None = None) -> Pr
 
 
 def _instance_summary(inst) -> dict:
-    """필수 AI 기록의 인스턴스 요약(다각형·박스 없음)."""
-    return {"index": inst.index, "class_index": inst.class_index, "class_name": inst.class_name,
-            "confidence": inst.confidence, "rejected": inst.rejected, "clipped": inst.clipped,
-            "area_px": inst.area_px}
+    """필수 AI 기록의 인스턴스 요약(다각형·박스 없음).
+
+    축 끝점 경로(#168 opt-in)가 다룬 인스턴스만 `axis_*` 키를 더한다(끈 실행의 기록은 그대로). 끝점은 추출기 출력이며 정확도 승인이 아니다.
+    """
+    out = {"index": inst.index, "class_index": inst.class_index, "class_name": inst.class_name,
+           "confidence": inst.confidence, "rejected": inst.rejected, "clipped": inst.clipped,
+           "area_px": inst.area_px}
+
+    if getattr(inst, "axis_evaluated", False):
+        out.update(axis_endpoints_px=None if inst.axis_endpoints_px is None else inst.axis_endpoints_px.tolist(),
+                   axis_reason=inst.axis_reason, axis_max_iou=inst.axis_max_iou, axis_diag=inst.axis_diag)
+
+    return out
 
 
 def _instance_geometry(inst) -> dict:
