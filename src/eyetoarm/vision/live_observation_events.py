@@ -7,6 +7,7 @@
 - 쓰기는 잠금 밖이다. `LiveObservationState.take_events`로 꺼낸 순서 그대로 쓴다(순번 역전이 생기면 쓰기 실패로 처리).
 - 단일 쓰기 소유자·실패 보존·fail-stop·종료 상한은 `LiveObservationEventWriter` 설명(#172 r1 F2).
 - 밀림: 등록 → 쓰기 반영 지연이 `lag_warn_s`를 넘으면 `lag_warnings`를 센다(fail-stop 여부는 결정 L-8, 기본값 없음).
+- accept 기록에는 B 출력의 `result_dict`(좌표·각도·판정 사유)와 `goal`을 저장 경로 기록기(`b_outputs.jsonl`)와 같은 키로 남긴다(#173 r1 F2).
 - K5 측정: accept 기록에 `k5_ms`(프레임 수신 단조 시각 → 수락 등록 시각)와 `tf_wait_ms`를 따로 남긴다(계획 §3.5, 값 판정 없음).
 - 저장 입력 기록기(`vision/capture_observation_recorder.py`)는 바꾸지 않는다(같은 키 이름 일부를 그대로 씀: `b_input`·`goal`·`b_reason`).
 """
@@ -59,6 +60,8 @@ def event_record(event: LiveObservationEvent, png_name: str | None) -> dict:
             "b_input": p.envelope.to_record() if hasattr(p.envelope, "to_record") else None,
             "goal_kind": goal.get("kind"), "b_reason": goal.get("reason"),
             "b_valid": getattr(result, "valid", None),
+            # r1 F2(#173): 저장 경로 기록기와 같은 키로 B가 계산한 좌표·각도·판정 사유 전체를 남긴다
+            "result_dict": _plain(getattr(out, "result_dict", None)), "goal": _plain(goal) if goal else None,
             "tf_status": p.tf_status, "tf_wait_ms": p.tf_wait_ms,
             "k5_ms": None if p.received_monotonic_ns is None
             else (event.enqueued_monotonic_ns - p.received_monotonic_ns) / 1e6,

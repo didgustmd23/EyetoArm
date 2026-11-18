@@ -247,19 +247,31 @@ class LiveRunController:
         self.used_run_ids: set[str] = set()
         self.ended: list[RunEnd] = []
 
-    def start_run(self, run_id: str) -> LiveRunSession:
-        """새 실행. 현재 실행이 끝나지 않았거나, 끝났어도 정리 완료가 확인되지 않았거나, run_id를 다시 쓰면 ValueError."""
+    def refusal(self, run_id: str) -> str | None:
+        """새 실행을 거부할 사유(허용이면 None). 부품을 만들기 전에 확인할 때 쓴다."""
         if self.current is not None and self.current.ended is None:
-            raise ValueError(f"run {self.current.run_id} is still active")
+            return f"run {self.current.run_id} is still active"
 
         if self.current is not None and not self.current.cleanup_confirmed:
-            raise ValueError(f"run {self.current.run_id} cleanup not confirmed: {self.current.ended.close_errors}")
+            return f"run {self.current.run_id} cleanup not confirmed: {self.current.ended.close_errors}"
 
         if run_id in self.used_run_ids:
-            raise ValueError(f"run_id {run_id!r} already used")
+            return f"run_id {run_id!r} already used"
+
+        return None
+
+    def start_run(self, run_id: str, make_session: Callable[[str], object] | None = None):
+        """새 실행. 현재 실행이 끝나지 않았거나, 끝났어도 정리 완료가 확인되지 않았거나, run_id를 다시 쓰면 ValueError.
+
+        `make_session`을 주면 이번 실행만 그 공장으로 만든다(진입점이 실행마다 출력·설정을 달리 줄 때). 세션 규약은 같다.
+        """
+        reason = self.refusal(run_id)
+
+        if reason is not None:
+            raise ValueError(reason)
 
         self.used_run_ids.add(run_id)
-        self.current = self._make(run_id)
+        self.current = (make_session or self._make)(run_id)
 
         return self.current
 

@@ -18,6 +18,8 @@
 - 되감기 epoch 보호 경로(#173 되감기 계획 r1, 선택): `tf_lookup_with_epoch=True`면 `tf_lookup(frame, rx_epoch=)`로 제출 때의 수신 epoch를
   넘긴다. `refuse_tf_statuses`에 든 TF 상태(예: `stale_overlap`·`epoch_mismatch`)는 봉투·검사 ② 전에 끝낸다(계산 권한 0, B 호출 0).
   기본값(False, 빈 집합)은 기존 동작 그대로다.
+- 건너뜀 통지(#173, 선택): `on_skip(item, reason, detail)`을 worker가 B를 부르지 않고 끝내는 지점마다 부른다(사유: `stale_before_b`·
+  `tf_<상태>`(거부 집합일 때)·`b_input_rejected`·`stale_after_tf`). 수락 거부는 `not_accepted`. 예외는 worker 오류로 센다.
 - ROS·Qt를 import하지 않는다.
 """
 from __future__ import annotations
@@ -64,7 +66,8 @@ class LiveObservationDispatcher:
     def __init__(self, state: LiveObservationState, *, camera, stage_factory: Callable, tf_lookup: Callable,
                  build_envelope: Callable, compute: Callable, render: Callable | None = None,
                  clock_ns: Callable[[], int] = time.monotonic_ns, hooks: dict | None = None,
-                 tf_lookup_with_epoch: bool = False, refuse_tf_statuses: frozenset = frozenset()) -> None:
+                 tf_lookup_with_epoch: bool = False, refuse_tf_statuses: frozenset = frozenset(),
+                 on_skip: Callable | None = None) -> None:
         """상태·처음 카메라·주입 함수들. 마지막 두 인자는 되감기 epoch 보호 경로용(기본은 기존 동작)."""
         self.state = state
         self._stage_factory = stage_factory
@@ -76,6 +79,7 @@ class LiveObservationDispatcher:
         self._hooks = hooks or {}
         self._tf_with_epoch = bool(tf_lookup_with_epoch)
         self._refuse_tf = frozenset(refuse_tf_statuses)
+        self._on_skip = on_skip
         self._cond = threading.Condition()
         self._slot: LiveObservationItem | None = None
         self._pending_camera = camera
@@ -83,6 +87,7 @@ class LiveObservationDispatcher:
         self._stage = None
         self._stop = False
         self._thread: threading.Thread | None = None
+        self._busy = False
         self.counts: dict[str, int] = {}
         self._counts_lock = threading.Lock()
         self.compute_calls = 0
@@ -105,11 +110,16 @@ class LiveObservationDispatcher:
                 self._count("submit_after_close")
                 return False
 
-            if self._slot is not None:
+            replaced = self._slot
+
+            if replaced is not None:
                 self._count("superseded")
 
             self._slot = item
             self._cond.notify_all()
+
+        if replaced is not None:
+            self._skip(replaced, "superseded")
 
         return True
 
@@ -127,16 +137,38 @@ class LiveObservationDispatcher:
         self._thread = threading.Thread(target=self._loop, name="eyetoarm-live-observation", daemon=True)
         self._thread.start()
 
+    def drain(self, limit_s: float) -> bool:
+        """대기 칸이 비고 처리 중 항목이 끝날 때까지 기다린다(정상 종료 전, #173). 새 제출은 막지 않는다. 상한 안에 비면 True."""
+        deadline = time.monotonic() + max(0.0, limit_s)
+
+        with self._cond:
+            while self._slot is not None or self._busy:
+                if self._thread is None or not self._thread.is_alive():
+                    return self._slot is None and not self._busy
+
+                remaining = deadline - time.monotonic()
+
+                if remaining <= 0:
+                    return False
+
+                self._cond.wait(min(remaining, 0.05))
+
+            return True
+
     def close(self, limit_s: float) -> bool:
         """대기 항목을 버리고 worker를 멈춘다. 상한 안에 멈추면 True."""
         with self._cond:
             self._stop = True
+            dropped = self._slot
 
-            if self._slot is not None:
+            if dropped is not None:
                 self._count("dropped_on_close")
                 self._slot = None
 
             self._cond.notify_all()
+
+        if dropped is not None:
+            self._skip(dropped, "dropped_on_close")
 
         if self._thread is None:
             return True
@@ -151,6 +183,11 @@ class LiveObservationDispatcher:
         """계수(별도 짧은 잠금, 대기 칸 조건변수와 섞지 않음)."""
         with self._counts_lock:
             self.counts[key] = self.counts.get(key, 0) + 1
+
+    def _skip(self, item, reason: str, detail: str | None = None) -> None:
+        """건너뜀 통지(선택)."""
+        if self._on_skip is not None:
+            self._on_skip(item, reason, detail)
 
     def _hook(self, name: str) -> None:
         fn = self._hooks.get(name)
@@ -167,6 +204,7 @@ class LiveObservationDispatcher:
                 return None
 
             item, self._slot = self._slot, None
+            self._busy = True
 
             if self._pending_camera is not None:
                 self._camera, self._pending_camera = self._pending_camera, None
@@ -186,6 +224,10 @@ class LiveObservationDispatcher:
             except Exception as exc:  # worker는 죽지 않는다. 오류는 기록한다
                 self.errors.append(f"{type(exc).__name__}: {exc}")
                 self._count("worker_error")
+            finally:
+                with self._cond:
+                    self._busy = False
+                    self._cond.notify_all()
 
     def _process(self, item: LiveObservationItem) -> None:
         if self._stage is None:
@@ -195,6 +237,7 @@ class LiveObservationDispatcher:
 
         if not self.state.is_current(item.token):              # ①
             self._count("stale_before_b")
+            self._skip(item, "stale_before_b")
             return
 
         if self._tf_with_epoch:
@@ -205,8 +248,9 @@ class LiveObservationDispatcher:
         self._count(f"tf_{tf_result.status}")
         self._hook("after_tf")
 
-        if tf_result.status in self._refuse_tf:                  # 되감기 epoch 보호: 계산 권한 0
+        if tf_result.status in self._refuse_tf:                  # 거부 집합의 TF 상태: 계산 권한 0
             self._count("tf_refused")
+            self._skip(item, f"tf_{tf_result.status}", tf_result.detail)
             return
 
         try:
@@ -214,6 +258,7 @@ class LiveObservationDispatcher:
         except ObservationEnvelopeError as exc:
             self._count("b_input_rejected")
             self.errors.append(f"envelope: {exc}")
+            self._skip(item, "b_input_rejected", str(exc))
             return
 
         compute_id = self.state.begin_compute(item.token)       # ②
@@ -221,6 +266,7 @@ class LiveObservationDispatcher:
 
         if compute_id is None:
             self._count("stale_after_tf")
+            self._skip(item, "stale_after_tf")
             return
 
         try:
@@ -239,6 +285,9 @@ class LiveObservationDispatcher:
 
         seq = self.state.accept(compute_id, item.token, payload)  # ③
         self._count("accepted" if seq is not None else "not_accepted")
+
+        if seq is None:
+            self._skip(item, "not_accepted")
 
 
 __all__ = ["LiveObservationDispatcher", "LiveObservationItem", "LiveObservationPayload"]

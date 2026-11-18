@@ -1,0 +1,13 @@
+{
+  "status": "test_only",
+  "note": "실시간 A→B 기록 전용 시험 설정(#173). 운영값 미확정: TF 상한 50 ms는 B A-7 시험 후보, 용량·건너뜀 대기 상한·종료 상한·여유는 결정 L-3·L-8·K4 전 시험값이다. 운영 승인값이 아니다.",
+  "world_frame": "world",
+  "tf_wait_limit_s": 0.05,
+  "static_pairs": [],
+  "future_tolerance_ns": 500000000,
+  "write_capacity": 8,
+  "reserved_capacity": 64,
+  "lag_warn_s": 2.0,
+  "close_limit_s": 2.0,
+  "skip_queue_capacity": 256
+}
