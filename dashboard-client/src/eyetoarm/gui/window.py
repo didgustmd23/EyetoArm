@@ -54,7 +54,7 @@ if not __package__:
 from PySide6.QtCore import QIODevice, QSaveFile, QSettings, Qt, QTimer
 from PySide6.QtGui import QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QMainWindow, QScrollArea, QStackedWidget,
+    QApplication, QCheckBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QScrollArea, QStackedWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -72,9 +72,10 @@ CHANNEL_NAMES = {"fixed": "탑뷰", "gripper": "그리퍼", "link": "링크"}
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, link, view, demo: bool = False) -> None:
+    def __init__(self, link, view, demo: bool = False, store=None) -> None:
         super().__init__()
         self.link, self.view, self.demo = link, view, demo
+        self.store = None if demo else store   # 적용한 서버 주소 저장소(QSettings). 없으면 저장하지 않는다
         self.display = None
         # 3채널 표시 모델: 모의 영상(--demo) 또는 C 3채널 중계(--view relay, RelayViewReceiver)
         self.relay = not demo and getattr(view, "is_relay", False) is True
@@ -236,16 +237,18 @@ class MainWindow(QMainWindow):
         display_card.body.addLayout(channel)
         grid.addWidget(display_card, 0, 0, 2, 2)
 
-        link_card = Card("연결", "client.json 읽기 전용")
-        source_value = self._rows(link_card, [
+        link_card = Card("연결", "입력 주소 적용·로컬 저장")
+        self.link_value, *_rest, source_value = self._rows(link_card, [
             ("명령 TCP (C 서버)", f"{self.link.host}:{self.link.port}"),
             ("준비 조회 주기", f"{self.link.config['readiness_poll_ms']} ms"),
             ("STATUS 유효 한도", f"{self.link.config['status_watchdog_ms']} ms"),
             ("재접속 간격", f"{self.link.config['reconnect_ms']} ms"),
             ("Gazebo 화면 원본", self.view.title),
-        ])[-1]
+        ])
         # 긴 중계 주소(제목)가 카드를 넓히지 않게 줄임표로 맞춘다. 전체 문장은 툴팁에 둔다(_fit_line)
-        self._fit_labels = [self._elidable(source_value, self.view.title)]
+        self.view_value = self._elidable(source_value, self.view.title)
+        self._fit_labels = [self.view_value]
+        self._build_endpoint_inputs(link_card)
         grid.addWidget(link_card, 0, 2)
 
         command_card = Card("모의 분류 조작" if self.demo else "명령 계약 상태", "실제 전송 없음" if self.demo else "D ↔ C")
@@ -486,6 +489,101 @@ class MainWindow(QMainWindow):
         side.addWidget(error_card, 1)
         row.addLayout(side, 2)
         return page, [log_card, metric_card, error_card]
+
+    def _build_endpoint_inputs(self, card: Card) -> None:
+        """서버 주소 입력. 적용 버튼을 누를 때만 연결을 바꾼다. 영상 IP 빈칸은 명령 IP를 따른다."""
+        relay_port = getattr(self.view, "port", RELAY_PORT) if self.relay else RELAY_PORT
+        view_host = getattr(self.view, "host", "") if self.relay else ""
+        self.endpoint_edits = {}
+        for key, name, value, hint, width in (
+                ("host", "명령 IP", self.link.host, "숫자 IP", 80), ("port", "포트", str(self.link.port), "47090", 56),
+                ("view_host", "영상 IP", "" if view_host == self.link.host else view_host, "빈칸 = 명령 IP", 80),
+                ("view_port", "포트", str(relay_port), str(RELAY_PORT), 56)):
+            if key in ("host", "view_host"):
+                line = QHBoxLayout()
+                card.body.addLayout(line)
+            edit = QLineEdit(value)
+            edit.setPlaceholderText(hint)
+            edit.setAccessibleName(name if key in ("host", "view_host") else f"{'명령' if key == 'port' else '영상'} {name}")
+            if key in ("host", "view_host"):
+                edit.setMinimumWidth(width)   # 남는 폭은 IP 칸이 쓴다. 카드(열) 폭을 넓히지 않는다
+                edit.setMaxLength(45)         # IPv6 문자열 최대 길이
+            else:
+                edit.setFixedWidth(width)
+                edit.setMaxLength(5)
+            edit.returnPressed.connect(self._apply_endpoint)
+            self.endpoint_edits[key] = edit
+            line.addWidget(label(name, "Dim"))
+            line.addWidget(edit, 1 if key in ("host", "view_host") else 0)
+        self.endpoint_keep = QCheckBox("결과 미확인 보존 후 다른 서버로 전환")
+        self.endpoint_keep.setToolTip("이전 서버가 끊겨 결과를 확인할 수 없을 때만 씁니다. 그 명령은 미확인으로 기록에 남고 다시 보내지 않습니다.")
+        card.body.addWidget(self.endpoint_keep)
+        self.endpoint_button = pill("적용·재접속", tooltip="입력한 주소를 검사한 뒤 지금 연결을 끊고 그 주소로 다시 접속합니다. 앱을 다시 켤 필요가 없습니다.")
+        self.endpoint_button.clicked.connect(self._apply_endpoint)
+        card.body.addWidget(self.endpoint_button)
+        self.endpoint_note = label("", "Caption", wrap=True)
+        card.body.addWidget(self.endpoint_note)
+        if self.demo:
+            note = "모의 모드: 실제 서버 주소를 쓰지 않습니다(소켓 없음)."
+        elif not self.relay:
+            note = "영상 주소 입력은 C 3채널 중계(--view relay)에서만 씁니다."
+        else:
+            note = ""
+        for key, edit in self.endpoint_edits.items():
+            edit.setEnabled(not self.demo and (self.relay or key in ("host", "port")))
+        self.endpoint_button.setEnabled(not self.demo)
+        self.endpoint_keep.setEnabled(not self.demo)
+        self.endpoint_note.setText(note)
+
+    def _apply_endpoint(self) -> None:
+        """입력 검사 → 명령 진행 검사 → 명령·영상 재접속 → 저장. 앞 단계에서 막히면 아무것도 바꾸지 않는다."""
+        if self.demo:
+            return
+        from eyetoarm.gui.client import endpoint_error
+
+        def port_of(key: str) -> int | None:
+            text = self.endpoint_edits[key].text().strip()
+            return int(text) if text.isascii() and text.isdigit() else None
+
+        host, port = self.endpoint_edits["host"].text().strip(), port_of("port")
+        error = endpoint_error(host, port) if port is not None else "명령 포트는 1~65535 정수"
+        view_host, view_port = "", None
+        if not error and self.relay:
+            view_host = self.endpoint_edits["view_host"].text().strip()
+            view_port = port_of("view_port")
+            error = (endpoint_error(view_host or host, view_port) if view_port is not None
+                     else "영상 포트는 1~65535 정수")
+            error = f"영상: {error}" if error else ""
+        # 명령·영상 어느 쪽도 바꾸기 전에 막는다(명령 결과를 지키는 쪽이 우선)
+        keep = self.endpoint_keep.isChecked()
+        error = (error or self.link.endpoint_busy(host, port, keep)
+                 or self.link.set_endpoint(host, port, keep_unconfirmed=keep))
+        if error:
+            self.endpoint_note.setText(f"적용 안 함 · {error}. 지금 연결과 저장값은 그대로입니다.")
+            return
+        self.endpoint_keep.setChecked(False)   # 한 번의 전환에만 쓴다
+        self._status = None   # 이전 서버의 준비 상태를 새 연결의 값처럼 보이지 않게 한다
+        if self.relay:
+            if self.view.set_endpoint(view_host or host, view_port):
+                # 다른 서버: 이전 서버의 run_id·순번·결과 기록을 버린다. 같은 주소 재접속은 보존한다
+                self.display.reset_session("주소 변경 · 새 서버 영상 대기")
+            self.view_value._full = self.view.title
+            self.view_value.setToolTip(self.view.title)
+        self.link_value.setText(f"{self.link.host}:{self.link.port}")
+        saved = "저장 안 함(이 실행만)"
+        if self.store is not None:
+            values = {"host": host, "port": port}
+            if self.relay:
+                values.update(view_host=view_host, view_port=view_port)
+            for key, value in values.items():
+                self.store.setValue(f"endpoint/{key}", value)
+            self.store.sync()
+            saved = "저장함" if self.store.status() == QSettings.Status.NoError else "저장 실패(다음 실행에는 이전 주소)"
+        # 요청만 했다는 뜻이다. 실제 수신·로봇 준비는 상태띠(명령 TCP·유효 STATUS·표시 연결)로 확인한다
+        self.endpoint_note.setText(f"연결 요청함 · 명령 {self.link.host}:{self.link.port}"
+                                   + (f" · 영상 {self.view.host}:{self.view.port}" if self.relay else "")
+                                   + f" · {saved}. 수신·준비 여부는 상태띠에서 확인")
+        self._update_status()
 
     @staticmethod
     def _rows(card: Card, rows: list[tuple[str, str]]) -> list[QLabel]:
@@ -1025,9 +1123,29 @@ class MainWindow(QMainWindow):
 
 
 def settings() -> QSettings:
-    """사용자 화면 설정 저장소(Windows 레지스트리 HKCU/Software/EyeToArms/d_client). 테마 선택만 저장한다."""
+    """사용자 화면 설정 저장소(Windows 레지스트리 HKCU/Software/EyeToArms/d_client). 테마와 적용한 서버 주소(endpoint/*)를 저장한다."""
     # 폴더명 변경 뒤에도 기존 테마 선택을 읽도록 저장 키는 유지한다.
     return QSettings("EyeToArms", "d_client")
+
+
+def saved_endpoints(store) -> dict:
+    """「적용·재접속」으로 저장한 주소. 검사를 통과한 값만 돌려준다(손상·옛 값은 무시하고 client.json 으로)."""
+    from eyetoarm.gui.client import endpoint_error
+    found = {}
+    for host_key, port_key in (("host", "port"), ("view_host", "view_port")):
+        host, port = store.value(f"endpoint/{host_key}"), store.value(f"endpoint/{port_key}")
+        # 정수 또는 숫자만 있는 문자열(INI 저장형)만 받는다. bool·실수·"47090.5" 는 손상으로 보고 무시한다
+        if isinstance(port, str) and port.isascii() and port.isdigit():
+            port = int(port)
+        elif port is not None and type(port) is not int:
+            continue
+        host = "" if host is None else str(host)
+        if port is None or (host and endpoint_error(host, port)) or (not host and host_key == "host"):
+            continue
+        if not host and endpoint_error("127.0.0.1", port):   # 영상 IP 빈칸(명령 IP 따름)도 포트는 검사한다
+            continue
+        found[host_key], found[port_key] = host, port
+    return found
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1067,13 +1185,21 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--view-port 범위 밖: {args.view_port}")
 
     app = QApplication(sys.argv[:1])
-    theme.apply(args.theme or str(settings().value("theme", "dark")))
+    store = settings()
+    theme.apply(args.theme or str(store.value("theme", "dark")))
     app.setStyleSheet(theme.QSS)
     motion.set_reduced(args.no_motion)
     if args.demo:
         from eyetoarm.gui.demo import DemoLink, DemoView
         link, view = DemoLink(), DemoView()
     else:
+        # 명시한 CLI 인자 > 「적용·재접속」으로 저장한 주소 > client.json. 칸마다 따로 고른다
+        saved = saved_endpoints(store)
+        args.host = args.host if args.host is not None else saved.get("host")
+        args.port = args.port if args.port is not None else saved.get("port")
+        if args.view == "relay":
+            args.view_host = args.view_host if args.view_host is not None else (saved.get("view_host") or None)
+            args.view_port = args.view_port if args.view_port is not None else saved.get("view_port")
         from eyetoarm.gui.client import StatusLink
         log_options = {}
         if args.log_dir:
@@ -1091,7 +1217,7 @@ def main(argv: list[str] | None = None) -> int:
             from eyetoarm.gui.relay_view import RelayViewReceiver
             # C 영상 중계는 보통 명령 서버와 같은 C PC 에서 돈다. 따로 주면 그 주소를 쓴다
             view = RelayViewReceiver(args.view_host or link.host, args.view_port or RELAY_PORT)
-    window = MainWindow(link, view, demo=args.demo)
+    window = MainWindow(link, view, demo=args.demo, store=store)
     window.show()
     if args.page != 1:
         window._show_page(args.page)

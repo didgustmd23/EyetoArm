@@ -327,8 +327,11 @@ class RelayCli(unittest.TestCase):
 
     def test_relay_host_follows_the_command_host_unless_given(self):
         # Separate process; MainWindow is replaced so no window is shown and neither socket is ever started.
-        probe = ("import json, sys; import eyetoarm.gui.window as w\n"
-                 "def fake(link, view, demo=False):\n"
+        probe = ("import json, sys, tempfile; import eyetoarm.gui.window as w\n"
+                 "from PySide6.QtCore import QSettings\n"
+                 "tmp = tempfile.TemporaryDirectory(); ini = tmp.name + '/s.ini'\n"   # never the user's registry (saved addresses would change the answer)
+                 "w.settings = lambda: QSettings(ini, QSettings.Format.IniFormat)\n"
+                 "def fake(link, view, demo=False, store=None):\n"
                  "    print(json.dumps([type(view).__name__, view.host, view.port, link.host])); raise SystemExit(0)\n"
                  "w.MainWindow = fake; w.main(json.loads(sys.argv[1]))\n")
         for args, expected in ((["--host", "10.1.2.3"], ["RelayViewReceiver", "10.1.2.3", 47092, "10.1.2.3"]),

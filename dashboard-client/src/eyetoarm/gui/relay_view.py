@@ -161,11 +161,8 @@ class RelayViewReceiver(QObject):
         ipaddress.ip_address(host)   # 숫자 IP 만. 이름 해석으로 다른 곳에 붙지 않는다
         if type(port) is not int or not 1 <= port <= 65535:
             raise ValueError("invalid relay port")
-        self.host, self.port = host, port
-        self.title = f"C 3채널 중계(시제품 ETV1) {host}:{port}"
+        self._set_address(host, port)
         self.source_name = "C display_relay"
-        self.help_text = (f"C 영상 중계({host}:{port})에 연결되지 않았습니다. WSL 에서 "
-                          "ros2 run robot_server_package display_relay 를 실행했는지 확인하세요.")
         self.stale_label = "영상 노후"
         self.state = "disconnected"
         self.frame_count = 0
@@ -180,12 +177,7 @@ class RelayViewReceiver(QObject):
         self._parser = EtvParser()
         self._pending: dict[tuple[str, str], tuple[str, dict, bytes]] = {}
 
-        self._socket = QTcpSocket(self)
-        self._socket.setReadBufferSize(SOCKET_BUFFER)
-        self._socket.connected.connect(lambda: self._set_state("connected"))
-        self._socket.disconnected.connect(self._drop)
-        self._socket.errorOccurred.connect(self._on_socket_error)
-        self._socket.readyRead.connect(self._on_ready_read)
+        self._socket = self._new_socket()
         self._retry = QTimer(self, interval=RECONNECT_MS, singleShot=True)
         self._retry.timeout.connect(self._open)
         self._flush_timer = QTimer(self, interval=0, singleShot=True)   # 한 번의 Qt 차례에 채널별 최신만 해독
@@ -206,8 +198,47 @@ class RelayViewReceiver(QObject):
         parts = [f"{name} {count}" for name, count in counts if count]
         return f"수신 오류 {', '.join(parts)} · 최근: {self.last_error}" if parts else ""
 
+    def _set_address(self, host: str, port: int) -> None:
+        self.host, self.port = host, port
+        self.title = f"C 3채널 중계(시제품 ETV1) {host}:{port}"
+        self.help_text = (f"C 영상 중계({host}:{port})에 연결되지 않았습니다. WSL 에서 "
+                          "ros2 run robot_server_package display_relay 를 실행했는지 확인하세요.")
+
+    def _new_socket(self) -> QTcpSocket:
+        sock = QTcpSocket(self)
+        sock.setReadBufferSize(SOCKET_BUFFER)
+        sock.connected.connect(lambda: self._set_state("connected"))
+        sock.disconnected.connect(self._drop)
+        sock.errorOccurred.connect(self._on_socket_error)
+        sock.readyRead.connect(self._on_ready_read)
+        return sock
+
     def start(self) -> None:
         self._open()
+
+    def set_endpoint(self, host: str, port: int) -> bool:
+        """명시적 적용. 끊고(표시 무효화) 다시 접속한다. 주소가 바뀌었으면 True.
+
+        주소가 바뀌면 소켓을 새로 만들어 옛 연결의 늦은 신호를 막고, 이전 서버의 run_id 기록도 버린다
+        (새 서버가 같은 run_id·낮은 순번으로 시작해도 막히지 않게). 호출자는 이때 DisplayModel.reset_session 을 부른다.
+        같은 주소면 소켓과 run_id 기록을 그대로 두므로 기존 재접속 보호(지난 run_id 무시)가 유지된다."""
+        ipaddress.ip_address(host)
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError("invalid relay port")
+        self.stop()
+        changed = (host, port) != (self.host, self.port)
+        if changed:
+            old, self._socket = self._socket, self._new_socket()
+            old.blockSignals(True)
+            old.abort()
+            old.deleteLater()
+            self._set_address(host, port)
+            self.socket_error = ""
+            self._last_frame_at = None
+            self.run_id = None
+            self._retired.clear()
+        self._open()
+        return changed
 
     def stop(self) -> None:
         self._retry.stop()
