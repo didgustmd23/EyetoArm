@@ -46,6 +46,8 @@ from eyetoarm.vision.pipeline_records import JsonlRecorder, PipelineLog
 from eyetoarm.vision.pipeline_runner import RunnerConfig, run, stored_source_factory
 from eyetoarm.vision.pipeline_types import PipelineSettings
 from eyetoarm.vision.planar import load_config
+from eyetoarm.vision.handoff import AToCHandoff
+from eyetoarm.vision.c_handoff_probe import HandoffProbe
 from eyetoarm.vision.tracking import PartTracker, PartTrackIdIssuer, TrackMode
 
 
@@ -274,17 +276,24 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
         err.write(f"run_pipeline: cannot open log: {exc}\n")
         return 2
 
-    with stream:
-        log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
-                          log_geometry=args.log_instance_geometry)
-        if args.ros_link:
-            with _StopSignals() as signals:
+    probe = HandoffProbe()
+    handoff = AToCHandoff(notify=probe.notify)
+    probe.start(handoff)
+    try:
+        with stream:
+            log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
+                              log_geometry=args.log_instance_geometry)
+            if args.ros_link:
+                with _StopSignals() as signals:
+                    result = run(source_factory, settings, log, config=runner_config, stderr=err,
+                                 versions={"opencv": cv2.__version__}, should_stop=signals.stop.is_set,
+                                 handoff_sink=handoff, **detector_kw)
+            else:
                 result = run(source_factory, settings, log, config=runner_config, stderr=err,
-                             versions={"opencv": cv2.__version__}, should_stop=signals.stop.is_set, **detector_kw)
-        else:
-            result = run(source_factory, settings, log, config=runner_config, stderr=err,
-                         versions={"opencv": cv2.__version__}, **detector_kw)
-
+                             versions={"opencv": cv2.__version__}, handoff_sink=handoff, **detector_kw)
+    finally:
+        probe.stop()
+        handoff.close()
     watch = (f"{runner_config.first_detect_timeout_s}/{runner_config.detect_timeout_s}" if runner_config.watchdog
              else "off")
     method = f"detector=ai model_id={config.model_id}" if args.detector == "ai" else "detector=opencv"
