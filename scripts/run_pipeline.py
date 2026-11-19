@@ -162,6 +162,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "사유 출력 폴더(새 폴더만). --live-observation-config 필수. C·D·로봇 송신 없음")
     parser.add_argument("--live-observation-config", dest="live_observation_config", metavar="JSON", default=None,
                         help="--live-observation-out 전용: 시험 설정(TF 상한·용량·종료 상한 등, status=test_only 필수)")
+    parser.add_argument("--b-input", dest="b_input", choices=("single", "list"), default="single",
+                        help="B 입력 단계(#189): single = 단계 T(기본, 관측 하나 eyetoarm.b_input/1), list = 단계 L(같은 프레임 "
+                             "후보 목록 eyetoarm.b_input/2). list는 --capture-meta 저장 입력 경로 전용이며 B 목록 소비자"
+                             "(BStage.process_frame)가 없으면 시작 때 거부한다(단계 T로 바꾸지 않음)")
     parser.add_argument("--tracking", action="store_true", help="--detector ai 전용. A-6 1차 실험: AI 검출 인스턴스 추적 번호를 붙인다(M2 휴리스틱, 표시·기록 전용, 팔 이동을 넘는 신원·중복 집기 방지 보장 없음, B로 보내지 않음). 기본 꺼짐")
 
     return parser
@@ -206,6 +210,10 @@ def _check_source_args(args, ros_available) -> None:
             build_parser().error("--capture-meta cannot be combined with --tracking")
         if args.detector != "ai":
             build_parser().error("--capture-meta requires --detector ai")
+
+    # 단계 L(#189): 저장 입력 실제 경로(--capture-meta, 이미 ros-link·synthetic·tracking·opencv 결합 금지)에서만
+    if args.b_input == "list" and args.capture_meta is None:
+        build_parser().error("--b-input list requires --capture-meta/--observation-out (stored input A->B path only)")
 
     # 실시간 A→B 기록 전용 시험(#173): 명시 옵션에서만 전용 디스패처. 기본 --ros-link는 D13 그대로
     if args.live_observation_out is not None or args.live_observation_config is not None:
@@ -323,7 +331,7 @@ def _prepare_synthetic_observation(args, err):
 
 def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_available=None,
          live_source_factory=None, b_stage_hook=None, extension_source=None, live_tf_factory=None,
-         live_run_controller=None) -> int:
+         live_run_controller=None, list_consumer_factory=None) -> int:
     """CLI 진입점. 종료 코드를 돌려준다.
 
     `b_stage_hook(stage)`는 시험 주입 지점이다(시험 B 연결에서 만든 BStage를 run 전에 받음, 기본 None).
@@ -334,6 +342,9 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
     수신 묶음)·`live_run_controller`(프로세스 단위 `LiveRunController`, 기본은 모듈 전역)도 시험 주입 지점이다.
 
     `model_factory`·`import_module`은 시험 주입 지점이다(AI 어댑터에 그대로 넘김, 기본은 실제 ultralytics 지연 import).
+
+    `list_consumer_factory(stage)`(#189)는 단계 L 시험 주입 지점이다. 목록 봉투(`eyetoarm.b_input/2`)를 받는 함수를 돌려준다.
+    None(기본)이면 `stage.process_frame`을 쓰고, 없으면 단계 L을 시작 때 거부한다(종료 1). 시험 밖에서 쓰지 않는다.
     """
     err = stderr if stderr is not None else sys.stderr
     args = build_parser().parse_args(argv)  # 인자 오류는 argparse가 종료 2로 끝낸다
@@ -400,6 +411,10 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
         return _run_live_observation(args, settings, runner_config, detector_kw, err, b_stage_hook=b_stage_hook,
                                      live_source_factory=live_source_factory, live_tf_factory=live_tf_factory,
                                      controller=live_run_controller or _live_runs())
+
+    if capture is not None and args.b_input == "list":
+        return _run_capture_list(args, settings, runner_config, detector_kw, capture, err, b_stage_hook,
+                                 list_consumer_factory)
 
     if capture is not None:
         return _run_capture_observation(args, settings, runner_config, detector_kw, capture, err, b_stage_hook,
@@ -684,6 +699,112 @@ def _prepare_capture_observation(args, err):
             return None, 2
 
     return (meta, inputs), 0
+
+
+def _run_capture_list(args, settings, runner_config, detector_kw, capture, err, b_stage_hook,
+                      list_consumer_factory) -> int:
+    """저장 입력 단계 L(#189). 실제 AI 검출·끝점 추출 결과를 `b_list_gate` 뒤 목록(`eyetoarm.b_input/2`)으로 목록 소비자에 넘긴다.
+
+    호출 경로: 저장 소스 → `CaptureMetaSource` → 실행기 → `AiSegDetector`(M1) → 코어(단계 T 관측 그대로) → `handle()`: 기록 →
+    `display_sink`(= 기록기 `on_outcome`) → `b_list_gate` → `b_list_consumer`(= 기록기가 감싼 목록 소비자). `b_consumer`는 주지 않는다
+    (이중 전달 없음). 목록 소비자: 시험 주입 `list_consumer_factory(stage)` 또는 `stage.process_frame`. 둘 다 없으면 로그·출력 파일을
+    만들기 전에 종료 1(단계 T로 바꾸지 않음). `on_output`은 None(C·D·로봇 송신 없음). 주석 영상은 만들지 않는다.
+    """
+    from eyetoarm.transforms.b_stage import BStage
+    from eyetoarm.transforms.observation_envelope_adapter import EnvelopeTfLookup
+    from eyetoarm.vision.ai_detector import AiSegDetector
+    from eyetoarm.vision.capture_list_recorder import CaptureListRecorder
+    from eyetoarm.vision.capture_meta import CaptureMetaSource
+    from eyetoarm.vision.list_envelope import LIST_ENVELOPE_VERSION
+    from eyetoarm.vision.pipeline_records import B_INPUT_LIST
+
+    meta, inputs = capture
+    stage = BStage.from_config(REPO_ROOT, meta.camera, EnvelopeTfLookup())
+
+    if b_stage_hook is not None:
+        b_stage_hook(stage)
+
+    if stage.on_output is not None:
+        err.write("run_pipeline: stage L path requires stage.on_output None (no C/D/robot output)\n")
+        return 1
+
+    if list_consumer_factory is not None:
+        consume, consumer_kind = list_consumer_factory(stage), "injected_test_only"
+    else:
+        consume, consumer_kind = getattr(stage, "process_frame", None), "BStage.process_frame"
+
+    if not callable(consume):
+        err.write("run_pipeline: --b-input list refused: list consumer unavailable (BStage.process_frame missing); "
+                  "not falling back to stage T\n")
+        return 1
+
+    inject = {"model_factory": args._model_factory}
+
+    if args._import_module is not None:
+        inject["import_module"] = args._import_module
+
+    det = AiSegDetector(settings.detector_config, **inject)
+    kind, paths = ("images", list(args.images)) if args.images else ("video", [args.video])
+    inner_factory = stored_source_factory(kind, paths, args.source_id)
+    holder = {}
+
+    def source_factory(issuer, generation_provider):
+        """저장 입력 소스를 촬영 메타 소스로 감싼다."""
+        holder["source"] = CaptureMetaSource(inner_factory(issuer, generation_provider), meta)
+        return holder["source"]
+
+    try:
+        recorder = CaptureListRecorder(args.observation_out, meta, consumer_kind=consumer_kind)
+    except OSError as exc:
+        err.write(f"run_pipeline: cannot create a-to-b-out: {exc}\n")
+        return 2
+
+    err.write(f"run_pipeline: A->B STAGE L opt-in capture_id={meta.capture_id} b_input={LIST_ENVELOPE_VERSION} "
+              f"consumer={consumer_kind}; no C/D/robot output\n")
+
+    try:
+        try:
+            stream = open(args.log, "x", encoding="utf-8")
+        except OSError as exc:
+            err.write(f"run_pipeline: cannot open log: {exc}\n")
+            return 2
+
+        with stream:
+            log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
+                              log_geometry=args.log_instance_geometry, b_input=B_INPUT_LIST)
+            result = run(source_factory, settings, log, detector=det, prepare=det.prepare,
+                         b_list_consumer=recorder.wrap(consume), display_sink=recorder, config=runner_config,
+                         stderr=err, versions={"opencv": cv2.__version__})
+
+        problems = []
+
+        if recorder.calls + recorder.rejected != result.b_list_calls:
+            problems.append(f"recorded list inputs {recorder.calls} + rejected {recorder.rejected} != runner b_list_calls "
+                            f"{result.b_list_calls}")
+
+        if recorder.rejected:
+            problems.append(f"{recorder.rejected} list envelope(s) rejected (consumer not called)")
+
+        exit_code = 1 if problems and result.exit_code == 0 else result.exit_code
+        source = holder.get("source")
+        recorder.summary({"exit_code": exit_code, "runner_exit_code": result.exit_code,
+                          "stop_reason": result.stop_reason, "run_id": result.run_id, "frames": result.frames,
+                          "runner_b_list_calls": result.b_list_calls, "runner_b_calls": result.b_calls,
+                          "capture_id": meta.capture_id, "capture_meta_sha256": meta.sha256, "inputs_sha256": inputs,
+                          "detector_config_id": settings.detector_config_id,
+                          "meta_mismatches": [] if source is None else source.mismatches,
+                          "on_output": None, "problems": problems, "runner_errors": result.errors})
+    finally:
+        recorder.close()
+
+    for p in problems:
+        err.write(f"run_pipeline: stage L mismatch: {p}\n")
+
+    err.write(f"run_pipeline: exit={exit_code} reason={result.stop_reason} a_b_stage_l frames={result.frames} "
+              f"b_list_calls={result.b_list_calls} candidates_sent={recorder.candidates_sent} "
+              f"input_errors={result.input_errors} timeouts={result.timeouts}\n")
+
+    return exit_code
 
 
 def _run_capture_observation(args, settings, runner_config, detector_kw, capture, err, b_stage_hook,

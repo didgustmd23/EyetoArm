@@ -51,6 +51,7 @@ from typing import Any
 
 from eyetoarm.common.types import CandidateInvalidationEvent, InputStatus, InputStatusEvent
 from eyetoarm.vision.ai_config import AiSegConfig
+from eyetoarm.vision.ai_convert import list_candidate_indices
 from eyetoarm.vision.ai_result import AiSegResult, axis_candidate_reason
 from eyetoarm.vision.pipeline_types import (
     InputStateRecord,
@@ -77,11 +78,21 @@ def _check_eval_run_id(eval_run_id) -> str | None:
     return eval_run_id
 
 
-def process_record(outcome: JobOutcome, *, eval_run_id: str | None = None) -> ProcessRecord:
+B_INPUT_SINGLE = "single"   # 단계 T(기본): 관측 하나(`eyetoarm.b_input/1`)
+B_INPUT_LIST = "list"       # 단계 L(#189): 같은 프레임 후보 목록(`eyetoarm.b_input/2`)
+B_INPUT_MODES = (B_INPUT_SINGLE, B_INPUT_LIST)
+
+
+def process_record(outcome: JobOutcome, *, eval_run_id: str | None = None,
+                   b_input: str = B_INPUT_SINGLE) -> ProcessRecord:
     """최초 terminal 응답을 처리 기록으로 바꾼다. 시작 당시 context(원본 시각·시작 설정·세대)를 그대로 쓴다.
 
     duplicate 응답은 ValueError(재기록 금지). 관측이 있는 완료만 valid·reason·후보 수·처리 시간을 채운다.
+    `b_input="list"`(단계 L)이면 축 경로 AI 완료 기록에 `list_candidate_count`·`list_indices`를 더한다(단계 T는 키 없음).
     """
+    if b_input not in B_INPUT_MODES:
+        raise ValueError(f"b_input must be one of {B_INPUT_MODES}: {b_input!r}")
+
     if outcome.duplicate:
         raise ValueError("duplicate outcome must not be recorded again")
 
@@ -93,6 +104,11 @@ def process_record(outcome: JobOutcome, *, eval_run_id: str | None = None) -> Pr
     is_ai = isinstance(cfg, AiSegConfig)
     display = outcome.display_result if outcome.status is JobStatus.COMPLETED else None
     ai = display if is_ai and isinstance(display, AiSegResult) else None
+    axis_on = ai is not None and bool(getattr(cfg, "axis_extractor", None))
+
+    # 단계 L 목록 구성(#189): 실행기·기록기와 같은 함수(프레임 차단이면 빈 목록)
+    listed = (list_candidate_indices(ai, f, job.settings.profile)
+              if axis_on and b_input == B_INPUT_LIST else None)
 
     return ProcessRecord(
         run_id=f.run_id, source_id=f.source_id, image_seq=f.image_seq,
@@ -108,7 +124,8 @@ def process_record(outcome: JobOutcome, *, eval_run_id: str | None = None) -> Pr
         method="ai" if is_ai else "opencv", model_id=cfg.model_id if is_ai else None,
         infer_ms=ai.infer_ms if ai is not None else None,
         ai_instances=None if ai is None else tuple(_instance_summary(i) for i in ai.instances),
-        axis_valid_count=ai.axis_valid_count if ai is not None and getattr(cfg, "axis_extractor", None) else None)
+        axis_valid_count=ai.axis_valid_count if axis_on else None,
+        list_candidate_count=None if listed is None else len(listed), list_indices=listed)
 
 
 def _instance_summary(inst) -> dict:
@@ -235,10 +252,16 @@ class JsonlRecorder:
 class PipelineLog:
     """파이프라인 기록을 1회씩만 쓰는 층. 무엇을 이미 썼는지(작업·사건·폐기)를 기억한다."""
 
-    def __init__(self, recorder: JsonlRecorder, *, eval_run_id: str | None = None, log_geometry: bool = False) -> None:
-        """기록기와 평가 실행 ID(평가가 아니면 None), 선택 AI geometry 기록 여부를 받는다."""
+    def __init__(self, recorder: JsonlRecorder, *, eval_run_id: str | None = None, log_geometry: bool = False,
+                 b_input: str = B_INPUT_SINGLE) -> None:
+        """기록기와 평가 실행 ID(평가가 아니면 None), 선택 AI geometry 기록 여부, B 입력 단계(#189, 기본 단계 T)를 받는다."""
         if not isinstance(log_geometry, bool):
             raise ValueError(f"log_geometry must be a bool: {log_geometry!r}")
+
+        if b_input not in B_INPUT_MODES:
+            raise ValueError(f"b_input must be one of {B_INPUT_MODES}: {b_input!r}")
+
+        self._b_input = b_input
 
         self._log_geometry = log_geometry
         self._recorder = recorder
@@ -269,6 +292,11 @@ class PipelineLog:
             "versions": {"python": platform.python_version(), **(versions or {})},
             "detector": _detector_block(s.detector_config),
         }
+
+        # 단계 L(#189)만 표시한다. 단계 T(기본) run_meta는 키를 더하지 않는다(바이트 동일)
+        if self._b_input == B_INPUT_LIST:
+            meta["b_input"] = B_INPUT_LIST
+
         self._recorder.write("run_meta", meta)
 
     def write_model_ready(self, info: dict) -> None:
@@ -312,7 +340,7 @@ class PipelineLog:
         if outcome.duplicate or outcome.context.job_seq in self._jobs_logged:
             return False
 
-        self._recorder.write("process", process_record(outcome, eval_run_id=self._eval_run_id))
+        self._recorder.write("process", process_record(outcome, eval_run_id=self._eval_run_id, b_input=self._b_input))
         self._jobs_logged.add(outcome.context.job_seq)
         display = outcome.display_result
 
