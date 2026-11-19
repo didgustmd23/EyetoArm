@@ -29,6 +29,11 @@
 - 기록: 출력 폴더(새로 만듦)에 `b_live_events.jsonl`(공통 순번, 기존 `LiveObservationEventWriter`)·`annotated/`·`skipped.jsonl`(건너뜀
   사유)·`summary.json`.
 - 운영값(TF 상한·용량·종료 상한 등)은 아직 미확정이라 설정 파일에 `"status": "test_only"`로 명시해야 한다(기본값 없음).
+- 단계 L(#201, `b_input="list"`): 실행기가 `b_list_skip_reason`으로 판정한 프레임을 같은 프레임 단위 검사(종료·epoch·준비·보정·세대)
+  뒤 대기 칸에 `LiveListInput(context, display)`로 넣는다. worker가 촬영 stamp TF를 한 번 조회해 그 TF 하나로 `FrameObservations`·
+  목록 봉투(`eyetoarm.b_input/2`)를 만들고 목록 소비자(`list_consumer_factory(stage)` 또는 `stage.process_frame`)를 부른다. 소비자를 못
+  구하면 RuntimeError(worker 오류, 단계 T로 바꾸지 않음). 목록 봉투 오류(ValueError 계열)는 `b_input_rejected`. 주석 영상은 만들지
+  않는다(B 후보 결과 형식 U-3 전). 단일 관측 경로(`"single"`, 기본)는 바꾸지 않는다.
 - ROS·Qt를 import하지 않는다(TF 수신 묶음·B 단계는 주입).
 """
 from __future__ import annotations
@@ -42,7 +47,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from eyetoarm.common.types import CaptureInfo
 from eyetoarm.transforms.live_tf_buffer import TfRewindReadiness
+from eyetoarm.vision.ai_convert import frame_observations_from_ai
+from eyetoarm.vision.list_envelope import make_list_envelope
 from eyetoarm.vision.live_observation_dispatch import LiveObservationDispatcher
 from eyetoarm.vision.live_observation_envelope import LiveCaptureTfLookup, make_live_envelope
 from eyetoarm.vision.live_observation_events import LiveObservationEventWriter
@@ -55,6 +63,33 @@ LIVE_OBSERVATION_CONFIG_STATUS = "test_only"
 NON_OK_TF = frozenset({"unavailable", "late", "stamp_mismatch", "no_stamp", "invalid_stamp"})
 _CONFIG_KEYS = {"status", "world_frame", "tf_wait_limit_s", "static_pairs", "future_tolerance_ns", "write_capacity",
                 "reserved_capacity", "lag_warn_s", "close_limit_s", "skip_queue_capacity", "note"}
+
+
+B_INPUT_SINGLE = "single"
+B_INPUT_LIST = "list"
+
+
+@dataclass(frozen=True)
+class LiveListInput:
+    """단계 L 대기 칸 항목의 관측 자리(#201): 작업 문맥과 AI 표시 결과. 건너뜀·기록 키(`job_seq`·`generation`)를 단일 관측과 같게 준다."""
+
+    context: object
+    display: object
+
+    @property
+    def job_seq(self):
+        """작업 순번."""
+        return self.context.job_seq
+
+    @property
+    def generation(self):
+        """작업 세대."""
+        return self.context.generation
+
+    @property
+    def image_seq(self):
+        """프레임 순번."""
+        return self.context.frame.image_seq
 
 
 class LiveObservationConfigError(ValueError):
@@ -145,8 +180,12 @@ class LiveObservationLink:
     `cleanup_confirmed`·`end`·`retry_cleanup`)을 따른다."""
 
     def __init__(self, run_id: str, out_dir: str, *, config: LiveObservationLinkConfig, tf, stage_factory: Callable,
-                 render: Callable | None, clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
+                 render: Callable | None, clock_ns: Callable[[], int] = time.monotonic_ns,
+                 b_input: str = B_INPUT_SINGLE, list_consumer_factory: Callable | None = None) -> None:
         """출력 폴더(새로)·상태(start_closed)·기록기·디스패처·TF 준비를 만든다.
+
+        - `b_input`(#201): `"single"`(기본, 단계 T 봉투 1) | `"list"`(단계 L 목록 봉투 2). `"list"`면 `render`는 쓰지 않는다.
+        - `list_consumer_factory(stage)`(#201, 시험 주입): 목록 봉투를 받는 함수. None이면 `stage.process_frame`.
 
         - `tf`: 시작된 TF 수신 묶음(`lookup(parent, child, stamp_ns, timeout_s)`·`has_static`·`close(limit_s)`).
         - `stage_factory(camera)` → `(BStage, ObservationEnvelopeAdapter)`. B 단계의 `on_output`은 None이어야 한다.
@@ -155,6 +194,17 @@ class LiveObservationLink:
         # 설정 검사는 파일을 열기 전에 한다(#180 #7: 검사 실패가 기록 파일 핸들을 남기지 않게)
         if type(config.skip_queue_capacity) is not int or config.skip_queue_capacity <= 0:
             raise ValueError(f"skip_queue_capacity must be a positive int: {config.skip_queue_capacity!r}")
+
+        if b_input not in (B_INPUT_SINGLE, B_INPUT_LIST):
+            raise ValueError(f"b_input must be {B_INPUT_SINGLE!r} or {B_INPUT_LIST!r}: {b_input!r}")
+
+        self.b_input = b_input
+        self._list_consumer_factory = list_consumer_factory
+        self.consumer_kind = (None if b_input == B_INPUT_SINGLE
+                              else "injected_test_only" if list_consumer_factory is not None else "BStage.process_frame")
+        self.list_consumer_calls = 0              # 목록 소비자 호출 수(worker만 씀, 잠금으로 읽음)
+        self.list_candidates_sent = 0
+        self.list_length_hist: dict[int, int] = {}
 
         self.run_id = run_id
         self.config = config
@@ -193,13 +243,19 @@ class LiveObservationLink:
         self._stage_factory = stage_factory
         self.stages: list = []
         capture = LiveCaptureTfLookup(tf.lookup, world_frame=config.world_frame, wait_limit_s=config.tf_wait_limit_s)
+
+        if b_input == B_INPUT_LIST:
+            list_kw = dict(build_envelope=self._build_list_envelope, compute=self._compute_list, render=None,
+                           envelope_errors=(ValueError,))
+        else:
+            list_kw = dict(build_envelope=lambda f, o, cam, r: make_live_envelope(f, o, camera=cam, tf_result=r,
+                                                                                  world_frame=config.world_frame),
+                           compute=lambda st, env: st[1].consume(env).output,
+                           render=None if render is None else (lambda st, f, out: render(st[0], f, out)))
+
         self.dispatcher = LiveObservationDispatcher(
             self.state, camera=None, stage_factory=self._make_stage, tf_lookup=capture,
-            build_envelope=lambda f, o, cam, r: make_live_envelope(f, o, camera=cam, tf_result=r,
-                                                                   world_frame=config.world_frame),
-            compute=lambda st, env: st[1].consume(env).output,
-            render=None if render is None else (lambda st, f, out: render(st[0], f, out)),
-            clock_ns=clock_ns, refuse_tf_statuses=NON_OK_TF, on_skip=self._worker_skip)
+            clock_ns=clock_ns, refuse_tf_statuses=NON_OK_TF, on_skip=self._worker_skip, **list_kw)
         self.readiness = TfRewindReadiness(self.state, clear=lambda: None, has_static=tf.has_static, lookup=tf.lookup,
                                            world_frame=config.world_frame, static_pairs=config.static_pairs,
                                            wait_limit_s=config.tf_wait_limit_s,
@@ -267,9 +323,46 @@ class LiveObservationLink:
         if getattr(st[0], "on_output", None) is not None:
             raise RuntimeError("live observation link requires stage.on_output None (no C/D/robot output)")
 
+        if self.b_input == B_INPUT_LIST:
+            consume = (self._list_consumer_factory(st[0]) if self._list_consumer_factory is not None
+                       else getattr(st[0], "process_frame", None))
+
+            # 목록 소비자가 없으면 단계 T로 바꾸지 않는다(#201): worker 오류로 드러나고 진입점은 종료 1
+            if not callable(consume):
+                raise RuntimeError("list consumer unavailable (BStage.process_frame missing); not falling back to stage T")
+
+            st = (st[0], st[1], consume)
+
         self.stages.append(st)
 
         return st
+
+    # ------------------------------------------------------------------ 단계 L(worker, 잠금 밖)
+
+    def _build_list_envelope(self, frame, item: LiveListInput, camera, tf_result):
+        """촬영 stamp TF 하나(`tf_result.tf`)로 목록·봉투 2를 만든다. 대조 오류는 ValueError(디스패처가 `b_input_rejected`)."""
+        capture = CaptureInfo(stamp_ns=frame.ros_stamp_ns, optical_frame=frame.optical_frame,
+                              calibration_id=frame.calibration_id, width=frame.width, height=frame.height)
+        observations = frame_observations_from_ai(item.context, item.display, capture=capture, camera=camera,
+                                                  tf=tf_result.tf, world_frame=self.config.world_frame)
+
+        # 실행기 `b_list_skip_reason`이 같은 함수로 비어 있지 않음을 확인했다. None이면 계약 위반(worker 오류)
+        if observations is None:
+            raise RuntimeError("b_list_skip_reason passed but frame_observations_from_ai built no list")
+
+        return make_list_envelope(observations, world_frame=self.config.world_frame)
+
+    def _compute_list(self, st, envelope):
+        """목록 소비자를 한 번 부르고 길이 분포를 센다."""
+        out = st[2](envelope)
+        n = len(envelope.observations.candidates)
+
+        with self._lock:
+            self.list_consumer_calls += 1
+            self.list_candidates_sent += n
+            self.list_length_hist[n] = self.list_length_hist.get(n, 0) + 1
+
+        return out
 
     # ------------------------------------------------------------------ 수신 경계(소스 slot 잠금 안)
 
@@ -360,6 +453,9 @@ class LiveObservationLink:
 
         if outcome.context.generation != token.generation:
             return self._record_skip("link", "generation_discarded", frame, ids)
+
+        if self.b_input == B_INPUT_LIST:
+            obs = LiveListInput(outcome.context, outcome.display_result)
 
         if not self.dispatcher.submit(frame, obs, rx_epoch=rx_epoch, generation=outcome.context.generation,
                                       calibration_id=frame.calibration_id):
@@ -661,9 +757,17 @@ class LiveObservationLink:
                                                        "lag_warnings": self.writer.lag_warnings},
                 "skip_write_error": self.skip_write_error, "drained_before_end": self.drained,
                 "tf_receiver_error": self.tf_receiver_error,
+                **({} if self.b_input == B_INPUT_SINGLE else self._list_summary()),
                 "skip_queue": self.skip_counts(),
                 "open_attempts": [list(a) for a in self.open_attempts],
                 "skip_write_threads": sorted(self.skip_write_threads)}
+
+    def _list_summary(self) -> dict:
+        """단계 L 요약 키(#201). 단일 관측 요약에는 넣지 않는다."""
+        with self._lock:
+            return {"b_input": "eyetoarm.b_input/2", "consumer_kind": self.consumer_kind,
+                    "list_consumer_calls": self.list_consumer_calls, "list_candidates_sent": self.list_candidates_sent,
+                    "list_length_hist": {str(k): v for k, v in sorted(self.list_length_hist.items())}}
 
     def write_summary(self, extra: dict) -> None:
         """`summary.json`을 새로 쓴다."""
@@ -671,5 +775,5 @@ class LiveObservationLink:
             json.dump({**self.summary(), **extra}, fh, ensure_ascii=False, indent=2, default=str)
 
 
-__all__ = ["LIVE_OBSERVATION_CONFIG_STATUS", "LiveObservationConfigError", "LiveObservationLink",
+__all__ = ["B_INPUT_LIST", "B_INPUT_SINGLE", "LIVE_OBSERVATION_CONFIG_STATUS", "LiveListInput", "LiveObservationConfigError", "LiveObservationLink",
            "LiveObservationLinkConfig", "NON_OK_TF", "load_live_observation_config"]

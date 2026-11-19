@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from eyetoarm.vision.list_envelope import LIST_ENVELOPE_VERSION
 from eyetoarm.vision.live_observation_state import LiveObservationEvent, LiveObservationState
 
 
@@ -37,6 +38,23 @@ def _plain(value):
     return value
 
 
+def _list_accept_fields(event: LiveObservationEvent, p, png_name: str | None) -> dict:
+    """단계 L accept 기록 키(#201). 봉투 버전은 `b_input.version`(단일 기록과 같은 자리). 단일 관측 전용 키(끝점·goal·result_dict 등)는
+    두지 않고, 후보 원 인덱스·수와 목록 소비자 결과(`consumer_result`, A는 해석하지 않음)를 남긴다."""
+    f, item, envelope = p.frame, p.observation, p.envelope
+    indices = [c.instance_index for c in envelope.observations.candidates]
+
+    return {"compute_id": event.compute_id,
+            "input": {"run_id": f.run_id, "image_seq": f.image_seq, "capture_generation": f.capture_generation,
+                      "ros_stamp_ns": f.ros_stamp_ns, "calibration_id": f.calibration_id,
+                      "job_seq": getattr(item, "job_seq", None), "generation": getattr(item, "generation", None)},
+            "b_input": envelope.to_record(), "list_indices": indices, "list_candidate_count": len(indices),
+            "consumer_result": _plain(p.output), "tf_status": p.tf_status, "tf_wait_ms": p.tf_wait_ms,
+            "k5_ms": None if p.received_monotonic_ns is None
+            else (event.enqueued_monotonic_ns - p.received_monotonic_ns) / 1e6,
+            "annotation": png_name}
+
+
 def event_record(event: LiveObservationEvent, png_name: str | None) -> dict:
     """기록 한 줄(사전). accept면 입력 키·B 출력 요약·시간 구간을 넣는다."""
     rec = {"event_seq": event.event_seq, "kind": event.kind, "token_seq": event.token_seq,
@@ -47,7 +65,9 @@ def event_record(event: LiveObservationEvent, png_name: str | None) -> dict:
 
     p = event.payload
 
-    if event.kind == "accept" and p is not None:
+    if event.kind == "accept" and p is not None and getattr(p.envelope, "version", None) == LIST_ENVELOPE_VERSION:
+        rec.update(_list_accept_fields(event, p, png_name))
+    elif event.kind == "accept" and p is not None:
         f, obs, out = p.frame, p.observation, p.output
         goal = getattr(out, "goal", None) or {}
         result = getattr(out, "result", None)
