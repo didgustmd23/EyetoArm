@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  대용량 영상용 Fast DDS 프로필 (ROS 2 Jazzy, Fast DDS 2.14, rmw_fastrtps_cpp)
+
+  목적
+  - Gazebo 카메라 영상(link 1280x720 RGB 약 2.76 MB/장 등)을 parameter_bridge -> ROS 구독자로 오래 보낼 때
+    수 분 뒤 수신이 약 1.3 Hz로 떨어지는 문제를 막는다.
+  - 원인(A #187): 기본 SHM 세그먼트 512 KiB와 UDP 수신 버퍼(OS 기본 212,992 B)가 영상 1장보다 작아
+    DDS RELIABLE 송신이 재전송에 기대다가 느린 상태로 넘어간다.
+  - 검증(A #187 H1c'): 이 설정으로 1200 s, 1800 s 실행에서 저하 없음(gz 발행 = bridge 출력, 최대 간격 0.254 s).
+
+  설정 내용
+  - SHM 세그먼트 16 MiB(영상 여러 장과 카메라 4대 동시 송신 여유).
+  - UDPv4 송수신 버퍼 4 MiB. OS 상한 net.core.rmem_max·wmem_max(현재 4194304) 이하여야 한다.
+  - 내장 전송을 끄고 위 두 전송만 쓴다. UDP는 127.0.0.1에만 묶는다(이 컴퓨터 안 통신 전용).
+  - 탐색은 127.0.0.1 유니캐스트 초기 피어로 한다(WSL 루프백에는 MULTICAST 플래그가 없다).
+
+  사용법(영상을 주고받는 모든 프로세스에 똑같이 준다: Gazebo bridge, A run_pipeline, B 노드, C 중계, 측정 구독 등)
+      export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+      export FASTRTPS_DEFAULT_PROFILES_FILE=<저장소>/config/dds/fastdds_large_image.xml
+  주의
+  - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST에서는 rmw가 전송 설정을 덮어써 이 파일의 SHM 크기가 적용되지 않는다
+    (기본 SHM 512 KiB가 덧붙는다). 반드시 SUBNET과 함께 쓴다. 다른 컴퓨터와 섞이지 않게 ROS_DOMAIN_ID는 따로 정한다.
+  - 한쪽 프로세스에만 주면 그 쌍은 기본값 경로로 통신할 수 있다. 영상 경로의 송신·수신 양쪽에 모두 준다.
+  - 적용 확인: 실행 중 /dev/shm의 fastrtps_* 세그먼트 파일 크기가 약 16 MiB인지 본다(기본값이면 약 549,408 B).
+  - SHM 16 MiB, UDP 버퍼 4 MiB, 내장 전송 끄기 가운데 어느 항목이 꼭 필요한지는 아직 나누어 확인하지 않았다(A #187 미검증).
+-->
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <profiles>
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>large_image_shm</transport_id>
+        <type>SHM</type>
+        <segment_size>16777216</segment_size>
+      </transport_descriptor>
+      <transport_descriptor>
+        <transport_id>large_image_udp</transport_id>
+        <type>UDPv4</type>
+        <sendBufferSize>4194304</sendBufferSize>
+        <receiveBufferSize>4194304</receiveBufferSize>
+        <interfaceWhiteList>
+          <address>127.0.0.1</address>
+        </interfaceWhiteList>
+      </transport_descriptor>
+    </transport_descriptors>
+    <participant profile_name="large_image_participant" is_default_profile="true">
+      <rtps>
+        <builtin>
+          <initialPeersList>
+            <locator>
+              <udpv4>
+                <address>127.0.0.1</address>
+              </udpv4>
+            </locator>
+          </initialPeersList>
+        </builtin>
+        <userTransports>
+          <transport_id>large_image_shm</transport_id>
+          <transport_id>large_image_udp</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+        <sendSocketBufferSize>4194304</sendSocketBufferSize>
+        <listenSocketBufferSize>4194304</listenSocketBufferSize>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>
