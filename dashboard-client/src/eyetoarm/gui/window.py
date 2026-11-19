@@ -966,6 +966,13 @@ class MainWindow(QMainWindow):
                     view._display_item = frame
                 view.set_footer(f"{tag} · {frame['source_id']} {variant} · 프레임 {frame['image_seq']} · "
                                 f"보정 {frame['calibration_id'] or NO_VALUE}")
+            elif self.relay and frame is not None and not frame.get("confirmed", True):
+                if getattr(view, "_display_item", None) is not frame:   # 확인 대기: 보이되 실시간이 아닌 노후 모습으로
+                    view.show_frame(frame["image"])
+                    view._display_item = frame
+                view.set_stale(int(max(0.0, self.display.clock() - frame["received"]) * 1000))
+                view.set_footer(f"{tag} · {frame['source_id']} {variant} · 프레임 {frame['image_seq']} · "
+                                "확인 대기(접속 직후 C 캐시일 수 있음 · 새 프레임 수신 전)")
             elif self.relay and frame is not None and getattr(view, "_display_item", None) is frame:
                 view.set_stale(int(max(0.0, self.display.clock() - frame["received"]) * 1000))   # 마지막 모습은 노후로 표시
             else:

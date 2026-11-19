@@ -249,12 +249,19 @@ class WindowSwitch(unittest.TestCase):
         sock.write(b"".join(frame(ch, seq, run) for ch in ("fixed", "gripper", "link")))
         sock.flush()
 
+    def send_live(self, index, run, seq):
+        """C 는 새 접속에 캐시를 먼저 보낸다. 첫 묶음 뒤 더 새 묶음을 따로 보내야 실시간으로 확인된다."""
+        count = self.view.frame_count
+        self.send(index, run, seq)
+        self.assertTrue(until(lambda: self.view.frame_count >= count + 3))
+        self.send(index, run, seq + 1)
+
     def fresh_channels(self):
         display = self.window.display
         return [ch for ch in ("fixed", "gripper", "link") if display.fresh(display.frame(ch))]
 
     def test_apply_moves_video_and_command_without_restart_and_old_frames_never_return(self):
-        self.send(0, "run-A", 1)
+        self.send_live(0, "run-A", 1)
         self.assertTrue(until(lambda: len(self.fresh_channels()) == 3))
         edits = self.window.endpoint_edits
         self.assertEqual(edits["view_host"].text(), "")             # inherits the command IP
@@ -269,7 +276,7 @@ class WindowSwitch(unittest.TestCase):
         self.send(0, "run-A", 2)                                    # late frames on the old relay connection
         until(lambda: False, timeout=0.2)
         self.assertEqual(self.view.frame_count, count)
-        self.send(1, "run-B", 1)
+        self.send_live(1, "run-B", 1)
         self.assertTrue(until(lambda: len(self.fresh_channels()) == 3))
         self.assertIn(str(self.relays[1].serverPort()), self.view.title)
         self.assertTrue(until(lambda: self.link.state == "connected" and self.link.last_status is not None))
@@ -280,7 +287,7 @@ class WindowSwitch(unittest.TestCase):
     def test_a_new_server_may_reuse_the_run_id_and_low_numbers_but_the_same_address_keeps_its_guard(self):
         self.send(0, "run-A", 5)
         self.assertTrue(until(lambda: self.view.run_id == "run-A"))   # seen first, else newest-only merge skips it
-        self.send(0, "run-B", 1)                                    # run-A is now retired on this server
+        self.send_live(0, "run-B", 1)                               # run-A is now retired on this server
         self.assertTrue(until(lambda: self.view.run_id == "run-B" and len(self.fresh_channels()) == 3))
         self.window.endpoint_button.click()                         # same address: reconnect, keep the guard
         self.assertTrue(until(lambda: self.view.state == "connected" and len(self.clients[0]) == 2))
@@ -292,7 +299,7 @@ class WindowSwitch(unittest.TestCase):
         self.window.endpoint_button.click()                         # another server: its history starts empty
         self.assertIsNone(self.window.display.run_id)
         self.assertTrue(until(lambda: self.view.state == "connected" and self.clients[1]))
-        self.send(1, "run-A", 1)                                    # same run id and a lower number than before
+        self.send_live(1, "run-A", 1)                               # same run id and a lower number than before
         self.assertTrue(until(lambda: len(self.fresh_channels()) == 3))
         self.assertEqual((self.view.run_id, self.window.display.run_id), ("run-A", "run-A"))
 
@@ -376,6 +383,118 @@ class DemoAndLegacy(unittest.TestCase):
         self.assertEqual(self.run_main({**saved, "host": "localhost"}, [])[1:3], ["127.0.0.1", 47090])
         self.assertEqual(self.run_main(saved, ["--view", "camera"])[3:], ["GzViewReceiver", "127.0.0.1", 47091])
         self.assertEqual(self.run_main(saved, ["--demo"])[0], "DemoLink")
+
+
+
+class LateServers(unittest.TestCase):
+    """D 가 먼저 켜지고 명령 서버·영상 중계가 각각 늦게 열린다. 모두 루프백 임시 포트의 프로세스 내 대역이다.
+
+    영상 패킷은 수정하지 않은 C pack_packet 으로 만든 JPEG raw 3채널이다. 명령 대역은 GET_STATUS 에만 미준비로 답한다.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        motion.set_reduced(True)
+
+    @classmethod
+    def tearDownClass(cls):
+        motion.set_reduced(False)
+
+    def setUp(self):
+        self.cmd = FakeCommandServer(555)
+        self.cmd.server.close()                         # port reserved, nothing listening yet
+        self.relay = QTcpServer()
+        self.assertTrue(self.relay.listen(QHostAddress("127.0.0.1"), 0))
+        self.relay_port = self.relay.serverPort()
+        self.relay.close()
+        self.relay_clients = []
+        self.relay.newConnection.connect(lambda: self.relay_clients.append(self.relay.nextPendingConnection()))
+        self.link = StatusLink("127.0.0.1", self.cmd.port, log_path=None,
+                               config={"reconnect_ms": 150, "connect_timeout_ms": 1000})
+        self.view = RelayViewReceiver("127.0.0.1", self.relay_port)
+        self.view._retry.setInterval(150)
+        self.window = MainWindow(self.link, self.view)
+        self.window.show()
+
+    def tearDown(self):
+        self.window.close()
+        self.assertEqual((self.view.state, self.link.state), ("disconnected", "disconnected"))
+        self.assertFalse(self.view._retry.isActive() or self.view._connect_deadline.isActive())
+        for sock in self.relay_clients:
+            sock.abort()
+        self.relay.close()
+        self.cmd.close()
+        cleanup(self.app, self.window, self.view, self.link, self.relay, *self.relay_clients)
+
+    def send(self, seq, client=-1):
+        sock = self.relay_clients[client]
+        sock.write(b"".join(frame(ch, seq, "run-L") for ch in ("fixed", "gripper", "link")))
+        sock.flush()
+
+    def views(self):
+        stage = self.window.stage
+        return {"fixed": stage.main, "gripper": stage.gripper, "link": stage.link}
+
+    def fresh(self):
+        display = self.window.display
+        return [ch for ch in ("fixed", "gripper", "link") if display.fresh(display.frame(ch))]
+
+    def test_command_then_video_open_late_cache_waits_and_reconnect_never_revives(self):
+        until(lambda: False, timeout=0.6)                # D keeps retrying both, nothing is up
+        self.window._update_status()
+        self.assertNotEqual(self.link.state, "connected")
+        self.assertNotEqual(self.view.state, "connected")
+        self.assertFalse(self.window.move_button.isEnabled())
+        self.assertNotEqual(self.window.chip_view._level, "ok")
+
+        self.assertTrue(self.cmd.server.listen(QHostAddress("127.0.0.1"), self.cmd.port))   # command opens late
+        self.assertTrue(until(lambda: self.link.state == "connected" and self.link.last_status is not None, 6))
+        self.assertFalse(self.link.last_status["robot_ready"])
+        self.window._update_status()
+        self.assertFalse(self.link.can_execute())
+        self.assertFalse(self.window.move_button.isEnabled())
+        self.assertNotEqual(self.view.state, "connected")                 # video still closed
+
+        self.assertTrue(self.relay.listen(QHostAddress("127.0.0.1"), self.relay_port))   # video opens later
+        self.assertTrue(until(lambda: self.view.state == "connected" and self.relay_clients, 6))
+        self.assertFalse(self.view._connect_deadline.isActive())
+        self.send(7)                                                      # what C replays: cached newest only
+        self.assertTrue(until(lambda: self.view.frame_count == 3))
+        until(lambda: False, timeout=0.3)                                 # no newer frame arrives
+        self.window._update_status()
+        self.assertEqual(self.fresh(), [])
+        self.assertTrue(self.view.is_stale())
+        self.assertIsNone(self.window.display.matched_result())
+        for channel, view in self.views().items():
+            self.assertEqual(view._mode, "stale")                         # shown, but never as live
+            self.assertIsNotNone(view._image)
+            self.assertIn(f"gz_{channel}", view._footer)
+            self.assertIn("확인 대기", view._footer)
+        self.assertNotEqual(self.window.chip_view._level, "ok")
+
+        self.send(8)                                                      # the camera is really updating
+        self.assertTrue(until(lambda: self.view.frame_count == 6))
+        self.window._update_status()
+        self.assertEqual(self.fresh(), ["fixed", "gripper", "link"])
+        for channel, view in self.views().items():
+            self.assertEqual(view._mode, "live")
+            self.assertIn(f"gz_{channel} raw · 프레임 8", view._footer)
+        self.assertEqual(self.window.chip_view._level, "ok")
+
+        self.relay_clients[0].abort()                                     # relay drops D; D reconnects
+        self.assertTrue(until(lambda: self.view.state == "connected" and len(self.relay_clients) == 2, 6))
+        self.send(8)                                                      # same cached frame replayed
+        self.assertTrue(until(lambda: self.view.frame_count == 9))
+        self.window._update_status()
+        self.assertEqual(self.fresh(), [])
+        self.assertNotEqual(self.window.chip_view._level, "ok")
+        self.send(9)
+        self.assertTrue(until(lambda: self.view.frame_count == 12))
+        self.window._update_status()
+        self.assertEqual(self.fresh(), ["fixed", "gripper", "link"])
+        self.assertEqual(set(self.cmd.kinds), {"GET_STATUS"})             # no MOVE was ever sent
+        self.assertTrue(all(sock.bytesAvailable() == 0 for sock in self.relay_clients))   # D sends nothing to C
 
 
 if __name__ == "__main__":
