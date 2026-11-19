@@ -76,10 +76,21 @@ def _pos_int(v, name: str, lo: int = 1, hi: int | None = None) -> int:
 
 
 def _pos_num(v, name: str) -> float:
-    """유한 양수."""
-    if isinstance(v, bool) or not isinstance(v, Real) or not math.isfinite(float(v)) or v <= 0:
+    """유한 양수. 거대 정수(float 변환 넘침)도 ConfigError(#196 A4-2)."""
+    f = _as_float(v)
+    if f is None or not math.isfinite(f) or f <= 0:
         raise ConfigError(f"{name} must be a finite number > 0: {v!r}")
-    return float(v)
+    return f
+
+
+def _as_float(v) -> float | None:
+    """bool이 아닌 실수를 float로. 변환할 수 없으면(거대 정수의 OverflowError 포함) None(#196 A4-2)."""
+    if isinstance(v, bool) or not isinstance(v, Real):
+        return None
+    try:
+        return float(v)
+    except (OverflowError, ValueError):
+        return None
 
 
 def _rel_path(v, name: str) -> str:

@@ -491,8 +491,10 @@ class PartTracker:
             box = i.box_xyxy
             if (not isinstance(box, tuple) or len(box) != 4
                     or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in box)
-                    or not (box[2] > box[0] and box[3] > box[1])):
-                raise TrackingInputError(f"box_xyxy must be 4 finite numbers with x2>x1, y2>y1: {box!r}")
+                    or not (box[2] >= box[0] and box[3] >= box[1])):
+                # #196 A3-1: AiInstance와 같은 규칙(x1 <= x2, y1 <= y2). 폭·높이 0 박스(1열 마스크)로 추적이 꺼지지 않게 한다.
+                # 정합 계산은 넓이 비 하한(1e-9)·반경 하한(gate_min_px)이 있어 0 크기에서도 나눗셈 오류가 없다
+                raise TrackingInputError(f"box_xyxy must be 4 finite numbers with x2>=x1, y2>=y1: {box!r}")
 
             if type(i.clipped) is not bool or type(i.candidate) is not bool:
                 raise TrackingInputError("clipped and candidate must be bool")

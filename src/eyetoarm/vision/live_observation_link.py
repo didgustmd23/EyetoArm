@@ -216,6 +216,33 @@ class LiveObservationLink:
         self.writer_report = None
         self.skip_write_error: str | None = None
         self.drained: bool | None = None   # 정상 종료 전 대기 작업 마무리 결과(진입점이 기록)
+        self.tf_receiver_error: str | None = None   # TF 수신 스레드 실패 사유(#196 A1-2)
+
+        # TF 수신 스레드가 죽으면 상태를 실패로 닫는다(영상 수신기 실패와 같은 fail-stop). 등록 함수가 없는 대역은 건너뛴다
+        register = getattr(tf, "set_failure_callback", None)
+
+        if callable(register):
+            register(self._tf_receiver_failed)
+
+    def _tf_receiver_failed(self, error: str) -> None:
+        """TF 스레드에서 불린다: 사유를 남기고 상태 fail-stop(이후 제출·계산·수락 차단). 정리 확인은 `end`의 tf 단계가 막는다."""
+        with self._lock:
+            if self.tf_receiver_error is None:
+                self.tf_receiver_error = error
+
+        self.state.fail("tf_receiver_failed")
+
+    def _close_tf(self, limit_s: float):
+        """TF 묶음을 닫는다. 수신 스레드가 실패했던 실행은 닫혀도 정리 확인으로 치지 않는다(#196 A1-2)."""
+        self.tf.close(limit_s)
+
+        with self._lock:
+            error = self.tf_receiver_error
+
+        if error is not None:
+            raise RuntimeError(f"tf receiver failed: {error}")
+
+        return True
 
     # ------------------------------------------------------------------ 수명
 
@@ -560,7 +587,7 @@ class LiveObservationLink:
             return True
 
         steps = (("probe", probe_close), ("dispatcher", lambda: self.dispatcher.close(limit_s)),
-                 ("writer", writer_close), ("tf", lambda: self.tf.close(limit_s)), ("skips", skip_close))
+                 ("writer", writer_close), ("tf", lambda: self._close_tf(limit_s)), ("skips", skip_close))
 
         for name, fn in steps:
             with self._lock:
@@ -633,6 +660,7 @@ class LiveObservationLink:
                                                        "error": report.error,
                                                        "lag_warnings": self.writer.lag_warnings},
                 "skip_write_error": self.skip_write_error, "drained_before_end": self.drained,
+                "tf_receiver_error": self.tf_receiver_error,
                 "skip_queue": self.skip_counts(),
                 "open_attempts": [list(a) for a in self.open_attempts],
                 "skip_write_threads": sorted(self.skip_write_threads)}

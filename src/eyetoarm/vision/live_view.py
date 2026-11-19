@@ -57,6 +57,12 @@ class ViewItem:
     conf_threshold: float | None
     reason: str | None          # 관측 reason(표시용 invalid 사유)
     tracks: TrackFrame | None = None  # 같은 작업의 추적 결과(#151 S3, 추적을 켰을 때만). 표시 실험 번호
+    valid: bool | None = None         # 관측 valid 그대로(#196 A1-5). 축 끝점 경로를 켜면 True일 수 있다. 로봇 목표 승인이 아니다
+
+
+def status_text(valid) -> str:
+    """확인 창 상태 문구(#196 A1-5): 관측의 실제 valid 값을 쓰고, 로봇 목표가 아니라는 문구는 그대로 둔다."""
+    return f"display-only detection (valid={valid}, not for robot)"
 
 
 @dataclass(frozen=True)
@@ -109,10 +115,12 @@ class DisplayBridge:
                 ctx, obs = outcome.context, outcome.observation
                 display = outcome.display_result
                 conf = getattr(ctx.settings.detector_config, "conf_threshold", None)
-                self._set(ViewState.LIVE, "display-only detection (valid=False, not for robot)",
+                valid = getattr(obs, "valid", None)
+                self._set(ViewState.LIVE, status_text(valid),
                           item=ViewItem(frame=ctx.frame, result=display if isinstance(display, AiSegResult) else None,
                                         job_seq=ctx.job_seq, generation=ctx.generation,
-                                        conf_threshold=conf, reason=getattr(obs, "reason", None), tracks=tracks),
+                                        conf_threshold=conf, reason=getattr(obs, "reason", None), tracks=tracks,
+                                        valid=valid),
                           last_frame=None)
                 self.shown += 1
                 return
@@ -312,7 +320,7 @@ def _info_lines(snap: ViewSnapshot) -> list[str]:
             lines.append(f"t {f.timestamp_ms / 1000:.3f} s ({base})  conf>={conf}  "
                          "display result is not AI segmentation (not drawn)")
 
-        lines.append(f"DISPLAY ONLY - observation valid=False ({item.reason}); not a robot target")
+        lines.append(f"DISPLAY ONLY - observation valid={item.valid} ({item.reason}); not a robot target")
 
         if item.tracks is not None:
             t = item.tracks
@@ -375,5 +383,5 @@ def render_view(snap: ViewSnapshot, max_width: int = 1600) -> np.ndarray:
     return np.vstack([header, pair])
 
 
-__all__ = ["DisplayBridge", "MASK_ALPHA", "ViewItem", "ViewSnapshot", "ViewState", "draw_detections", "render_view",
+__all__ = ["DisplayBridge", "MASK_ALPHA", "ViewItem", "ViewSnapshot", "ViewState", "draw_detections", "render_view", "status_text",
            "track_label"]

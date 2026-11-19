@@ -24,6 +24,10 @@
 - R8(사용자 확정 2026-11-16, #124 대안 0): 영상 중단(`frame_timeout_s`) 뒤 첫 새 영상은 **발행자 변경 여부를 구분하지 않고** 그 콜백에서
   `RECONNECT` 경계를 만들어 새 epoch로 받는다(일시 정지 재개도 세대 +1, 이전 「재개 세대 유지」 정책을 이 범위에서 대체).
   제어 흐름이 중단을 아직 판정하지 못했어도 간격이 `frame_timeout_s` 이상이면 같은 콜백에서 `FRAME_TIMEOUT` → `RECONNECT` 순서로 만든다.
+- R8a(#196, #193 A1-1): 그 재개 첫 영상의 stamp가 중단 전 마지막 stamp보다 작으면(중단 중 Gazebo 리셋) 재접속에 합치지 않는다.
+  `FRAME_TIMEOUT` → `SIM_TIME_REWIND` → `RECONNECT` 순서로 만들고 R5와 같은 되감기 필터를 켠다(기준 = 중단 전 마지막 stamp).
+  `/clock`이 영상보다 먼저 오든 늦게 오든 되감기 경계는 정확히 한 번이다(실행 종료는 연결부가 `SIM_TIME_REWIND`로 판단).
+  이전 판의 `rewind_merged_into_resume`(합쳐서 세대만 올림)은 더 세지 않는다(키는 호환용으로 남김, 항상 0).
 - R9: 발행자 그래프는 GID 집합으로 비교한다. 수신 중(끊김 아님) 확정 집합과 다른 비지 않은 집합이 보이면 `RECONNECT`(중단 없는 교체 보완).
   빈 집합·끊긴 동안의 변화는 경계가 아니다(첫 새 영상이 경계를 만든다). R8 경계 뒤 `graph_absorb_s` 안에 처음 보인 변화 1회는 같은
   복구로 흡수해 세대를 또 올리지 않는다. 창 뒤의 변화는 새 경계다(같은 복구의 두 번째 전이가 될 수 있음).
@@ -213,7 +217,7 @@ class GenerationMirror:
 _STATS_KEYS = ("received", "accepted", "overwritten", "duplicate_stamp", "stale_epoch", "stale_after_rewind",
                "rewind_filter_released", "frame_id_mismatch", "boundaries", "notices", "taken", "resume_boundaries",
                "graph_change_absorbed", "graph_change_during_gap", "rewind_merged_into_resume",
-               "boundary_hook_errors", "camera_info_invalid")
+               "boundary_hook_errors", "camera_info_invalid", "rewind_after_gap", "invalid_header", "invalid_clock")
 
 
 class LiveFrameSlot:
@@ -313,14 +317,22 @@ class LiveFrameSlot:
                     self._boundary(BoundaryKind.FRAME_TIMEOUT,
                                    f"no frame for {(now - self._last_rx_ns) / 1e9:.3f} s (detected at image)", now)
 
+                # R8a(#196 A1-1): 재개 첫 영상의 stamp가 중단 전보다 작으면 중단 중 리셋이다. 재접속에 합치지 않고 /clock 되감기(R5)와
+                # 같은 결과를 만든다: SIM_TIME_REWIND 경계 + 되감기 필터(기준 = 중단 전 마지막 stamp). /clock이 먼저 왔든 늦게 오든 같다.
+                # 늦게 오는 낮은 /clock은 기준(_last_clock_ns)을 비웠으므로 경계를 또 만들지 않는다. 필터는 그 뒤 /clock이 올 때까지
+                # 영상을 넘기지 않는다(clock 없음 = 판단 불가, R5와 같은 보수적 처리, 휴리스틱)
+                if self._last_stamp_ns is not None and stamp_ns < self._last_stamp_ns:
+                    pre_max = self._last_stamp_ns
+                    self._boundary(BoundaryKind.SIM_TIME_REWIND,
+                                   f"image stamp {stamp_ns} < {pre_max} after frame_timeout (reset during gap)", now)
+                    self._stats["rewind_after_gap"] += 1
+                    self._filter_until_ns = pre_max
+                    self._filter_drops = 0
+                    self._last_clock_ns = None
+
                 self._boundary(BoundaryKind.RECONNECT, "first frame after frame_timeout (origin not checked)", now)
                 self._stats["resume_boundaries"] += 1
                 self._absorb_until_ns = now + int(self._config.graph_absorb_s * 1e9)
-
-                # 같은 영상의 stamp 되감기는 이미 새 경계 안에 있으므로 따로 세대를 올리지 않는다
-                if self._last_stamp_ns is not None and stamp_ns < self._last_stamp_ns:
-                    self._stats["rewind_merged_into_resume"] += 1
-                    self._last_clock_ns = None
 
             # R6: 영상 stamp 되감기. 같은 되감기의 /clock 경계를 막으려고 clock 기준을 비운다
             elif self._last_stamp_ns is not None and stamp_ns < self._last_stamp_ns:
@@ -381,6 +393,14 @@ class LiveFrameSlot:
             if self._filter_until_ns is not None and clock_ns > self._filter_until_ns:
                 self._filter_until_ns = None
                 self._filter_drops = 0
+
+    def on_invalid_input(self, kind: str) -> None:
+        """해석할 수 없는 영상 헤더(`invalid_header`)·`/clock`(`invalid_clock`)을 센다(#196 A1-4). 상태·epoch는 바꾸지 않는다."""
+        if kind not in ("invalid_header", "invalid_clock"):
+            raise ValueError(f"unknown invalid input kind: {kind!r}")
+
+        with self._cond:
+            self._stats[kind] += 1
 
     def on_camera_info(self, info: CameraProfileInfo) -> None:
         """`CameraInfo` 식별 정보를 받는다. 처음이거나 달라지면 `PROFILE_CHANGED` 경계(R4)."""

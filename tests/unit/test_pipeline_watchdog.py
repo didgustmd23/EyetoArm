@@ -630,7 +630,9 @@ class WatchdogConfigTest(unittest.TestCase):
             err = io.StringIO()
             code = mod.main(["--images", img, "--detect-config", cfg_path, "--log", out], stderr=err)
             err2 = io.StringIO()
-            code2 = mod.main(["--images", img, "--detect-config", cfg_path, "--log", out, "--no-detect-timeout"],
+            # #196 A4-1: 기본 경로도 기존 --log를 덮어쓰지 않으므로 두 번째 실행은 새 기록 파일을 쓴다
+            out2 = os.path.join(d, "run_no_watch.jsonl")
+            code2 = mod.main(["--images", img, "--detect-config", cfg_path, "--log", out2, "--no-detect-timeout"],
                              stderr=err2)
 
         self.assertEqual(code, 0, err.getvalue())

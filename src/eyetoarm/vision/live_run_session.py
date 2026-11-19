@@ -84,6 +84,7 @@ class LiveRunSession:
         self.counts: dict[str, int] = {}
         self.tf = make_tf()
         self.dispatcher = None
+        self.slot = None
 
         try:
             self.slot = make_slot(self._on_boundary)
@@ -93,12 +94,18 @@ class LiveRunSession:
                                                wait_limit_s=wait_limit_s, future_tolerance_ns=future_tolerance_ns)
         except Exception:
             # 부분 생성 실패(#180 #7): 이미 시작한 TF 묶음·만든 디스패처를 닫고 원래 예외를 올린다. 정리 실패는 원래 예외를 가리지 않는다
-            for part in (self.dispatcher, self.tf):
+            # #196 A1-6: 이미 만든 slot도 닫는다(slot.close는 인자 없음)
+            parts = ((self.dispatcher, True), (self.slot, False), (self.tf, True))
+
+            for part, takes_limit in parts:
                 if part is None:
                     continue
 
                 try:
-                    part.close(_INIT_FAILURE_CLOSE_LIMIT_S)
+                    if takes_limit:
+                        part.close(_INIT_FAILURE_CLOSE_LIMIT_S)
+                    else:
+                        part.close()
                 except Exception:  # noqa: BLE001 - 정리 경로: 원래 생성 실패를 그대로 올리는 것이 우선
                     pass
 

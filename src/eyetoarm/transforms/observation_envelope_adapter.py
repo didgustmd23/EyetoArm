@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Mapping
 
@@ -27,7 +28,13 @@ TF_WAIT_LIMIT_S = 0.05   # B 시간 상한: TF 대기 50 ms (B 협업 요청 §8
 
 
 class EnvelopeTfLookup:
-    """B `tf_lookup` 자리: 지금 소비 중인 봉투의 촬영 시각 TF만 돌려준다(다른 프레임·최신 TF 없음, 50 ms 초과는 None)."""
+    """B `tf_lookup` 자리: 지금 소비 중인 봉투의 촬영 시각 TF만 돌려준다(다른 프레임·최신 TF 없음, 50 ms 초과는 None).
+
+    대기 시간 기록(#196 A1-3): `wait_ms`는 최근 `WAIT_HISTORY`개만 둔다(실시간 실행 내내 늘지 않게). 요약에 쓰는 전체 실행 최대값은
+    `max_wait_ms`(없으면 None)로 따로 유지한다.
+    """
+
+    WAIT_HISTORY = 1024
 
     def __init__(self, *, timeout_s: float = TF_WAIT_LIMIT_S, clock: Callable[[], float] = time.monotonic) -> None:
         """상한과 시계."""
@@ -37,7 +44,8 @@ class EnvelopeTfLookup:
         self.calls = 0
         self.unavailable = 0
         self.timed_out = 0
-        self.wait_ms: list[float] = []
+        self.wait_ms: deque[float] = deque(maxlen=self.WAIT_HISTORY)
+        self.max_wait_ms: float | None = None
 
         def from_envelope(frame):
             """봉투 TF: 같은 프레임 객체·같은 촬영 시각·같은 광학 프레임일 때만."""
@@ -57,7 +65,9 @@ class EnvelopeTfLookup:
         t0 = self._clock()
         T = self.inner(frame)
         waited = self._clock() - t0
-        self.wait_ms.append(waited * 1000.0)
+        ms = waited * 1000.0
+        self.wait_ms.append(ms)
+        self.max_wait_ms = ms if self.max_wait_ms is None else max(self.max_wait_ms, ms)
 
         if waited > self.timeout_s:
             self.timed_out += 1

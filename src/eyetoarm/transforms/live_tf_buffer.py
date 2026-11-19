@@ -56,7 +56,20 @@ class LiveTfRuntime:
         self._thread: threading.Thread | None = None
         self._closing = False
         self.spin_error: str | None = None
+        self._on_failure: Callable[[str], None] | None = None
+        self._failure: str | None = None   # 실패로 알린(알릴) 사유. 정리 중 종료는 실패가 아니라 None으로 남는다(#196 r1 L1)
+        self._failure_lock = threading.Lock()
         self._done: set[str] = set()
+
+    def set_failure_callback(self, callback: Callable[[str], None] | None) -> None:
+        """수신 스레드 실패 알림 함수(#196 A1-2). 스레드가 예외로 끝나거나 close 전에 반환하면 사유 문자열로 **TF 스레드에서** 한 번
+        부른다. 이미 실패했으면 등록 즉시 부른다(등록 전 사망을 놓치지 않음). 호출 쪽은 잠금만 짧게 잡아야 한다."""
+        with self._failure_lock:
+            self._on_failure = callback
+            error = self._failure
+
+        if callback is not None and error is not None:
+            callback(error)
 
     def start(self) -> None:
         """노드 → Buffer → Listener → executor 스레드. 실패하면 만든 것까지 정리하고 예외를 올린다."""
@@ -80,10 +93,36 @@ class LiveTfRuntime:
             raise
 
     def _spin(self) -> None:
+        """executor를 돌린다. 정리 요청(`close`) 없이 끝나면 예외든 반환이든 실패로 남기고 알린다(#196 A1-2).
+
+        영상 수신기(`RclpyTransport._spin`)와 같은 규칙(#196 r1 L1): 정리 중에 끝나면 예외여도 `spin_error`에 원인만 남기고 알리지 않는다.
+        """
+        error = None
+
         try:
             self._executor.spin()
-        except BaseException as exc:  # 스레드 밖으로 내보내지 않는다
-            self.spin_error = f"{type(exc).__name__}: {exc}"
+        except BaseException as exc:  # 스레드 밖으로 내보내지 않는다(아래에서 사유로 남김·알림)
+            error = f"{type(exc).__name__}: {exc}"
+
+        with self._failure_lock:
+            self.spin_error = error
+
+            if self._closing:
+                return
+
+            error = error or "spin returned before close"
+            self.spin_error = error
+            self._failure = error
+            callback = self._on_failure
+
+        if callback is None:
+            return
+
+        try:
+            callback(error)
+        except Exception as exc:  # noqa: BLE001 - 알림 실패도 사유에 남긴다(스레드 최상단, 규약 §10)
+            with self._failure_lock:
+                self.spin_error = f"{error}; failure callback failed: {type(exc).__name__}: {exc}"
 
     def lookup(self, parent: str, child: str, stamp_ns: int, timeout_s: float):
         """정확 stamp 조회. 실패는 tf2 예외 그대로(호출자가 None으로 바꾼다).

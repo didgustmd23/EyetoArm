@@ -525,6 +525,12 @@ def rigid_transform(T, where: str) -> np.ndarray:
     return arr
 
 
+def raw_points_in_frame(points: np.ndarray, width: int, height: int) -> bool:
+    """RAW 픽셀 점들이 모두 0 ≤ u ≤ width − 1, 0 ≤ v ≤ height − 1 안인가(#196 A3-4: 목록·검출 변환이 같은 범위 규칙을 쓴다)."""
+    return not ((points[:, 0] < 0).any() or (points[:, 0] > width - 1).any()
+                or (points[:, 1] < 0).any() or (points[:, 1] > height - 1).any())
+
+
 def check_frame_image(frame: FramePacket) -> None:
     """프레임 영상이 uint8 (H, W, 3)이고 frame.width·height와 맞는지. 아니면 ValueError."""
     img = frame.image
@@ -737,10 +743,7 @@ class FrameObservations:
 
             # RAW만 범위를 본다(undistorted 범위 규칙은 미결, A 코어와 같음)
             if c.pixel_basis is PixelBasis.RAW:
-                p = c.points
-
-                if (p[:, 0] < 0).any() or (p[:, 0] > self.capture.width - 1).any() \
-                        or (p[:, 1] < 0).any() or (p[:, 1] > self.capture.height - 1).any():
+                if not raw_points_in_frame(c.points, self.capture.width, self.capture.height):
                     raise ValueError(f"candidate {c.instance_index} raw coordinates out of frame "
                                      f"{(self.capture.width, self.capture.height)}")
 
