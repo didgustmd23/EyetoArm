@@ -69,7 +69,11 @@ def goal_to_msg(goal: dict, goal_cls, candidate_cls):
 
 
 class SortPartClient:
-    """`stage.on_output = client.send` 로 붙인다. A 실행기 스레드에서 불려도 막히지 않는다."""
+    """`stage.on_output = client.send` 로 붙인다. A 실행기 스레드에서 불려도 막히지 않는다.
+
+    같은 종류(`PICK_PLACE` / `PASS_THROUGH`)의 목표가 C 결과를 기다리는 중이면 새 목표를 보내지 않는다(`busy`).
+    팔이 1대라 집기는 한 번에 하나(B 상세설계 §16.3 사이클). `part_track_id`(A-6)가 없어도 같은 볼트를 연달아 보내지 않는다.
+    """
 
     def __init__(self, node, stage=None, action_name: str = ACTION_NAME):
         from rclpy.action import ActionClient
@@ -86,7 +90,8 @@ class SortPartClient:
     # ---------- 보내기 ----------
     def send(self, out) -> bool:
         goal = out.goal if hasattr(out, "goal") else out
-        if goal.get("kind") not in SEND_KINDS:
+        kind = goal.get("kind")
+        if kind not in SEND_KINDS:
             self.stats["skip"] += 1
             return False
         if not self.client.server_is_ready():        # C 서버 없음 → 기다리지 않음
@@ -98,11 +103,23 @@ class SortPartClient:
         gid = msg.goal_id or str(_uuid.uuid4())
         msg.goal_id = gid
         with self._lock:
-            self.inflight[gid] = {"part_track_id": goal.get("part_track_id"), "stage": "SENT", "status": None}
+            busy = any(v["kind"] == kind for v in self.inflight.values())
+            if not busy:
+                self.inflight[gid] = {"kind": kind, "part_track_id": goal.get("part_track_id"),
+                                      "stage": "SENT", "status": None}
+        if busy:                                       # 같은 종류가 결과 대기 중 → 보내지 않음
+            self.stats["busy"] += 1
+            self._release(goal)                        # B 쪽 기억도 풀어 다음 사진에서 다시 보낼 수 있게
+            return False
         self.stats["sent"] += 1
 
-        fut = self.client.send_goal_async(msg, feedback_callback=lambda fb: self._on_feedback(gid, fb),
-                                          goal_uuid=_uuid_msg(gid))
+        try:
+            fut = self.client.send_goal_async(msg, feedback_callback=lambda fb: self._on_feedback(gid, fb),
+                                              goal_uuid=_uuid_msg(gid))
+        except Exception as exc:                     # 보내는 순간 실패해도 대기 표시를 남기지 않는다 (B-10)
+            self.stats["error"] += 1
+            self._finish(gid, goal, "ERROR", f"send: {type(exc).__name__}: {exc}")
+            return False
         fut.add_done_callback(lambda f: self._on_accepted(gid, goal, f))
         return True
 
@@ -113,7 +130,12 @@ class SortPartClient:
                 self.inflight[gid]["stage"] = fb.feedback.stage
 
     def _on_accepted(self, gid: str, goal: dict, fut) -> None:
-        handle = fut.result()
+        try:
+            handle = fut.result()
+        except Exception as exc:                     # 송신 실패·취소: 대기 표시를 지우고 부품을 풀어 준다 (A 요청 B-10)
+            self.stats["error"] += 1
+            self._finish(gid, goal, "ERROR", f"send: {type(exc).__name__}: {exc}")
+            return
         if not handle.accepted:
             self.stats["rejected"] += 1
             self._finish(gid, goal, "REJECTED", "")
@@ -121,7 +143,12 @@ class SortPartClient:
         handle.get_result_async().add_done_callback(lambda f: self._on_result(gid, goal, f))
 
     def _on_result(self, gid: str, goal: dict, fut) -> None:
-        res = fut.result().result
+        try:
+            res = fut.result().result
+        except Exception as exc:                     # 결과 받기 실패: 위와 같이 정리 (B-10)
+            self.stats["error"] += 1
+            self._finish(gid, goal, "ERROR", f"result: {type(exc).__name__}: {exc}")
+            return
         self.stats[res.status or "UNKNOWN"] += 1
         self._finish(gid, goal, res.status, res.reason)
 

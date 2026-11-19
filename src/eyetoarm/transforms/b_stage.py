@@ -265,7 +265,7 @@ def make_c_handoff(loop, queue, kinds: tuple[str, ...] = SEND_KINDS) -> Callable
                 queue.get_nowait()
                 stats["dropped_old"] += 1
             except asyncio.QueueEmpty:
-                pass
+                pass                                 # 확인과 꺼내기 사이에 다른 쪽이 먼저 비움 → 버릴 것이 없으니 그대로 넣는다 (B-10 관찰 2)
 
         queue.put_nowait(goal)
         stats["sent"] += 1
