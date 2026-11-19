@@ -196,6 +196,9 @@ class ProcessRecord:
       모두 기본값 None인 끝 필드다. 실패·중단·세대 폐기에는 인스턴스가 없다.
     - `axis_valid_count`(#174): 축 경로를 켠 AI 완료 작업의 **픽셀 후보 수**(`AiSegResult.axis_valid_count`). 보정·세대·현재성
       검사 뒤 B로 간 수가 아니다(그것은 `valid`와 B 제출 기록으로 본다). None이면 기록 줄에 키를 쓰지 않는다(축 경로를 끈 기록 호환).
+    - `list_candidate_count`·`list_indices`(#189 단계 L): 단계 L 실행(`PipelineLog(b_input="list")`)의 축 경로 AI 완료 작업에서 A가 그
+      프레임 목록에 실은 후보 수와 원 인덱스(`list_candidate_indices`, 프레임 차단이면 0·빈 목록). 실제 B 전달 여부(현재성·세대)는
+      실행 요약 `b_list_calls`와 목록 기록기로 본다. 단계 T(기본)에서는 None이라 키를 쓰지 않는다(기록 바이트 동일).
     """
 
     run_id: str
@@ -223,6 +226,8 @@ class ProcessRecord:
     infer_ms: float | None = None
     ai_instances: tuple | None = None
     axis_valid_count: int | None = field(default=None, metadata={"omit_if_none": True})
+    list_candidate_count: int | None = field(default=None, metadata={"omit_if_none": True})
+    list_indices: tuple[int, ...] | None = field(default=None, metadata={"omit_if_none": True})
 
     def __post_init__(self) -> None:
         """명령 ID를 만들지 않는다는 계약과 eval_run_id 형식(None 또는 비어 있지 않은 문자열)을 검사한다."""

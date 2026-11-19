@@ -14,6 +14,8 @@
 - **감시 끔(6a 동기 경로):** 상한 둘 다 None이면 detector를 **제어 흐름 안에서 동기 호출**한다. terminal 보장은 호출이
   반환(정상·예외)하거나 실행기에 전달된 중단(`KeyboardInterrupt`, `JobCancelled`, `should_stop`)까지다.
 - 실제 B 계산은 없다. `b_consumer`는 소비 조건(`b_gate`)을 통과한 응답을 받은 그 자리에서 한 번 부르는 지점이다.
+- 단계 L(#189, `b_list_consumer`): 같은 자리에서 목록 조건(`b_list_gate`)을 통과하면 `b_list_consumer(context, display_result)`를 한 번
+  부른다. 단계 T(`b_consumer`)와 동시에 줄 수 없고 실시간 소스에서는 거부한다(D13). 목록 생성은 소비자 쪽 기록기가 한다.
 
 종료 코드(A 내부 임시 결정)
 - 0: 입력 끝(EOF)·`max_frames` 도달·`should_stop` 요청으로 끝났고 **처리 실패·입력 오류가 하나도 없음**.
@@ -42,6 +44,7 @@ from eyetoarm.common.types import (CandidateInvalidationEvent, FramePacket, Inpu
                                    InvalidationKind, PlanarObservation)
 from eyetoarm.inputs.base import FrameIdIssuer, new_run_id
 from eyetoarm.inputs.live_slot import BoundaryKind, LiveInputOverflow, NoticeKind
+from eyetoarm.vision.ai_convert import list_candidate_indices
 from eyetoarm.vision.ai_result import AiJobConfigError, AiSegResult, ModelPrepareError
 from eyetoarm.vision.handoff import HandoffClosed, HandoffError, HandoffFailed, HandoffState
 from eyetoarm.vision.pipeline import GenerationCause, VisionPipeline
@@ -178,6 +181,7 @@ class RunResult:
     frames: int = 0
     input_errors: int = 0
     b_calls: int = 0
+    b_list_calls: int = 0        # 단계 L(#189): 목록 소비자 호출 수(b_list_consumer=None이면 0)
     counters: PipelineCounters | None = None
     closed: bool = False
     missing: dict | None = None  # 기록이 확인되지 않은 처리·사건·폐기 수(정상 기록이면 모두 0)
@@ -200,24 +204,50 @@ def b_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
     소스가 같고 현재 프로파일이 그 프레임에 적용되며 관측 식별자가 작업과 같아야 한다. applied만으로는 B 전달
     허가가 아니다. 보관해 둔 과거 응답은 현재 관측이 바뀌면 통과하지 못한다.
     """
+    if not _b_gate_common(pipeline, outcome) or outcome.observation.valid is not True:
+        return False
+
+    profile = pipeline.settings.profile
+
+    return profile is not None and profile.applies_to(outcome.context.frame)
+
+
+def _b_gate_common(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
+    """`b_gate`·`b_list_gate` 공통 조건(유효 여부·프로필 제외): duplicate 아님, COMPLETED·applied, 관측형, 코어 열림,
+    현재 관측이 바로 그 관측, 세대·검출 설정·소스가 같고 관측 식별자가 작업과 같음."""
     obs = outcome.observation
 
     if outcome.duplicate or outcome.status is not JobStatus.COMPLETED or not outcome.applied:
         return False
 
-    if not isinstance(obs, PlanarObservation) or obs.valid is not True or pipeline.closed:
+    if not isinstance(obs, PlanarObservation) or pipeline.closed:
         return False
 
     ctx = outcome.context
     settings = pipeline.settings
-    profile = settings.profile
 
     return (pipeline.current_observation is obs
             and ctx.generation == pipeline.current_generation()
             and ctx.detector_config_id == settings.detector_config_id
             and ctx.frame.source_id == settings.source_id
-            and profile is not None and profile.applies_to(ctx.frame)
             and (obs.job_seq, obs.image_seq, obs.generation) == (ctx.job_seq, ctx.frame.image_seq, ctx.generation))
+
+
+def b_list_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
+    """단계 L 목록 소비 조건(#189). `b_gate` 공통 조건을 같은 함수로 쓰고, 유효 여부 대신
+    「AI 결과 + 프로필 적용 + `list_candidate_indices` 비어 있지 않음」을 본다.
+
+    단계 T 관측은 후보가 2개 이상이면 무효(`MULTIPLE_OBJECTS`)라 `b_gate`로는 목록이 가지 못한다. 코어 관측은 그대로 둔다.
+    """
+    if not _b_gate_common(pipeline, outcome):
+        return False
+
+    display = outcome.display_result
+
+    if not isinstance(display, AiSegResult):
+        return False
+
+    return bool(list_candidate_indices(display, outcome.context.frame, pipeline.settings.profile))
 
 
 def b_admit(pipeline: VisionPipeline, outcome: JobOutcome, live_source=None) -> bool:
@@ -531,7 +561,8 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         should_stop: Callable[[], bool] | None = None, versions: dict | None = None,
         detector_takes_token: bool = False, watch_clock: Callable[[], float] = time.monotonic,
         prepare: Callable[[], dict] | None = None, display_sink=None, handoff_sink=None,
-        part_tracker: PartTracker | None = None, live_observation_sink=None) -> RunResult:
+        part_tracker: PartTracker | None = None, live_observation_sink=None,
+        b_list_consumer: Callable[[JobContext, AiSegResult], None] | None = None) -> RunResult:
     """저장 입력 한 번을 끝까지 처리한다. 예외를 밖으로 내지 않고 `RunResult`(종료 코드 포함)를 돌려준다.
 
     `source_factory(issuer, generation_provider)`는 실행기가 만든 단일 발급기와 `pipeline.current_generation`을
@@ -574,6 +605,10 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
       None)로 넘길 뿐이다(전용 디스패처가 대기 1개 최신 우선·검사 ①②③으로 처리). 실시간 입력 항목은 반영·`input_applied` 뒤
       `on_live_input(item, generation)`으로 넘긴다. 저장 입력과 함께 주거나 `b_consumer`와 함께 주면 `live_observation_contract`로
       종료 1. 연결부는 호출자가 만들고 닫는다(run은 닫지 않음).
+    - `b_list_consumer`(#189 단계 L, 기본 None=단계 T): terminal 응답마다 기록·표시 뒤 `b_list_gate`를 통과하면
+      `b_list_consumer(context, display_result)`를 그 자리에서 한 번 부르고 `b_list_calls`를 센다. 시작 계약(프레임을 읽기 전 거부,
+      종료 1): `b_consumer`와 동시 → `b_input_contract`, 실시간 소스 → `b_list_consumer_not_allowed`(D13), 검출 설정에
+      `axis_extractor`가 없음 → `b_list_requires_axis`. 단계 T로 바꿔 계속하지 않는다.
     """
     err = stderr if stderr is not None else sys.stderr
     issuer = FrameIdIssuer(run_id or new_run_id())
@@ -701,6 +736,11 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         if b_consumer is not None and b_admit(pipeline, outcome, source if live else None):
             result.b_calls += 1
             b_consumer(outcome.context.frame, outcome.observation)
+
+        # 단계 L(#189): 저장 입력에서만 시작이 허용된다(실시간은 시작 계약에서 거부)
+        if b_list_consumer is not None and not live and b_list_gate(pipeline, outcome):
+            result.b_list_calls += 1
+            b_list_consumer(outcome.context, outcome.display_result)
 
         # 실시간 관측 기록 연결(#173): 판정 사유와 수신 epoch만 넘기고 B는 전용 디스패처가 부른다(D13: b_consumer 아님)
         if live_observation_sink is not None and live:
@@ -1019,6 +1059,15 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         elif live_observation_sink is not None and (not live or b_consumer is not None):
             fail_run("live_observation_contract", "live_observation_sink requires a live source and no b_consumer")
             proceed = False
+        elif b_list_consumer is not None and b_consumer is not None:
+            fail_run("b_input_contract", "b_consumer (stage T) and b_list_consumer (stage L) must not be given together")
+            proceed = False
+        elif b_list_consumer is not None and (live or live_observation_sink is not None):
+            fail_run("b_list_consumer_not_allowed", "live source does not allow b_list_consumer (D13)")
+            proceed = False
+        elif b_list_consumer is not None and getattr(settings.detector_config, "axis_extractor", None) is None:
+            fail_run("b_list_requires_axis", "b_list_consumer requires an AI config with axis_extractor")
+            proceed = False
         else:
             proceed = prepare is None or run_prepare()
 
@@ -1324,4 +1373,4 @@ def stored_source_factory(kind: str, paths: list[str], source_id: str):
     return factory
 
 
-__all__ = ["CancelToken", "JobCancelled", "RunnerConfig", "RunResult", "apply_seek", "b_admit", "b_gate", "b_skip_reason", "display_gate", "run", "stored_source_factory"]
+__all__ = ["CancelToken", "JobCancelled", "RunnerConfig", "RunResult", "apply_seek", "b_admit", "b_gate", "b_list_gate", "b_skip_reason", "display_gate", "run", "stored_source_factory"]

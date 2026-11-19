@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Mapping
@@ -32,7 +31,8 @@ from typing import Mapping
 import numpy as np
 
 from eyetoarm.calibration.profile import CameraProfile
-from eyetoarm.common.types import FramePacket, PixelBasis, PlanarObservation
+from eyetoarm.common import types as _common
+from eyetoarm.common.types import CaptureInfo, CaptureTf, FramePacket, PixelBasis, PlanarObservation
 from eyetoarm.transforms.b_stage import correlation_keys
 
 OBSERVATION_ENVELOPE_VERSION = "eyetoarm.b_input/1"
@@ -48,25 +48,7 @@ class ObservationEnvelopeError(ValueError):
     """봉투 필수 필드·버전·결합·확장 형식 오류. B를 부르지 않고 기록한다."""
 
 
-@dataclass(frozen=True)
-class CaptureInfo:
-    """촬영 정보: 원본 stamp(ns, SIM_TIME)·광학 프레임·보정 번호·CameraInfo 해상도."""
-
-    stamp_ns: int
-    optical_frame: str
-    calibration_id: str
-    width: int
-    height: int
-
-
-@dataclass(frozen=True)
-class CaptureTf:
-    """촬영 시각의 `parent → child`(world ← optical) 4×4. `T_W_C`는 읽기 전용 float64."""
-
-    parent: str
-    child: str
-    stamp_ns: int
-    T_W_C: np.ndarray
+# `CaptureInfo`·`CaptureTf`는 #189에서 공통형(`common/types`)으로 옮겼다. 같은 클래스를 이 모듈에서도 그대로 내보낸다
 
 
 @dataclass(frozen=True)
@@ -113,84 +95,39 @@ def _jsonable(value):
     return value
 
 
+def _wrapped(check, *args):
+    """공통형 검사 함수(`ValueError`)를 같은 메시지의 `ObservationEnvelopeError`로 바꿔 부른다(#189: 검사 규칙은 한 곳)."""
+    try:
+        return check(*args)
+    except ObservationEnvelopeError:
+        raise
+    except ValueError as exc:
+        raise ObservationEnvelopeError(str(exc)) from exc
+
+
 def _int(value, where: str) -> int:
     """bool이 아닌 0 이상 정수."""
-    if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < 0:
-        raise ObservationEnvelopeError(f"{where} must be an integer >= 0: {value!r}")
-
-    return int(value)
+    return _wrapped(_common.nonneg_int, value, where)
 
 
 def _real(value, where: str) -> float:
     """유한 실수 하나(#168 F3). bool·문자열·복소수·None·그 밖의 형은 거부, float 변환 넘침(거대 정수)·비유한도 ObservationEnvelopeError."""
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.integer, np.floating)):
-        raise ObservationEnvelopeError(f"{where} must be a real number (not bool/str/complex): {value!r}")
-
-    try:
-        number = float(value)
-    except (OverflowError, ValueError, TypeError) as exc:
-        raise ObservationEnvelopeError(f"{where} is not representable as float64: {value!r}") from exc
-
-    if not math.isfinite(number):
-        raise ObservationEnvelopeError(f"{where} must be finite: {value!r}")
-
-    return number
+    return _wrapped(_common.real_number, value, where)
 
 
 def _real_array(value, where: str) -> np.ndarray:
-    """실수 배열(float64 새 복사본). ndarray는 정수·실수 dtype만, 목록·튜플은 원소마다 `_real`로 검사한다(조용한 형 변환 없음)."""
-    if isinstance(value, np.ndarray):
-        if value.dtype.kind not in "iuf":
-            raise ObservationEnvelopeError(f"{where} must have an integer/float dtype: {value.dtype}")
-
-        with np.errstate(over="ignore"):
-            arr = value.astype(np.float64, copy=True)
-    elif isinstance(value, (list, tuple)):
-        def walk(v, path):
-            """중첩 목록을 원소 검사하며 그대로 옮긴다."""
-            if isinstance(v, (list, tuple)):
-                return [walk(x, f"{path}[{i}]") for i, x in enumerate(v)]
-
-            if isinstance(v, np.ndarray):
-                return _real_array(v, path).tolist()
-
-            return _real(v, path)
-
-        try:
-            arr = np.array(walk(value, where), dtype=np.float64)
-        except ValueError as exc:   # 들쭉날쭉한 중첩
-            raise ObservationEnvelopeError(f"{where} must be a rectangular numeric array: {exc}") from exc
-    else:
-        raise ObservationEnvelopeError(f"{where} must be a numeric array: {type(value).__name__}")
-
-    if not np.isfinite(arr).all():
-        raise ObservationEnvelopeError(f"{where} must be finite")
-
-    return arr
+    """실수 배열(float64 새 복사본). ndarray는 정수·실수 dtype만, 목록·튜플은 원소마다 검사한다(조용한 형 변환 없음)."""
+    return _wrapped(_common.real_array, value, where)
 
 
 def _text(value, where: str) -> str:
     """비어 있지 않은 문자열."""
-    if not isinstance(value, str) or not value:
-        raise ObservationEnvelopeError(f"{where} must be a non-empty string: {value!r}")
-
-    return value
+    return _wrapped(_common.nonempty_text, value, where)
 
 
 def _rigid(T, where: str) -> np.ndarray:
     """4×4 유한 강체변환의 읽기 전용 복사본(원소 형 엄격 검사)."""
-    arr = _real_array(T, where)
-
-    R = arr[:3, :3] if arr.shape == (4, 4) else None
-
-    if (R is None or not np.isfinite(arr).all() or not np.allclose(arr[3], [0, 0, 0, 1], atol=1e-9)
-            or not np.allclose(R @ R.T, np.eye(3), atol=1e-6) or not math.isclose(float(np.linalg.det(R)), 1.0,
-                                                                                   abs_tol=1e-6)):
-        raise ObservationEnvelopeError(f"{where} must be a finite 4x4 rigid transform")
-
-    arr.setflags(write=False)
-
-    return arr
+    return _wrapped(_common.rigid_transform, T, where)
 
 
 def _check_core(frame, obs, capture: CaptureInfo, camera: CameraProfile) -> None:
@@ -201,12 +138,7 @@ def _check_core(frame, obs, capture: CaptureInfo, camera: CameraProfile) -> None
     if not isinstance(obs, PlanarObservation):
         raise ObservationEnvelopeError(f"observation must be PlanarObservation: {type(obs).__name__}")
 
-    img = frame.image
-
-    if not isinstance(img, np.ndarray) or img.dtype != np.uint8 or img.ndim != 3 or img.shape[2] != 3 \
-            or img.shape[:2] != (frame.height, frame.width):
-        raise ObservationEnvelopeError(f"frame.image must be uint8 (H, W, 3) matching width/height: "
-                          f"{getattr(img, 'shape', None)} vs {(frame.height, frame.width)}")
+    _wrapped(_common.check_frame_image, frame)
 
     for name in ("run_id", "source_id", "image_seq", "capture_generation", "calibration_id"):
         if getattr(obs, name) != getattr(frame, name):
@@ -215,45 +147,17 @@ def _check_core(frame, obs, capture: CaptureInfo, camera: CameraProfile) -> None
     if obs.pixel_basis not in (PixelBasis.RAW, PixelBasis.UNDISTORTED):
         raise ObservationEnvelopeError(f"observation.pixel_basis unsupported: {obs.pixel_basis!r}")
 
-    _int(capture.stamp_ns, "capture.stamp_ns")
-    _text(capture.optical_frame, "capture.optical_frame")
-    _text(capture.calibration_id, "capture.calibration_id")
+    _wrapped(_common.check_frame_capture, frame, capture)
 
-    if frame.ros_stamp_ns != capture.stamp_ns:
-        raise ObservationEnvelopeError(f"frame.ros_stamp_ns {frame.ros_stamp_ns!r} != capture.stamp_ns {capture.stamp_ns}")
-
-    if frame.optical_frame != capture.optical_frame:
-        raise ObservationEnvelopeError(f"frame.optical_frame {frame.optical_frame!r} != capture.optical_frame {capture.optical_frame!r}")
-
-    if (frame.width, frame.height) != (capture.width, capture.height):
-        raise ObservationEnvelopeError(f"frame size {(frame.width, frame.height)} != capture size {(capture.width, capture.height)}")
-
-    if frame.calibration_id != capture.calibration_id:
-        raise ObservationEnvelopeError(f"frame.calibration_id {frame.calibration_id!r} != capture {capture.calibration_id!r}")
-
-    if not isinstance(camera, CameraProfile) or (camera.calibration_id, camera.frame_id, camera.width, camera.height) != (
-            capture.calibration_id, capture.optical_frame, capture.width, capture.height):
+    if not isinstance(camera, CameraProfile):
         raise ObservationEnvelopeError("camera profile (calibration_id/frame_id/size) does not match capture info")
+
+    _wrapped(_common.check_camera_capture, camera, capture)
 
 
 def _check_tf(tf, capture: CaptureInfo, world_frame: str) -> CaptureTf | None:
     """촬영 시각 TF 결합 대조와 정규화."""
-    if tf is None:
-        return None
-
-    if not isinstance(tf, CaptureTf):
-        raise ObservationEnvelopeError(f"tf must be CaptureTf or None: {type(tf).__name__}")
-
-    if tf.parent != world_frame:
-        raise ObservationEnvelopeError(f"tf.parent {tf.parent!r} != world frame {world_frame!r}")
-
-    if tf.child != capture.optical_frame:
-        raise ObservationEnvelopeError(f"tf.child {tf.child!r} != capture.optical_frame {capture.optical_frame!r}")
-
-    if _int(tf.stamp_ns, "tf.stamp_ns") != capture.stamp_ns:
-        raise ObservationEnvelopeError(f"tf.stamp_ns {tf.stamp_ns} != capture.stamp_ns {capture.stamp_ns}")
-
-    return CaptureTf(tf.parent, tf.child, tf.stamp_ns, _rigid(tf.T_W_C, "tf.T_W_C"))
+    return _wrapped(_common.check_capture_tf, tf, capture, world_frame)
 
 
 def _check_binding(value: dict, obs: PlanarObservation, capture: CaptureInfo, where: str) -> None:

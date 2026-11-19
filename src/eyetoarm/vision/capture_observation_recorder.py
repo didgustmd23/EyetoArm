@@ -74,6 +74,21 @@ def _frame_keys(frame, obs) -> dict:
             "capture_stamp_ns": frame.ros_stamp_ns, "optical_frame": frame.optical_frame}
 
 
+def capture_from_meta(meta, frame, error=ValueError):
+    """녹화 메타 레코드로 그 프레임의 촬영 정보·촬영 시각 TF를 만든다(메타가 없으면 `error`). 단계 T·L 기록기 공통(#189)."""
+    record = meta.frames.get(getattr(frame, "source_index", -1))
+
+    if record is None:
+        raise error(f"no capture meta for source_index {getattr(frame, 'source_index', None)}")
+
+    cam = meta.camera
+    capture = CaptureInfo(stamp_ns=record.stamp_ns, optical_frame=record.frame_id, calibration_id=cam.calibration_id,
+                          width=cam.width, height=cam.height)
+    tf = None if record.T_W_C is None else CaptureTf(meta.world_frame, record.tf_child, record.tf_stamp_ns, record.T_W_C)
+
+    return capture, tf
+
+
 class _Jsonl:
     """새 JSONL 파일(덮어쓰지 않음)."""
 
@@ -140,16 +155,8 @@ class CaptureObservationRecorder:
     # ---- b_consumer ----
     def envelope(self, frame, obs):
         """녹화 메타 레코드로 촬영 정보·TF를 만들어 봉투를 검사한다. 오류는 ObservationEnvelopeError."""
-        record = self._meta.frames.get(getattr(frame, "source_index", -1))
-
-        if record is None:
-            raise ObservationEnvelopeError(f"no capture meta for source_index {getattr(frame, 'source_index', None)}")
-
+        capture, tf = capture_from_meta(self._meta, frame, ObservationEnvelopeError)
         cam = self._meta.camera
-        capture = CaptureInfo(stamp_ns=record.stamp_ns, optical_frame=record.frame_id, calibration_id=cam.calibration_id,
-                              width=cam.width, height=cam.height)
-        tf = None if record.T_W_C is None else CaptureTf(self._meta.world_frame, record.tf_child, record.tf_stamp_ns,
-                                                         record.T_W_C)
 
         extensions = None if self._extension_source is None else self._extension_source(frame, obs)
 
@@ -237,4 +244,4 @@ class CaptureObservationRecorder:
         self._frames.close()
 
 
-__all__ = ["CaptureObservationRecorder", "VALID_MEANING"]
+__all__ = ["CaptureObservationRecorder", "VALID_MEANING", "capture_from_meta"]

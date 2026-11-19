@@ -8,6 +8,8 @@
   (계획 제안 단계, 영향 담당 확인 전). `WorkPlanarResult`(B 소유)·`PixelToSourceTransform`
   (전달 방식 미결)은 아직 두지 않는다. A-8(#157)에서 `PlanarObservation.axis_endpoints_px`(볼트 두 끝점)와
   축 끝점 경로 유효 조건을 추가했다(B 요청·사용자 구현 지시, 다른 소비자 확인 전).
+  #189 단계 L에서 `CaptureInfo`·`CaptureTf`(봉투 모듈에서 옮김)와 다중 물체 목록 `ObjectObservation`·`FrameObservations`,
+  봉투·목록 공통 검사 함수를 추가했다(B-09 B 회신 2026-11-19 수락 형식).
 - 담당별 확장(예: A 입력의 `source_ref`·`source_index`)은 각 모듈에서 이 클래스를 상속해 둔다.
 - 표준 라이브러리와 NumPy만 쓴다. Qt·ROS·OpenCV를 import하지 않는다.
 """
@@ -401,3 +403,348 @@ class CandidateInvalidationEvent:
 
         if has_job != has_frame:
             raise ValueError("job_seq and image_seq must be both set or both None")
+
+
+# ---------------------------------------------------------------------------
+# 촬영 정보·촬영 시각 TF와 A→B 다중 물체 목록(#189 단계 L, B-09 B 회신 2026-11-19 수락 형식)
+#
+# `CaptureInfo`·`CaptureTf`는 #168 봉투(`vision/observation_envelope`)에서 옮겨 왔다. 봉투 모듈은 같은 클래스를 다시 내보낸다.
+# 검사 보조 함수는 봉투(`eyetoarm.b_input/1`)와 목록이 같은 규칙을 쓰도록 여기 한 곳에 두고 `ValueError`를 낸다.
+# 봉투는 같은 메시지로 `ObservationEnvelopeError`로 감싼다. 카메라 프로파일은 B 모듈(`calibration.profile`)을 import하지 않고
+# 속성(`calibration_id`·`frame_id`·`width`·`height`)으로 대조한다(reviewer #189 Q1: 공통형은 최소 의존).
+# ---------------------------------------------------------------------------
+
+FRAME_OBSERVATIONS_VERSION = "eyetoarm.frame_observations/1"
+
+# 목록 후보의 관측면(A §5.2 B-09 협의안). 볼트 축 끝점 또는 너트 윗면 윤곽
+OBSERVED_FACE_TOP = "top_face"
+_OBJECT_FACES = (OBSERVED_FACE_AXIS, OBSERVED_FACE_TOP)
+
+
+@dataclass(frozen=True)
+class CaptureInfo:
+    """촬영 정보: 원본 stamp(ns, SIM_TIME)·광학 프레임·보정 번호·CameraInfo 해상도."""
+
+    stamp_ns: int
+    optical_frame: str
+    calibration_id: str
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
+class CaptureTf:
+    """촬영 시각의 `parent → child`(world ← optical) 4×4. `T_W_C`는 읽기 전용 float64."""
+
+    parent: str
+    child: str
+    stamp_ns: int
+    T_W_C: np.ndarray
+
+
+def nonneg_int(value, where: str) -> int:
+    """bool이 아닌 0 이상 정수(NumPy 정수 포함). 아니면 ValueError."""
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < 0:
+        raise ValueError(f"{where} must be an integer >= 0: {value!r}")
+
+    return int(value)
+
+
+def real_number(value, where: str) -> float:
+    """유한 실수 하나. bool·문자열·복소수·None·그 밖의 형은 거부, float 변환 넘침(거대 정수)·비유한도 ValueError."""
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.integer, np.floating)):
+        raise ValueError(f"{where} must be a real number (not bool/str/complex): {value!r}")
+
+    try:
+        number = float(value)
+    except (OverflowError, ValueError, TypeError) as exc:
+        raise ValueError(f"{where} is not representable as float64: {value!r}") from exc
+
+    if not math.isfinite(number):
+        raise ValueError(f"{where} must be finite: {value!r}")
+
+    return number
+
+
+def real_array(value, where: str) -> np.ndarray:
+    """실수 배열(float64 새 복사본). ndarray는 정수·실수 dtype만, 목록·튜플은 원소마다 `real_number`로 검사한다(조용한 형 변환 없음)."""
+    if isinstance(value, np.ndarray):
+        if value.dtype.kind not in "iuf":
+            raise ValueError(f"{where} must have an integer/float dtype: {value.dtype}")
+
+        with np.errstate(over="ignore"):
+            arr = value.astype(np.float64, copy=True)
+    elif isinstance(value, (list, tuple)):
+        def walk(v, path):
+            """중첩 목록을 원소 검사하며 그대로 옮긴다."""
+            if isinstance(v, (list, tuple)):
+                return [walk(x, f"{path}[{i}]") for i, x in enumerate(v)]
+
+            if isinstance(v, np.ndarray):
+                return real_array(v, path).tolist()
+
+            return real_number(v, path)
+
+        try:
+            arr = np.array(walk(value, where), dtype=np.float64)
+        except ValueError as exc:   # 들쭉날쭉한 중첩
+            raise ValueError(f"{where} must be a rectangular numeric array: {exc}") from exc
+    else:
+        raise ValueError(f"{where} must be a numeric array: {type(value).__name__}")
+
+    if not np.isfinite(arr).all():
+        raise ValueError(f"{where} must be finite")
+
+    return arr
+
+
+def nonempty_text(value, where: str) -> str:
+    """비어 있지 않은 문자열. 아니면 ValueError."""
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{where} must be a non-empty string: {value!r}")
+
+    return value
+
+
+def rigid_transform(T, where: str) -> np.ndarray:
+    """4×4 유한 강체변환의 읽기 전용 복사본(원소 형 엄격 검사).
+
+    허용오차(U-6 보고값, #168 봉투 기준 그대로): 마지막 행 [0,0,0,1] atol 1e-9, `R Rᵀ = I` atol 1e-6, det(R) = 1 abs 1e-6.
+    """
+    arr = real_array(T, where)
+
+    R = arr[:3, :3] if arr.shape == (4, 4) else None
+
+    if (R is None or not np.isfinite(arr).all() or not np.allclose(arr[3], [0, 0, 0, 1], atol=1e-9)
+            or not np.allclose(R @ R.T, np.eye(3), atol=1e-6) or not math.isclose(float(np.linalg.det(R)), 1.0,
+                                                                                   abs_tol=1e-6)):
+        raise ValueError(f"{where} must be a finite 4x4 rigid transform")
+
+    arr.setflags(write=False)
+
+    return arr
+
+
+def check_frame_image(frame: FramePacket) -> None:
+    """프레임 영상이 uint8 (H, W, 3)이고 frame.width·height와 맞는지. 아니면 ValueError."""
+    img = frame.image
+
+    if not isinstance(img, np.ndarray) or img.dtype != np.uint8 or img.ndim != 3 or img.shape[2] != 3 \
+            or img.shape[:2] != (frame.height, frame.width):
+        raise ValueError(f"frame.image must be uint8 (H, W, 3) matching width/height: "
+                         f"{getattr(img, 'shape', None)} vs {(frame.height, frame.width)}")
+
+
+def check_frame_capture(frame: FramePacket, capture: CaptureInfo) -> None:
+    """촬영 정보 필드와 프레임 ↔ 촬영 정보(시각·광학 프레임·크기·보정 번호)를 대조한다. 어긋나면 ValueError."""
+    nonneg_int(capture.stamp_ns, "capture.stamp_ns")
+    nonempty_text(capture.optical_frame, "capture.optical_frame")
+    nonempty_text(capture.calibration_id, "capture.calibration_id")
+
+    if frame.ros_stamp_ns != capture.stamp_ns:
+        raise ValueError(f"frame.ros_stamp_ns {frame.ros_stamp_ns!r} != capture.stamp_ns {capture.stamp_ns}")
+
+    if frame.optical_frame != capture.optical_frame:
+        raise ValueError(f"frame.optical_frame {frame.optical_frame!r} != capture.optical_frame {capture.optical_frame!r}")
+
+    if (frame.width, frame.height) != (capture.width, capture.height):
+        raise ValueError(f"frame size {(frame.width, frame.height)} != capture size {(capture.width, capture.height)}")
+
+    if frame.calibration_id != capture.calibration_id:
+        raise ValueError(f"frame.calibration_id {frame.calibration_id!r} != capture {capture.calibration_id!r}")
+
+
+_MISSING = object()
+
+
+def check_camera_capture(camera, capture: CaptureInfo) -> None:
+    """카메라 프로파일 ↔ 촬영 정보(보정 번호·광학 프레임·해상도)를 속성으로 대조한다. 어긋나거나 속성이 없으면 ValueError."""
+    got = tuple(getattr(camera, name, _MISSING) for name in ("calibration_id", "frame_id", "width", "height"))
+
+    if got != (capture.calibration_id, capture.optical_frame, capture.width, capture.height):
+        raise ValueError("camera profile (calibration_id/frame_id/size) does not match capture info")
+
+
+def check_capture_tf(tf, capture: CaptureInfo, world_frame: str | None) -> CaptureTf | None:
+    """촬영 시각 TF 결합 대조와 정규화(독립 복사·읽기 전용). None은 None. `world_frame`이 None이면 부모는 비지 않음만 본다."""
+    if tf is None:
+        return None
+
+    if not isinstance(tf, CaptureTf):
+        raise ValueError(f"tf must be CaptureTf or None: {type(tf).__name__}")
+
+    if world_frame is None:
+        nonempty_text(tf.parent, "tf.parent")
+    elif tf.parent != world_frame:
+        raise ValueError(f"tf.parent {tf.parent!r} != world frame {world_frame!r}")
+
+    if tf.child != capture.optical_frame:
+        raise ValueError(f"tf.child {tf.child!r} != capture.optical_frame {capture.optical_frame!r}")
+
+    if nonneg_int(tf.stamp_ns, "tf.stamp_ns") != capture.stamp_ns:
+        raise ValueError(f"tf.stamp_ns {tf.stamp_ns} != capture.stamp_ns {capture.stamp_ns}")
+
+    return CaptureTf(tf.parent, tf.child, tf.stamp_ns, rigid_transform(tf.T_W_C, "tf.T_W_C"))
+
+
+@dataclass(frozen=True)
+class ObjectObservation:
+    """같은 프레임의 물체 후보 하나(A §5.2 B-09 협의안, B 수락). 좌표는 독립 복사·읽기 전용이다.
+
+    - `instance_index`: 그 프레임의 원래 검출 인덱스(`AiSegResult.instances` 순번, 0 이상). 추적 ID가 아니다.
+    - `observed_face`: 볼트 `"axis"`(끝점 필수·윤곽 없음) 또는 너트 등 `"top_face"`(윤곽 필수·끝점 없음). 클래스와 맞아야 한다.
+    - RAW 픽셀 범위는 프레임 크기를 아는 `FrameObservations`가 검사한다.
+    - 자료형은 계약대로 `top_face`를 표현할 수 있다. A 생성 함수는 볼트만 넣는다(사용자 결정: 분류 대상은 볼트만).
+    """
+
+    instance_index: int
+    class_name: str
+    confidence: float
+    pixel_basis: PixelBasis
+    observed_face: str
+    axis_endpoints_px: AxisEndpoints | None
+    calc_contour: Contour | None
+
+    def __post_init__(self) -> None:
+        """필드를 검사하고 좌표를 독립 복사·읽기 전용으로 바꾼다. 어긋나면 ValueError."""
+        put = lambda k, v: object.__setattr__(self, k, v)  # noqa: E731
+
+        nonneg_int(self.instance_index, "instance_index")
+        put("instance_index", int(self.instance_index))
+        nonempty_text(self.class_name, "class_name")
+
+        confidence = real_number(self.confidence, "confidence")
+
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError(f"confidence must be in [0, 1]: {self.confidence!r}")
+
+        put("confidence", confidence)
+
+        if not isinstance(self.pixel_basis, PixelBasis):
+            raise ValueError(f"pixel_basis must be PixelBasis: {self.pixel_basis!r}")
+
+        if not isinstance(self.observed_face, str) or self.observed_face not in _OBJECT_FACES:
+            raise ValueError(f"observed_face must be one of {_OBJECT_FACES}: {self.observed_face!r}")
+
+        bolt = _is_bolt_class(self.class_name)
+
+        # 관측면에 맞는 기하 하나만(배타). 볼트 ↔ axis, 볼트 아님 ↔ top_face
+        if self.observed_face == OBSERVED_FACE_AXIS:
+            if not bolt:
+                raise ValueError(f"observed_face 'axis' is only for bolts: class_name={self.class_name!r}")
+
+            if self.calc_contour is not None:
+                raise ValueError("axis candidate must not carry calc_contour")
+
+            endpoints = _owned_endpoints(self.axis_endpoints_px)
+
+            if endpoints is None:
+                raise ValueError("axis candidate requires axis_endpoints_px")
+
+            put("axis_endpoints_px", endpoints)
+        else:
+            if bolt:
+                raise ValueError(f"observed_face 'top_face' is not for bolts: class_name={self.class_name!r}")
+
+            if self.axis_endpoints_px is not None:
+                raise ValueError("top_face candidate must not carry axis_endpoints_px")
+
+            if self.calc_contour is None:
+                raise ValueError("top_face candidate requires calc_contour")
+
+            values = real_array(self.calc_contour, "calc_contour")
+
+            # float64 유한 값도 float32로 넘치면 inf가 된다(변환 전에 거부)
+            if (np.abs(values) > np.finfo(np.float32).max).any():
+                raise ValueError("calc_contour must be finite in float32")
+
+            contour = _owned_contour(values, "calc_contour")
+
+            if contour.shape[0] < 3:
+                raise ValueError(f"calc_contour needs at least 3 points: {contour.shape}")
+
+            put("calc_contour", contour)
+
+    @property
+    def points(self) -> np.ndarray:
+        """관측면의 좌표 배열(끝점 또는 윤곽)."""
+        return self.axis_endpoints_px if self.observed_face == OBSERVED_FACE_AXIS else self.calc_contour
+
+
+@dataclass(frozen=True)
+class FrameObservations:
+    """같은 프레임의 유효 물체 후보 목록(A→B 단계 L, A §5.2 B-09 협의안·B 수락). 프레임 공통 정보는 한 번만 둔다.
+
+    생성 검사(어긋나면 ValueError, 조용히 고치지 않음):
+    - `version`은 `FRAME_OBSERVATIONS_VERSION`만.
+    - `frame.image`는 uint8 (H, W, 3)이고 쓰기 금지여야 한다(입력 소스가 독립·쓰기 금지로 넘김, 복사하지 않고 검사만).
+    - `capture` ↔ `frame`(시각·광학 프레임·크기·보정 번호), `camera` ↔ `capture`(속성 대조).
+    - `tf`는 None 또는 촬영 시각·광학 프레임이 같은 4×4 강체(프레임 공통 하나, 독립 복사·읽기 전용).
+    - `candidates`는 `ObjectObservation`의 tuple, 길이 1 이상, `instance_index` 엄격 오름차순. 상한은 두지 않는다
+      (B가 앞 8개만 계산, B-09 회신). RAW 좌표는 0 ≤ u ≤ W−1, 0 ≤ v ≤ H−1(W·H = capture).
+    """
+
+    version: str
+    frame: FramePacket
+    capture: CaptureInfo
+    camera: object
+    tf: CaptureTf | None
+    generation: int
+    job_seq: int
+    detector_config_id: str
+    candidates: tuple[ObjectObservation, ...]
+
+    def __post_init__(self) -> None:
+        """필드와 결합을 검사하고 TF를 독립 복사로 바꾼다. 어긋나면 ValueError."""
+        if self.version != FRAME_OBSERVATIONS_VERSION:
+            raise ValueError(f"unsupported frame observations version {self.version!r} "
+                             f"(expected {FRAME_OBSERVATIONS_VERSION!r})")
+
+        if not isinstance(self.frame, FramePacket):
+            raise ValueError(f"frame must be FramePacket: {type(self.frame).__name__}")
+
+        check_frame_image(self.frame)
+
+        if self.frame.image.flags.writeable:
+            raise ValueError("frame.image must be read-only (owned by the input source)")
+
+        if not isinstance(self.capture, CaptureInfo):
+            raise ValueError(f"capture must be CaptureInfo: {type(self.capture).__name__}")
+
+        check_frame_capture(self.frame, self.capture)
+        check_camera_capture(self.camera, self.capture)
+        object.__setattr__(self, "tf", check_capture_tf(self.tf, self.capture, None))
+
+        nonneg_int(self.generation, "generation")
+        nonneg_int(self.job_seq, "job_seq")
+        nonempty_text(self.detector_config_id, "detector_config_id")
+
+        cands = self.candidates
+
+        if not isinstance(cands, tuple) or not cands:
+            raise ValueError("candidates must be a non-empty tuple of ObjectObservation")
+
+        previous = -1
+
+        for c in cands:
+            if not isinstance(c, ObjectObservation):
+                raise ValueError(f"candidates must contain ObjectObservation: {type(c).__name__}")
+
+            if c.instance_index <= previous:
+                raise ValueError(f"candidate instance_index must be strictly increasing: {[x.instance_index for x in cands]}")
+
+            previous = c.instance_index
+
+            # RAW만 범위를 본다(undistorted 범위 규칙은 미결, A 코어와 같음)
+            if c.pixel_basis is PixelBasis.RAW:
+                p = c.points
+
+                if (p[:, 0] < 0).any() or (p[:, 0] > self.capture.width - 1).any() \
+                        or (p[:, 1] < 0).any() or (p[:, 1] > self.capture.height - 1).any():
+                    raise ValueError(f"candidate {c.instance_index} raw coordinates out of frame "
+                                     f"{(self.capture.width, self.capture.height)}")
+
+    @property
+    def instance_indices(self) -> tuple[int, ...]:
+        """목록에 실린 원 인덱스(오름차순)."""
+        return tuple(c.instance_index for c in self.candidates)

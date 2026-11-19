@@ -35,6 +35,9 @@
   - 2개 이상: `MULTIPLE_OBJECTS` 무효(최종 목록 형식 B-09 합의 전이라 B를 부르지 않고 임의로 고르지 않는다). 후보는 기록에 남는다.
   - 0개: 대표 사유 하나를 무효 사유로 쓴다(CONTOUR_CLIPPED > MULTIPLE_CANDIDATES > 가장 작은 index의 추출기 사유). **대표 사유는
     진단·표시용**이며 유효 판정·B 호출은 후보별 자격으로만 정한다. 후보별 사유는 인스턴스 기록에 있다.
+- **#189 단계 L(다중 물체 목록)**: `list_candidate_indices`·`frame_observations_from_ai`. 프레임 차단(보정 프로파일 불일치)이면
+  목록 없음, 그 밖은 단계 T와 같은 자격 함수(`axis_candidate_reason`, `AiSegResult.axis_valid_indices`)를 통과한 볼트만 원 인덱스 순.
+  너트는 축 경로에 들어오지 않아 목록에 없다(분류 대상은 볼트만). A는 고르거나 자르지 않는다(대상 선택·앞 8개 계산은 B).
 - 이 `valid=True`는 **추출기 형식 조건 통과** 뜻이다. 정확도·운영 승인이 아니다(K0). 무효를 유효로 바꾸거나 polygon·이전 결과로
   대체하지 않는다. `#163`의 `AXIS_PROFILE_MISMATCH`는 M1에 구현되어 있지 않아 쓰지 않는다. 너트는 기존 사유(윗면 미구현) 그대로다.
 """
@@ -47,7 +50,8 @@ import cv2
 import numpy as np
 
 from eyetoarm.common.types import FramePacket, PixelBasis, PlanarObservation
-from eyetoarm.common.types import OBSERVED_FACE_AXIS
+from eyetoarm.common.types import (FRAME_OBSERVATIONS_VERSION, OBSERVED_FACE_AXIS, CaptureInfo, CaptureTf,
+                                   FrameObservations, ObjectObservation)
 from eyetoarm.vision.ai_config import AiSegConfig
 from eyetoarm.vision.axis_endpoints import MODEL_DERIVED, extract_m1
 from eyetoarm.vision.ai_result import (AXIS_EXTRACTION_ERROR, CONTOUR_CLIPPED, EMPTY_MASK, LOW_CONFIDENCE,
@@ -378,5 +382,51 @@ def observation_from_ai(job: JobContext, result: AiSegResult) -> PlanarObservati
         method="ai", class_name=None, confidence=None, model_id=result.model_id)
 
 
+def list_candidate_indices(result: AiSegResult, frame: FramePacket, profile: SourceProfile | None) -> tuple[int, ...]:
+    """단계 L 목록에 실을 원 인덱스(#189). 프레임 차단(`axis_selection`과 같은 보정 조건)이면 빈 tuple.
+
+    자격은 단계 T와 같은 `axis_candidate_reason`(집계 `axis_valid_indices`)만 쓴다. 판정 사본을 두지 않는다.
+    """
+    if profile is None or not profile.applies_to(frame):
+        return ()
+
+    return result.axis_valid_indices
+
+
+def frame_observations_from_ai(job: JobContext, result: AiSegResult, *, capture: CaptureInfo, camera,
+                               tf: CaptureTf | None, world_frame: str = "world") -> FrameObservations | None:
+    """작업과 AI 표시 결과로 단계 L 목록을 만든다(#189). 후보 0개(프레임 차단 포함)면 None(B 계산 호출 생략).
+
+    - 결과 설정 해시가 작업 시작 설정과 다르면 `AiJobConfigError`(`observation_from_ai`와 같음).
+    - TF 부모가 `world_frame`이 아니면 ValueError. 그 밖의 대조는 `FrameObservations` 생성자가 한다(어긋나면 ValueError).
+    - 후보 좌표는 생성자가 새로 복사한다(원 인스턴스 배열과 메모리 공유 없음).
+    """
+    if result.config_sha256 != job.detector_config_id:
+        raise AiJobConfigError(f"display result config {result.config_sha256[:12]} != job start config "
+                               f"{job.detector_config_id[:12]}")
+
+    indices = list_candidate_indices(result, job.frame, job.settings.profile)
+
+    if not indices:
+        return None
+
+    candidates = tuple(
+        ObjectObservation(instance_index=inst.index, class_name=inst.class_name, confidence=inst.confidence,
+                          pixel_basis=PixelBasis.RAW, observed_face=OBSERVED_FACE_AXIS,
+                          axis_endpoints_px=inst.axis_endpoints_px, calc_contour=None)
+        for inst in (result.instances[i] for i in indices))
+
+    observations = FrameObservations(version=FRAME_OBSERVATIONS_VERSION, frame=job.frame, capture=capture,
+                                     camera=camera, tf=tf, generation=job.generation, job_seq=job.job_seq,
+                                     detector_config_id=job.detector_config_id, candidates=candidates)
+
+    # 생성자가 TF 형·시각·광학 프레임을 먼저 검사한 뒤 부모(world) 이름을 대조한다
+    if observations.tf is not None and observations.tf.parent != world_frame:
+        raise ValueError(f"tf.parent {observations.tf.parent!r} != world frame {world_frame!r}")
+
+    return observations
+
+
 __all__ = ["AXIS_EXTRACTION_ERROR", "AXIS_OVERLAP_IOU", "MULTIPLE_CANDIDATES", "MULTIPLE_OBJECTS", "axis_selection", "convert", "overlaps",
-           "crop_frame", "display_reason", "observation_from_ai", "rasterize_polygon"]
+           "crop_frame", "display_reason", "frame_observations_from_ai", "list_candidate_indices", "observation_from_ai",
+           "rasterize_polygon"]
