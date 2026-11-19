@@ -67,8 +67,13 @@ class LiveObservationDispatcher:
                  build_envelope: Callable, compute: Callable, render: Callable | None = None,
                  clock_ns: Callable[[], int] = time.monotonic_ns, hooks: dict | None = None,
                  tf_lookup_with_epoch: bool = False, refuse_tf_statuses: frozenset = frozenset(),
-                 on_skip: Callable | None = None) -> None:
-        """상태·처음 카메라·주입 함수들. 마지막 두 인자는 되감기 epoch 보호 경로용(기본은 기존 동작)."""
+                 on_skip: Callable | None = None,
+                 envelope_errors: tuple = (ObservationEnvelopeError,)) -> None:
+        """상태·처음 카메라·주입 함수들. `tf_lookup_with_epoch`·`refuse_tf_statuses`는 되감기 epoch 보호 경로용(기본은 기존 동작).
+
+        `envelope_errors`(#201): 봉투 생성에서 `b_input_rejected`로 기록할 예외형(기본은 단일 관측 봉투 오류만). 목록 봉투는
+        `ValueError` 계열(`ListEnvelopeError`·`FrameObservations` 대조 실패)을 넘긴다.
+        """
         self.state = state
         self._stage_factory = stage_factory
         self._tf_lookup = tf_lookup
@@ -80,6 +85,7 @@ class LiveObservationDispatcher:
         self._tf_with_epoch = bool(tf_lookup_with_epoch)
         self._refuse_tf = frozenset(refuse_tf_statuses)
         self._on_skip = on_skip
+        self._envelope_errors = tuple(envelope_errors)
         self._cond = threading.Condition()
         self._slot: LiveObservationItem | None = None
         self._pending_camera = camera
@@ -255,7 +261,7 @@ class LiveObservationDispatcher:
 
         try:
             envelope = self._build(item.frame, item.observation, self._camera, tf_result)
-        except ObservationEnvelopeError as exc:
+        except self._envelope_errors as exc:
             self._count("b_input_rejected")
             self.errors.append(f"envelope: {exc}")
             self._skip(item, "b_input_rejected", str(exc))

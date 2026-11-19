@@ -51,6 +51,8 @@
   실행의 정리 완료가 확인되기 전 새 실행을 거부한다(1). `stage.on_output`은 쓰지 않는다(C·D 송신·로봇 목표 없음). 설정 파일의
   값은 미확정 운영값의 시험 설정이며 `"status": "test_only"`가 필수다(`config/vision/live_observation_test.json`). 기록·출력이 이미
   있으면 덮어쓰지 않고 2. `--tracking`·`--capture-meta`·`--synthetic-observation-*`과 함께 쓸 수 없다(2).
+  `--b-input list`(#201)를 더하면 같은 연결·같은 프레임 단위 검사로 유효 볼트 목록(`eyetoarm.b_input/2`, 촬영 stamp TF 하나)을 B 목록
+  소비자(`BStage.process_frame`)에 넘기고 소비자 결과를 기록한다(주석 없음). 소비자가 없으면 시작 때 1(단계 T로 바꾸지 않음).
 - 종료 코드: 0 정상(EOF·max-frames·정지 요청), 1 실행 실패(입력 없음·기록 실패·중단·close 실패·검출 시간 초과·멈춤 등),
   2 인자·설정 오류.
 """
@@ -164,7 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="--live-observation-out 전용: 시험 설정(TF 상한·용량·종료 상한 등, status=test_only 필수)")
     parser.add_argument("--b-input", dest="b_input", choices=("single", "list"), default="single",
                         help="B 입력 단계(#189): single = 단계 T(기본, 관측 하나 eyetoarm.b_input/1), list = 단계 L(같은 프레임 "
-                             "후보 목록 eyetoarm.b_input/2). list는 --capture-meta 저장 입력 경로 전용이며 B 목록 소비자"
+                             "후보 목록 eyetoarm.b_input/2). list는 --capture-meta 저장 입력 경로 또는 --live-observation-out 실시간 기록 전용 경로에서만 쓰며 B 목록 소비자"
                              "(BStage.process_frame)가 없으면 시작 때 거부한다(단계 T로 바꾸지 않음)")
     parser.add_argument("--tracking", action="store_true", help="--detector ai 전용. A-6 1차 실험: AI 검출 인스턴스 추적 번호를 붙인다(M2 휴리스틱, 표시·기록 전용, 팔 이동을 넘는 신원·중복 집기 방지 보장 없음, B로 보내지 않음). 기본 꺼짐")
 
@@ -212,8 +214,10 @@ def _check_source_args(args, ros_available) -> None:
             build_parser().error("--capture-meta requires --detector ai")
 
     # 단계 L(#189): 저장 입력 실제 경로(--capture-meta, 이미 ros-link·synthetic·tracking·opencv 결합 금지)에서만
-    if args.b_input == "list" and args.capture_meta is None:
-        build_parser().error("--b-input list requires --capture-meta/--observation-out (stored input A->B path only)")
+    # #201: 실시간은 기록 전용 연결(--live-observation-out) 안에서만. 기본 --ros-link의 B 소비는 D13 그대로 거부
+    if args.b_input == "list" and args.capture_meta is None and args.live_observation_out is None:
+        build_parser().error("--b-input list requires --capture-meta/--observation-out (stored input) or "
+                             "--ros-link --live-observation-out (live record-only); D13: no B in plain live")
 
     # 실시간 A→B 기록 전용 시험(#173): 명시 옵션에서만 전용 디스패처. 기본 --ros-link는 D13 그대로
     if args.live_observation_out is not None or args.live_observation_config is not None:
@@ -410,7 +414,8 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
     if args.live_observation_out is not None:
         return _run_live_observation(args, settings, runner_config, detector_kw, err, b_stage_hook=b_stage_hook,
                                      live_source_factory=live_source_factory, live_tf_factory=live_tf_factory,
-                                     controller=live_run_controller or _live_runs())
+                                     controller=live_run_controller or _live_runs(),
+                                     list_consumer_factory=list_consumer_factory)
 
     if capture is not None and args.b_input == "list":
         return _run_capture_list(args, settings, runner_config, detector_kw, capture, err, b_stage_hook,
@@ -521,10 +526,14 @@ class _RosTfRuntime:
 
 
 def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_stage_hook, live_source_factory,
-                          live_tf_factory, controller) -> int:
+                          live_tf_factory, controller, list_consumer_factory=None) -> int:
     """실시간 A→B 기록 전용 시험(#173). 호출 경로: LiveLinkSource(경계 훅 = 연결부) → 실행기 → AiSegDetector(M1) → 코어 →
     `handle()` 기록·표시 뒤 `live_observation_sink.offer` → 전용 디스패처 → 촬영 stamp TF → 봉투 → B 입구 어댑터 → BStage → 주석 → 순번
-    기록기. 리셋이면 실행을 멈추고 정리한다(자동 재시작 없음)."""
+    기록기. 리셋이면 실행을 멈추고 정리한다(자동 재시작 없음).
+
+    `--b-input list`(#201): 같은 연결부가 목록 봉투(`eyetoarm.b_input/2`)를 만들어 목록 소비자(시험 주입 `list_consumer_factory(stage)`
+    또는 `BStage.process_frame`)를 부른다. 소비자가 없으면 TF·출력·기록을 만들기 전에 종료 1(단계 T로 바꾸지 않음). 주석 없음.
+    """
     import cv2 as _cv2
 
     from eyetoarm.inputs.base import new_run_id
@@ -532,6 +541,7 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
     from eyetoarm.transforms.observation_envelope_adapter import EnvelopeTfLookup, ObservationEnvelopeAdapter
     from eyetoarm.vision.live_observation_link import (LiveObservationConfigError, LiveObservationLink,
                                                        load_live_observation_config)
+    from eyetoarm.vision.pipeline_records import B_INPUT_LIST
 
     try:
         link_config = load_live_observation_config(args.live_observation_config)
@@ -547,6 +557,13 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         if Path(path).exists():
             err.write(f"run_pipeline: output exists, refusing to overwrite: {path}\n")
             return 2
+
+    listed = args.b_input == "list"
+
+    if listed and list_consumer_factory is None and not callable(getattr(BStage, "process_frame", None)):
+        err.write("run_pipeline: --b-input list refused: list consumer unavailable (BStage.process_frame missing); "
+                  "not falling back to stage T\n")
+        return 1
 
     run_id = new_run_id()
     refusal = controller.refusal(run_id)
@@ -584,7 +601,8 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
     try:
         link = controller.start_run(run_id, make_session=lambda rid: LiveObservationLink(
-            rid, args.live_observation_out, config=link_config, tf=tf, stage_factory=stage_factory, render=render))
+            rid, args.live_observation_out, config=link_config, tf=tf, stage_factory=stage_factory, render=render,
+            b_input=args.b_input, list_consumer_factory=list_consumer_factory if listed else None))
     except Exception as exc:
         # 세션이 만들어지지 않았다: 이 함수가 만든 TF만 정리한다(세션 등록 없음)
         err.write(f"run_pipeline: cannot start live observation run: {type(exc).__name__}: {exc}\n")
@@ -596,8 +614,9 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
         return 2 if isinstance(exc, OSError) else 1
 
+    stage_l = (f" b_input=eyetoarm.b_input/2 consumer={link.consumer_kind}" if listed else "")
     err.write(f"run_pipeline: LIVE A->B RECORD-ONLY TEST run_id={run_id} config_sha256={link_config.sha256} "
-              f"status=test_only; no C/D/robot output, no auto restart\n")
+              f"status=test_only{stage_l}; no C/D/robot output, no auto restart\n")
     result = None
     exit_code = 1
     failure = None
@@ -610,13 +629,15 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         stream = open(args.log, "x", encoding="utf-8")
 
         with stream, _StopSignals() as signals:
+            log_kw = {"b_input": B_INPUT_LIST} if listed else {}
             log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
-                              log_geometry=args.log_instance_geometry)
+                              log_geometry=args.log_instance_geometry, **log_kw)
+            run_kw = {"live_observation_b_input": "list"} if listed else {}
             result = run(source_factory, settings, log, run_id=run_id, config=runner_config, stderr=err,
                          versions={"opencv": cv2.__version__},
                          should_stop=lambda: (signals.stop.is_set() or link.reset_pending
                                               or link.state.failed is not None),
-                         live_observation_sink=link, **detector_kw)
+                         live_observation_sink=link, **run_kw, **detector_kw)
 
         exit_code = result.exit_code
     except Exception as exc:
@@ -681,6 +702,8 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
               f"frames={0 if result is None else result.frames} submitted={link.submitted} "
               f"accepted={link.dispatcher.counts.get('accepted', 0)} skips={sum(link.skips.values())} "
               f"cleanup_confirmed={link.cleanup_confirmed}"
+              + (f" list_consumer_calls={link.list_consumer_calls} list_candidates_sent={link.list_candidates_sent}"
+                 if listed else "")
               + (" (new run requires an explicit restart)" if reset else "") + "\n")
 
     return exit_code
