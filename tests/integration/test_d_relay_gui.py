@@ -119,12 +119,19 @@ class RelayWindow(unittest.TestCase):
         self.send(packet("fixed", 1))   # first packet is not link: the session (and link source) still starts
         self.settle(lambda: self.view.frame_count == 1)
         self.assertEqual((self.view.run_id, self.window.display.link_source_id), ("run-A", "gz_link"))
+        self.assertEqual(self.mode_of("fixed"), "stale")              # first packet may be C's cache: shown, not live
+        self.assertIn("확인 대기", self.views()["fixed"]._footer)
+        self.assertEqual(self.window.chip_view._level, "fail")
+        self.send(packet("fixed", 2))                                 # a newer packet on the same run confirms it
+        self.settle(lambda: self.view.frame_count == 2)
         self.assertEqual(self.mode_of("fixed"), "live")
         self.assertNotEqual(self.mode_of("gripper"), "live")
         self.assertEqual(self.window.chip_view._level, "warn")       # TCP connected alone is not "good video"
         self.assertIn("그리퍼", self.window.chip_view._text)
         self.send(packet("gripper", 1), packet("link", 1))
-        self.settle(lambda: self.view.frame_count == 3)
+        self.settle(lambda: self.view.frame_count == 4)
+        self.send(packet("gripper", 2), packet("link", 2))
+        self.settle(lambda: self.view.frame_count == 6)
         self.assertEqual([self.mode_of(c) for c in ("fixed", "gripper", "link")], ["live"] * 3)
         self.assertEqual(self.window.chip_view._level, "ok")
         self.assertTrue(all(value.text() == NO_VALUE for value in self.window.measure_values))   # no results
@@ -134,6 +141,8 @@ class RelayWindow(unittest.TestCase):
     def test_link_selection_is_display_only_synced_and_never_falls_back_to_raw(self):
         self.send(packet("fixed", 1), packet("gripper", 1), packet("link", 1))
         self.settle(lambda: self.view.frame_count == 3)
+        self.send(packet("fixed", 2), packet("gripper", 2), packet("link", 2))
+        self.settle(lambda: self.view.frame_count == 6)
         buttons = self.window.mode_buttons
         self.assertEqual(len(buttons), 6)   # setup page + operate page
         detect = [b for b in buttons if b._mode == "detect"]
@@ -147,7 +156,10 @@ class RelayWindow(unittest.TestCase):
         self.assertEqual((self.mode_of("fixed"), self.mode_of("gripper")), ("live", "live"))   # unaffected
         self.assertEqual(self.window.chip_view._level, "warn")
         self.send(packet("link", 1, variant="detect", data=jpeg("#c03030")))   # fixture-only detect packet
-        self.settle(lambda: self.view.frame_count == 4)
+        self.settle(lambda: self.view.frame_count == 7)
+        self.assertNotEqual(self.mode_of("link"), "live")                       # confirmation is per variant
+        self.send(packet("link", 2, variant="detect", data=jpeg("#c03030")))
+        self.settle(lambda: self.view.frame_count == 8)
         self.assertEqual(self.mode_of("link"), "live")
         self.assertIn("detect", self.views()["link"]._footer)
         [b for b in buttons if b._mode == "center"][0].click()          # setup-page selector
@@ -238,6 +250,70 @@ class RelayWindow(unittest.TestCase):
         self.window._update_status()
         self.assertIn("경계 2", self.window.chip_view.toolTip())        # counts persist across reconnects
         self.assertIn("ETV1 아님", self.view.last_error)
+
+
+    def test_repeats_and_regressions_never_refresh_and_a_new_connection_or_run_starts_unconfirmed(self):
+        self.send(packet("fixed", 5))
+        self.settle(lambda: self.view.frame_count == 1)
+        self.assertIsNone(self.view.frame_age_ms())                     # first packet: cache candidate
+        self.send(packet("fixed", 5))
+        self.settle(lambda: self.view.frame_count == 2)
+        self.send(packet("fixed", 4))
+        self.settle(lambda: self.view.frame_count == 3)
+        self.assertIsNone(self.view.frame_age_ms())                     # same and older numbers confirm nothing
+        self.send(packet("fixed", 6))
+        self.settle(lambda: self.view.frame_count == 4)
+        self.assertIsNotNone(self.view.frame_age_ms())
+        self.assertEqual(self.mode_of("fixed"), "live")
+        marked = self.view._last_frame_at
+        until(lambda: False, timeout=0.05)
+        self.send(packet("fixed", 6))                                   # confirmed channel, repeated number
+        self.settle(lambda: self.view.frame_count == 5)
+        self.assertEqual(self.view._last_frame_at, marked)
+        self.send(packet("gripper", 1, run="run-B"))                    # relay restarted: new run
+        self.settle(lambda: self.view.run_id == "run-B")
+        self.assertIsNone(self.view.frame_age_ms())
+        self.assertEqual(self.window.display.fresh(self.window.display.frame("gripper")), False)
+        self.clients[0].disconnectFromHost()
+        self.settle(lambda: self.view.state == "disconnected")
+        self.assertTrue(until(lambda: self.view.state == "connected" and len(self.clients) == 2, 6))
+        self.assertIsNone(self.view.frame_age_ms())                     # nothing carried across the reconnect
+        self.send(packet("gripper", 7, run="run-B"))
+        self.settle(lambda: self.view.frame_count == 7)
+        self.assertIsNone(self.view.frame_age_ms())
+        self.assertFalse(self.window.display.fresh(self.window.display.frame("gripper")))
+
+
+class RelayConnectDeadline(unittest.TestCase):
+    """A connect that never completes must not pin the receiver in "connecting". No socket leaves this process:
+    connectToHost is replaced, so nothing is sent anywhere (no external address is contacted)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_deadline_drops_retries_and_stop_clears_every_timer(self):
+        view = RelayViewReceiver("127.0.0.1", 47092)
+        calls = []
+        view._socket.connectToHost = lambda *args: calls.append(args)   # never connects, never errors
+        view._connect_deadline.setInterval(50)
+        view._retry.setInterval(50)
+        try:
+            view.start()
+            self.assertEqual(view.state, "connecting")
+            self.assertTrue(view._connect_deadline.isActive())
+            self.assertTrue(until(lambda: view.state == "disconnected" and view._retry.isActive(), 2))
+            self.assertIn("접속 기한 초과", view.socket_error)
+            self.assertTrue(until(lambda: len(calls) >= 2, 2))           # it keeps trying, it is not stuck
+            view.stop()
+            self.assertEqual(view.state, "disconnected")
+            self.assertFalse(view._connect_deadline.isActive())
+            self.assertFalse(view._retry.isActive())
+            self.assertFalse(view._flush_timer.isActive())
+        finally:
+            view.stop()
+            view.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 CHILD = r"""

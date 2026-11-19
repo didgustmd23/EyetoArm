@@ -113,7 +113,8 @@ class DisplayModel(QObject):
         self.changed.emit()
         return True
 
-    def ingest_frame(self, channel, image, *, source_id, image_seq, generation, calibration_id, run_id, capture_generation, detector_config_id, job_seq, variant="raw"):
+    def ingest_frame(self, channel, image, *, source_id, image_seq, generation, calibration_id, run_id, capture_generation, detector_config_id, job_seq, variant="raw", confirmed=True):
+        """confirmed=False: 연결 직후 캐시일 수 있는 첫 프레임. 보관·표시는 하되 신선(fresh)·결과 일치에는 넣지 않는다."""
         if not self.connected or channel not in ("link", "gripper", "fixed") or image is None or image.isNull():
             return False
         if not isinstance(source_id, str) or not source_id or type(image_seq) is not int or type(generation) is not int:
@@ -149,7 +150,7 @@ class DisplayModel(QObject):
         self.frames[key] = dict(image=image.copy(), source_id=source_id, image_seq=image_seq,
                                 generation=generation, calibration_id=calibration_id, run_id=run_id,
                                 capture_generation=capture_generation, detector_config_id=detector_config_id,
-                                job_seq=job_seq, received=received)
+                                job_seq=job_seq, received=received, confirmed=confirmed is True)
         self.frame_marks[key] = {k: v for k, v in self.frames[key].items() if k != "image"}
         self.changed.emit()
         return True
@@ -238,7 +239,8 @@ class DisplayModel(QObject):
         return None
 
     def fresh(self, item):
-        return bool(self.connected and item and 0 <= self.clock() - item["received"] <= self.stale_seconds)
+        return bool(self.connected and item and item.get("confirmed", True)
+                    and 0 <= self.clock() - item["received"] <= self.stale_seconds)
 
     def matched_result(self):
         frame, result = self.frame("link"), self.result

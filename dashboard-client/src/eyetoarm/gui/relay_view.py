@@ -14,6 +14,8 @@
 detector_config_id·job_seq(+ stamp_sec·stamp_nanosec). DisplayModel 이 받는 키만 엄격히 검사해 넘긴다.
 C 의 run_id 는 relay 프로세스마다 하나로 고정이다. 새 run_id 를 처음 보면 새 세션을 시작하고, 이미 지나간
 run_id 는 같은 연결 안에서도 다시 받지 않는다(세션이 뒤로 가지 않게).
+C 는 새 접속에 채널별 마지막 패킷(캐시)을 나이와 상관없이 바로 보낸다. 그래서 연결·run 마다 채널·종류별 첫 패킷은
+「확인 대기」(confirmed=False)로 넘기고, 같은 run 에서 순번이 더 큰 패킷을 정상 해독한 뒤에야 실시간으로 본다.
 """
 from __future__ import annotations
 
@@ -39,6 +41,7 @@ LINK_SOURCE = CHANNELS["link"]
 VARIANTS = ("raw", "detect", "center")
 INT_KEYS = ("image_seq", "generation", "capture_generation", "job_seq")
 RECONNECT_MS = 1500
+CONNECT_TIMEOUT_MS = 2000              # 명령 연결 connect_timeout_ms 초기값과 같다. 응답 없는 주소에 묶이지 않게
 READ_CHUNK = 1024 * 1024               # 한 번에 읽어 파서에 넣는 최대 바이트
 SOCKET_BUFFER = 2 * (MAX_PACKET + 8)  # Qt 소켓 내부 버퍼 상한. 차면 TCP 흐름 제어로 C 송신이 기다린다
 RETIRED_RUNS = 32
@@ -176,12 +179,16 @@ class RelayViewReceiver(QObject):
         self._last_frame_at: float | None = None
         self._parser = EtvParser()
         self._pending: dict[tuple[str, str], tuple[str, dict, bytes]] = {}
+        self._newest: dict[tuple[str, str], tuple[int, int]] = {}       # 이 연결·run 의 칸별 최고 (capture_generation, image_seq)
+        self._confirmed: set[tuple[str, str]] = set()                   # 첫 패킷 뒤 더 새 패킷을 받은 칸
 
         self._socket = self._new_socket()
         self._retry = QTimer(self, interval=RECONNECT_MS, singleShot=True)
         self._retry.timeout.connect(self._open)
         self._flush_timer = QTimer(self, interval=0, singleShot=True)   # 한 번의 Qt 차례에 채널별 최신만 해독
         self._flush_timer.timeout.connect(self._flush)
+        self._connect_deadline = QTimer(self, interval=CONNECT_TIMEOUT_MS, singleShot=True)
+        self._connect_deadline.timeout.connect(self._on_connect_timeout)
 
     @property
     def packet_errors(self) -> int:
@@ -207,7 +214,7 @@ class RelayViewReceiver(QObject):
     def _new_socket(self) -> QTcpSocket:
         sock = QTcpSocket(self)
         sock.setReadBufferSize(SOCKET_BUFFER)
-        sock.connected.connect(lambda: self._set_state("connected"))
+        sock.connected.connect(self._on_connected)
         sock.disconnected.connect(self._drop)
         sock.errorOccurred.connect(self._on_socket_error)
         sock.readyRead.connect(self._on_ready_read)
@@ -242,6 +249,7 @@ class RelayViewReceiver(QObject):
 
     def stop(self) -> None:
         self._retry.stop()
+        self._connect_deadline.stop()
         self._flush_timer.stop()
         self._pending.clear()
         self._set_state("disconnected")   # 먼저 바꿔야 abort() 뒤 재접속이 예약되지 않는다
@@ -260,12 +268,30 @@ class RelayViewReceiver(QObject):
             return
         self._parser.reset()   # 재접속해도 누적 오류 수와 마지막 오류는 남긴다
         self._pending.clear()
+        self._reset_confirmation()   # 새 연결의 첫 패킷은 C 캐시일 수 있다
         self._set_state("connecting")
+        self._connect_deadline.start()
         self._socket.connectToHost(QHostAddress(self.host), self.port)
+
+    def _on_connected(self) -> None:
+        self._connect_deadline.stop()
+        self._set_state("connected")
+
+    def _on_connect_timeout(self) -> None:
+        if self.state == "connecting":
+            self.socket_error = f"접속 기한 초과({CONNECT_TIMEOUT_MS} ms) · 중계 미기동 또는 차단 가능"
+            self._drop()
+
+    def _reset_confirmation(self) -> None:
+        """새 연결·새 run: 칸별 확인과 「최근 확인 수신」 시각을 버린다(이전 연결의 확인을 들고 가지 않게)."""
+        self._newest.clear()
+        self._confirmed.clear()
+        self._last_frame_at = None
 
     def _drop(self) -> None:
         if self.state == "disconnected":
             return
+        self._connect_deadline.stop()
         self._flush_timer.stop()
         self._pending.clear()
         self._set_state("disconnected")
@@ -314,6 +340,7 @@ class RelayViewReceiver(QObject):
                 if self.run_id is not None:
                     self._retired.append(self.run_id)
                 self.run_id = run_id
+                self._reset_confirmation()   # 확인은 run 별
                 self.display_session.emit(run_id, LINK_SOURCE)   # 첫 패킷이 fixed·gripper 여도 링크 소스를 먼저 정한다
             image = decode_jpeg(jpeg)
             if image is None:
@@ -322,5 +349,13 @@ class RelayViewReceiver(QObject):
                 self._parser.last_error = ""
                 continue
             self.frame_count += 1
-            self._last_frame_at = time.monotonic()
-            self.display_frame.emit(channel, image, envelope)
+            key, order = (channel, envelope["variant"]), (envelope["capture_generation"], envelope["image_seq"])
+            newest = self._newest.get(key)
+            advanced = newest is not None and order > newest   # 같은 연결·run 에서 순번이 실제로 앞섰다
+            if newest is None or advanced:
+                self._newest[key] = order
+            if advanced:
+                self._confirmed.add(key)
+                self._last_frame_at = time.monotonic()   # 확인 대기·같은 순번 반복·역행은 「최근 수신」으로 치지 않는다
+            confirmed = key in self._confirmed
+            self.display_frame.emit(channel, image, dict(envelope, confirmed=confirmed))
