@@ -21,7 +21,8 @@ from dataclasses import dataclass
 from numbers import Real
 from typing import Any, Callable
 
-from eyetoarm.training.config import ConfigError, _exact_keys, _freeze, _is_int, _load_json, _rel_path, thaw
+from eyetoarm.training.config import (ConfigError, _as_float, _exact_keys, _freeze, _is_int, _load_json, _rel_path,
+                                      thaw)
 
 PHASES = ("prepare", "cold", "warmup", "measure")
 ACC_REQUIRED = ("split", "images", "imgsz", "conf", "iou", "by_size", "total", "predictions", "per_gt",
@@ -60,10 +61,11 @@ class EvalConfig:
 
 
 def _unit(v, name: str) -> float:
-    """(0, 1] 실수."""
-    if isinstance(v, bool) or not isinstance(v, Real) or not math.isfinite(float(v)) or not 0 < float(v) <= 1:
+    """(0, 1] 실수. 거대 정수(float 변환 넘침)도 ConfigError(#196 A4-2)."""
+    f = _as_float(v)
+    if f is None or not math.isfinite(f) or not 0 < f <= 1:
         raise ConfigError(f"{name} must be in (0, 1]: {v!r}")
-    return float(v)
+    return f
 
 
 def _sizes(v, name: str) -> tuple:
@@ -203,8 +205,9 @@ def summarize_timing(raw: dict) -> dict:
 
 
 def _finite(v) -> bool:
-    """유한 실수."""
-    return not isinstance(v, bool) and isinstance(v, Real) and math.isfinite(float(v))
+    """유한 실수. 거대 정수는 유한 실수로 보지 않는다(#196 A4-2: OverflowError 대신 False)."""
+    f = _as_float(v)
+    return f is not None and math.isfinite(f)
 
 
 def validate_timing(d, *, imgsz: int, warmup_n: int, measure_n: int) -> list[str]:

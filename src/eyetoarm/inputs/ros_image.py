@@ -225,6 +225,7 @@ class LiveLinkSource:
                                           width=int(message.width), height=int(message.height))
         except (AttributeError, TypeError, ValueError):
             outcome = "invalid_header"
+            self._slot.on_invalid_input("invalid_header")   # #196 A1-4: 버리되 수신 진단에서 사라지지 않게 센다
 
         with self._callback_lock:
             self._callback_ns.append(time.perf_counter_ns() - t0)
@@ -232,11 +233,14 @@ class LiveLinkSource:
         return outcome
 
     def handle_clock(self, message) -> None:
-        """`/clock` 메시지(`clock.sec`·`clock.nanosec`)를 넘긴다. 잘못된 값은 무시한다."""
+        """`/clock` 메시지(`clock.sec`·`clock.nanosec`)를 넘긴다. 잘못된 값은 버리고 `invalid_clock`으로 센다(#196 A1-4)."""
         try:
-            self._slot.on_clock(stamp_to_ns(message.clock))
+            clock_ns = stamp_to_ns(message.clock)
         except (AttributeError, TypeError, ValueError):
-            pass
+            self._slot.on_invalid_input("invalid_clock")
+            return
+
+        self._slot.on_clock(clock_ns)
 
     def handle_camera_info(self, message) -> bool:
         """`CameraInfo`를 식별 정보로 바꿔 넘긴다. 잘못된 K 등으로 만들 수 없으면 False.

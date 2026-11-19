@@ -70,6 +70,16 @@ class Injector:
             self._writer = None
 
 
+def _parse_object(line: bytes) -> dict:
+    """중계기가 들여다볼 JSON 객체. 해석할 수 없거나 객체가 아닌 줄(`[1]`, `5`, `"x"`)은 빈 사전(줄은 그대로 넘긴다, #196 A4-3)."""
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        return {}
+
+    return msg if isinstance(msg, dict) else {}
+
+
 class FaultRelay:
     """클라이언트 ↔ 서버 중계기. `start()` → 들을 포트. 규칙은 실행 중에 바꿀 수 있다(같은 루프에서만)."""
 
@@ -119,26 +129,27 @@ class FaultRelay:
         self._close_pair(pair)
 
     async def _pump_c2s(self, reader, writer) -> None:
-        """클라이언트→서버 펌프(연결 끊김은 정상 종료로 기록)."""
+        """클라이언트→서버 펌프(연결 끊김은 정상 종료로 기록, 그 밖의 예외는 `relay_c2s_failed`로 기록, #196 A4-3)."""
         try:
             await self._c2s(reader, writer)
         except (ConnectionError, OSError) as exc:
             self._event("relay_c2s_closed", error=f"{type(exc).__name__}: {exc}"[:200])
+        except Exception as exc:  # noqa: BLE001 - 작업 최상단: 버려진 작업에 묻히지 않게 기록한다(규약 §10)
+            self._event("relay_c2s_failed", error=f"{type(exc).__name__}: {exc}"[:200])
 
     async def _pump_s2c(self, reader, writer, pair) -> None:
-        """서버→클라이언트 펌프(연결 끊김은 정상 종료로 기록)."""
+        """서버→클라이언트 펌프(연결 끊김은 정상 종료로 기록, 그 밖의 예외는 `relay_s2c_failed`로 기록, #196 A4-3)."""
         try:
             await self._s2c(reader, writer, pair)
         except (ConnectionError, OSError) as exc:
             self._event("relay_s2c_closed", error=f"{type(exc).__name__}: {exc}"[:200])
+        except Exception as exc:  # noqa: BLE001 - 작업 최상단: 버려진 작업에 묻히지 않게 기록한다(규약 §10)
+            self._event("relay_s2c_failed", error=f"{type(exc).__name__}: {exc}"[:200])
 
     async def _c2s(self, reader, writer) -> None:
         """클라이언트→서버: 그대로 넘기고 MOVE command_id 통과 수를 센다."""
         while line := await reader.readline():
-            try:
-                msg = json.loads(line)
-            except ValueError:
-                msg = {}
+            msg = _parse_object(line)
 
             if msg.get("type") == "MOVE":
                 cid = msg.get("command_id")
@@ -154,10 +165,7 @@ class FaultRelay:
     async def _s2c(self, reader, writer, pair) -> None:
         """서버→클라이언트: 규칙에 맞는 줄은 삼키고(기록), 필요하면 끊는다."""
         while line := await reader.readline():
-            try:
-                msg = json.loads(line)
-            except ValueError:
-                msg = {}
+            msg = _parse_object(line)
 
             rule = self.swallow_rule
 

@@ -51,7 +51,7 @@ import numpy as np
 
 from eyetoarm.common.types import FramePacket, PixelBasis, PlanarObservation
 from eyetoarm.common.types import (FRAME_OBSERVATIONS_VERSION, OBSERVED_FACE_AXIS, CaptureInfo, CaptureTf,
-                                   FrameObservations, ObjectObservation)
+                                   FrameObservations, ObjectObservation, owned_axis_endpoints, raw_points_in_frame)
 from eyetoarm.vision.ai_config import AiSegConfig
 from eyetoarm.vision.axis_endpoints import MODEL_DERIVED, extract_m1
 from eyetoarm.vision.ai_result import (AXIS_EXTRACTION_ERROR, CONTOUR_CLIPPED, EMPTY_MASK, LOW_CONFIDENCE,
@@ -138,6 +138,26 @@ def _extract_axis(inst: AiInstance, offset: np.ndarray, crop_wh: tuple[int, int]
         return mask, None, est.reason or AXIS_EXTRACTION_ERROR, diag
 
     return mask, est.endpoints_px + offset.astype(np.float64), None, diag
+
+
+def _checked_endpoints(endpoints, reason, diag, frame: FramePacket):
+    """추출기 끝점을 공통형 규칙(형식·두 점 구분)과 RAW 프레임 범위로 검사한다(#196 A3-4).
+
+    어긋나면 그 물체만 끝점 없음·`AXIS_EXTRACTION_ERROR`로 바꾸고 진단에 `endpoints_rejected`를 남긴다. 그래서 잘못된 끝점이 유효 후보로
+    집계됐다가 관측·목록 생성에서 프레임 전체를 잃지 않는다. 판정은 공통 함수(`owned_axis_endpoints`·`raw_points_in_frame`)만 쓴다.
+    """
+    if endpoints is None:
+        return endpoints, reason, diag
+
+    try:
+        owned = owned_axis_endpoints(endpoints)
+    except ValueError as exc:
+        return None, AXIS_EXTRACTION_ERROR, {**diag, "endpoints_rejected": str(exc)[:200]}
+
+    if not raw_points_in_frame(owned, frame.width, frame.height):
+        return None, AXIS_EXTRACTION_ERROR, {**diag, "endpoints_rejected": f"out of frame {(frame.width, frame.height)}"}
+
+    return owned, reason, diag
 
 
 def overlaps(iou: float) -> bool:
@@ -262,6 +282,7 @@ def convert(raw: RawSegOutput, frame: FramePacket, config: AiSegConfig, *,
                 inst = dataclasses.replace(inst, axis_reason=CONTOUR_CLIPPED)
             else:
                 raster, endpoints, reason, diag = _extract_axis(inst, offset, crop_wh)
+                endpoints, reason, diag = _checked_endpoints(endpoints, reason, diag, frame)
                 inst = dataclasses.replace(inst, axis_endpoints_px=endpoints, axis_reason=reason, axis_diag=diag)
 
                 if raster is not None:

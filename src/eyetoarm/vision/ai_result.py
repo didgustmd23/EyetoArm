@@ -23,7 +23,7 @@ from numbers import Integral, Real
 
 import numpy as np
 
-from eyetoarm.common.types import Contour, InvalidationKind, _owned_contour
+from eyetoarm.common.types import Contour, InvalidationKind, _owned_contour, owned_axis_endpoints
 
 # 대표 거부 사유(판정 순서대로, 계획 §4.3 5단계)
 NON_TARGET_CLASS = "NON_TARGET_CLASS"
@@ -61,10 +61,17 @@ def _nonneg_int(v, name: str) -> int:
 
 def _finite(v, name: str, *, lo: float | None = 0.0, hi: float | None = None) -> float:
     """bool이 아닌 유한 실수(범위 [lo, hi])를 float로."""
-    if not isinstance(v, Real) or isinstance(v, bool) or not math.isfinite(float(v)):
+    if not isinstance(v, Real) or isinstance(v, bool):
         raise ValueError(f"{name} must be a finite number: {v!r}")
 
-    f = float(v)
+    # #196 A3-3: 거대 정수(10**400)는 float 변환이 넘친다 → OverflowError가 아니라 ValueError
+    try:
+        f = float(v)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite number: {v!r}") from exc
+
+    if not math.isfinite(f):
+        raise ValueError(f"{name} must be a finite number: {v!r}")
 
     if (lo is not None and f < lo) or (hi is not None and f > hi):
         raise ValueError(f"{name} out of range [{lo}, {hi}]: {v!r}")
@@ -220,13 +227,9 @@ class AiInstance:
         endpoints = self.axis_endpoints_px
 
         if endpoints is not None:
-            owned = np.array(endpoints, dtype=np.float64, copy=True)
-
-            if owned.shape != (2, 2) or not np.all(np.isfinite(owned)):
-                raise ValueError(f"axis_endpoints_px must be finite (2, 2): {owned.shape}")
-
-            owned.setflags(write=False)
-            put("axis_endpoints_px", owned)
+            # #196 A3-4: 공통형(`PlanarObservation`·`ObjectObservation`)과 같은 규칙 함수(형·dtype·bool·유한·두 점 구분, 소유 복사).
+            # 프레임 범위는 프레임 크기를 아는 `ai_convert.convert`가 같은 공통 함수로 거른다
+            put("axis_endpoints_px", owned_axis_endpoints(endpoints))
 
         if self.axis_reason is not None and (not isinstance(self.axis_reason, str) or not self.axis_reason):
             raise ValueError(f"axis_reason must be None or a non-empty string: {self.axis_reason!r}")

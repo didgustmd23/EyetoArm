@@ -80,7 +80,7 @@ class CaptureListRecorder:
                 if observations is None:
                     raise RuntimeError("b_list_gate passed but frame_observations_from_ai built no list")
 
-                envelope = make_list_envelope(observations)
+                envelope = make_list_envelope(observations, world_frame=self._meta.world_frame)
             except ValueError as exc:
                 self.rejected += 1
                 self._lists.write({"kind": "b_input_rejected", "input": keys, "error": str(exc)})

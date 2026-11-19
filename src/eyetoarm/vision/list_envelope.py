@@ -6,7 +6,7 @@
 규칙
 - `b_input/1`(`vision/observation_envelope`, 관측 하나)과 별개 자료형이다. 1은 바꾸지 않는다.
 - 프레임·촬영 정보·카메라·TF·후보 대조는 `FrameObservations` 생성자가 이미 했다(공통 검사 함수, 봉투 1과 같은 규칙).
-  `make_list_envelope`는 버전·형만 보고 상관 키를 고정한다. 어긋나면 `ListEnvelopeError`(B를 부르지 않고 기록).
+  `make_list_envelope`는 버전·형과 TF 부모 = world 프레임(#196 A3-2, 봉투 1과 같음)을 보고 상관 키를 고정한다. 어긋나면 `ListEnvelopeError`(B를 부르지 않고 기록).
 - 상관 키는 B `correlation_keys`를 그대로 불러 같은 키 8개를 만든다. 후보별 대응 열쇠는 여기에 `instance_index`를 더한다.
 - 확장(`ai_instances`·`tracking`)은 두지 않는다(A가 만들지 않고 B가 쓰지 않음).
 - A는 후보를 고르거나 자르지 않는다. 선택·C 송신은 B 소관이다.
@@ -73,13 +73,20 @@ def _correlation(obs: FrameObservations) -> dict:
     return correlation_keys(view, obs.frame)
 
 
-def make_list_envelope(observations, *, version: str = LIST_ENVELOPE_VERSION) -> ListEnvelope:
-    """목록 봉투를 만든다. 버전이 다르거나 `FrameObservations`가 아니면 ListEnvelopeError."""
+def make_list_envelope(observations, *, world_frame: str = "world",
+                       version: str = LIST_ENVELOPE_VERSION) -> ListEnvelope:
+    """목록 봉투를 만든다. 버전이 다르거나 `FrameObservations`가 아니거나 TF 부모가 `world_frame`이 아니면 ListEnvelopeError.
+
+    #196 A3-2: v1(`make_observation_envelope`)과 같이 TF 부모 = world 프레임을 생성 때 대조한다(TF가 None이면 대조 없음).
+    """
     if version != LIST_ENVELOPE_VERSION:
         raise ListEnvelopeError(f"unsupported list envelope version {version!r} (expected {LIST_ENVELOPE_VERSION!r})")
 
     if not isinstance(observations, FrameObservations):
         raise ListEnvelopeError(f"observations must be FrameObservations: {type(observations).__name__}")
+
+    if observations.tf is not None and observations.tf.parent != world_frame:
+        raise ListEnvelopeError(f"tf.parent {observations.tf.parent!r} != world frame {world_frame!r}")
 
     return ListEnvelope(version=version, observations=observations,
                         correlation=MappingProxyType(_correlation(observations)))

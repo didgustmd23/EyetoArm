@@ -3,7 +3,7 @@
 
 사용 예(작업 디렉터리 저장소 루트):
     PYTHONPATH=src .venv/bin/python scripts/run_pipeline.py --images a.png b.png \\
-        --detect-config config/vision/planar.json --log outputs/run.jsonl
+        --detect-config config/vision/opencv_planar.json --log outputs/run.jsonl
     PYTHONPATH=src .venv/bin/python scripts/run_pipeline.py --video clip.avi \\
         --detect-config cfg.json --log run.jsonl --max-frames 30
 
@@ -427,8 +427,12 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
         kind, paths = ("images", list(args.images)) if args.images else ("video", [args.video])
         source_factory = stored_source_factory(kind, paths, args.source_id)
 
+    # #196 A4-1: 기본 경로도 기존 기록을 덮어쓰지 않는다(다른 경로와 같은 "x" 규칙, 덮어쓰기 옵션 없음)
     try:
-        stream = open(args.log, "w", encoding="utf-8")
+        stream = open(args.log, "x", encoding="utf-8")
+    except FileExistsError:
+        err.write(f"run_pipeline: output exists, refusing to overwrite: {args.log}\n")
+        return 2
     except OSError as exc:
         err.write(f"run_pipeline: cannot open log: {exc}\n")
         return 2
@@ -504,6 +508,7 @@ class _RosTfRuntime:
             raise
 
         self.lookup, self.has_static, self.clear = self._runtime.lookup, self._runtime.has_static, self._runtime.clear
+        self.set_failure_callback = self._runtime.set_failure_callback   # #196 A1-2: 연결부가 수신 스레드 실패를 받는다
         self._shutdown = False
 
     def close(self, limit_s: float) -> None:
@@ -892,7 +897,7 @@ def _run_capture_observation(args, settings, runner_config, detector_kw, capture
                           "meta_mismatches": [] if source is None else source.mismatches,
                           "tf": {"calls": tf_lookup.calls, "unavailable": tf_lookup.unavailable,
                                  "timed_out": tf_lookup.timed_out,
-                                 "max_wait_ms": max(tf_lookup.wait_ms) if tf_lookup.wait_ms else None},
+                                 "max_wait_ms": tf_lookup.max_wait_ms},
                           "on_output": None, "problems": problems, "runner_errors": result.errors,
                           "b_adapter": {"extensions_received": recorder._adapter.received_extensions,
                                         "unsupported_received": recorder._adapter.received_unsupported,
