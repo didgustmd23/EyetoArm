@@ -372,14 +372,14 @@ def ctx_of(i, generation=0):
 def live_cfg(**over):
     """추적 스레드 설정."""
     base = dict(queue_capacity=8, handoff_wait_s=0.5, lag_limit_ms=300.0, window_n=20, pending_ratio_limit=0.5,
-                lag_persist_n=5, lag_cooldown_ms=2000.0)
+                lag_persist_n=5, lag_cooldown_ms=2000.0, conveyor_probe_timeout_s=5.0)
     base.update(over)
 
     return LiveWorldConfig(**base)
 
 
-class LiveThreadTest(unittest.TestCase):
-    """추적 스레드."""
+class LiveBase(unittest.TestCase):
+    """추적 스레드 시험 도우미(시험 메서드 없음, #226 시험이 재사용)."""
 
     def make(self, lookup=None, **over):
         """스레드 시작(정리 등록)."""
@@ -412,6 +412,11 @@ class LiveThreadTest(unittest.TestCase):
         self.lw.close(2.0)
         return [json.loads(t) for t in (Path(self.tmp.name) / "world_tracks.jsonl").read_text().splitlines()]
 
+
+
+class LiveThreadTest(LiveBase):
+    """추적 스레드."""
+
     def test_handoff_and_confirmed_ids(self):
         """worker 넘김: 작업마다 결과를 받음, 3번째부터 확정 번호, TF 조회는 추적 스레드에서만."""
         lw = self.make()
@@ -425,8 +430,8 @@ class LiveThreadTest(unittest.TestCase):
         self.assertIsNotNone(ids_of(got[-1])[0])
         self.assertEqual(self.lookup.threads, {"eyetoarm-live-world-tracking"})
         recs = self.records()
-        self.assertEqual([r["kind"] for r in recs], ["frame"] * 5)
-        self.assertIn("center_mm", recs[-1]["tracks"][0])
+        self.assertEqual([r["kind"] for r in recs], ["frame"] * 5 + ["closed"])   # #226 D3: 닫힐 때 종료 사건 1줄
+        self.assertIn("center_mm", recs[-2]["tracks"][0])
 
     def test_w6_tf_missing_not_updated(self):
         """W6: TF 없음·늦음 → 갱신 안 함(사유 결과), 추적기 갱신 0(픽셀·최신 TF 대체 없음)."""

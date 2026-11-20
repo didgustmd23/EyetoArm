@@ -635,10 +635,11 @@ def _new_world_tracker(config):
     return WorldTracker(PartTrackIdIssuer(), config=config)
 
 
-def _ros_conveyor_speed_probe(timeout_s: float = 1.0) -> dict:
+def _ros_conveyor_speed_probe(timeout_s: float) -> dict:
     """C `/conveyor_controller` 노드의 `speed_mps` 파라미터를 시작 때 1회 읽는다(진단 전용, C 코드 무변). 자기 Context를 쓰고 닫는다.
 
-    노드가 없으면 `status="no_node"`. 이 값은 예측·짝짓기·번호 판정에 쓰지 않는다(보충 2, 정답 격리).
+    노드가 없으면 `status="no_node"`, 응답이 상한 안에 없으면 `no_reply`(실패는 진단 기록 `status`에만, #226 D2). 상한 `timeout_s`는
+    W 추적 시험 설정 `live.conveyor_probe_timeout_s`. 이 값은 예측·짝짓기·번호 판정에 쓰지 않는다(보충 2, 정답 격리).
     """
     import rclpy
     from rcl_interfaces.srv import GetParameters
@@ -649,7 +650,7 @@ def _ros_conveyor_speed_probe(timeout_s: float = 1.0) -> dict:
     ctx = Context()
     rclpy.init(context=ctx, signal_handler_options=SignalHandlerOptions.NO)
     node = None
-    out = {"node": "/conveyor_controller", "speed_mps": None, "status": "no_node"}
+    out = {"node": "/conveyor_controller", "speed_mps": None, "status": "no_node", "timeout_s": timeout_s}
 
     try:
         node = rclpy.create_node("eyetoarm_world_tracking_probe", context=ctx)
@@ -1071,7 +1072,9 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
     if world_on:
         # 진단 전용(정답 격리): C speed_mps 조회값은 요약에만 둔다. 추적기에는 넘기지 않는다(보충 2)
         try:
-            probe = (live_conveyor_probe or _ros_conveyor_speed_probe)()
+            # #226 D2: 상한은 설정값(진단 전용). 시험 주입 조회기는 인자 없이 부른다
+            probe = (live_conveyor_probe() if live_conveyor_probe is not None
+                     else _ros_conveyor_speed_probe(world_cfg[1].conveyor_probe_timeout_s))
         except Exception as exc:
             probe = {"node": "/conveyor_controller", "speed_mps": None, "status": f"error: {type(exc).__name__}: {exc}"}
 
