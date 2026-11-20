@@ -113,6 +113,30 @@ class Day7Window(unittest.TestCase):
             link._handle_line(self.command_status(command_id, "ACK"))   # duplicate ACK
             self.assertEqual(value.text(), "180 ms")
 
+    def test_reach_error_row_shows_reported_values_keeps_zero_and_clears_for_new_move(self):
+        link = self.socketless_link()
+        window = self.make(link, DemoView())
+        value = window.reach_error_value
+        self.assertEqual(value.text(), "—")
+        first = link.execute(target())
+        link._handle_line(wire({**READY, "server_time_ms": 2}))
+        link._handle_line(self.command_status(first, "ACK"))
+        self.assertEqual(value.text(), "—")                          # ACK 에는 reach_error 가 없다
+        self.assertIn("reach_error=—", window.error_detail.text())
+        link._handle_line(wire({**READY, "server_time_ms": 3, "command_id": first, "state": "REACHED",
+                                "reach_error": {"position_mm": 0, "rotation_deg": 0.25}}))
+        self.assertEqual(value.text(), "0 mm · 0.25 °")              # 유효한 0 을 — 로 바꾸지 않는다
+        self.assertIn("reach_error=0 mm · 0.25 °", window.error_detail.text())
+        self.assertIn("reach_error=0 mm · 0.25 °", window.command_label.text())
+        link._handle_line(wire({**READY, "server_time_ms": 4}))      # 종료 뒤 새 준비 응답이 있어야 다음 MOVE 가능
+        second = link.execute(target())                              # 새 명령: 이전 값을 남기지 않는다
+        self.assertEqual(value.text(), "—")                          # 새 기록이 만들어지는 즉시 비운다
+        link._handle_line(wire({**READY, "server_time_ms": 5}))
+        link._handle_line(self.command_status(second, "ACK"))
+        self.assertNotEqual(first, second)
+        self.assertEqual(value.text(), "—")
+        self.assertIn("reach_error=—", window.error_detail.text())
+
     def test_resend_shows_dash_with_reason_and_demo_never_fakes_a_value(self):
         link = self.socketless_link()
         window = self.make(link, DemoView())

@@ -1,6 +1,6 @@
 # D 담당 협업 요청 초안 (A·B·C)
 
-문서 버전 0.5 · D 검토 초안 · 2026-11-19 · 0.5: C 회신 초안 DC-01~04 기록(미발송) · 0.4: DC-01 아래 분류 진행 표시 보충 제안 추가(미게시) · 기존 요청(DA·DB·DC 본문)은 **사용자 보고상 게시됨**(D가 네트워크·수신을 확인하지 않음) · 6일차 추가 절과 A·B 회신 확인 메모는 **미게시** · 검토 기준 HEAD `c66cece422441a9a9ad1f54b1a98765066ac0ac3`(이전 0.3 기준 `dbd2c0ca292295f2b76fab1a27771e8b1627db5d`, 0.2 기준 `fa56c704d8b6d17c214598596f452283527a61d0`, 0.1 기준 `c8b992f506097666de807e4150f0924113ccabc5`)
+문서 버전 0.6 · D 검토 초안 · 2026-11-20 · 0.6: DB-01·DB-02·6일차 표에 B 코드(`cb66e74`)·B 답신 보충(11/18) 상태 반영(미게시) · 0.5: C 회신 초안 DC-01~04 기록(미발송) · 0.4: DC-01 아래 분류 진행 표시 보충 제안 추가(미게시) · 기존 요청(DA·DB·DC 본문)은 **사용자 보고상 게시됨**(D가 네트워크·수신을 확인하지 않음) · 6일차 추가 절과 A·B 회신 확인 메모는 **미게시** · 기존 게시 원문 검토 기준 HEAD `c66cece422441a9a9ad1f54b1a98765066ac0ac3`(이전 0.3 기준 `dbd2c0ca292295f2b76fab1a27771e8b1627db5d`, 0.2 기준 `fa56c704d8b6d17c214598596f452283527a61d0`, 0.1 기준 `c8b992f506097666de807e4150f0924113ccabc5`)
 
 이 문서는 D가 팀에 전달할 요청 초안입니다. 기한은 합의 전 제안이며 문서 작성은 상대 승인·실제 발송·시험 완료가 아닙니다. 관련 근거: [A 요청](A담당_협업_요청_초안.md), [B 요청](B담당_협업_요청_초안.md), [C 요청](C담당_협업_요청_초안.md), [D 상세설계](D담당_GUI_TCP_상세설계.md), [TCP 명세](../protocol/TCP_프로토콜_명세서.md).
 
@@ -58,6 +58,13 @@ Windows는 D GUI 구현 환경, Ubuntu는 팀원 코드 수신 환경입니다. 
 - **수신·확인:** B 내부 계산은 m, 내보내기(`transforms/work_result.py` `to_output_dict()`)는 위치·길이 mm·각도 deg로 B가 한 번 변환 → D는 B 외부 mm 출력을 소비할 때 다시 변환하지 않음(실제 C→D adapter 연동은 미완료). `theta_deg`는 작업 좌표 +X 기준 반시계 0~180°, 너트는 `theta_valid=false`·`theta_deg=null`. 규격 기준은 B 답신 표(BOLT_A 14~22 mm, BOLT_B 40~52 mm, NUT 7~14 mm, 반올림 표기)로 확인. 실제 `config/calibration/part_specs.json`의 NUT 상한은 14.05 mm(맞모서리 11.05 + 허용 3)이며 판정은 B 코드 기준이고 D는 중복 판정하지 않음. 무효 사유·`reason_owner`, 계산 불가 좌표의 `null` 원소(판정 무효라도 계산된 좌표는 유한값 가능, D는 `valid=false`면 수치를 표시하지 않음), B JSON 예시 형태 확인.
 - **미회신으로 남김:** ① 표시 JSON의 관측 상관 필드(`run_id`·`capture_generation`·`generation`·`job_seq`·`detector_config_id`·촬영 시각)가 `to_output_dict()`에 없음 — B가 넣을지 C 중계가 붙일지 ② 픽셀 중심(`center_px`) 제공 여부(현재 A 관측·B 출력 모두 없음) ③ `part_track_id`는 현재 A 관측형에 없어 B 출력이 null ④ `/b/center_overlay/image` 토픽의 C 채택(11/17)과 C→D 송출 담당. 미제공 값은 D가 추정해 채우지 않고 미수신으로 표시.
 
+**상태 갱신(2026-11-20, HEAD `cb66e74` 코드·B 문서 대조 · 미게시):** 위 「미회신으로 남김」 원문은 그대로 두고 현재 상태만 적습니다.
+
+- **①② B 반영됨(코드):** `to_output_dict()` 자체에는 여전히 없지만, B 실행 단계 `transforms/b_stage.py` `process()`가 내보내는 `result_dict`에 `correlation_keys()`(`run_id`·`capture_generation`·`generation`·`job_seq`·`detector_config_id`·`timestamp_ms`·`timestamp_base`·`capture_stamp_ns`)와 `center_px`(작업 좌표 중심을 원본 픽셀로 재투영, 계산 불가 시 `null`)를 붙입니다(B `1f91ff4`). D는 이 값을 다시 계산하지 않습니다.
+- **③ 대기:** `part_track_id`는 A-6 합의 전까지 null(B 답신 보충 2026-11-18). D는 추정해 채우지 않습니다.
+- **④ 담당 구분:** 발행은 B(`scripts/b_live_view.py --publish`, 토픽은 C 답 C-6으로 확정), C→D 송출은 C(B 답신 보충 2026-11-18). 다만 C 회신 초안(아래 DC-02, 2026-11-19)은 같은 토픽을 「B 확인 후 연결」로 적고 있어 B·C 문서 간 정리가 남아 있습니다.
+- **남은 전송 계약(C·D, 미결):** C→D 결과·무효화 전송은 미구현이고 부록 B는 미승인입니다. 현재 C 영상 중계 시제품은 프레임에 자체 `run_id`·채널별 `image_seq`·`source_id`(`gz_link` 등)를 붙이므로, B `result_dict`의 A 식별자와 같은 프레임으로 맞추는 방법을 C·D(필요 시 A)가 정해야 합니다. 그 전에는 D가 B 결과를 실제 화면 값으로 표시하지 않습니다.
+
 ### DB-02 B→C 액션 단위와 관측 상관 — P1
 
 *게시 당시 요청 원문(보존). 아래 m/mm 충돌은 B 답신으로 해소되었으며 현재 상태는 아래 **D 확인**이 우선합니다.*
@@ -74,6 +81,12 @@ Windows는 D GUI 구현 환경, Ubuntu는 팀원 코드 수신 환경입니다. 
 - **B 제안 수신:** C 목표는 mm·쿼터니언 `[x, y, z, w]`·`frame_id=base_link`, 연결 키 `source_id`·`image_seq`·`part_track_id`·`calibration_id`·`capture_stamp`(SIM_TIME ns)(`transforms/grasp.py` `build_sort_goal()`, `b_stage.py`가 `run_id`·세대·`job_seq` 추가). `base_link = world`는 현재 URDF(`simulation/models/ur5e_2f85/ur5e_2f85.urdf.xacro`, world 원점·회전 0) 배치상 성립을 확인. C 실행 프레임 채택과 액션 **최종 확인은 별개로 대기**(11/17·11/19). C 목표 사전은 D 표시 입력이 아니며 D는 소비하지 않음.
 - **정책 질문(B·C, D는 결정하지 않음):** B §7.1은 `SKIP`을 B 안에서만 쓰고 C로 보내지 않는다고 제안하나, C 상세설계는 사이클 격리·실패의 종료 규칙을 §16.8.3에, 규격 미판정 `UNRESOLVED`의 `ISOLATE_STOP`(벨트 정지·사용자 확인 후 격리)을 §17.1에 정의함. 벨트를 멈추지 않는 지금 전제에서 무효·판정 불가 볼트가 C 정지 경로를 타는지, 그냥 지나가는지 확정 요청.
 - **집계 보호(질문, DC-01과 연결):** `SKIP`·`UNRESOLVED`로 정상 상자의 정상 분류 수량이 자동으로 늘지 않아야 한다고 D는 봅니다. 실패·격리·이상 도착과 전체 공급(분모)은 별도로 세며, C가 확인한 사건과 합의된 기준을 적용합니다. 지나간 무효 볼트의 행선과 그 기록 담당, 이 집계 기준의 확정을 B·C에 요청합니다.
+
+**B 답신 보충 수신(2026-11-18, [B §6 DB-02 보충](B담당_협업_요청_초안.md#db-02-d--b-bc-액션-단위와-관측-상관) · D 확인 2026-11-20 · 미게시):** 위 정책 질문·집계 보호 원문은 그대로 둡니다.
+
+- **B 답:** 무효·`UNRESOLVED`·집는 구간 밖(`OUT_OF_REACH`) 볼트는 `SKIP`으로 C에 보내지 않고 벨트 끝으로 지나가며, `ISOLATE_STOP`은 이번 범위(11/26)에서 쓰지 않는 것을 제안. B 결과(`result_dict`)는 사진마다 나오므로 수량을 세지 않고, 정상 상자 수량은 C가 확인한 도착만 셈(D 제안과 같음). `OUT_OF_REACH`·`ALREADY_SENT`는 C 목표에만 있고 `result_dict`에는 없으며, D가 원하면 B가 `goal_kind`·`goal_reason`을 추가할 수 있다고 제안.
+- **C 확인 남음:** `SKIP` 볼트 통과(정지 경로 미사용) 정책, 너트 상자로 흘러간 볼트를 「미분류 통과」로 따로 셀 수 있는지(C 도착 규격 구분 여부).
+- **D 결정 남음:** `goal_kind`·`goal_reason` 추가 요청 여부. 현재 `result_dict`에는 없으며 D는 C 목표 사전을 소비하지 않습니다.
 
 ## C에게 요청
 
@@ -125,7 +138,7 @@ Windows는 D GUI 구현 환경, Ubuntu는 팀원 코드 수신 환경입니다. 
 |---|---|---|
 | C · DC-02 | 전송 방식, 접속 방향/주소/포트, 프레이밍·최대 크기·압축/해상도/주기, 3채널 이름과 실제 센서 대응표. `overview_cam/image`와 고정 탑뷰의 같은 센서/시점 여부. 링크 선택 요청의 접수·실제 적용 프레임 경계와 응답. 명령 TCP와 분리 | 내부 3칸 표시/선택·수신 소비 시험. 합의 전 47091/EAV1이나 D 내부 모의 API를 정식 규격으로 사용하지 않음 |
 | A·C · DA-01/DC-02 | A 측 필드·세대·무효화 규칙은 CA-02 회신으로 수신(위 DA-01). C→D 전달에서 run/source/image_seq/capture_generation/generation/job_seq/detector_config/calibration/시각 기준을 보존하는 형식과 결과·무효화 공통 순번. 무효화 `kind`·`cause` 전달과 `GENERATION_CHANGED` 대 프레임 없는 오류의 복구 경계. 재처리·재접속·새 run 구분과 오래된 결과/무효화 범위의 C 반영. 프레임 없는 입력 오류에는 image_seq를 합성하지 않는 예 | D 내부 상관/순서·무효화 시험. 부족한 상관 필드를 D가 추정해 B 결과에 채우지 않음 |
-| B·C · DB-01/DC-02 | 최신 `to_output_dict()`의 mm 출력과 B 답신의 `/b/center_overlay/image` ROS 토픽 제안(11/17 C와 확정 예정)은 확인. 이 JSON에 없는 `run_id`·`capture_generation`·`generation`·`job_seq`·`detector_config_id`·촬영 시각의 부착 담당(B 또는 C 중계), 픽셀 중심 제공 유무, `part_track_id` 출처(A), 제안 토픽의 C 채택 여부와 C→D 송출 담당, 동일 프레임 표본을 요청. | 너트 `theta_valid=false`·`theta_deg=null`은 B 답신으로 확인됨(추가 요청 아님). D는 B 출력 mm 재변환하지 않음. 추가 식별자/px 미제공 시 미수신으로 표시하고 가짜 px/방향을 만들지 않음 |
+| B·C · DB-01/DC-02 | 최신 `to_output_dict()`의 mm 출력과 B 답신의 `/b/center_overlay/image` ROS 토픽 제안(11/17 C와 확정 예정)은 확인. 이 JSON에 없는 `run_id`·`capture_generation`·`generation`·`job_seq`·`detector_config_id`·촬영 시각의 부착 담당(B 또는 C 중계), 픽셀 중심 제공 유무, `part_track_id` 출처(A), 제안 토픽의 C 채택 여부와 C→D 송출 담당, 동일 프레임 표본을 요청. | 너트 `theta_valid=false`·`theta_deg=null`은 B 답신으로 확인됨(추가 요청 아님). D는 B 출력 mm 재변환하지 않음. 추가 식별자/px 미제공 시 미수신으로 표시하고 가짜 px/방향을 만들지 않음. **2026-11-20 상태:** 상관 식별자·`center_px`는 B `result_dict`에 반영(`to_output_dict()` 단독은 미포함), 발행 B·송출 C로 B 답신, `part_track_id`(A-6)와 C→D 전송·프레임 대응 계약은 미결(위 DB-01 상태 갱신) |
 | C · DC-02/03 | 송출기 실행 명령·커밋/설정, 의존성·브리지 담당, 정상 3영상+결과 표본, 지연/순서역전/중복/보정 변경/단절/재접속/주석 중단 예시와 기대 결과. 로컬 재현 가능한 표본/시험 송출기 제공 시점 | 합의된 adapter로 전환 후 Windows 수신/표시 검증. 송출 코드만 전달되었다는 이유로 실제 3영상 호환 완료로 처리하지 않음 |
 | A · DA-03 | [D API·예제·로그 설명](../gui-impl/D_6일차_클라이언트_API.md)을 기준으로 Python/실행 환경·호출 방법·변경 통지 요구 확인. Qt StatusLink와 비Qt TcpClient 중 시험 도구는 후자 사용 | 기존 TCP1.1 GET_STATUS 예제와 함수 계약 제공. A 환경에서의 import/연결·100회 장애 시험은 A·D 공동 확인 전 미완료 |
 

@@ -473,8 +473,10 @@ class MainWindow(QMainWindow):
         side = QVBoxLayout()
         side.setSpacing(14)
         metric_card = Card("평가", "측정 전")
-        self.ack_metric_value = self._rows(metric_card, [("사용자 실행 → ACK 지연", NO_VALUE), ("명령 성공률", NO_VALUE),
-                                                         ("위치 오차", NO_VALUE)])[0]
+        self.ack_metric_value, _rate, self.reach_error_value = self._rows(
+            metric_card, [("사용자 실행 → ACK 지연", NO_VALUE), ("명령 성공률", NO_VALUE), ("도달 오차", NO_VALUE)])
+        # 현재 추적 MOVE 의 C 보고 reach_error 만 쓴다. D 가 계산하지 않는다(TCP 1.1 §4.6)
+        self.reach_error_value.setToolTip("C 가 STATUS reach_error 로 보낸 현재 MOVE 의 위치·회전 오차. 없으면 —")
         self.ack_metric_note = label("모의: 실제 ACK 없음 · 측정 안 함" if self.demo else "명령 없음", "Caption", wrap=True)
         tip = "모의 분류는 TCP 를 쓰지 않아 측정하지 않습니다." if self.demo else ACK_METRIC_BOUNDARY
         self.ack_metric_value.setToolTip(tip)
@@ -631,11 +633,19 @@ class MainWindow(QMainWindow):
         self._update_command_controls()
 
     def _on_command(self, record) -> None:
+        reach = getattr(record, "reach_error", None)   # 새 명령이면 None 이라 이전 명령 값이 남지 않는다
+        reach_text = (NO_VALUE if not reach else   # 0 은 유효값이므로 is None 으로만 비운다
+                      f"{NO_VALUE if reach.get('position_mm') is None else reach['position_mm']} mm · "
+                      f"{NO_VALUE if reach.get('rotation_deg') is None else reach['rotation_deg']} °")
         text = (f"ID: {record.command_id}\n{record.result}\n"
                 f"state={record.state or '—'} / stage={record.stage or '—'}\n"
-                f"code={record.code or '—'} / 시도={record.attempts}\n{record.detail or ''}")
+                f"code={record.code or '—'} / 시도={record.attempts}\n"
+                f"reach_error={reach_text}\n{record.detail or ''}")
         self.command_label.setText(text)
         self.error_detail.setText(text)
+        self.reach_error_value.setText(reach_text)
+        self.reach_error_value.setObjectName("Dim" if not reach else "CardTitle")
+        self.reach_error_value.style().polish(self.reach_error_value)
         latency, reason = record.ack_metric()
         self.ack_metric_value.setText(NO_VALUE if latency is None else f"{latency} ms")
         self.ack_metric_value.setObjectName("Dim" if latency is None else "CardTitle")

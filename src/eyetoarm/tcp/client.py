@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -18,6 +19,8 @@ from .protocol import (
     FINAL_STATES, STATE_RANK, MoveTarget, ProtocolError, build_cancel, build_get_status, build_move,
     new_command_id, parse_status, status_kind,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 def now_ms() -> int:
@@ -117,19 +120,19 @@ class TcpClient:
         self._want = False
         await self._drop(reason)
         self.phase = "연결 안 됨"
-        self.notify()
+        self._notify()
 
     async def _run(self) -> None:
         while self._want:
             self.phase = "접속 중"
-            self.notify()
+            self._notify()
             try:
                 reader, writer = await asyncio.wait_for(
                     asyncio.open_connection(self.config.host, self.config.port), self.config.connect_timeout_ms / 1000)
             except (OSError, asyncio.TimeoutError) as error:
                 self.log.add("LOCAL", "연결 실패", note=f"{self.config.host}:{self.config.port} · {error or '시간 초과'}")
                 self.phase = "재접속 대기"
-                self.notify()
+                self._notify()
                 await asyncio.sleep(self.config.reconnect_ms / 1000)
                 continue
             self.conn_id += 1
@@ -137,7 +140,7 @@ class TcpClient:
             self.phase = "연결됨"
             self.robot_ready, self.ready_note = None, "조회 중"
             self.log.add("LOCAL", "연결됨", note=f"{self.config.host}:{self.config.port} · 연결 {self.conn_id}")
-            self.notify()
+            self._notify()
             poller = asyncio.ensure_future(self._poll_loop())
             try:
                 await self._read_loop(reader)
@@ -146,10 +149,10 @@ class TcpClient:
                 await self._drop("서버가 연결을 닫음" if self._want else "")
             if self._want:
                 self.phase = "재접속 대기"
-                self.notify()
+                self._notify()
                 await asyncio.sleep(self.config.reconnect_ms / 1000)
         self.phase = "연결 안 됨"
-        self.notify()
+        self._notify()
 
     async def _drop(self, reason: str) -> None:
         writer, self._writer = self._writer, None
@@ -159,7 +162,7 @@ class TcpClient:
         try:
             await writer.wait_closed()
         except OSError:
-            pass
+            pass  # 상대가 먼저 끊었거나 리셋된 소켓을 닫을 때 난다. 이미 닫는 중이라 처리할 것이 없다(D-07)
         self.robot_ready, self.ready_note, self._last_ready = None, "미확인", None
         if self._ready_waiter is not None and not self._ready_waiter.done():
             self._ready_waiter.set_result(None)
@@ -169,7 +172,7 @@ class TcpClient:
             record.notes.append("연결 끊김")
         if reason:
             self.log.add("LOCAL", "연결 끊김", note=reason)
-        self.notify()
+        self._notify()
 
     # ── 송신 ───────────────────────────────────────────────────
 
@@ -257,7 +260,7 @@ class TcpClient:
             return self._say("MOVE 송신 · 수락 대기")
         finally:
             self._executing = False
-            self.notify()
+            self._notify()
 
     def _unsent(self, target: MoveTarget, reason: str) -> str:
         """보내지 않은 MOVE 도 어떻게 작성됐는지 기록에 남긴다. 이 ID 는 다시 쓰지 않는다."""
@@ -279,12 +282,12 @@ class TcpClient:
                 self.kpi["unconfirmed"] += 1
                 why = "연결이 바뀜" if not same_connection else "목표 유효 시간 초과" if not valid else "재전송 상한"
                 self.log.add("LOCAL", "수락 미확인", command_id=record.command_id, note=why)
-                self.notify()
+                self._notify()
                 return
             record.attempts += 1
             self.kpi["resend"] += 1
             await self._send(record.raw, "MOVE", record.command_id, "ACK 시간 초과 · 같은 바이트 재전송", attempt=record.attempts)
-            self.notify()
+            self._notify()
 
     async def cancel(self) -> str:
         """정지 버튼. 요청 전송만으로 정지 완료로 표시하지 않는다(§8.7)."""
@@ -295,11 +298,11 @@ class TcpClient:
             record.cancel = "unsent"
             self.log.add("TX", "CANCEL", raw=build_cancel(record.command_id), command_id=record.command_id,
                          send_state="unsent", note="연결 끊김 — 취소 요청을 보낼 수 없음")
-            self.notify()
+            self._notify()
             return self._say("연결 끊김 — 취소 요청을 보낼 수 없음 · 미전송")
         if await self._send(build_cancel(record.command_id), "CANCEL", record.command_id):
             record.cancel = "requested"
-            self.notify()
+            self._notify()
             return self._say("취소 요청 전송 · 종료·정지 확인 중")
         return self._say("취소 요청 미전송")
 
@@ -331,7 +334,7 @@ class TcpClient:
         except ProtocolError as error:
             self.kpi["invalid_rx"] += 1
             self.log.add("RX", "잘못된 응답", raw=line, note=f"{error} · 기록만 하고 상태에 반영하지 않음")
-            self.notify()
+            self._notify()
             return
         kind = status_kind(status)
         self.robot_ready = status["robot_ready"]
@@ -353,7 +356,7 @@ class TcpClient:
             note = self._apply_reject(status)
         self.log.add("RX", "STATUS", raw=line, command_id=status.get("command_id"), note=note, conn_id=self.conn_id,
                      routine=routine)
-        self.notify()
+        self._notify()
 
     def _apply_command(self, status: dict[str, Any]) -> str:
         record = self.current
@@ -411,9 +414,16 @@ class TcpClient:
 
     # ── 보조 ───────────────────────────────────────────────────
 
+    def _notify(self) -> None:
+        """화면 콜백 실패가 송수신·재접속 작업을 끝내지 않게 한다(D-07). 실패는 traceback 과 함께 기록한다."""
+        try:
+            self.notify()
+        except Exception:
+            _logger.exception("TcpClient notify 콜백 예외 · 송수신·재접속은 계속")
+
     def _say(self, text: str) -> str:
         self.last_message = text
-        self.notify()
+        self._notify()
         return text
 
     def _spawn(self, coroutine: Any) -> None:
