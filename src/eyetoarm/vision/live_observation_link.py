@@ -34,8 +34,12 @@
   목록 봉투(`eyetoarm.b_input/2`)를 만들고 목록 소비자(`list_consumer_factory(stage)` 또는 `stage.process_frame`)를 부른다. 소비자를 못
   구하면 RuntimeError(worker 오류, 단계 T로 바꾸지 않음). 목록 봉투 오류(ValueError 계열)는 `b_input_rejected`. 주석 영상은 만들지
   않는다(B 후보 결과 형식 U-3 전). 단일 관측 경로(`"single"`, 기본)는 바꾸지 않는다.
-- C 목표 송신(#214 D13 해제, 선택): `sort_part_runtime`을 주면(설정 `sort_part` 필수, 단계 T만) 검사 ③이 수락한 결과의 C 목표를
-  `LiveSortPartSender`가 B `SortPartClient`로 보낸다(`vision/live_sort_part`). `stage.on_output`은 여전히 None이어야 한다(수락 전 송신
+- C 목표 송신(#214 D13 해제, 선택): `sort_part_runtime`을 주면(설정 `sort_part` 필수) 검사 ③이 수락한 결과의 C 목표를
+  `LiveSortPartSender`가 B `SortPartClient`로 보낸다(`vision/live_sort_part`). 단계 L(#233)은 B `process_frame`이 고른 1개(`chosen`)만
+  보낸다: worker가 소비자를 부른 직후 `stage.last_frame`에서 반환 사전 `goal`과 같은 객체를 가진 결과를 찾아 그 봉투와 짝으로 두고, 수락
+  훅은 같은 봉투일 때만 그 결과를 송신기에 넘긴다(사진당 최대 1회). 고른 것이 없으면 송신하지 않고 `list_no_selection`만 센다.
+  못 찾으면(반환 계약 위반) `list_goal_unmatched`로 세고 진입점이 종료 1로 드러낸다. `stage.last`는 쓰지 않는다(고른 것이 없는
+  프레임에 앞 프레임 값이 남음). `stage.on_output`은 여전히 None이어야 한다(수락 전 송신
   경로를 만들지 않음). 실행 닫힘(리셋·종료·fail-stop)에 송신 게이트를 먼저 닫고, 정리 단계 `sort_part`는 dispatcher 다음이다. 실행기
   D13 가드(실시간 `b_consumer` 거부)는 그대로다. 주지 않으면 기록·요약이 기존과 같다.
 - 추적 번호(#215, 선택 `tracking=True`, 진입점 `--tracking`): 실행기가 `offer(..., tracks=TrackFrame | None)`로 같은 작업의 추적 결과를
@@ -89,6 +93,7 @@ _OPTIONAL_KEYS = {"sort_part"}   # #214 송신을 켤 때만(진입점이 옵션
 
 B_INPUT_SINGLE = "single"
 B_INPUT_LIST = "list"
+_UNMATCHED = object()   # #233: 고른 목표를 결과 묶음에서 못 찾음 표시
 
 
 @dataclass(frozen=True)
@@ -242,11 +247,15 @@ class LiveObservationLink:
                  render: Callable | None, clock_ns: Callable[[], int] = time.monotonic_ns,
                  b_input: str = B_INPUT_SINGLE, list_consumer_factory: Callable | None = None,
                  view_bias=None, sort_part_runtime=None, tracking: bool = False,
-                 world_tracker=None, world_config=None, world_plane_z_m: float | None = None) -> None:
+                 world_tracker=None, world_config=None, world_plane_z_m: float | None = None,
+                 list_consumer_kind: str | None = None, run_outputs: tuple | None = None) -> None:
         """출력 폴더(새로)·상태(start_closed)·기록기·디스패처·TF 준비를 만든다.
 
         - `b_input`(#201): `"single"`(기본, 단계 T 봉투 1) | `"list"`(단계 L 목록 봉투 2). `"list"`면 `render`는 쓰지 않는다.
         - `list_consumer_factory(stage)`(#201, 시험 주입): 목록 봉투를 받는 함수. None이면 `stage.process_frame`.
+        - `run_outputs`(#233 r1, 선택): 이 실행의 실제 출구 이름 목록(진입점이 C 연결부·B center·C 목표를 나열). 주면 요약
+          `record_only`는 목록이 비었을 때만 참이고 `outputs`는 그 목록이다. None이면 기존 규칙(송신기 유무).
+        - `list_consumer_kind`(#233, 선택): 운영 소비자(B center 감싸개 등)를 줄 때 기록할 소비자 이름. None이면 기존 이름 규칙.
         - `view_bias`(#207): `ViewBiasConfig` 또는 None(기본, 꺼짐). 켜면 디스패처의 공통 지점(봉투 생성 직후)에서 단계 T·L 끝점을
           보정하고 accept 기록·요약에 보정 필드를 남긴다. None이면 기록·요약이 기존과 같다.
 
@@ -254,7 +263,7 @@ class LiveObservationLink:
         - `stage_factory(camera)` → `(BStage, ObservationEnvelopeAdapter)`. B 단계의 `on_output`은 None이어야 한다.
         - `render(stage, frame, out)` → PNG bytes | None(같은 프레임 주석).
         - `sort_part_runtime`(#214, 선택): C 송신 런타임(`send`·`stats`·`inflight_ids`·`server_seen`·`close`). 주면 `config.sort_part`가
-          있어야 하고 단계 T만 된다. 연결부가 소유해 정리 단계 `sort_part`에서 닫는다. None(기본)이면 송신 없음.
+          있어야 한다. 단계 T, 또는 단계 L(#233, 고른 1개만). 연결부가 소유해 정리 단계 `sort_part`에서 닫는다. None(기본)이면 송신 없음.
         - `tracking`(#215, 기본 False): 추적 번호 연결. 단계 T만. 끄면 `offer`의 `tracks`를 쓰지 않고 기록·요약이 기존과 같다.
         - `world_tracker`·`world_config`·`world_plane_z_m`(#217, 선택): W 추적 스레드. `tracking`이 참이어야 하고 단계 T만.
         """
@@ -275,16 +284,18 @@ class LiveObservationLink:
             if config.sort_part is None:
                 raise ValueError("sort_part sending requires config block sort_part")
 
-            if b_input != B_INPUT_SINGLE:
-                raise ValueError("sort_part sending is for stage T (b_input single) only (B-09 list rule pending)")
-
         self.b_input = b_input
+        self.run_outputs = None if run_outputs is None else tuple(run_outputs)
         self._list_consumer_factory = list_consumer_factory
-        self.consumer_kind = (None if b_input == B_INPUT_SINGLE
+        self.consumer_kind = (None if b_input == B_INPUT_SINGLE else list_consumer_kind if list_consumer_kind is not None
                               else "injected_test_only" if list_consumer_factory is not None else "BStage.process_frame")
         self.list_consumer_calls = 0              # 목록 소비자 호출 수(worker만 씀, 잠금으로 읽음)
         self.list_candidates_sent = 0
         self.list_length_hist: dict[int, int] = {}
+        self._list_chosen: tuple | None = None    # #233: (봉투, 고른 BOutput | None) worker 전용(같은 worker의 수락 훅이 읽음)
+        self.list_no_selection = 0                # #233: 수락됐지만 B가 고른 목표가 없는 프레임(송신 없음)
+        self.list_goal_unmatched = 0              # #233: 반환 `goal`을 결과 묶음에서 못 찾은 프레임(계약 위반)
+        self.list_goals_offered = 0               # #233: 송신기에 넘긴 고른 목표 수
 
         self.run_id = run_id
         self.config = config
@@ -457,7 +468,9 @@ class LiveObservationLink:
                 self.release_proxy.release(goal["part_track_id"])
                 self._count_tracking("released_record_only")
 
-        if self.sort_part is not None:   # 송신 예외는 디스패처가 수락 훅 오류로 센다
+        if self.sort_part is not None and self.b_input == B_INPUT_LIST:   # #233: 고른 1개만
+            self._offer_list_goal(item, payload, event_seq, ids)
+        elif self.sort_part is not None:   # 송신 예외는 디스패처가 수락 훅 오류로 센다
             self.sort_part.offer(payload.output, item.frame, ids, event_seq)
 
     def _close_outputs(self, reason: str) -> None:
@@ -540,9 +553,13 @@ class LiveObservationLink:
         return make_list_envelope(observations, world_frame=self.config.world_frame)
 
     def _compute_list(self, st, envelope):
-        """목록 소비자를 한 번 부르고 길이 분포를 센다."""
+        """목록 소비자를 한 번 부르고 길이 분포를 센다. 송신을 켰으면 고른 결과를 이 봉투와 짝으로 둔다(#233)."""
+        self._list_chosen = None
         out = st[2](envelope)
         n = len(envelope.observations.candidates)
+
+        if self.sort_part is not None:
+            self._list_chosen = (envelope, self._find_chosen(st[0], out))
 
         with self._lock:
             self.list_consumer_calls += 1
@@ -550,6 +567,43 @@ class LiveObservationLink:
             self.list_length_hist[n] = self.list_length_hist.get(n, 0) + 1
 
         return out
+
+    @staticmethod
+    def _find_chosen(stage, out):
+        """B 반환 사전의 `goal`(고른 결과의 목표 객체 그 자체)을 가진 결과를 이번 사진 결과 묶음에서 찾는다.
+
+        고른 것이 없으면 None. `goal`이 있는데 못 찾으면 `_UNMATCHED`(수락 훅이 계약 위반으로 센다).
+        """
+        goal = out.get("goal") if isinstance(out, dict) else None
+
+        if goal is None:
+            return None
+
+        for o in getattr(stage, "last_frame", None) or ():
+            if getattr(o, "goal", None) is goal:
+                return o
+
+        return _UNMATCHED
+
+    def _offer_list_goal(self, item, payload, event_seq, ids) -> None:
+        """단계 L 수락 훅(#233): 같은 봉투의 고른 결과 하나만 송신기에 넘긴다."""
+        pair = self._list_chosen
+        chosen = pair[1] if pair is not None and pair[0] is payload.envelope else _UNMATCHED
+
+        if chosen is None:
+            with self._lock:
+                self.list_no_selection += 1
+            return
+
+        if chosen is _UNMATCHED:
+            with self._lock:
+                self.list_goal_unmatched += 1
+            return
+
+        with self._lock:
+            self.list_goals_offered += 1
+
+        self.sort_part.offer(chosen, item.frame, ids, event_seq)
 
     # ------------------------------------------------------------------ 수신 경계(소스 slot 잠금 안)
 
@@ -956,8 +1010,11 @@ class LiveObservationLink:
         """종료 요약(사전)."""
         report = self.writer_report
 
-        outputs = ({"record_only": True, "outputs": "none (no C/D/robot output)"} if self.sort_part is None else
-                   {"record_only": False, "outputs": "C goals via /sort_part (accepted results only, #214)"})
+        if self.run_outputs is not None:   # #233 r1: 진입점이 준 실제 출구(C 연결부는 항상)
+            outputs = {"record_only": not self.run_outputs, "outputs": list(self.run_outputs)}
+        else:
+            outputs = ({"record_only": True, "outputs": "none (no C/D/robot output)"} if self.sort_part is None else
+                       {"record_only": False, "outputs": "C goals via /sort_part (accepted results only, #214)"})
 
         return {"run_id": self.run_id, **outputs,
                 "config_status": LIVE_OBSERVATION_CONFIG_STATUS, "config_sha256": self.config.sha256,
@@ -998,7 +1055,10 @@ class LiveObservationLink:
         with self._lock:
             return {"b_input": "eyetoarm.b_input/2", "consumer_kind": self.consumer_kind,
                     "list_consumer_calls": self.list_consumer_calls, "list_candidates_sent": self.list_candidates_sent,
-                    "list_length_hist": {str(k): v for k, v in sorted(self.list_length_hist.items())}}
+                    "list_length_hist": {str(k): v for k, v in sorted(self.list_length_hist.items())},
+                    **({} if self.sort_part is None else {
+                        "list_goals_offered": self.list_goals_offered, "list_no_selection": self.list_no_selection,
+                        "list_goal_unmatched": self.list_goal_unmatched})}
 
     def write_summary(self, extra: dict) -> None:
         """`summary.json`을 새로 쓴다."""

@@ -277,8 +277,10 @@ class NormalPathTest(Base):
             self.assertEqual((r["goal_kind"], r["b_valid"]), (real.goal.get("kind"), real.result.valid))
 
         s = self.summary(out)
+        # #233 r1: 실시간 A→B 실행은 C 연결부(detect)를 항상 출구로 가진다(C 목표·D·로봇 출력은 없음)
         self.assertEqual((s["record_only"], s["cleanup_confirmed"], s["reset_detected"], s["drained_before_end"]),
-                         (True, True, False, True))
+                         (False, True, False, True))
+        self.assertEqual(s["outputs"], ["c_handoff_detect(127.0.0.1:47093)"])
         self.assertEqual(self.tf.closed, 1)
         self.assertTrue(all(c[2] in {sc.stamp(i) for i in range(3)} for c in self.tf.calls))
 

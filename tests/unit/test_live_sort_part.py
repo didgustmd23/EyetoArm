@@ -512,19 +512,20 @@ class CliOffAndArgsTest(CliBase):
     """U1·U12·U14."""
 
     def test_off_creates_nothing_and_keeps_summary(self):
-        """U1: 옵션 없으면 런타임 공장 0, sort_part.jsonl 없음, 요약에 sort_part 없음·record_only 참, 시작 줄 그대로."""
+        """U1: 옵션 없으면 런타임 공장 0, sort_part.jsonl 없음, 요약에 sort_part 없음. #233 r1: C 연결부만 출구(record_only 거짓)."""
         code, err, out = self.run_sort(Scenario(3), extra=(), config=CONFIG)
         self.assertEqual(code, 0, err)
         self.assertEqual(self.factory_calls, [])
         self.assertFalse((Path(out) / "sort_part.jsonl").exists())
         s = self.summary(out)
         self.assertNotIn("sort_part", s)
-        self.assertEqual((s["record_only"], s["outputs"]), (True, "none (no C/D/robot output)"))
-        self.assertIn("no C/D/robot output, no auto restart", err)
+        # #233 r1: C 연결부(detect)는 항상 출구다. C 목표·center·D/로봇 출력은 없다
+        self.assertEqual((s["record_only"], s["outputs"]), (False, ["c_handoff_detect(127.0.0.1:47093)"]))
+        self.assertIn("outputs=c_handoff_detect(127.0.0.1:47093); no D/robot output from A, no auto restart", err)
         self.assertNotIn("SORT_PART", err)
 
     def test_argument_and_config_errors(self):
-        """U12: 기록 연결 없이·단계 L·블록 없음·블록만 있음·잘못된 블록은 2, 런타임·TF 0."""
+        """U12: 기록 연결 없이·단계 L 추적·블록 없음·블록만 있음·잘못된 블록은 2, 런타임·TF 0(#233: 단계 L 송신 자체는 허용)."""
         base = ["--detector", "ai", "--ai-config", self.case.ai, "--log", str(Path(self.tmp.name) / "x.jsonl")]
         bad = Path(self.tmp.name) / "bad.json"
         doc = json.loads(SORT_CONFIG.read_text(encoding="utf-8"))
@@ -532,7 +533,7 @@ class CliOffAndArgsTest(CliBase):
         bad.write_text(json.dumps(doc), encoding="utf-8")
         live = ["--live-observation-out", self.out(), "--live-observation-config"]
         cases = [["--ros-link", *base, "--live-sort-part"],
-                 ["--ros-link", *base, *live, str(SORT_CONFIG), "--b-input", "list", "--live-sort-part"],
+                 ["--ros-link", *base, *live, str(SORT_CONFIG), "--b-input", "list", "--tracking", "--live-sort-part"],
                  ["--ros-link", *base, *live, str(CONFIG), "--live-sort-part"],
                  ["--ros-link", *base, *live, str(SORT_CONFIG)],
                  ["--ros-link", *base, *live, str(bad), "--live-sort-part"]]

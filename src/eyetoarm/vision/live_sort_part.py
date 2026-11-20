@@ -7,7 +7,8 @@ Q7 = 별도 `sort_part.jsonl`만, Q8 = 클라이언트 `stats`는 참고만), �
 - **송신 자리:** 디스패처 검사 ③ 수락 뒤 worker(`offer`). `BStage.on_output`은 B 계산 안·수락 전에 불리므로 쓰지 않는다(연결부의
   `on_output` 거부 유지). 실행기 D13 가드(`pipeline_runner`의 실시간 `b_consumer`·`b_list_consumer` 거부)도 그대로다.
 - **보내는 조건:** 수락 + `out.result.valid` + `goal.kind`가 `PICK_PLACE`·`PASS_THROUGH` + 게이트 열림 + 상태 fail-stop 아님 + 클라이언트
-  규칙(`no_server`·`busy`면 클라이언트가 보내지 않음). 단계 T만(프레임당 1회 시도 = 사진 한 장에 목표 최대 1개).
+  규칙(`no_server`·`busy`면 클라이언트가 보내지 않음). 단계 T, 또는 단계 L(#233: 연결부가 B `process_frame`이 고른 1개만 넘김).
+  어느 쪽이든 프레임당 1회 시도 = 사진 한 장에 목표 최대 1개. 단계 L은 추적 번호가 없어(B `_candidate_view`) 재시도 제한 중 실패 지점 차단(②)만 작동한다.
 - **게이트:** 잠금 하나. `offer`는 잠금 안에서 「닫힘·실패 아님 확인 → `client.send`(기다리지 않는 호출)」를 하고, `close_run`도 같은
   잠금으로 닫는다. 그래서 `close_run`이 돌아온 뒤 시작하는 송신은 0이다. 대가로 `close_run`(소스 slot 잠금 안의 되감기 훅에서도 불림)이
   진행 중 송신 한 번을 기다릴 수 있다(`gate_wait_max_ms`).
