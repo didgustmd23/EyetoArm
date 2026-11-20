@@ -19,6 +19,7 @@ from eyetoarm.calibration.profile import from_fov
 from eyetoarm.common.types import InvalidationKind, PixelBasis, PlanarObservation
 from eyetoarm.transforms.b_stage import BStage, StaticTfLookup
 from eyetoarm.transforms.planar_transform import w_to_image
+from eyetoarm.transforms.work_result import class_plane_z, load_specs
 from eyetoarm.vision.pipeline import ADAPTER_CONTRACT_VIOLATION, GenerationCause, VisionPipeline
 from eyetoarm.vision.pipeline_runner import b_gate
 from eyetoarm.vision.ai_convert import observation_from_ai
@@ -33,7 +34,9 @@ from test_pipeline import RUN_ID, FakeClock, frame, profile, settings
 from test_run_pipeline import Base, FakeSource
 
 W, H = CAM.width, CAM.height
-BOLT_Z, NUT_Z = 0.105, 0.1057
+# #233: 종류별 기준 높이는 B 규격 파일에서 읽는다(B가 값을 바꾸면 합성 투영과 기대값이 함께 따라감)
+_SPECS = load_specs(ROOT / "config/calibration/part_specs.json")
+BOLT_Z, NUT_Z = class_plane_z(_SPECS, "bolt"), class_plane_z(_SPECS, "nut")
 
 
 def _project(points_w, z):

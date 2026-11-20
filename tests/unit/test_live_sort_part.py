@@ -21,7 +21,6 @@ from unittest import mock
 from eyetoarm.transforms import sort_part_client as spc
 from eyetoarm.vision.live_sort_part import (LiveSortPartSender, RecordingSortPartClient, SortPartConfig,
                                             SortPartConfigError, parse_sort_part)
-from test_live_center_display import FakePublisher, write_center_config
 from test_run_pipeline_capture_observation import model_with
 from test_run_pipeline_live_observation import CONFIG, FakeTf, Scenario
 from test_run_pipeline_live_observation import Base as LiveBase
@@ -351,7 +350,7 @@ class CliBase(LiveBase):
         return make
 
     def run_sort(self, scenario, *, config: Path | str = SORT_CONFIG, extra=("--live-sort-part",), factory=None, tf=None, max_frames=None,
-                 out=None, display_factory=None, hook=None):
+                 out=None, hook=None):
         """main 실행 → (종료 코드, stderr, 출력 폴더)."""
         out = out or self.out()
         log = str(Path(self.tmp.name) / f"{Path(out).name}.jsonl")
@@ -368,8 +367,7 @@ class CliBase(LiveBase):
                                  model_factory=lambda path: model_with(scenario.masks_fn),
                                  live_source_factory=scenario.factory_maker(made), live_tf_factory=lambda c: tf,
                                  live_run_controller=self.controller, b_stage_hook=hook,
-                                 live_sort_part_factory=factory or self.factory(),
-                                 live_display_factory=display_factory)
+                                 live_sort_part_factory=factory or self.factory())
         except SystemExit as exc:
             code = exc.code
 
@@ -385,7 +383,7 @@ class CliBase(LiveBase):
 
 
 class CliOnTest(CliBase):
-    """U2·U3·U5·U6·U11·U13 CLI 경로."""
+    """U2·U3·U5·U6·U11 CLI 경로."""
 
     def test_each_accept_tried_once_and_goal_matches_b(self):
         """U2·U3: 수락마다 송신 판단 1회(같은 프레임 두 번 없음), 보낸 목표 = accept 기록의 B 목표(goal_id·spec·kind)."""
@@ -509,66 +507,25 @@ class CliOnTest(CliBase):
         self.assertIn("warning: /sort_part server not seen", err)
         self.assertTrue(all(r["event"] in ("no_server", "gate_closed_by") for r in self.sort_records(out)))
 
-    def test_with_center_display_both_once_send_first(self):
-        """U13: 표시와 함께 켜면 같은 수락에 송신 판단 1회·표시 1회, 송신이 먼저. 표시 실패는 송신에 영향 없음."""
-        order = []
-        rt = FakeRuntime()
-        real_send = rt.send
-
-        def send(out):
-            """순서 기록."""
-            order.append(("send", out.goal["goal_id"]))
-            return real_send(out)
-
-        rt.send = send
-        from eyetoarm.vision import live_center_display as lcd
-
-        real_offer = lcd.LiveCenterDisplay.offer_accepted
-
-        def offer(disp, frame, annotated, out, ids, vb=None):
-            """순서 기록."""
-            order.append(("display", out.goal["goal_id"]))
-            return real_offer(disp, frame, annotated, out, ids, vb)
-
-        cfg_path = write_center_config(Path(self.tmp.name) / "both.json", status_hold_s=100.0, publish_fail_limit=1)
-        doc = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
-        doc["sort_part"] = json.loads(SORT_CONFIG.read_text(encoding="utf-8"))["sort_part"]
-        Path(cfg_path).write_text(json.dumps(doc), encoding="utf-8")
-        pub = FakePublisher(fail=-1)
-
-        with mock.patch.object(lcd.LiveCenterDisplay, "offer_accepted", offer):
-            code, err, out = self.run_sort(Scenario(4), config=cfg_path, factory=self.factory(rt),
-                                           extra=("--live-sort-part", "--live-center-topic"),
-                                           display_factory=lambda t, c: pub)
-
-        self.assertEqual(code, 1, err)                          # 표시 실패는 종료 1(#213 Q6)
-        acc = self.accepts(out)
-        sends = [g for k, g in order if k == "send"]
-        displays = [g for k, g in order if k == "display"]
-        self.assertEqual(sends, displays)                       # 수락마다 둘 다 1회
-        self.assertEqual(len(sends), len(acc))
-        self.assertTrue(all(order[2 * i] == ("send", sends[i]) for i in range(len(sends))))
-        self.assertEqual(len(rt.sent), len(acc))                # 표시 실패와 무관하게 송신
-        self.assertIn("center display stopped: publish_failed", err)
-
 
 class CliOffAndArgsTest(CliBase):
     """U1·U12·U14."""
 
     def test_off_creates_nothing_and_keeps_summary(self):
-        """U1: 옵션 없으면 런타임 공장 0, sort_part.jsonl 없음, 요약에 sort_part 없음·record_only 참, 시작 줄 그대로."""
+        """U1: 옵션 없으면 런타임 공장 0, sort_part.jsonl 없음, 요약에 sort_part 없음. #233 r1: C 연결부만 출구(record_only 거짓)."""
         code, err, out = self.run_sort(Scenario(3), extra=(), config=CONFIG)
         self.assertEqual(code, 0, err)
         self.assertEqual(self.factory_calls, [])
         self.assertFalse((Path(out) / "sort_part.jsonl").exists())
         s = self.summary(out)
         self.assertNotIn("sort_part", s)
-        self.assertEqual((s["record_only"], s["outputs"]), (True, "none (no C/D/robot output)"))
-        self.assertIn("no C/D/robot output, no auto restart", err)
+        # #233 r1: C 연결부(detect)는 항상 출구다. C 목표·center·D/로봇 출력은 없다
+        self.assertEqual((s["record_only"], s["outputs"]), (False, ["c_handoff_detect(127.0.0.1:47093)"]))
+        self.assertIn("outputs=c_handoff_detect(127.0.0.1:47093); no D/robot output from A, no auto restart", err)
         self.assertNotIn("SORT_PART", err)
 
     def test_argument_and_config_errors(self):
-        """U12: 기록 연결 없이·단계 L·블록 없음·블록만 있음·잘못된 블록은 2, 런타임·TF 0."""
+        """U12: 기록 연결 없이·단계 L 추적·블록 없음·블록만 있음·잘못된 블록은 2, 런타임·TF 0(#233: 단계 L 송신 자체는 허용)."""
         base = ["--detector", "ai", "--ai-config", self.case.ai, "--log", str(Path(self.tmp.name) / "x.jsonl")]
         bad = Path(self.tmp.name) / "bad.json"
         doc = json.loads(SORT_CONFIG.read_text(encoding="utf-8"))
@@ -576,7 +533,7 @@ class CliOffAndArgsTest(CliBase):
         bad.write_text(json.dumps(doc), encoding="utf-8")
         live = ["--live-observation-out", self.out(), "--live-observation-config"]
         cases = [["--ros-link", *base, "--live-sort-part"],
-                 ["--ros-link", *base, *live, str(SORT_CONFIG), "--b-input", "list", "--live-sort-part"],
+                 ["--ros-link", *base, *live, str(SORT_CONFIG), "--b-input", "list", "--tracking", "--live-sort-part"],
                  ["--ros-link", *base, *live, str(CONFIG), "--live-sort-part"],
                  ["--ros-link", *base, *live, str(SORT_CONFIG)],
                  ["--ros-link", *base, *live, str(bad), "--live-sort-part"]]
