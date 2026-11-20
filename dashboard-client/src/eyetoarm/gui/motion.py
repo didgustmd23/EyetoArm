@@ -19,6 +19,8 @@ from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
 EASE_OUT = QEasingCurve.Type.OutCubic
 EASE_IO = QEasingCurve.Type.InOutCubic
+EASE_BACK = QEasingCurve(QEasingCurve.Type.OutBack)   # 끝에서 살짝 넘쳤다 돌아온다(탭의 흰 알약)
+EASE_BACK.setOvershoot(1.1)
 _DELETE = QAbstractAnimation.DeletionPolicy.DeleteWhenStopped
 
 _reduced = False  # 「모션 줄이기」. 창의 체크박스와 --no-motion 이 바꾼다
@@ -56,8 +58,8 @@ def tween(owner: QObject, start, end, ms: int, on_value: Callable, curve=EASE_OU
     return animation
 
 
-def move_geometry(widget: QWidget, target: QRect, ms: int) -> None:
-    """위젯을 target 위치·크기로 옮긴다(탭 선택선 이동에 사용)."""
+def move_geometry(widget: QWidget, target: QRect, ms: int, curve=EASE_IO) -> None:
+    """위젯을 target 위치·크기로 옮긴다(탭의 흰 알약 이동, 보조 영상 확대·복구에 사용)."""
     previous = widget.findChild(QPropertyAnimation, "geometry_motion")
     if previous is not None:  # 빠르게 다시 누르면 이전 움직임을 정리하고 새로 시작한다
         previous.stop()
@@ -71,31 +73,45 @@ def move_geometry(widget: QWidget, target: QRect, ms: int) -> None:
     animation.setDuration(ms)
     animation.setStartValue(widget.geometry())
     animation.setEndValue(target)
-    animation.setEasingCurve(EASE_IO)
+    animation.setEasingCurve(curve)
     animation.start(_DELETE)
 
 
-def appear(widget: QWidget, ms: int, rise_px: int = 12, delay_ms: int = 0) -> None:
+def appear(widget: QWidget, ms: int, rise_px: int = 18, delay_ms: int = 0) -> None:
     """위젯이 아래에서 살짝 올라오며 나타난다. 끝나면 효과 객체를 떼어 그리기 비용을 남기지 않는다.
 
     위치 이동은 레이아웃이 정한 자리로 끝나므로 최종 배치는 모션 유무와 같다.
+    움직이는 도중에 다시 불러도 된다(단축키로 화면을 빠르게 오갈 때). 앞선 움직임은 그 자리에서 버리고,
+    처음 기억해 둔 제자리(appear_home)에서 새로 시작한다. 그래서 자리가 몇 픽셀씩 밀리지 않는다.
     """
     if _reduced:
         return
+    generation = (widget.property("appear_generation") or 0) + 1
+    widget.setProperty("appear_generation", generation)
+    if widget.property("appear_home") is None:
+        widget.setProperty("appear_home", widget.pos())
     effect = QGraphicsOpacityEffect(widget)
     effect.setOpacity(0.0)
-    widget.setGraphicsEffect(effect)
+    widget.setGraphicsEffect(effect)   # 앞선 효과 객체는 Qt 가 지운다. 앞선 움직임은 아래 세대 확인으로 손대지 않는다
+
+    def current() -> bool:
+        return widget.property("appear_generation") == generation
 
     def start() -> None:
-        home = widget.pos()
+        if not current():
+            return
+        home = widget.property("appear_home")
 
         def step(value: float) -> None:
-            effect.setOpacity(value)
-            widget.move(home + QPoint(0, round((1.0 - value) * rise_px)))
+            if current():
+                effect.setOpacity(value)
+                widget.move(home + QPoint(0, round((1.0 - value) * rise_px)))
 
         def finish() -> None:
-            widget.move(home)
-            widget.setGraphicsEffect(None)  # effect 는 Qt 가 함께 지운다
+            if current():
+                widget.move(home)
+                widget.setGraphicsEffect(None)  # effect 는 Qt 가 함께 지운다
+                widget.setProperty("appear_home", None)
 
         tween(widget, 0.0, 1.0, ms, step, EASE_OUT, finish)
 
