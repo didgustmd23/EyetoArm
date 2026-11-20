@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <sdf version="1.9">
-  <!--
+<!--
     EyetoArm 분류 셀 외형 확인용 월드(D 데모, C 실행 구성의 대역).
     배치·치수는 B 확정 전 임시값이다. 로봇은 launch에서 원점에 생성한다.
-    벨트는 외형 전용 정적 모델이며 구동하지 않는다(벨트 제어기는 C 소유).
+    벨트 모델은 TrackController 시스템으로 구동한다. 속도·방향 초기값 및 제어 연결은 C 소유.
   -->
   <world name="sort_cell">
     <physics name="1ms" type="ignored">
