@@ -34,9 +34,6 @@
   목록 봉투(`eyetoarm.b_input/2`)를 만들고 목록 소비자(`list_consumer_factory(stage)` 또는 `stage.process_frame`)를 부른다. 소비자를 못
   구하면 RuntimeError(worker 오류, 단계 T로 바꾸지 않음). 목록 봉투 오류(ValueError 계열)는 `b_input_rejected`. 주석 영상은 만들지
   않는다(B 후보 결과 형식 U-3 전). 단일 관측 경로(`"single"`, 기본)는 바꾸지 않는다.
-- 표시 전용 송출(#213, 선택): `display_publisher`를 주면(설정 `center_display` 필수, 단계 T만) 수락 결과의 주석 배열과 무효 사유를
-  `LiveCenterDisplay`에 넘긴다(`vision/live_center_display`). 실행 닫힘(리셋·종료)에 `close_run`, 정리 단계 `display`(dispatcher 다음).
-  주지 않으면 기록·요약이 기존과 같다. C·D·로봇 송신은 여전히 없다(영상 토픽 하나만).
 - C 목표 송신(#214 D13 해제, 선택): `sort_part_runtime`을 주면(설정 `sort_part` 필수, 단계 T만) 검사 ③이 수락한 결과의 C 목표를
   `LiveSortPartSender`가 B `SortPartClient`로 보낸다(`vision/live_sort_part`). `stage.on_output`은 여전히 None이어야 한다(수락 전 송신
   경로를 만들지 않음). 실행 닫힘(리셋·종료·fail-stop)에 송신 게이트를 먼저 닫고, 정리 단계 `sort_part`는 dispatcher 다음이다. 실행기
@@ -50,7 +47,7 @@
   스레드(`vision/live_world_tracking`)를 둔다. `offer`가 AI 결과가 있는 현재 응답(건너뜀 사유 없음·`invalid_observation`)을 추적 큐에
   넣고(제어 흐름 TF 조회 없음), worker는 봉투를 만들기 직전 그 작업 결과를 상한까지 기다려 #215와 같은 규칙(확정 번호만)으로 싣는다.
   실행 닫힘·보정/프로필 경계에서 추적기 초기화를 요청한다. 정리 단계 `world_tracking`은 dispatcher 다음(TF를 닫기 전).
-- ROS·Qt를 import하지 않는다(TF 수신 묶음·B 단계·표시 발행자·송신 런타임은 주입).
+- ROS·Qt를 import하지 않는다(TF 수신 묶음·B 단계·송신 런타임은 주입).
 """
 from __future__ import annotations
 
@@ -67,8 +64,6 @@ from eyetoarm.common.types import CaptureInfo
 from eyetoarm.transforms.live_tf_buffer import TfRewindReadiness
 from eyetoarm.vision.ai_convert import frame_observations_from_ai
 from eyetoarm.vision.list_envelope import make_list_envelope
-from eyetoarm.vision.live_center_display import (CenterDisplayConfig, CenterDisplayConfigError, LiveCenterDisplay,
-                                                 parse_center_display)
 from eyetoarm.vision.live_observation_dispatch import LiveObservationDispatcher
 from eyetoarm.vision.live_observation_envelope import LiveCaptureTfLookup, make_live_envelope
 from eyetoarm.vision.live_observation_events import LiveObservationEventWriter
@@ -89,7 +84,7 @@ LIVE_OBSERVATION_CONFIG_STATUS = "test_only"
 NON_OK_TF = frozenset({"unavailable", "late", "stamp_mismatch", "no_stamp", "invalid_stamp"})
 _CONFIG_KEYS = {"status", "world_frame", "tf_wait_limit_s", "static_pairs", "future_tolerance_ns", "write_capacity",
                 "reserved_capacity", "lag_warn_s", "close_limit_s", "skip_queue_capacity", "note"}
-_OPTIONAL_KEYS = {"center_display", "sort_part"}   # #213 표시·#214 송신을 켤 때만(진입점이 옵션과 짝을 확인)
+_OPTIONAL_KEYS = {"sort_part"}   # #214 송신을 켤 때만(진입점이 옵션과 짝을 확인)
 
 
 B_INPUT_SINGLE = "single"
@@ -155,7 +150,6 @@ class LiveObservationLinkConfig:
     close_limit_s: float
     skip_queue_capacity: int = 0   # 건너뜀 기록 대기 상한(쓰는 중 포함). 설정 파일에서는 필수(r2)
     sha256: str | None = None
-    center_display: CenterDisplayConfig | None = None   # #213 선택 블록(없으면 표시 송출 불가)
     sort_part: SortPartConfig | None = None             # #214 선택 블록(없으면 C 송신 불가)
 
 
@@ -201,14 +195,6 @@ def load_live_observation_config(path: str) -> LiveObservationLinkConfig:
             or doc["future_tolerance_ns"] < 0:
         raise LiveObservationConfigError("future_tolerance_ns must be an int >= 0")
 
-    center = None
-
-    if "center_display" in doc:
-        try:
-            center = parse_center_display(doc["center_display"])
-        except CenterDisplayConfigError as exc:
-            raise LiveObservationConfigError(str(exc)) from exc
-
     sort_part = None
 
     if "sort_part" in doc:
@@ -225,7 +211,7 @@ def load_live_observation_config(path: str) -> LiveObservationLinkConfig:
         lag_warn_s=float(_positive(doc["lag_warn_s"], "lag_warn_s")),
         close_limit_s=float(_positive(doc["close_limit_s"], "close_limit_s")),
         skip_queue_capacity=_positive(doc["skip_queue_capacity"], "skip_queue_capacity", integer=True),
-        sha256=hashlib.sha256(raw).hexdigest(), center_display=center, sort_part=sort_part)
+        sha256=hashlib.sha256(raw).hexdigest(), sort_part=sort_part)
 
 
 def _tracking_extension(frame, obs):
@@ -255,9 +241,8 @@ class LiveObservationLink:
     def __init__(self, run_id: str, out_dir: str, *, config: LiveObservationLinkConfig, tf, stage_factory: Callable,
                  render: Callable | None, clock_ns: Callable[[], int] = time.monotonic_ns,
                  b_input: str = B_INPUT_SINGLE, list_consumer_factory: Callable | None = None,
-                 view_bias=None, display_publisher=None, sort_part_runtime=None, tracking: bool = False,
-                 world_tracker=None, world_config=None, world_plane_z_m: float | None = None,
-                 display_clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
+                 view_bias=None, sort_part_runtime=None, tracking: bool = False,
+                 world_tracker=None, world_config=None, world_plane_z_m: float | None = None) -> None:
         """출력 폴더(새로)·상태(start_closed)·기록기·디스패처·TF 준비를 만든다.
 
         - `b_input`(#201): `"single"`(기본, 단계 T 봉투 1) | `"list"`(단계 L 목록 봉투 2). `"list"`면 `render`는 쓰지 않는다.
@@ -267,9 +252,7 @@ class LiveObservationLink:
 
         - `tf`: 시작된 TF 수신 묶음(`lookup(parent, child, stamp_ns, timeout_s)`·`has_static`·`close(limit_s)`).
         - `stage_factory(camera)` → `(BStage, ObservationEnvelopeAdapter)`. B 단계의 `on_output`은 None이어야 한다.
-        - `render(stage, frame, out)` → PNG bytes | None(같은 프레임 주석). 표시 송출을 켜면 `RenderedCenter(png, image)`.
-        - `display_publisher`(#213, 선택): 표시 발행자(`publish`·`count_publishers`·`close`). 주면 `config.center_display`가 있어야 하고
-          단계 T만 된다. 연결부가 소유해 정리 단계 `display`에서 닫는다. None(기본)이면 표시 송출 없음.
+        - `render(stage, frame, out)` → PNG bytes | None(같은 프레임 주석).
         - `sort_part_runtime`(#214, 선택): C 송신 런타임(`send`·`stats`·`inflight_ids`·`server_seen`·`close`). 주면 `config.sort_part`가
           있어야 하고 단계 T만 된다. 연결부가 소유해 정리 단계 `sort_part`에서 닫는다. None(기본)이면 송신 없음.
         - `tracking`(#215, 기본 False): 추적 번호 연결. 단계 T만. 끄면 `offer`의 `tracks`를 쓰지 않고 기록·요약이 기존과 같다.
@@ -281,13 +264,6 @@ class LiveObservationLink:
 
         if b_input not in (B_INPUT_SINGLE, B_INPUT_LIST):
             raise ValueError(f"b_input must be {B_INPUT_SINGLE!r} or {B_INPUT_LIST!r}: {b_input!r}")
-
-        if display_publisher is not None:
-            if config.center_display is None:
-                raise ValueError("center display requires config block center_display")
-
-            if b_input != B_INPUT_SINGLE:
-                raise ValueError("center display is for stage T (b_input single) only")
 
         if tracking and b_input != B_INPUT_SINGLE:
             raise ValueError("tracking link is for stage T (b_input single) only")
@@ -358,9 +334,6 @@ class LiveObservationLink:
 
         self.view_bias = view_bias
         bias_fn = None if view_bias is None else (lambda env, cam: apply_view_bias(env, cam, view_bias))
-        self.display = (None if display_publisher is None else
-                        LiveCenterDisplay(run_id, config.center_display, display_publisher, clock_ns=display_clock_ns,
-                                          is_live=self._display_live))
         self.tracking = bool(tracking)
         self.world = (None if world_tracker is None else
                       LiveWorldTracking(run_id, world_tracker, world_config, tf_lookup=capture, plane_z_m=world_plane_z_m,
@@ -374,15 +347,15 @@ class LiveObservationLink:
                           LiveSortPartSender(run_id, config.sort_part, sort_part_runtime, str(self.dir),
                                              is_failed=lambda: self.state.failed is not None, tracking=self.tracking,
                                              release_target=self.release_proxy))
-        hooked = self.display is not None or self.sort_part is not None or self.tracking
-        display_kw = {} if not hooked else {"on_accepted": self._on_accepted}
+        hooked = self.sort_part is not None or self.tracking
+        hook_kw = {} if not hooked else {"on_accepted": self._on_accepted}
 
         if self.tracking:
-            display_kw["on_not_accepted"] = self._on_not_accepted
+            hook_kw["on_not_accepted"] = self._on_not_accepted
         self.dispatcher = LiveObservationDispatcher(
             self.state, camera=None, stage_factory=self._make_stage, tf_lookup=capture,
             clock_ns=clock_ns, refuse_tf_statuses=NON_OK_TF, on_skip=self._worker_skip, view_bias=bias_fn,
-            **display_kw, **list_kw)
+            **hook_kw, **list_kw)
         self.readiness = TfRewindReadiness(self.state, clear=lambda: None, has_static=tf.has_static, lookup=tf.lookup,
                                            world_frame=config.world_frame, static_pairs=config.static_pairs,
                                            wait_limit_s=config.tf_wait_limit_s,
@@ -415,13 +388,6 @@ class LiveObservationLink:
 
         self.state.fail("tf_receiver_failed")
         self._close_outputs("tf_receiver_failed")
-
-    def _display_live(self) -> bool:
-        """표시 스레드가 발행 직전에 본다: 리셋·종료·상태 fail-stop이면 거짓."""
-        with self._lock:
-            ended = self.reset_reason is not None or self.ended is not None
-
-        return not ended and self.state.failed is None
 
     def _build_single(self, frame, obs, camera, tf_result):
         """단계 T 봉투(worker). W 추적이면 그 작업의 추적 결과를 상한까지 기다려 번호를 싣는다(#217)."""
@@ -474,11 +440,10 @@ class LiveObservationLink:
 
         self._count_tracking("released_not_accepted")
 
-    def _on_accepted(self, item, payload, image, event_seq) -> None:
-        """worker 수락 훅: C 송신(#214) 먼저, 표시(#213) 다음. 둘은 서로 독립이다(한쪽 예외가 다른 쪽을 막지 않음)."""
+    def _on_accepted(self, item, payload, event_seq) -> None:
+        """worker 수락 훅: 추적 계수(#215)·C 송신(#214)."""
         obs = item.observation
         ids = {"job_seq": getattr(obs, "job_seq", None), "generation": getattr(obs, "generation", None)}
-        error = None
 
         if self.tracking:
             goal = getattr(payload.output, "goal", None) or {}
@@ -492,28 +457,16 @@ class LiveObservationLink:
                 self.release_proxy.release(goal["part_track_id"])
                 self._count_tracking("released_record_only")
 
-        if self.sort_part is not None:
-            try:
-                self.sort_part.offer(payload.output, item.frame, ids, event_seq)
-            except Exception as exc:   # 송신 예외는 표시를 막지 않는다. 디스패처가 수락 훅 오류로 세도록 다시 던진다
-                error = exc
-
-        if self.display is not None and image is not None:
-            self.display.offer_accepted(item.frame, image, payload.output, ids, payload.view_bias)
-
-        if error is not None:
-            raise error
+        if self.sort_part is not None:   # 송신 예외는 디스패처가 수락 훅 오류로 센다
+            self.sort_part.offer(payload.output, item.frame, ids, event_seq)
 
     def _close_outputs(self, reason: str) -> None:
-        """실행 닫힘: 송신 게이트 먼저(그 뒤 송신 0), 표시 다음. W 추적은 초기화 요청."""
+        """실행 닫힘: 송신 게이트를 닫는다(그 뒤 송신 0). W 추적은 초기화 요청."""
         if self.world is not None:
             self.world.request_reset(f"run_end:{reason}")
 
         if self.sort_part is not None:
             self.sort_part.close_run(reason)
-
-        if self.display is not None:
-            self.display.close_run(reason)
 
     def _close_tf(self, limit_s: float):
         """TF 묶음을 닫는다. 수신 스레드가 실패했던 실행은 닫혀도 정리 확인으로 치지 않는다(#196 A1-2)."""
@@ -530,15 +483,12 @@ class LiveObservationLink:
     # ------------------------------------------------------------------ 수명
 
     def start(self) -> None:
-        """건너뜀 기록 스레드·열기 스레드·(표시 스레드)·순번 기록기·worker를 시작한다."""
+        """건너뜀 기록 스레드·열기 스레드·(송신 스레드)·순번 기록기·worker를 시작한다."""
         self._skip_thread = threading.Thread(target=self._skip_loop, name="eyetoarm-live-observation-skips", daemon=True)
         self._skip_thread.start()
         self._probe_thread = threading.Thread(target=self._probe_loop, name="eyetoarm-live-observation-open",
                                               daemon=True)
         self._probe_thread.start()
-
-        if self.display is not None:
-            self.display.start()
 
         if self.sort_part is not None:
             self.sort_part.start()
@@ -803,9 +753,6 @@ class LiveObservationLink:
         if fail is not None:   # 상태 잠금은 건너뜀 잠금 밖에서
             self.state.fail(fail)
 
-        if self.display is not None:   # 무효 사유 화면 후보(넣기만, 보낼지는 표시 스레드가 판단)
-            self.display.offer_status(frame, reason, ids)
-
         return reason
 
     def _skip_loop(self) -> None:
@@ -942,13 +889,10 @@ class LiveObservationLink:
 
             return True
 
-        display_step = (() if self.display is None else
-                        (("display", lambda: self.display.close(min(limit_s, self.display.config.close_limit_s))),))
         world_step = (() if self.world is None else (("world_tracking", lambda: self.world.close(limit_s)),))
         sort_step = (() if self.sort_part is None else
                      (("sort_part", lambda: self.sort_part.close(min(limit_s, self.sort_part.config.close_limit_s))),))
         steps = (("probe", probe_close), ("dispatcher", lambda: self.dispatcher.close(limit_s)), *world_step, *sort_step,
-                 *display_step,
                  ("writer", writer_close), ("tf", lambda: self._close_tf(limit_s)), ("skips", skip_close))
 
         for name, fn in steps:
@@ -988,13 +932,12 @@ class LiveObservationLink:
     def cleanup_confirmed(self) -> bool:
         """끝났고 모든 정리 단계 성공 + worker 스레드 종료."""
         with self._lock:
-            need = ({"probe", "dispatcher", "writer", "tf", "skips"} | (set() if self.display is None else {"display"})
+            need = ({"probe", "dispatcher", "writer", "tf", "skips"}
                     | (set() if self.sort_part is None else {"sort_part"})
                     | (set() if self.world is None else {"world_tracking"}))
             done = self.ended is not None and self._cleanup_done >= need
 
         threads = (getattr(self.dispatcher, "_thread", None), self._probe_thread, self._skip_thread,
-                   None if self.display is None else self.display.thread,
                    None if self.sort_part is None else self.sort_part.thread,
                    None if self.world is None else self.world.thread)
 
@@ -1035,7 +978,6 @@ class LiveObservationLink:
                 **({} if self.b_input == B_INPUT_SINGLE else self._list_summary()),
                 **({} if self.view_bias is None else {"view_bias": {"enabled": True, **self.view_bias.to_json(),
                                                                      **self.dispatcher.view_bias_summary()}}),
-                **({} if self.display is None else {"center_display": self.display.summary()}),
                 **({} if self.sort_part is None else {"sort_part": self.sort_part.summary()}),
                 **({} if not self.tracking else {"tracking_link": self._tracking_summary()}),
                 **({} if self.world is None else {"world_tracking": self.world.summary()}),

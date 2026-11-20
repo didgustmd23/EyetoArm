@@ -21,7 +21,6 @@ from unittest import mock
 from eyetoarm.transforms import sort_part_client as spc
 from eyetoarm.vision.live_sort_part import (LiveSortPartSender, RecordingSortPartClient, SortPartConfig,
                                             SortPartConfigError, parse_sort_part)
-from test_live_center_display import FakePublisher, write_center_config
 from test_run_pipeline_capture_observation import model_with
 from test_run_pipeline_live_observation import CONFIG, FakeTf, Scenario
 from test_run_pipeline_live_observation import Base as LiveBase
@@ -351,7 +350,7 @@ class CliBase(LiveBase):
         return make
 
     def run_sort(self, scenario, *, config: Path | str = SORT_CONFIG, extra=("--live-sort-part",), factory=None, tf=None, max_frames=None,
-                 out=None, display_factory=None, hook=None):
+                 out=None, hook=None):
         """main 실행 → (종료 코드, stderr, 출력 폴더)."""
         out = out or self.out()
         log = str(Path(self.tmp.name) / f"{Path(out).name}.jsonl")
@@ -368,8 +367,7 @@ class CliBase(LiveBase):
                                  model_factory=lambda path: model_with(scenario.masks_fn),
                                  live_source_factory=scenario.factory_maker(made), live_tf_factory=lambda c: tf,
                                  live_run_controller=self.controller, b_stage_hook=hook,
-                                 live_sort_part_factory=factory or self.factory(),
-                                 live_display_factory=display_factory)
+                                 live_sort_part_factory=factory or self.factory())
         except SystemExit as exc:
             code = exc.code
 
@@ -385,7 +383,7 @@ class CliBase(LiveBase):
 
 
 class CliOnTest(CliBase):
-    """U2·U3·U5·U6·U11·U13 CLI 경로."""
+    """U2·U3·U5·U6·U11 CLI 경로."""
 
     def test_each_accept_tried_once_and_goal_matches_b(self):
         """U2·U3: 수락마다 송신 판단 1회(같은 프레임 두 번 없음), 보낸 목표 = accept 기록의 B 목표(goal_id·spec·kind)."""
@@ -508,48 +506,6 @@ class CliOnTest(CliBase):
         self.assertIn("server_seen=false", err)
         self.assertIn("warning: /sort_part server not seen", err)
         self.assertTrue(all(r["event"] in ("no_server", "gate_closed_by") for r in self.sort_records(out)))
-
-    def test_with_center_display_both_once_send_first(self):
-        """U13: 표시와 함께 켜면 같은 수락에 송신 판단 1회·표시 1회, 송신이 먼저. 표시 실패는 송신에 영향 없음."""
-        order = []
-        rt = FakeRuntime()
-        real_send = rt.send
-
-        def send(out):
-            """순서 기록."""
-            order.append(("send", out.goal["goal_id"]))
-            return real_send(out)
-
-        rt.send = send
-        from eyetoarm.vision import live_center_display as lcd
-
-        real_offer = lcd.LiveCenterDisplay.offer_accepted
-
-        def offer(disp, frame, annotated, out, ids, vb=None):
-            """순서 기록."""
-            order.append(("display", out.goal["goal_id"]))
-            return real_offer(disp, frame, annotated, out, ids, vb)
-
-        cfg_path = write_center_config(Path(self.tmp.name) / "both.json", status_hold_s=100.0, publish_fail_limit=1)
-        doc = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
-        doc["sort_part"] = json.loads(SORT_CONFIG.read_text(encoding="utf-8"))["sort_part"]
-        Path(cfg_path).write_text(json.dumps(doc), encoding="utf-8")
-        pub = FakePublisher(fail=-1)
-
-        with mock.patch.object(lcd.LiveCenterDisplay, "offer_accepted", offer):
-            code, err, out = self.run_sort(Scenario(4), config=cfg_path, factory=self.factory(rt),
-                                           extra=("--live-sort-part", "--live-center-topic"),
-                                           display_factory=lambda t, c: pub)
-
-        self.assertEqual(code, 1, err)                          # 표시 실패는 종료 1(#213 Q6)
-        acc = self.accepts(out)
-        sends = [g for k, g in order if k == "send"]
-        displays = [g for k, g in order if k == "display"]
-        self.assertEqual(sends, displays)                       # 수락마다 둘 다 1회
-        self.assertEqual(len(sends), len(acc))
-        self.assertTrue(all(order[2 * i] == ("send", sends[i]) for i in range(len(sends))))
-        self.assertEqual(len(rt.sent), len(acc))                # 표시 실패와 무관하게 송신
-        self.assertIn("center display stopped: publish_failed", err)
 
 
 class CliOffAndArgsTest(CliBase):

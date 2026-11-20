@@ -21,9 +21,8 @@
 - 건너뜀 통지(#173, 선택): `on_skip(item, reason, detail)`을 worker가 B를 부르지 않고 끝내는 지점마다 부른다(사유: `stale_before_b`·
   `tf_<상태>`(거부 집합일 때)·`b_input_rejected`·`stale_after_tf`). 수락 거부는 `not_accepted`. 예외는 worker 오류로 센다.
 - 시선 기반 끝점 보정(#207, 선택): `view_bias`를 주면 3과 4 사이에서 봉투를 보정한다(단계 T·L 공통 지점).
-- 수락 훅(#213 표시·#214 C 송신, 선택): 검사 ③이 수락한 뒤에만 `on_accepted(item, payload, image, event_seq)`를 부른다(worker 안,
-  잠금 밖). `render`가 `RenderedCenter(png, image)`를 돌려주면 png는 기존대로 payload에, 주석 배열은 `image`로 넘기고, 아니면 `image`는
-  None이다. bytes·None을 돌려주는 기존 render는 그대로다.
+- 수락 훅(#214 C 송신·#215 추적, 선택): 검사 ③이 수락한 뒤에만 `on_accepted(item, payload, event_seq)`를 부른다(worker 안,
+  잠금 밖).
 - ROS·Qt를 import하지 않는다.
 """
 from __future__ import annotations
@@ -35,14 +34,6 @@ from typing import Callable
 
 from eyetoarm.vision.observation_envelope import ObservationEnvelopeError
 from eyetoarm.vision.live_observation_state import LiveObservationState, LiveObservationToken
-
-
-@dataclass(frozen=True)
-class RenderedCenter:
-    """표시 송출(#213)이 켜졌을 때 render가 돌려주는 짝: 기록용 PNG와 같은 주석 배열."""
-
-    png: bytes | None
-    image: object
 
 
 @dataclass(frozen=True)
@@ -92,8 +83,7 @@ class LiveObservationDispatcher:
         `view_bias(envelope, camera) → (envelope', records)`(#207, 선택): 봉투 생성 직후·검사 ② 전에 부르는 공통 보정 지점
         (`vision/view_bias.apply_view_bias`). None이면 부르지 않는다(기존 동작). 기록은 payload `view_bias`로 넘긴다.
 
-        `on_accepted(item, payload, image, event_seq)`(#213·#214, 선택): 검사 ③ 수락 뒤 항상 부른다(`image`는 `RenderedCenter.image`
-        또는 None). 이 함수의 예외는 worker 오류로 세지 않고 `accept_hook_errors`로 센다(`errors`에 `accept_hook:`로 남김).
+        `on_accepted(item, payload, event_seq)`(#214·#215, 선택): 검사 ③ 수락 뒤 항상 부른다. 이 함수의 예외는 worker 오류로 세지 않고 `accept_hook_errors`로 센다(`errors`에 `accept_hook:`로 남김).
 
         `on_not_accepted(item, payload)`(#215, 선택): B 계산 뒤 검사 ③이 거부했을 때 부른다(B가 남긴 중복 방지 기록을 풀 기회).
         예외는 `accept_hook_errors`로 같이 센다.
@@ -328,10 +318,6 @@ class LiveObservationDispatcher:
             out = self._compute(self._stage, envelope)
             self._hook("in_compute")
             png = None if self._render is None else self._render(self._stage, item.frame, out)
-            annotated = None
-
-            if isinstance(png, RenderedCenter):
-                png, annotated = png.png, png.image
         except Exception as exc:
             self.state.abandon(compute_id, type(exc).__name__)
             raise
@@ -355,10 +341,10 @@ class LiveObservationDispatcher:
                     self.errors.append(f"accept_hook: {type(exc).__name__}: {exc}")
         elif self._on_accepted is not None:
             try:
-                self._on_accepted(item, payload, annotated, seq)
+                self._on_accepted(item, payload, seq)
             except Exception as exc:   # 수락 훅 실패는 B 결과·기록에 영향 없음(세고 남김, 진입점이 종료 1로 드러냄)
                 self._count("accept_hook_errors")
                 self.errors.append(f"accept_hook: {type(exc).__name__}: {exc}")
 
 
-__all__ = ["LiveObservationDispatcher", "LiveObservationItem", "LiveObservationPayload", "RenderedCenter"]
+__all__ = ["LiveObservationDispatcher", "LiveObservationItem", "LiveObservationPayload"]

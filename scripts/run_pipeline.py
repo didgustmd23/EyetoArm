@@ -54,11 +54,6 @@
   번호만 관측·봉투에 실어 B 중복 방지(`_dedupe`·`release`)까지 넘긴다(단계 T만, M2 휴리스틱, 분열은 알려진 한계).
   `--b-input list`(#201)를 더하면 같은 연결·같은 프레임 단위 검사로 유효 볼트 목록(`eyetoarm.b_input/2`, 촬영 stamp TF 하나)을 B 목록
   소비자(`BStage.process_frame`)에 넘기고 소비자 결과를 기록한다(주석 없음). 소비자가 없으면 시작 때 1(단계 T로 바꾸지 않음).
-- **표시 전용 송출(#213 L1.5, opt-in):** `--live-observation-out`에 `--live-center-topic [TOPIC]`(기본 `/b/center_overlay/image`)을 더하면
-  수락 결과의 B 중심점 주석 영상(`render_center`)과 낮은 빈도의 무효 사유 화면을 `sensor_msgs/Image`(bgr8, 원본 stamp·광학 프레임,
-  reliable·volatile)로 발행한다(`vision/live_center_display`). 단계 T만(`--b-input list`와 2), 설정 블록 `center_display` 필수(없거나
-  옵션 없이 있으면 2). 시작 때 같은 토픽 발행자가 보이면 2(최선 노력, 발견 전이면 못 볼 수 있음), 실행 중 보이면 표시를 멈추고 1.
-  `scripts/b_live_view.py --publish`와 동시에 쓰지 않는다. D13·`stage.on_output` 미연결·C·D·로봇 송신 없음은 그대로다.
 - **실시간 C 목표 송신(#214 D13 해제, opt-in):** `--live-observation-out`에 `--live-sort-part`를 더하면 검사 ③이 수락한 B 결과의
   C 목표(`PICK_PLACE`·`PASS_THROUGH`)를 B `SortPartClient`로 ROS 액션 `/sort_part`에 보낸다(`vision/live_sort_part`, 사용자 결정
   2026-11-20 「승인하고 위험으로 기록만해」, 해제 전 시험 F6 없이 수용된 위험: A 상세설계 §11 「D13 해제 위험」). 송신은 수락 뒤 worker의
@@ -74,7 +69,6 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import math
-import re
 import signal
 import sys
 import threading
@@ -178,11 +172,6 @@ def build_parser() -> argparse.ArgumentParser:
                              "사유 출력 폴더(새 폴더만). --live-observation-config 필수. C·D·로봇 송신 없음")
     parser.add_argument("--live-observation-config", dest="live_observation_config", metavar="JSON", default=None,
                         help="--live-observation-out 전용: 시험 설정(TF 상한·용량·종료 상한 등, status=test_only 필수)")
-    parser.add_argument("--live-center-topic", dest="live_center_topic", metavar="TOPIC", nargs="?", default=None,
-                        const="/b/center_overlay/image",
-                        help="--live-observation-out 전용(#213): B 중심점 주석 영상을 이 토픽으로 표시 전용 발행(값 없으면 "
-                             "/b/center_overlay/image). 단계 T만, 설정 center_display 필수. b_live_view.py --publish와 동시 실행 금지. "
-                             "C·D·로봇 송신 없음")
     parser.add_argument("--tracking-space", dest="tracking_space", choices=("pixel", "world"), default="pixel",
                         help="--tracking 추적 좌표(#217): pixel(기본, 기존 픽셀 추적) | world(작업 좌표 W 추적, --live-observation-out "
                              "전용, --world-tracker-config 필수)")
@@ -216,9 +205,6 @@ def _check_detector_args(args) -> None:
             build_parser().error("--detector opencv requires --detect-config")
         if args.ai_config is not None or args.model_load_timeout is not None or args.log_instance_geometry:
             build_parser().error("--ai-config/--model-load-timeout/--log-instance-geometry are for --detector ai")
-
-
-_ROS_TOPIC = re.compile(r"/[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*)*")
 
 
 def _check_source_args(args, ros_available) -> None:
@@ -272,15 +258,6 @@ def _check_source_args(args, ros_available) -> None:
             build_parser().error("--tracking-space world requires --world-tracker-config")
     elif args.world_tracker_config is not None:
         build_parser().error("--world-tracker-config is for --tracking-space world only")
-
-    # 표시 전용 송출(#213): 기록 전용 연결의 단계 T 결과만 그린다
-    if args.live_center_topic is not None:
-        if args.live_observation_out is None:
-            build_parser().error("--live-center-topic requires --live-observation-out (display of live record-only B results)")
-        if args.b_input != "single":
-            build_parser().error("--live-center-topic is for stage T only (--b-input single); stage L has no annotation")
-        if not _ROS_TOPIC.fullmatch(args.live_center_topic):
-            build_parser().error(f"--live-center-topic: invalid ROS topic name: {args.live_center_topic!r}")
 
     # C 목표 송신(#214): 기록 전용 연결의 단계 T 수락 결과만
     if args.live_sort_part:
@@ -414,7 +391,7 @@ def _prepare_synthetic_observation(args, err):
 
 def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_available=None,
          live_source_factory=None, b_stage_hook=None, extension_source=None, live_tf_factory=None,
-         live_run_controller=None, list_consumer_factory=None, live_display_factory=None,
+         live_run_controller=None, list_consumer_factory=None,
          live_sort_part_factory=None, live_conveyor_probe=None) -> int:
     """CLI 진입점. 종료 코드를 돌려준다.
 
@@ -429,9 +406,6 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
 
     `list_consumer_factory(stage)`(#189)는 단계 L 시험 주입 지점이다. 목록 봉투(`eyetoarm.b_input/2`)를 받는 함수를 돌려준다.
     None(기본)이면 `stage.process_frame`을 쓰고, 없으면 단계 L을 시작 때 거부한다(종료 1). 시험 밖에서 쓰지 않는다.
-
-    `live_display_factory(topic, center_config)`(#213)는 표시 발행자 시험 주입 지점이다(기본 `_RosCenterPublisher`). 시작 때 같은
-    토픽 발행자가 보이면 `ExistingPublisherError`를 낸다.
 
     `live_sort_part_factory(sort_part_config)`(#214)는 C 송신 런타임 시험 주입 지점이다(기본 `_RosSortPartRuntime`).
 
@@ -516,7 +490,6 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
                                      live_source_factory=live_source_factory, live_tf_factory=live_tf_factory,
                                      controller=live_run_controller or _live_runs(),
                                      list_consumer_factory=list_consumer_factory,
-                                     live_display_factory=live_display_factory,
                                      live_sort_part_factory=live_sort_part_factory,
                                      live_conveyor_probe=live_conveyor_probe)
 
@@ -677,88 +650,6 @@ def _ros_conveyor_speed_probe(timeout_s: float) -> dict:
     return out
 
 
-class ExistingPublisherError(RuntimeError):
-    """시작 때 같은 표시 토픽에 다른 발행자가 보였다(#213, 종료 2)."""
-
-
-class _RosCenterPublisher:
-    """표시 발행자(#213): 자기 rclpy Context + 노드 + `sensor_msgs/Image` 발행자(reliable·keep_last·volatile). executor 없음.
-
-    시작 때 `discovery_wait_s`를 기다린 뒤 `count_publishers`로 같은 토픽 발행자를 본다. 있으면 정리하고 `ExistingPublisherError`.
-    0은 「발견된 것 없음(최선 노력)」일 뿐 다른 발행자가 없다는 확인이 아니다(r1 F4). 실행 중 확인은 `LiveCenterDisplay`가 한다.
-    """
-
-    NODE_NAME = "eyetoarm_live_center_display"
-
-    def __init__(self, topic: str, config) -> None:
-        """Context·노드를 만들고 기존 발행자를 확인한 뒤 발행자를 만든다."""
-        import time as _time
-
-        import rclpy
-        from rclpy.context import Context
-        from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-        from rclpy.signals import SignalHandlerOptions
-        from sensor_msgs.msg import Image
-
-        self._Image = Image
-        self.topic = topic
-        self._context = Context()
-        rclpy.init(context=self._context, signal_handler_options=SignalHandlerOptions.NO)
-        self._node = None
-        self._pub = None
-        self._closed = False
-
-        try:
-            self._node = rclpy.create_node(self.NODE_NAME, context=self._context)
-            _time.sleep(config.discovery_wait_s)
-            existing = self._node.count_publishers(topic)
-            self.startup_check = "none_seen_best_effort" if existing == 0 else "refused"
-
-            if existing:
-                raise ExistingPublisherError(f"topic {topic} already has {existing} publisher(s) "
-                                             f"(scripts/b_live_view.py --publish running?)")
-
-            qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST,
-                             depth=config.qos_depth, durability=DurabilityPolicy.VOLATILE)
-            self._pub = self._node.create_publisher(Image, topic, qos)
-        except BaseException:
-            self.close(0.0)
-            raise
-
-    def publish(self, frame) -> None:
-        """`DisplayFrame` → `sensor_msgs/Image`(bgr8). stamp는 원본 촬영 stamp(끝 표시 0)."""
-        msg = self._Image()
-        msg.header.stamp.sec = int(frame.stamp_ns // 1_000_000_000)
-        msg.header.stamp.nanosec = int(frame.stamp_ns % 1_000_000_000)
-        msg.header.frame_id = frame.frame_id
-        msg.height, msg.width = int(frame.image.shape[0]), int(frame.image.shape[1])
-        msg.encoding = "bgr8"
-        msg.is_bigendian = 0
-        msg.step = msg.width * 3
-        msg.data = frame.image.tobytes()
-        self._pub.publish(msg)
-
-    def count_publishers(self) -> int:
-        """같은 토픽 발행자 수(자기 포함)."""
-        return self._node.count_publishers(self.topic)
-
-    def close(self, limit_s: float) -> None:
-        """발행자·노드 정리 → Context 종료. 두 번째부터 아무것도 안 함."""
-        if self._closed:
-            return
-
-        if self._pub is not None:
-            self._node.destroy_publisher(self._pub)
-            self._pub = None
-
-        if self._node is not None:
-            self._node.destroy_node()
-            self._node = None
-
-        self._context.try_shutdown()
-        self._closed = True
-
-
 class _RosSortPartRuntime:
     """C 송신 런타임(#214): 자기 rclpy Context + 노드 + `SingleThreadedExecutor` spin 스레드 + `RecordingSortPartClient`(B 클라이언트).
 
@@ -863,7 +754,7 @@ class _RosSortPartRuntime:
 
 
 def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_stage_hook, live_source_factory,
-                          live_tf_factory, controller, list_consumer_factory=None, live_display_factory=None,
+                          live_tf_factory, controller, list_consumer_factory=None,
                           live_sort_part_factory=None, live_conveyor_probe=None) -> int:
     """실시간 A→B 기록 전용 시험(#173). 호출 경로: LiveLinkSource(경계 훅 = 연결부) → 실행기 → AiSegDetector(M1) → 코어 →
     `handle()` 기록·표시 뒤 `live_observation_sink.offer` → 전용 디스패처 → 촬영 stamp TF → 봉투 → B 입구 어댑터 → BStage → 주석 → 순번
@@ -879,7 +770,6 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
     from eyetoarm.transforms.observation_envelope_adapter import EnvelopeTfLookup, ObservationEnvelopeAdapter
     from eyetoarm.vision.live_observation_link import (LiveObservationConfigError, LiveObservationLink,
                                                        load_live_observation_config)
-    from eyetoarm.vision.live_observation_dispatch import RenderedCenter
     from eyetoarm.vision.pipeline_records import B_INPUT_LIST
 
     try:
@@ -892,19 +782,12 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         err.write("run_pipeline: config error: --live-observation-out requires an AI config with axis_extractor\n")
         return 2
 
-    display_on = args.live_center_topic is not None
     sort_on = bool(getattr(args, "live_sort_part", False))
 
     if sort_on != (link_config.sort_part is not None):   # #214: 옵션과 설정 블록은 짝
         err.write("run_pipeline: live observation config error: "
                   + ("--live-sort-part requires config block sort_part\n" if sort_on
                      else "config block sort_part given without --live-sort-part\n"))
-        return 2
-
-    if display_on != (link_config.center_display is not None):   # #213: 옵션과 설정 블록은 짝
-        err.write("run_pipeline: live observation config error: "
-                  + ("--live-center-topic requires config block center_display\n" if display_on
-                     else "config block center_display given without --live-center-topic\n"))
         return 2
 
     for path in (args.log, args.live_observation_out):
@@ -941,55 +824,35 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         return 1
 
     controller.close_limit_s = link_config.close_limit_s
-    display_pub = None
-
-    # #213: 표시 발행자는 세션·TF·출력 폴더보다 먼저(같은 토픽 발행자가 보이면 아무것도 만들지 않고 2)
-    if display_on:
-        try:
-            display_pub = (live_display_factory or _RosCenterPublisher)(args.live_center_topic,
-                                                                        link_config.center_display)
-        except ExistingPublisherError as exc:
-            err.write(f"run_pipeline: center display refused: {exc}\n")
-            return 2
-        except Exception as exc:
-            err.write(f"run_pipeline: center display start failed: {type(exc).__name__}: {exc}\n")
-            return 1
-
     sort_rt = None
 
-    def close_display_pub():
-        """세션이 만들어지지 않았을 때만: 이 함수가 만든 발행자·송신 런타임을 닫는다."""
-        if display_pub is not None:
-            try:
-                display_pub.close(link_config.close_limit_s)
-            except Exception as dexc:
-                err.write(f"run_pipeline: center display close failed: {type(dexc).__name__}: {dexc}\n")
-
+    def close_sort_rt():
+        """세션이 만들어지지 않았을 때만: 이 함수가 만든 송신 런타임을 닫는다."""
         if sort_rt is not None:
             try:
                 sort_rt.close(link_config.close_limit_s)
             except Exception as sexc:
                 err.write(f"run_pipeline: sort_part runtime close failed: {type(sexc).__name__}: {sexc}\n")
 
-    # #214: C 송신 런타임은 표시 발행자 다음, TF·세션 앞(인터페이스가 없으면 아무것도 만들지 않고 1)
+    # #214: C 송신 런타임은 TF·세션 앞(인터페이스가 없으면 아무것도 만들지 않고 1)
     if sort_on:
         try:
             sort_rt = (live_sort_part_factory or _RosSortPartRuntime)(link_config.sort_part)
         except ImportError as exc:
             err.write(f"run_pipeline: --live-sort-part: eyetoarm_interfaces not found ({exc}); build robot_ws and "
                       "source robot_ws/install/setup.bash\n")
-            close_display_pub()
+            close_sort_rt()
             return 1
         except Exception as exc:
             err.write(f"run_pipeline: sort_part runtime start failed: {type(exc).__name__}: {exc}\n")
-            close_display_pub()
+            close_sort_rt()
             return 1
 
     try:
         tf = (live_tf_factory or _RosTfRuntime)(link_config)
     except Exception as exc:
         err.write(f"run_pipeline: live TF start failed: {type(exc).__name__}: {exc}\n")
-        close_display_pub()
+        close_sort_rt()
         return 1
 
     def stage_factory(camera):
@@ -1007,18 +870,15 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         if getattr(out, "T_W_C", None) is None:
             return None
 
-        image = stage.render_center(frame.image, [out])
-        ok, buf = _cv2.imencode(".png", image)
-        png = buf.tobytes() if ok else None
+        ok, buf = _cv2.imencode(".png", stage.render_center(frame.image, [out]))
 
-        # #213: 표시 송출이 켜졌을 때만 같은 주석 배열을 함께 넘긴다(끄면 기존과 같은 bytes)
-        return RenderedCenter(png, image) if display_on else png
+        return buf.tobytes() if ok else None
 
     try:
         link = controller.start_run(run_id, make_session=lambda rid: LiveObservationLink(
             rid, args.live_observation_out, config=link_config, tf=tf, stage_factory=stage_factory, render=render,
             b_input=args.b_input, list_consumer_factory=list_consumer_factory if listed else None,
-            view_bias=getattr(settings.detector_config, "axis_view_bias", None), display_publisher=display_pub,
+            view_bias=getattr(settings.detector_config, "axis_view_bias", None),
             sort_part_runtime=sort_rt, tracking=args.tracking,
             **({} if not world_on else {"world_tracker": _new_world_tracker(world_cfg[0]), "world_config": world_cfg[1],
                                         "world_plane_z_m": world_plane_z})))
@@ -1031,7 +891,7 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         except Exception as cexc:
             err.write(f"run_pipeline: live TF close failed: {type(cexc).__name__}: {cexc}\n")
 
-        close_display_pub()
+        close_sort_rt()
 
         return 2 if isinstance(exc, OSError) else 1
 
@@ -1083,10 +943,6 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
                   f"lag_reset>{world_cfg[1].lag_limit_ms:.0f}ms; prediction uses W differencing only "
                   f"(conveyor speed_mps diagnostic={probe.get('speed_mps')} not used)\n")
 
-    if display_on:
-        err.write(f"run_pipeline: center display ON topic={args.live_center_topic} sensor_msgs/Image bgr8 "
-                  f"startup_publisher_check={getattr(display_pub, 'startup_check', 'injected')} "
-                  "(display only; do not run b_live_view.py --publish together)\n")
     result = None
     exit_code = 1
     failure = None
@@ -1148,9 +1004,6 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         if link.state.failed is not None:
             problems.append(f"state failed: {link.state.failed}")
 
-        if link.display is not None and link.display.problem() is not None:   # #213 Q6: 표시를 못 했으면 숨기지 않는다
-            problems.append(link.display.problem())
-
         if link.sort_part is not None and link.sort_part.problem() is not None:   # #214: 송신 기록 실패는 숨기지 않는다
             problems.append(link.sort_part.problem())
 
@@ -1167,11 +1020,8 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
             err.write(f"run_pipeline: live observation problem: {p}\n")
 
         try:
-            display_extra = ({} if not args.tracking else {"tracking": None if result is None else result.tracking})
-            display_extra.update({} if not display_on else
-                             {"center_display_topic": args.live_center_topic,
-                              "center_display_startup_check": getattr(display_pub, "startup_check", "injected")})
-            link.write_summary({"exit_code": exit_code, "reset_detected": reset, "problems": problems, **display_extra,
+            tracking_extra = ({} if not args.tracking else {"tracking": None if result is None else result.tracking})
+            link.write_summary({"exit_code": exit_code, "reset_detected": reset, "problems": problems, **tracking_extra,
                                 "runner": None if result is None else {
                                     "exit_code": result.exit_code, "stop_reason": result.stop_reason,
                                     "frames": result.frames, "b_calls": result.b_calls,
