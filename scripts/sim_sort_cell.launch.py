@@ -55,8 +55,8 @@ def generate_launch_description():
                               description="upper_arm_link 기준 매립 시험 카메라 위치(m), 흰색 몸체 위쪽 옆면"),
         DeclareLaunchArgument("link_camera_rpy", default_value="1.5707963 0 -0.815927",
                               description="upper_arm_link 기준 자세(rad), 초기 대기 자세에서 정면 아래 약 43.3도"),
-        DeclareLaunchArgument("gripper_camera_xyz", default_value="0 0 0.068",
-                              description="robotiq_85_base_link 기준 앞면 중앙 매립 RGB-D 카메라 위치(m)"),
+        DeclareLaunchArgument("gripper_camera_xyz", default_value="0 0 0.038",
+                              description="robotiq_85_base_link 기준 앞면 중앙 매립 RGB-D 카메라 위치(m). 2/3 그리퍼 앞면 z 0.060 m 기준(xacro 기본값과 같음)"),
         DeclareLaunchArgument("gripper_camera_rpy", default_value="0 -1.57079632679 0",
                               description="그리퍼 기준 자세(rad), 기본값은 손가락 전방(+Z)을 봄"),
         # 대용량 영상용 DDS 설정(모듈 설명 참고). LOCALHOST에서는 rmw가 전송 설정을 덮어쓰므로 SUBNET과 함께 준다

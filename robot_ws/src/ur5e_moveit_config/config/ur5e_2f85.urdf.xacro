@@ -2,8 +2,8 @@
 <!--
   UR5e + Robotiq 2F-85 (Gazebo Sim, gz_ros2_control). D 외형 확인·데모용.
   - 팔 외형: ur_description 공식 메시·재질 그대로 (BSD-3-Clause, THIRD_PARTY_NOTICES.md).
-  - 그리퍼 외형: robotiq_description 공식 2F-85 메시·재질 그대로 (BSD-3-Clause).
-    tool0 → 공식 ur_to_robotiq 어댑터(11 mm) → 2F-85 순서로 장착.
+  - 그리퍼 외형: robotiq_description 공식 2F-85 메시·재질을 모든 길이 2/3 으로 고정 축소(robotiq_2f_85_two_thirds.urdf.xacro).
+    tool0 → 공식 ur_to_robotiq 어댑터(11 mm, 축소 안 함) → 2/3 2F-85 순서로 장착.
   - 팔과 그리퍼를 ros2_control 하나로 묶는다. 그리퍼는 구동 관절 하나만 명령하고
     나머지는 URDF mimic으로 Gazebo가 따라 움직인다(robotiq_description 2f_85.ros2_control.xacro와 같은 방식).
 -->
@@ -16,15 +16,17 @@
   <xacro:arg name="link_camera_xyz" default="-0.3400051 -0.0594480 0.0964437"/>
   <xacro:arg name="link_camera_rpy" default="1.5707963 0.6151567 -1.5715927"/>
   <xacro:include filename="link_camera.urdf.xacro"/>
-  <!-- 그리퍼 앞면 중앙 매립형. 센서 +X를 그리퍼 +Z(손가락 전방)로 향하게 한다. -->
-  <xacro:arg name="gripper_camera_xyz" default="0 0 0.068"/>
+  <!-- 그리퍼 앞면 중앙 매립형. 센서 +X를 그리퍼 +Z(손가락 전방)로 향하게 한다.
+       2/3 축소로 앞면이 z 0.090 → 0.060 m 가 되어, 앞면과의 상대 위치를 유지하도록 0.068 → 0.038 m 로 옮겼다.
+       카메라 자체(렌즈 위치·화각·해상도)는 Robotiq 부품이 아니므로 축소하지 않는다. -->
+  <xacro:arg name="gripper_camera_xyz" default="0 0 0.038"/>
   <xacro:arg name="gripper_camera_rpy" default="0 -1.57079632679 0"/>
   <xacro:include filename="gripper_rgbd_camera.urdf.xacro"/>
 
   <xacro:property name="ur_type" value="ur5e"/>
   <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
   <xacro:include filename="$(find ur_description)/urdf/inc/ur_joint_control.xacro"/>
-  <xacro:include filename="$(find robotiq_description)/urdf/robotiq_2f_85_macro.urdf.xacro"/>
+  <xacro:include filename="robotiq_2f_85_two_thirds.urdf.xacro"/>
   <xacro:include filename="$(find robotiq_description)/urdf/ur_to_robotiq_adapter.urdf.xacro"/>
 
   <link name="world"/>
@@ -45,9 +47,9 @@
 
   <xacro:link_camera parent="upper_arm_link" xyz="$(arg link_camera_xyz)" rpy="$(arg link_camera_rpy)"/>
 
-  <xacro:robotiq_gripper name="robotiq_gripper" prefix="" parent="gripper_mount_link" include_ros2_control="false">
+  <xacro:robotiq_2f_85_two_thirds prefix="" parent="gripper_mount_link">
     <origin xyz="0 0 0" rpy="0 0 0"/>
-  </xacro:robotiq_gripper>
+  </xacro:robotiq_2f_85_two_thirds>
 
   <xacro:gripper_rgbd_camera parent="robotiq_85_base_link"
     xyz="$(arg gripper_camera_xyz)" rpy="$(arg gripper_camera_rpy)"/>
