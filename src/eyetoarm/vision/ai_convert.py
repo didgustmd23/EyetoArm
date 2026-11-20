@@ -53,7 +53,7 @@ from eyetoarm.common.types import FramePacket, PixelBasis, PlanarObservation
 from eyetoarm.common.types import (FRAME_OBSERVATIONS_VERSION, OBSERVED_FACE_AXIS, CaptureInfo, CaptureTf,
                                    FrameObservations, ObjectObservation, owned_axis_endpoints, raw_points_in_frame)
 from eyetoarm.vision.ai_config import AiSegConfig
-from eyetoarm.vision.axis_endpoints import MODEL_DERIVED, extract_m1, extract_m2
+from eyetoarm.vision.axis_endpoints import MODEL_DERIVED, extract_m1
 from eyetoarm.vision.ai_result import (AXIS_EXTRACTION_ERROR, CONTOUR_CLIPPED, EMPTY_MASK, LOW_CONFIDENCE,
                                        MULTIPLE_CANDIDATES, NON_TARGET_CLASS, SMALL_MASK, AiInstance, AiJobConfigError,
                                        AiSegResult, RawSegOutput, axis_candidate_reason)
@@ -72,9 +72,7 @@ AXIS_OVERLAP_IOU = 0.5   # #163 §4 「볼트 마스크끼리 IoU ≥ 0.5」(명
 
 # 기록에 남길 추출기 진단 키(수·문자열만)
 _DIAG_KEYS = ("pixels", "components", "holes", "width_ratio", "head_step_frac", "tilt_deg", "class_est",
-              "total_length_est_mm", "scale_px_per_mm",
-              # M2(#225)만 내는 값. M1 진단에는 없으므로 M1 기록은 그대로다
-              "vote_width_ratio", "head_vote", "order_gate", "centerline", "tilt_used_deg")
+              "total_length_est_mm", "scale_px_per_mm")
 
 
 def _is_bolt(name: str) -> bool:
@@ -114,14 +112,11 @@ def rasterize_polygon(polygon_px: np.ndarray, offset: np.ndarray, crop_wh: tuple
     return canvas.astype(bool)
 
 
-def _extract_axis(inst: AiInstance, offset: np.ndarray, crop_wh: tuple[int, int], extractor: str = "m1"):
+def _extract_axis(inst: AiInstance, offset: np.ndarray, crop_wh: tuple[int, int]):
     """비거부·비잘림 볼트 인스턴스 하나 → (래스터 마스크 또는 None, 끝점 또는 None, 사유 또는 None, 진단).
 
-    `extractor`는 설정 `axis_extractor` 값("m1"·"m2", #225). 모르는 값은 KeyError(설정 검사가 먼저 막으므로 도달하지 않는다).
-    위상(조각·구멍)은 인스턴스 계수로 M1·M2와 같은 순서에서 먼저 판정한다. 추출기·래스터 예외는 AXIS_EXTRACTION_ERROR로 막는다.
+    위상(조각·구멍)은 인스턴스 계수로 M1과 같은 순서에서 먼저 판정한다. 추출기·래스터 예외는 AXIS_EXTRACTION_ERROR로 막는다.
     """
-    # 설정 값 → 추출기. 호출 때 모듈 이름으로 찾는다(시험의 mock.patch가 닿도록). 허용 값 검사는 `ai_config.AXIS_EXTRACTORS`
-    extract = {"m1": extract_m1, "m2": extract_m2}[extractor]
     topo = {"pixels": int(inst.area_px), "components": inst.component_count, "holes": inst.hole_count}
 
     if inst.area_px >= MODEL_DERIVED.min_pixels:
@@ -133,7 +128,7 @@ def _extract_axis(inst: AiInstance, offset: np.ndarray, crop_wh: tuple[int, int]
 
     try:
         mask = rasterize_polygon(inst.polygon, offset, crop_wh)
-        est = extract(mask)
+        est = extract_m1(mask)
     except Exception as exc:  # noqa: BLE001 - 관측 예외로 새지 않게(#163 §4)
         return None, None, AXIS_EXTRACTION_ERROR, {"error": f"{type(exc).__name__}: {exc}"[:200]}
 
@@ -286,7 +281,7 @@ def convert(raw: RawSegOutput, frame: FramePacket, config: AiSegConfig, *,
             if clipped:
                 inst = dataclasses.replace(inst, axis_reason=CONTOUR_CLIPPED)
             else:
-                raster, endpoints, reason, diag = _extract_axis(inst, offset, crop_wh, config.axis_extractor)
+                raster, endpoints, reason, diag = _extract_axis(inst, offset, crop_wh)
                 endpoints, reason, diag = _checked_endpoints(endpoints, reason, diag, frame)
                 inst = dataclasses.replace(inst, axis_endpoints_px=endpoints, axis_reason=reason, axis_diag=diag)
 
