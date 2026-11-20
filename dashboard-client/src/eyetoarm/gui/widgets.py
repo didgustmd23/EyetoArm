@@ -1,7 +1,7 @@
 """D 운영 GUI 화면 부품. 통신을 모른다. 값을 받아 그리기만 한다.
 
 ┌─ 부품과 연동 파트 ─────────────────────────────────────────────────────────┐
-│ NavRail       좌측 화면 선택(조작·설정 / 운영 대시보드 / 평가·기록)   [D]    │
+│ NavRail       상단 화면 선택(조작·설정 / 운영 대시보드 / 평가·기록)   [D]    │
 │ StatusChip    상단 상태띠 한 칸                                      [C 값]  │
 │ DisplayView   영상 표시면. 메인 = Gazebo 로봇 화면                   [D 임시]│
 │               보조 2칸 = 그리퍼·링크 영상 자리                       [C 예정]│
@@ -20,9 +20,10 @@ import time
 from collections import deque
 
 from PySide6.QtCore import QPointF, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QFrame, QHBoxLayout, QHeaderView, QLabel, QPushButton, QSizePolicy, QTableWidget,
+    QAbstractItemView, QButtonGroup, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QHeaderView, QLabel, QPushButton, QSizePolicy,
+    QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -65,38 +66,52 @@ class Card(QFrame):
         super().__init__()
         self.setObjectName("Card")
         self.body = QVBoxLayout(self)
-        self.body.setContentsMargins(20, 18, 20, 18)
-        self.body.setSpacing(10)
+        self.body.setContentsMargins(16, 13, 16, 13)
+        self.body.setSpacing(8)
         if title:
             head = QHBoxLayout()
-            head.addWidget(label(title, "CardTitle"))
+            parts = [label(title, "CardTitle")] + ([label(tag, "Tag")] if tag else [])
+            for part in parts:   # 카드가 커져도 제목·꼬리표는 제 높이를 지킨다(꼬리표가 세로로 늘어나지 않게)
+                part.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            head.addWidget(parts[0])
             head.addStretch(1)
-            if tag:
-                head.addWidget(label(tag, "Tag"))
+            for part in parts[1:]:
+                head.addWidget(part, 0, Qt.AlignmentFlag.AlignVCenter)
             self.body.addLayout(head)
 
 
-# ── 좌측 화면 선택 ────────────────────────────────────────────────────────
+# ── 상단 화면 선택 ────────────────────────────────────────────────────────
 
 class NavRail(QFrame):
-    """화면 선택. 라임색 선택 표시가 누른 항목으로 미끄러져 간다(theme.MS_NAV)."""
+    """화면 선택 띠(창 맨 위 한 줄). 캡슐 안의 흰 알약이 누른 탭으로 미끄러져 간다(theme.MS_NAV).
+
+    사용자 지정 2026-11-20: 참고 릴스처럼 좌측 세로 목록을 상단 탭으로 옮겼다. 고르는 방법(클릭·Ctrl+1~3)과
+    신호(selected)는 그대로다. 이름 NavRail 은 다른 코드가 쓰고 있어 그대로 둔다.
+    """
 
     selected = Signal(int)
+    shortcut_used = Signal(int)   # Ctrl+1~3 으로 골랐다. 창이 단축키 표시(KeyHint)를 띄운다
 
     def __init__(self, items: list[str]) -> None:
         super().__init__()
         self.setObjectName("NavRail")
-        self.setFixedWidth(232)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 26, 20, 20)
-        layout.setSpacing(6)
+        self.setFixedHeight(50)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(20, 0, 20, 0)
+        layout.setSpacing(10)
+        mark = label("E", "BrandMark")     # 상표 표식. 그림 파일을 쓰지 않는다
+        mark.setFixedSize(26, 26)
+        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(mark)
         layout.addWidget(label("Eye To Arms", "Brand"))
-        layout.addSpacing(22)
+        layout.addSpacing(10)
 
-        self._list = QWidget()
-        rows = QVBoxLayout(self._list)
-        rows.setContentsMargins(0, 0, 0, 0)
-        rows.setSpacing(6)
+        self._list = QFrame()
+        self._list.setObjectName("NavTabs")
+        self._list.setFixedHeight(34)
+        rows = QHBoxLayout(self._list)
+        rows.setContentsMargins(3, 3, 3, 3)
+        rows.setSpacing(2)
         self._indicator = QFrame(self._list)
         self._indicator.setObjectName("NavIndicator")
         self._group = QButtonGroup(self)
@@ -105,10 +120,10 @@ class NavRail(QFrame):
             button = QPushButton(text)
             button.setObjectName("NavButton")
             button.setCheckable(True)
-            button.setFixedHeight(46)
+            button.setFixedHeight(28)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setShortcut(f"Ctrl+{index + 1}")
             button.setToolTip(f"Ctrl+{index + 1}")
+            QShortcut(QKeySequence(f"Ctrl+{index + 1}"), self).activated.connect(lambda i=index: self._on_shortcut(i))
             self._group.addButton(button, index)
             self._buttons.append(button)
             rows.addWidget(button)
@@ -116,8 +131,8 @@ class NavRail(QFrame):
         self._group.idClicked.connect(self._on_clicked)
         layout.addWidget(self._list)
         layout.addStretch(1)
-        self.footer = QVBoxLayout()   # 창이 출처 표시·모션 줄이기 체크를 넣는다
-        self.footer.setSpacing(10)
+        self.footer = QHBoxLayout()   # 창이 출처 표시·테마 선택·모션 줄이기 체크를 넣는다(오른쪽 끝)
+        self.footer.setSpacing(12)
         layout.addLayout(self.footer)
         self._layout_timer = QTimer(self, singleShot=True)
         self._layout_timer.timeout.connect(self._snap)
@@ -127,13 +142,17 @@ class NavRail(QFrame):
         self._buttons[index].setFocus()   # 키보드 초점도 선택한 항목으로 옮긴다
         target = self._buttons[index].geometry()
         if animate:
-            motion.move_geometry(self._indicator, target, theme.MS_NAV)
+            motion.move_geometry(self._indicator, target, theme.MS_NAV, motion.EASE_BACK)
         else:
             self._indicator.setGeometry(target)
 
     def _on_clicked(self, index: int) -> None:
         self.select(index)
         self.selected.emit(index)
+
+    def _on_shortcut(self, index: int) -> None:
+        self.shortcut_used.emit(index)
+        self._on_clicked(index)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 이름
         super().resizeEvent(event)
@@ -145,13 +164,115 @@ class NavRail(QFrame):
             self._indicator.setGeometry(self._buttons[index].geometry())
 
 
+# ── 화면 전환 · 단축키 표시 ───────────────────────────────────────────────
+
+class PageZoom(QWidget):
+    """화면 전환 모션: 떠나는 화면의 「찍어 둔 그림」이 작아지거나 커지면서 옅어진다(theme.MS_PAGE).
+
+    [값은 즉시] 새 화면은 이미 아래에 떠 있고 살아 있다. 이 위젯은 그 위에 옛 화면의 그림을 잠깐 겹칠 뿐이다.
+      새 화면의 영상·상태·기록은 멈추거나 늦춰지지 않는다. 그림은 옛 화면의 것이며 새 값이 아니다.
+    [방향] 다음 화면으로 가면(forward) 옛 화면이 뒤로 물러나듯 작아지고, 이전 화면으로 가면 앞으로 다가오듯 커진다.
+    [모션 줄이기] 아무 것도 하지 않는다. 화면은 그냥 바뀐다.
+    """
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self._pixmap: QPixmap | None = None
+        self._progress = 0.0
+        self._forward = True
+        self._generation = 0
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)   # 전환 중에도 아래 화면을 바로 누를 수 있다
+        self.hide()
+
+    def play(self, pixmap: QPixmap, forward: bool) -> None:
+        if motion.is_reduced():
+            return
+        self._generation += 1
+        generation = self._generation
+        self._pixmap, self._forward, self._progress = pixmap, forward, 0.0
+        self.setGeometry(self.parentWidget().rect())
+        self.raise_()
+        self.show()
+
+        def step(value: float) -> None:
+            if generation == self._generation:
+                self._progress = float(value)
+                self.update()
+
+        def finish() -> None:
+            if generation == self._generation:
+                self.hide()
+                self._pixmap = None
+
+        motion.tween(self, 0.0, 1.0, theme.MS_PAGE, step, done=finish)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        if self._pixmap is None:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        scale = 1.0 + (-0.07 if self._forward else 0.07) * self._progress
+        painter.setOpacity(1.0 - self._progress)
+        painter.translate(self.width() / 2.0, self.height() / 2.0)
+        painter.scale(scale, scale)
+        painter.translate(-self.width() / 2.0, -self.height() / 2.0)
+        painter.drawPixmap(self.rect(), self._pixmap)
+
+
+class KeyHint(QLabel):
+    """단축키 표시: 단축키를 누르면 창 아래 가운데에 「Ctrl+2 · 운영 대시보드」가 떠올랐다 사라진다(theme.MS_HINT).
+
+    무엇이 눌렸는지 알려 줄 뿐이다. 누를 수 없고(마우스가 통과한다) 화면 전환을 늦추지 않는다.
+    모션 줄이기면 떠오름·옅어짐 없이 나타났다 사라진다.
+    """
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("KeyHint")
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._generation = 0
+        self._hide_timer = QTimer(self, singleShot=True, interval=theme.MS_HINT)
+        self._hide_timer.timeout.connect(self._leave)
+        self.hide()
+
+    def flash(self, text: str) -> None:
+        self._generation += 1
+        generation = self._generation
+        self.setText(text)
+        self.adjustSize()
+        home_x = (self.parentWidget().width() - self.width()) // 2
+        home_y = self.parentWidget().height() - self.height() - 26
+        effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(effect)
+        self.move(home_x, home_y)
+        self.raise_()
+        self.show()
+
+        def step(value: float) -> None:
+            if generation == self._generation:
+                effect.setOpacity(value)
+                self.move(home_x, home_y + round((1.0 - value) * 10))
+
+        motion.tween(self, 0.0, 1.0, theme.MS_POPUP, step)
+        self._hide_timer.start()
+
+    def _leave(self) -> None:
+        self._generation += 1
+        generation = self._generation
+        effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(effect)
+        motion.tween(self, 1.0, 0.0, theme.MS_POPUP, lambda value: generation == self._generation and effect.setOpacity(value),
+                     done=lambda: generation == self._generation and self.hide())
+
+
 # ── 상단 상태띠 ───────────────────────────────────────────────────────────
 
 class StatusChip(QWidget):
     """상태띠 한 칸: 색 점 + 항목 이름 + 현재 문구.
 
-    문구는 set_state 즉시 바뀐다. 색 점의 색만 MS_STAGE 동안 전환되고, 바탕이 MS_FLASH 동안
-    한 번 밝아졌다 돌아온다(반복 없음). level: ok · warn · fail · idle · accent.
+    문구는 set_state 즉시 바뀐다. 색 점의 색만 MS_STAGE 동안 전환되고, 수준이 바뀌면 그 색이 MS_FLASH 동안
+    왼쪽에서 오른쪽으로 한 번 쓸고 지나가며 옅어지고, 점에서 고리가 한 번 퍼진다(반복 없음).
+    level: ok · warn · fail · idle · accent.
     """
 
     def __init__(self, caption: str) -> None:
@@ -162,7 +283,7 @@ class StatusChip(QWidget):
         self._dot = QColor(theme.IDLE)
         self._flash = 0.0
         self._dot_generation = 0
-        self.setFixedHeight(58)
+        self.setFixedHeight(46)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setAccessibleName(caption)
 
@@ -200,20 +321,36 @@ class StatusChip(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        background = motion.blend(QColor(theme.SURFACE), self._dot, 0.22 * self._flash)
+        shape = QPainterPath()
+        shape.addRoundedRect(rect, theme.RADIUS_SMALL, theme.RADIUS_SMALL)
+        painter.fillPath(shape, QColor(theme.SURFACE))
+        if self._flash > 0.0:   # 색이 왼쪽에서 차오르며 옅어진다. 끝나면 흔적이 남지 않는다
+            wash = QColor(self._dot)
+            wash.setAlphaF(0.34 * self._flash)
+            painter.save()
+            painter.setClipPath(shape)
+            painter.fillRect(QRectF(rect.left(), rect.top(), rect.width() * (1.0 - self._flash * self._flash), rect.height()), wash)
+            painter.restore()
         painter.setPen(QPen(QColor(theme.LINE), 1))
-        painter.setBrush(background)
-        painter.drawRoundedRect(rect, theme.RADIUS_SMALL, theme.RADIUS_SMALL)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(shape)
+        center = QPointF(15, 14)
+        if self._flash > 0.0:   # 점에서 고리가 퍼지며 옅어진다
+            ring = QColor(self._dot)
+            ring.setAlphaF(0.7 * self._flash)
+            painter.setPen(QPen(ring, 1.5))
+            reach = 4.0 + 7.0 * (1.0 - self._flash)
+            painter.drawEllipse(center, reach, reach)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(self._dot)
-        painter.drawEllipse(QPointF(18, 20), 4.5, 4.5)
+        painter.drawEllipse(center, 4.0, 4.0)
         painter.setPen(QColor(theme.DIM))
-        painter.setFont(_font(11, 700))
-        painter.drawText(QRectF(30, 10, rect.width() - 38, 20), Qt.AlignmentFlag.AlignVCenter, self._caption)
+        painter.setFont(_font(10, 700))
+        painter.drawText(QRectF(26, 5, rect.width() - 32, 18), Qt.AlignmentFlag.AlignVCenter, self._caption)
         painter.setPen(QColor(theme.TEXT))
-        painter.setFont(_font(14, 700))
-        text = painter.fontMetrics().elidedText(self._text, Qt.TextElideMode.ElideRight, int(rect.width() - 24))
-        painter.drawText(QRectF(14, 30, rect.width() - 24, 22), Qt.AlignmentFlag.AlignVCenter, text)
+        painter.setFont(_font(13, 700))
+        text = painter.fontMetrics().elidedText(self._text, Qt.TextElideMode.ElideRight, int(rect.width() - 22))
+        painter.drawText(QRectF(11, 22, rect.width() - 22, 20), Qt.AlignmentFlag.AlignVCenter, text)
 
 
 # ── 영상 표시면 ───────────────────────────────────────────────────────────
@@ -568,13 +705,13 @@ class StageStrip(QWidget):
         self._stages = stages
         self._current: int | None = None
         self._glow = 0.0
-        self.setFixedHeight(40)
+        self.setFixedHeight(34)
 
     def set_stage(self, index: int | None) -> None:
         if index == self._current:
             return
         self._current = index
-        motion.tween(self, 0.0, 1.0, theme.MS_STAGE, self._set_glow)
+        motion.tween(self, 0.0, 1.0, theme.MS_STAGE, self._set_glow)   # 색이 차오른다(한 번)
 
     def _set_glow(self, value: float) -> None:
         self._glow = float(value)
@@ -584,15 +721,23 @@ class StageStrip(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setFont(_font(11, 700))
-        gap = 6
+        gap = 5
         width = (self.width() - gap * (len(self._stages) - 1)) / len(self._stages)
         for index, name in enumerate(self._stages):
-            box = QRectF(index * (width + gap), 4, width, 32)
+            box = QRectF(index * (width + gap), 3, width, 28)
             active = index == self._current
-            fill = motion.blend(QColor(theme.SURFACE_2), QColor(theme.ACCENT), self._glow) if active else QColor(theme.SURFACE_2)
+            shape = QPainterPath()
+            shape.addRoundedRect(box, 14, 14)
+            painter.fillPath(shape, QColor(theme.SURFACE_2))
+            if active:   # 주황이 왼쪽부터 차오른다. 어느 칸이 확인됐는지는 그대로 한 칸뿐이다
+                painter.save()
+                painter.setClipPath(shape)
+                painter.fillRect(QRectF(box.left(), box.top(), box.width() * self._glow, box.height()),
+                                 QColor(theme.ACCENT))
+                painter.restore()
             painter.setPen(QPen(QColor(theme.LINE), 1))
-            painter.setBrush(fill)
-            painter.drawRoundedRect(box, 16, 16)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(shape)
             painter.setPen(QColor(theme.ON_ACCENT if active and self._glow > 0.5 else theme.DIM))
             painter.drawText(box, Qt.AlignmentFlag.AlignCenter, name)
 
@@ -639,6 +784,22 @@ class TrafficTable(QTableWidget):
         self.setRowHidden(0, bool(self._filter) and entry.direction != self._filter)
         if self.rowCount() > self.MAX_ROWS:
             self.removeRow(self.rowCount() - 1)
+        self._flash_row([self.item(0, column) for column in range(4)])
+
+    def _flash_row(self, items: list) -> None:
+        """새로 들어온 줄의 바탕이 한 번 밝아졌다 사라진다(반복 없음). 글자와 값은 처음부터 최종 그대로다."""
+        tint = QColor(self._direction_color(items[1].text()))
+
+        def paint(value: float) -> None:
+            color = QColor(tint)
+            color.setAlphaF(0.20 * float(value))
+            try:
+                for item in items:
+                    item.setBackground(color)
+            except RuntimeError:   # 강조가 끝나기 전에 그 줄이 표에서 빠졌다(화면 비우기·500줄 초과)
+                pass
+
+        motion.tween(self, 1.0, 0.0, theme.MS_FLASH, paint)
 
     def refresh_theme(self) -> None:
         """이미 넣은 행의 방향 글자색을 새 테마 값으로 바꾼다."""

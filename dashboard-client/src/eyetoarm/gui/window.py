@@ -11,7 +11,8 @@
                                            C 는 지금 raw 만 보내므로 detect·center 는 수신 대기로 보이고, 측정값은 — 이다
   python -m eyetoarm.gui.window --demo     모의 분류 조작·상태 확인 (아무 것도 보내지 않음)
   python -m eyetoarm.gui.window --no-motion  모션 줄이기 상태로 시작
-  python -m eyetoarm.gui.window --theme light  라이트 테마로 시작 (좌측 아래 「다크 / 라이트」로 실행 중 전환)
+  python -m eyetoarm.gui.window --theme light  라이트 테마로 시작 (오른쪽 위 「다크 / 라이트」로 실행 중 전환)
+  python -m eyetoarm.gui.window --no-cover  표지 화면(UR5e 인사, cover.py) 없이 바로 연다
 1일차 진단 CLI(python -m eyetoarm.gui)는 그대로다. 이 창은 별도 진입점이다.
 
 ┌─ 화면 구역과 연동 파트 ────────────────────────────────────────────────────┐
@@ -62,7 +63,9 @@ from eyetoarm.gui import motion, theme
 from eyetoarm.gui.client import ACK_METRIC_BOUNDARY
 from eyetoarm.gui.gz_view_relay import DEFAULT_PORT as VIEW_PORT
 from eyetoarm.gui.relay_view import DEFAULT_PORT as RELAY_PORT
-from eyetoarm.gui.widgets import Card, DisplayStage, NavRail, RingProgress, StageStrip, StatusChip, TrafficTable, label, pill
+from eyetoarm.gui.widgets import (
+    Card, DisplayStage, KeyHint, NavRail, PageZoom, RingProgress, StageStrip, StatusChip, TrafficTable, label, pill,
+)
 from eyetoarm.tcp.protocol import MoveTarget
 
 PAGES = ["조작·설정", "운영 대시보드", "평가·기록"]
@@ -101,11 +104,11 @@ class MainWindow(QMainWindow):
 
         root = QWidget(objectName="Root")
         self.setCentralWidget(root)
-        outer = QHBoxLayout(root)
+        outer = QVBoxLayout(root)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # ── 좌측: 화면 선택 ────────────────────────────────────────────
+        # ── 맨 위: 화면 선택 띠(상표 · 탭 · 출처 · 테마 · 모션 줄이기) ─────
         self.nav = NavRail(PAGES)
         self.source = label("", "Tag")
         self.reduce = QCheckBox("모션 줄이기")
@@ -122,16 +125,15 @@ class MainWindow(QMainWindow):
             button.clicked.connect(lambda _checked, k=key: self.set_theme(k))
             self.theme_buttons[key] = button
             theme_row.addWidget(button)
-        theme_row.addStretch(1)
-        self.nav.footer.addWidget(self.source)
+        self.nav.footer.addWidget(self.source, 0, Qt.AlignmentFlag.AlignVCenter)
         self.nav.footer.addLayout(theme_row)
         self.nav.footer.addWidget(self.reduce)
         outer.addWidget(self.nav)
 
-        # ── 우측: 제목줄 · 상태띠 · 화면 ───────────────────────────────
+        # ── 아래: 제목줄 · 상태띠 · 화면 ───────────────────────────────
         right = QVBoxLayout()
-        right.setContentsMargins(28, 22, 28, 24)
-        right.setSpacing(16)
+        right.setContentsMargins(20, 10, 20, 14)
+        right.setSpacing(10)
         outer.addLayout(right, 1)
         right.addLayout(self._build_header())
         right.addLayout(self._build_status_strip())
@@ -140,6 +142,8 @@ class MainWindow(QMainWindow):
         self.traffic_recent = TrafficTable()    # 운영 대시보드의 최근 기록(같은 내용을 함께 받는다)
         self.stage = DisplayStage(demo=demo)    # 메인 디스플레이. 창에 하나만 있고 화면 사이를 옮겨 다닌다
         self.pages = QStackedWidget()
+        self.page_zoom = PageZoom(self.pages)   # 화면 전환 모션(떠나는 화면의 그림이 줌되며 옅어진다)
+        self.key_hint = KeyHint(root)           # 단축키 표시(Ctrl+1~3)
         self._page_cards: list[list[QWidget]] = []
         for build in (self._build_setup_page, self._build_operate_page, self._build_record_page):
             page, cards = build()
@@ -149,6 +153,7 @@ class MainWindow(QMainWindow):
 
         # ── 연결과 화면을 잇는다 ───────────────────────────────────────
         self.nav.selected.connect(self._show_page)
+        self.nav.shortcut_used.connect(lambda index: self.key_hint.flash(f"Ctrl+{index + 1}  ·  {PAGES[index]}"))
         self.link.traffic.connect(self.traffic_full.add_entry)
         self.link.traffic.connect(self.traffic_recent.add_entry)
         self.link.status_received.connect(self._on_status)
@@ -185,7 +190,7 @@ class MainWindow(QMainWindow):
 
     def _build_header(self) -> QHBoxLayout:
         row = QHBoxLayout()
-        row.setSpacing(10)
+        row.setSpacing(8)
         self.title = label("", "PageTitle")
         row.addWidget(self.title)
         row.addStretch(1)
@@ -207,7 +212,7 @@ class MainWindow(QMainWindow):
 
     def _build_status_strip(self) -> QHBoxLayout:
         row = QHBoxLayout()
-        row.setSpacing(10)
+        row.setSpacing(8)
         self.chip_tcp = StatusChip("명령 TCP")        # [C] 47090 연결
         self.chip_view = StatusChip("표시 연결")      # [D 임시] Gazebo 창 캡처 또는 카메라 중계
         self.chip_status = StatusChip("유효 STATUS")  # [C] 검사를 통과한 최근 준비 응답
@@ -225,7 +230,7 @@ class MainWindow(QMainWindow):
         page = QWidget()
         grid = QGridLayout(page)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(14)
+        grid.setSpacing(10)
 
         self.setup_display_slot = QVBoxLayout()   # 이 화면이 보일 때 메인 디스플레이가 여기로 온다
         display_card = Card("영상", "모의 · 실제 아님" if self.demo else "C 3채널 중계 시제품" if self.relay else "D 임시 경로")
@@ -249,6 +254,7 @@ class MainWindow(QMainWindow):
         self.view_value = self._elidable(source_value, self.view.title)
         self._fit_labels = [self.view_value]
         self._build_endpoint_inputs(link_card)
+        link_card.body.addStretch(1)
         grid.addWidget(link_card, 0, 2)
 
         command_card = Card("모의 분류 조작" if self.demo else "명령 계약 상태", "실제 전송 없음" if self.demo else "D ↔ C")
@@ -287,6 +293,7 @@ class MainWindow(QMainWindow):
         input_card = Card("입력·보정", "D 모의" if self.demo else "A·B 결과 미수신")
         self.input_values = self._rows(input_card, [("소스 · 모드", NO_VALUE), ("보정", NO_VALUE), ("상태 · 사유", NO_VALUE)])
         input_card.body.addWidget(label("D 내부 모의 값입니다. 실제 A·B 측정값이 아닙니다." if self.demo else "A·B 값은 C 표시 연결로 옵니다. 연결 방식이 정해지기 전에는 비워 둡니다.", "Caption", wrap=True))
+        input_card.body.addStretch(1)
         grid.addWidget(input_card, 2, 0)
 
         target_card = Card("수동 명령 목표", "PLANAR · mm / °")
@@ -314,19 +321,21 @@ class MainWindow(QMainWindow):
         self.resolve_button = pill("미확인 기록 보존·새 목표 확인", tooltip="C가 준비됨을 보고한 경우에만 이전 결과 미확인을 보존하고 새 목표를 확인할 수 있습니다. 자동 재송신하지 않습니다.")
         self.resolve_button.clicked.connect(self._resolve_unconfirmed)
         target_card.body.addWidget(self.resolve_button)
+        target_card.body.addStretch(1)
         grid.addWidget(target_card, 2, 1)
 
         shape_card = Card("로봇 외형", "D 자산 · C 적용 확인 전")
         self._rows(shape_card, [("모델 이름 · 버전", NO_VALUE), ("Gazebo 적용 확인", "미실행")])
         shape_card.body.addWidget(label("정적 미리보기는 실제 관절 자세가 아닙니다. 움직임은 메인 디스플레이의 Gazebo 화면으로 봅니다.", "Caption", wrap=True))
+        shape_card.body.addStretch(1)
         grid.addWidget(shape_card, 2, 2)
 
-        grid.setColumnStretch(0, 3)
-        grid.setColumnStretch(1, 3)
-        grid.setColumnStretch(2, 4)
-        grid.setRowStretch(0, 2)
-        grid.setRowStretch(1, 2)
-        grid.setRowStretch(2, 1)
+        grid.setColumnStretch(0, 4)   # 영상 송출이 주인공이다. 영상 쪽 두 열이 폭의 8/11 을 쓴다(사용자 지정 2026-11-20)
+        grid.setColumnStretch(1, 4)
+        grid.setColumnStretch(2, 3)   # 오른쪽 카드(연결·조작·로봇 외형)는 좁게
+        grid.setRowStretch(0, 1)   # 남는 높이는 영상과 오른쪽 두 카드가 나눠 갖는다
+        grid.setRowStretch(1, 1)
+        grid.setRowStretch(2, 0)   # 아래 줄(입력·보정 / 수동 명령 목표 / 로봇 외형)은 내용 높이만 쓴다
         # 최소 창(1180x760)에서는 카드 최소 높이 합이 본문보다 커서 글자·입력칸이 잘린다. 줄이지 않고 세로로 넘긴다
         scroll = QScrollArea()
         scroll.setWidget(page)
@@ -342,13 +351,13 @@ class MainWindow(QMainWindow):
         page = QWidget()
         column = QVBoxLayout(page)
         column.setContentsMargins(0, 0, 0, 0)
-        column.setSpacing(14)
+        column.setSpacing(10)
 
         self.operate_display_slot = QVBoxLayout()
         holder = QWidget()
         holder_layout = QVBoxLayout(holder)
         holder_layout.setContentsMargins(0, 0, 0, 0)
-        holder_layout.setSpacing(10)
+        holder_layout.setSpacing(8)
         tools = QHBoxLayout()
         self.detail_button = pill("측정·보정 상세", checkable=True, tooltip="탑뷰 화면 위에 상세 팝업을 펼칩니다.")
         self.detail_button.toggled.connect(self.stage.popup.toggle)
@@ -370,7 +379,7 @@ class MainWindow(QMainWindow):
         column.addWidget(holder, 1)
 
         cards = QHBoxLayout()
-        cards.setSpacing(14)
+        cards.setSpacing(10)
 
         measure_card = Card("현재 측정", "D 모의" if self.demo else "A·B 미수신")
         self.measure_values = self._rows(measure_card, [("(u, v) px", NO_VALUE), ("(X, Y) mm", NO_VALUE), ("θ °", NO_VALUE)])
@@ -414,7 +423,7 @@ class MainWindow(QMainWindow):
         recent_card.body.addWidget(self.traffic_recent, 1)
 
         for card, stretch in ((measure_card, 2), (stage_card, 4), (count_card, 2), (recent_card, 5)):
-            card.setFixedHeight(268)   # 단계 ID·실패 줄과 수량 5줄이 최소 창에서도 잘리지 않는 높이
+            card.setFixedHeight(232)   # 단계 ID·실패 줄과 수량 5줄이 최소 창에서도 잘리지 않는 높이
             cards.addWidget(card, stretch)
         column.addLayout(cards)
         scroll = QScrollArea()
@@ -431,7 +440,7 @@ class MainWindow(QMainWindow):
         page = QWidget()
         row = QHBoxLayout(page)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(14)
+        row.setSpacing(10)
 
         log_card = Card("TX/RX 기록", "GUI-03 · " + self._live_tag)
         tools = QHBoxLayout()
@@ -471,10 +480,12 @@ class MainWindow(QMainWindow):
         row.addWidget(log_card, 5)
 
         side = QVBoxLayout()
-        side.setSpacing(14)
+        side.setSpacing(10)
         metric_card = Card("평가", "측정 전")
-        self.ack_metric_value = self._rows(metric_card, [("사용자 실행 → ACK 지연", NO_VALUE), ("명령 성공률", NO_VALUE),
-                                                         ("위치 오차", NO_VALUE)])[0]
+        self.ack_metric_value, _rate, self.reach_error_value = self._rows(
+            metric_card, [("사용자 실행 → ACK 지연", NO_VALUE), ("명령 성공률", NO_VALUE), ("도달 오차", NO_VALUE)])
+        # 현재 추적 MOVE 의 C 보고 reach_error 만 쓴다. D 가 계산하지 않는다(TCP 1.1 §4.6)
+        self.reach_error_value.setToolTip("C 가 STATUS reach_error 로 보낸 현재 MOVE 의 위치·회전 오차. 없으면 —")
         self.ack_metric_note = label("모의: 실제 ACK 없음 · 측정 안 함" if self.demo else "명령 없음", "Caption", wrap=True)
         tip = "모의 분류는 TCP 를 쓰지 않아 측정하지 않습니다." if self.demo else ACK_METRIC_BOUNDARY
         self.ack_metric_value.setToolTip(tip)
@@ -631,11 +642,19 @@ class MainWindow(QMainWindow):
         self._update_command_controls()
 
     def _on_command(self, record) -> None:
+        reach = getattr(record, "reach_error", None)   # 새 명령이면 None 이라 이전 명령 값이 남지 않는다
+        reach_text = (NO_VALUE if not reach else   # 0 은 유효값이므로 is None 으로만 비운다
+                      f"{NO_VALUE if reach.get('position_mm') is None else reach['position_mm']} mm · "
+                      f"{NO_VALUE if reach.get('rotation_deg') is None else reach['rotation_deg']} °")
         text = (f"ID: {record.command_id}\n{record.result}\n"
                 f"state={record.state or '—'} / stage={record.stage or '—'}\n"
-                f"code={record.code or '—'} / 시도={record.attempts}\n{record.detail or ''}")
+                f"code={record.code or '—'} / 시도={record.attempts}\n"
+                f"reach_error={reach_text}\n{record.detail or ''}")
         self.command_label.setText(text)
         self.error_detail.setText(text)
+        self.reach_error_value.setText(reach_text)
+        self.reach_error_value.setObjectName("Dim" if not reach else "CardTitle")
+        self.reach_error_value.style().polish(self.reach_error_value)
         latency, reason = record.ack_metric()
         self.ack_metric_value.setText(NO_VALUE if latency is None else f"{latency} ms")
         self.ack_metric_value.setObjectName("Dim" if latency is None else "CardTitle")
@@ -744,7 +763,11 @@ class MainWindow(QMainWindow):
         self._export_lock(False)
 
     def _show_page(self, index: int, animate: bool = True) -> None:
-        """본문은 즉시 바뀐다. 그 뒤 카드가 차례로 등장한다. 연결·기록은 건드리지 않는다."""
+        """본문은 즉시 바뀐다. 떠나는 화면의 그림이 줌되며 옅어지고, 새 화면의 카드가 차례로 등장한다. 연결·기록은 건드리지 않는다."""
+        previous = self.pages.currentIndex()
+        # 떠나는 화면을 그림으로 찍어 둔다(영상 칸을 옮기기 전에). 새 화면은 그 아래에서 바로 살아 있다
+        snapshot = (self.pages.grab() if animate and index != previous and self.pages.isVisible() and not motion.is_reduced()
+                    else None)
         if index != 1 and self.detail_button.isChecked():
             self.detail_button.setChecked(False)
         # 메인 디스플레이는 하나뿐이다. 영상 칸이 있는 화면으로 옮긴다(수신은 끊기지 않는다)
@@ -752,10 +775,17 @@ class MainWindow(QMainWindow):
         if slot is not None and slot.indexOf(self.stage) < 0:
             slot.addWidget(self.stage)
         self.pages.setCurrentIndex(index)
+        if snapshot is not None:
+            self.page_zoom.play(snapshot, forward=index > previous)
         self.title.setText(PAGES[index])
         self.nav.select(index, animate)
         if animate:
             motion.stagger(self._page_cards[index], theme.MS_PAGE, theme.MS_STAGGER)
+
+    def play_entrance(self) -> None:
+        """표지가 닫힌 뒤 한 번: 상태띠 칸과 지금 화면의 카드가 차례로 떠오른다. 값·연결은 건드리지 않는다."""
+        chips = [self.chip_tcp, self.chip_view, self.chip_status, self.chip_ready, self.chip_sort, self.chip_age]
+        motion.stagger(chips + self._page_cards[self.pages.currentIndex()], theme.MS_PAGE, theme.MS_STAGGER)
 
     # ══ 테마 ═══════════════════════════════════════════════════════════════
 
@@ -1169,6 +1199,7 @@ def main(argv: list[str] | None = None) -> int:
                         help=f"중계 포트 (기본: camera {VIEW_PORT}, relay {RELAY_PORT})")
     parser.add_argument("--demo", action="store_true", help="모의 분류 조작·상태·화면 확인. 소켓을 열지 않음")
     parser.add_argument("--no-motion", action="store_true", help="모션 줄이기 상태로 시작")
+    parser.add_argument("--no-cover", action="store_true", help="표지 화면(UR5e 인사) 없이 바로 대시보드를 연다")
     parser.add_argument("--theme", choices=tuple(theme.PALETTES), default=None,
                         help="시작 테마. 생략하면 지난번에 고른 테마(없으면 dark). 이 인자로 준 값은 저장하지 않음")
     parser.add_argument("--shot", default="", help="(개발용) 창을 띄우고 --shot-after ms 뒤 이 경로에 PNG 저장 후 종료")
@@ -1193,7 +1224,7 @@ def main(argv: list[str] | None = None) -> int:
 
     app = QApplication(sys.argv[:1])
     store = settings()
-    theme.apply(args.theme or str(store.value("theme", "dark")))
+    theme.apply(args.theme or str(store.value("theme", theme.DEFAULT_THEME)))
     app.setStyleSheet(theme.QSS)
     motion.set_reduced(args.no_motion)
     if args.demo:
@@ -1230,6 +1261,10 @@ def main(argv: list[str] | None = None) -> int:
         window._show_page(args.page)
     if args.popup:
         window.detail_button.setChecked(True)
+    if not args.shot and not args.no_cover:
+        from eyetoarm.gui.cover import CoverScreen
+        # 표지는 덮개일 뿐이다. 아래 창의 연결·수신은 이미 시작했고 표지가 막지 않는다
+        CoverScreen(window.centralWidget()).finished.connect(window.play_entrance)
     if args.shot:
         def shoot() -> None:
             window.grab().save(args.shot)

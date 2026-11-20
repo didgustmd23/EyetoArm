@@ -6,10 +6,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections import deque
 from pathlib import Path
 from typing import Any, Callable
+
+_logger = logging.getLogger(__name__)
 
 
 class EventLog:
@@ -55,7 +58,10 @@ class EventLog:
                 self.write_error = str(error)
         if not routine:
             for listener in list(self.listeners):
-                listener(row)
+                try:   # 한 listener 의 실패가 다른 listener 와 송수신 작업을 멈추지 않게 한다(D-07)
+                    listener(row)
+                except Exception:
+                    _logger.exception("EventLog listener 예외 · 다른 listener 와 기록은 계속")
         return row
 
     def to_csv(self) -> str:
