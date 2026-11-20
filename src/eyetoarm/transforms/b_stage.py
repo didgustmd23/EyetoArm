@@ -164,6 +164,8 @@ class BStage:
         keys = correlation_keys(obs, frame)              # A 관측 → B → C·D 연결 키 (CB-05, D DB-01)
         goal.update(keys)
         goal.update({"goal_id": str(uuid.uuid4()), "sort_job_id": self.sort_job_id, "run_epoch": self.run_epoch})
+        ttl, stamp = self.frames.get("goal_ttl_s"), frame.ros_stamp_ns
+        goal["valid_until_ns"] = int(stamp + round(float(ttl) * 1e9)) if ttl and stamp else 0   # C-9 (B 제안 2 s)
 
         result_dict = to_output_dict(result, frame.source_id)
         result_dict.update(keys)

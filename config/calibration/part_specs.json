@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "status": "draft-2026-11-17",
-  "note": "B 규격 판정 기준. 길이는 m. 근거: simulation/models/bolt_m6x12·bolt_m6x40·nut_m6 (ISO 4762 / ISO 4032). 볼트는 머리 포함 전체 길이로 판정(A B-04). 판정 규칙·허용 범위는 B 협업 요청 §6 DB-01과 같다. 2026-11-17 B 선택(A-2): 볼트는 머리 끝·축 끝 두 점, 너트는 윗면 바깥 테두리. 종류별 기준 높이 plane_z(A 후보 자료 r1: 볼트 축 105.0 mm, 너트 윗면 105.7 mm).",
+  "note": "B 규격 판정 기준. 길이는 m. 근거: simulation/models/bolt_m6x12·bolt_m6x40·nut_m6 (ISO 4762 / ISO 4032). 볼트는 머리 포함 전체 길이로 판정(A B-04). 판정 규칙·허용 범위는 B 협업 요청 §6 DB-01과 같다. 2026-11-17 B 선택(A-2): 볼트는 머리 끝·축 끝 두 점, 너트는 윗면 바깥 테두리. 종류별 기준 높이 plane_z(A 후보 자료 r1: 볼트 축 105.0 mm, 너트 윗면 105.7 mm). 2026-11-20 B 수정: 너트 105.2 mm (Gazebo 실측 part_02 z=0.0999995 + 두께 5.2 mm, nut_m6 SDF).",
   "plane_z": 0.105,
   "bolt_min_aspect": 1.5,
   "specs": {
@@ -42,7 +42,7 @@
       "bin": "NUT",
       "action": "PASS_THROUGH",
       "note": "벨트 끝 너트 상자로 흘려보낸다 (DB-02 결정 6). 집지 않는다.",
-      "plane_z": 0.1057
+      "plane_z": 0.1052
     }
   }
 }
