@@ -183,6 +183,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="--live-observation-out 전용(#213): B 중심점 주석 영상을 이 토픽으로 표시 전용 발행(값 없으면 "
                              "/b/center_overlay/image). 단계 T만, 설정 center_display 필수. b_live_view.py --publish와 동시 실행 금지. "
                              "C·D·로봇 송신 없음")
+    parser.add_argument("--tracking-space", dest="tracking_space", choices=("pixel", "world"), default="pixel",
+                        help="--tracking 추적 좌표(#217): pixel(기본, 기존 픽셀 추적) | world(작업 좌표 W 추적, --live-observation-out "
+                             "전용, --world-tracker-config 필수)")
+    parser.add_argument("--world-tracker-config", dest="world_tracker_config", metavar="JSON", default=None,
+                        help="--tracking-space world 전용: W 추적 시험 설정(status=test_only)")
     parser.add_argument("--live-sort-part", dest="live_sort_part", action="store_true",
                         help="--live-observation-out 전용(#214 D13 해제): 수락된 B 결과의 C 목표를 /sort_part로 송신. 단계 T만, "
                              "설정 sort_part 필수. robot_ws의 eyetoarm_interfaces 빌드·source 필요")
@@ -256,6 +261,17 @@ def _check_source_args(args, ros_available) -> None:
         # #215: 추적 번호 연결은 단계 T만(B-09 목록 규칙 전)
         if args.tracking and args.b_input != "single":
             build_parser().error("--live-observation-out --tracking is for stage T only (--b-input single)")
+
+    # #217: W 추적은 실시간 기록 연결 안에서만(촬영 시각 TF 필요)
+    if args.tracking_space == "world":
+        if not args.tracking:
+            build_parser().error("--tracking-space world requires --tracking")
+        if args.live_observation_out is None:
+            build_parser().error("--tracking-space world requires --live-observation-out (needs capture-time TF)")
+        if args.world_tracker_config is None:
+            build_parser().error("--tracking-space world requires --world-tracker-config")
+    elif args.world_tracker_config is not None:
+        build_parser().error("--world-tracker-config is for --tracking-space world only")
 
     # 표시 전용 송출(#213): 기록 전용 연결의 단계 T 결과만 그린다
     if args.live_center_topic is not None:
@@ -399,7 +415,7 @@ def _prepare_synthetic_observation(args, err):
 def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_available=None,
          live_source_factory=None, b_stage_hook=None, extension_source=None, live_tf_factory=None,
          live_run_controller=None, list_consumer_factory=None, live_display_factory=None,
-         live_sort_part_factory=None) -> int:
+         live_sort_part_factory=None, live_conveyor_probe=None) -> int:
     """CLI 진입점. 종료 코드를 돌려준다.
 
     `b_stage_hook(stage)`는 시험 주입 지점이다(시험 B 연결에서 만든 BStage를 run 전에 받음, 기본 None).
@@ -418,6 +434,9 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
     토픽 발행자가 보이면 `ExistingPublisherError`를 낸다.
 
     `live_sort_part_factory(sort_part_config)`(#214)는 C 송신 런타임 시험 주입 지점이다(기본 `_RosSortPartRuntime`).
+
+    `live_conveyor_probe()`(#217)는 C `/conveyor_controller`의 `speed_mps` 진단 조회 시험 주입 지점이다(기본 `_ros_conveyor_speed_probe`).
+    결과는 요약 진단값으로만 쓰고 추적기에는 넘기지 않는다(정답 격리).
     """
     err = stderr if stderr is not None else sys.stderr
     args = build_parser().parse_args(argv)  # 인자 오류는 argparse가 종료 2로 끝낸다
@@ -473,7 +492,8 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
         return 2
 
     # 추적 opt-in(#151): 진입점이 프로세스당 발급기 1개를 만들어 주입한다
-    if args.tracking:
+    # W 추적(#217)은 연결부 추적 스레드가 하므로 실행기 픽셀 추적기를 만들지 않는다
+    if args.tracking and args.tracking_space == "pixel":
         detector_kw["part_tracker"] = PartTracker(PartTrackIdIssuer(), mode=TrackMode.HEURISTIC)
 
     if synthetic is not None:
@@ -497,7 +517,8 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
                                      controller=live_run_controller or _live_runs(),
                                      list_consumer_factory=list_consumer_factory,
                                      live_display_factory=live_display_factory,
-                                     live_sort_part_factory=live_sort_part_factory)
+                                     live_sort_part_factory=live_sort_part_factory,
+                                     live_conveyor_probe=live_conveyor_probe)
 
     if capture is not None and args.b_input == "list":
         return _run_capture_list(args, settings, runner_config, detector_kw, capture, err, b_stage_hook,
@@ -605,6 +626,54 @@ class _RosTfRuntime:
         if not self._shutdown:
             self._context.try_shutdown()
             self._shutdown = True
+
+
+def _new_world_tracker(config):
+    """W 추적기(#217): 이 실행 전용 발급기(프로세스 수명 번호 규칙은 픽셀 추적과 같음)."""
+    from eyetoarm.vision.world_tracking import WorldTracker
+
+    return WorldTracker(PartTrackIdIssuer(), config=config)
+
+
+def _ros_conveyor_speed_probe(timeout_s: float = 1.0) -> dict:
+    """C `/conveyor_controller` 노드의 `speed_mps` 파라미터를 시작 때 1회 읽는다(진단 전용, C 코드 무변). 자기 Context를 쓰고 닫는다.
+
+    노드가 없으면 `status="no_node"`. 이 값은 예측·짝짓기·번호 판정에 쓰지 않는다(보충 2, 정답 격리).
+    """
+    import rclpy
+    from rcl_interfaces.srv import GetParameters
+    from rclpy.context import Context
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.signals import SignalHandlerOptions
+
+    ctx = Context()
+    rclpy.init(context=ctx, signal_handler_options=SignalHandlerOptions.NO)
+    node = None
+    out = {"node": "/conveyor_controller", "speed_mps": None, "status": "no_node"}
+
+    try:
+        node = rclpy.create_node("eyetoarm_world_tracking_probe", context=ctx)
+        client = node.create_client(GetParameters, "/conveyor_controller/get_parameters")
+
+        if client.wait_for_service(timeout_sec=timeout_s):
+            ex = SingleThreadedExecutor(context=ctx)
+            ex.add_node(node)
+            fut = client.call_async(GetParameters.Request(names=["speed_mps"]))
+            ex.spin_until_future_complete(fut, timeout_sec=timeout_s)
+            res = fut.result() if fut.done() else None
+            ex.shutdown()
+
+            if res is not None and res.values:
+                out.update(speed_mps=float(res.values[0].double_value), status="ok")
+            else:
+                out["status"] = "no_reply"
+    finally:
+        if node is not None:
+            node.destroy_node()
+
+        ctx.try_shutdown()
+
+    return out
 
 
 class ExistingPublisherError(RuntimeError):
@@ -794,7 +863,7 @@ class _RosSortPartRuntime:
 
 def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_stage_hook, live_source_factory,
                           live_tf_factory, controller, list_consumer_factory=None, live_display_factory=None,
-                          live_sort_part_factory=None) -> int:
+                          live_sort_part_factory=None, live_conveyor_probe=None) -> int:
     """실시간 A→B 기록 전용 시험(#173). 호출 경로: LiveLinkSource(경계 훅 = 연결부) → 실행기 → AiSegDetector(M1) → 코어 →
     `handle()` 기록·표시 뒤 `live_observation_sink.offer` → 전용 디스패처 → 촬영 stamp TF → 봉투 → B 입구 어댑터 → BStage → 주석 → 순번
     기록기. 리셋이면 실행을 멈추고 정리한다(자동 재시작 없음).
@@ -843,6 +912,20 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
             return 2
 
     listed = args.b_input == "list"
+    world_on = getattr(args, "tracking_space", "pixel") == "world"
+    world_cfg = None
+
+    # #217: W 추적 설정·볼트 평면 높이(B 규격 읽기만)는 출력·세션을 만들기 전에 확인한다
+    if world_on:
+        from eyetoarm.transforms.work_result import class_plane_z, load_specs
+        from eyetoarm.vision.live_world_tracking import LagConfigError, load_world_tracking_config
+
+        try:
+            world_cfg = load_world_tracking_config(args.world_tracker_config)
+            world_plane_z = class_plane_z(load_specs(REPO_ROOT / "config/calibration/part_specs.json"), "bolt")
+        except (OSError, LagConfigError) as exc:
+            err.write(f"run_pipeline: world tracking config error: {exc}\n")
+            return 2
 
     if listed and list_consumer_factory is None and not callable(getattr(BStage, "process_frame", None)):
         err.write("run_pipeline: --b-input list refused: list consumer unavailable (BStage.process_frame missing); "
@@ -935,7 +1018,9 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
             rid, args.live_observation_out, config=link_config, tf=tf, stage_factory=stage_factory, render=render,
             b_input=args.b_input, list_consumer_factory=list_consumer_factory if listed else None,
             view_bias=getattr(settings.detector_config, "axis_view_bias", None), display_publisher=display_pub,
-            sort_part_runtime=sort_rt, tracking=args.tracking))
+            sort_part_runtime=sort_rt, tracking=args.tracking,
+            **({} if not world_on else {"world_tracker": _new_world_tracker(world_cfg[0]), "world_config": world_cfg[1],
+                                        "world_plane_z_m": world_plane_z})))
     except Exception as exc:
         # 세션이 만들어지지 않았다: 이 함수가 만든 TF만 정리한다(세션 등록 없음)
         err.write(f"run_pipeline: cannot start live observation run: {type(exc).__name__}: {exc}\n")
@@ -972,16 +1057,28 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         retry_text = ("off" if retry is None else f"max_failures_per_track={retry.max_failures_per_track} "
                       f"point_block={retry.failed_point_block_mm}mm/{retry.failed_point_block_s}s")
         err.write(f"run_pipeline: LIVE A->B->C SORT_PART ON action=/sort_part server_seen={str(seen).lower()} "
-                  f"retry={retry_text} tracking={'M2(heuristic)' if args.tracking else 'off'} "
+                  f"retry={retry_text} tracking={('world' if world_on else 'M2(heuristic)') if args.tracking else 'off'} "
                   "(D13 released by user decision 2026-11-20, accepted risk without pre-release test F6)\n")
 
         if not seen:
             err.write("run_pipeline: warning: /sort_part server not seen at start; goals will be recorded as no_server "
                       "until it appears\n")
 
-    if args.tracking:
+    if args.tracking and not world_on:
         err.write("run_pipeline: tracking ON M2(heuristic): confirmed part_track_id only -> B _dedupe/release "
                   "(A-6 experimental ids; split ids are a known limit #156)\n")
+
+    if world_on:
+        # 진단 전용(정답 격리): C speed_mps 조회값은 요약에만 둔다. 추적기에는 넘기지 않는다(보충 2)
+        try:
+            probe = (live_conveyor_probe or _ros_conveyor_speed_probe)()
+        except Exception as exc:
+            probe = {"node": "/conveyor_controller", "speed_mps": None, "status": f"error: {type(exc).__name__}: {exc}"}
+
+        link.world.diagnostics["conveyor_speed_mps"] = probe
+        err.write(f"run_pipeline: tracking ON space=world(W, belt plane z={world_plane_z:.3f} m) config_sha256={world_cfg[2]} "
+                  f"lag_reset>{world_cfg[1].lag_limit_ms:.0f}ms; prediction uses W differencing only "
+                  f"(conveyor speed_mps diagnostic={probe.get('speed_mps')} not used)\n")
 
     if display_on:
         err.write(f"run_pipeline: center display ON topic={args.live_center_topic} sensor_msgs/Image bgr8 "
@@ -1053,6 +1150,9 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
         if link.sort_part is not None and link.sort_part.problem() is not None:   # #214: 송신 기록 실패는 숨기지 않는다
             problems.append(link.sort_part.problem())
+
+        if link.world is not None and link.world.problem() is not None:   # #217: 추적 스레드 비정상 종료·기록 실패
+            problems.append(link.world.problem())
 
         if link.dispatcher.errors and any(not e.startswith("envelope:") for e in link.dispatcher.errors):
             problems.append(f"worker errors: {[e for e in link.dispatcher.errors if not e.startswith('envelope:')]}")

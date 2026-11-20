@@ -50,6 +50,7 @@ class TrackMode(str, Enum):
     OFF = "off"                              # M0
     CONFIRMED_STATIC = "confirmed_static"    # M1: 외부 정지 확인 신호가 True인 동안만 연결
     HEURISTIC = "heuristic"                  # M2: 신호 없음, 공통 큰 이동이면 카메라 이동 의심 → 전 종료(보장 없음)
+    WORLD = "world"                          # #217: 작업 좌표(W) 추적 결과 표시용(`vision.world_tracking.WorldTracker`). PartTracker는 받지 않음
 
 
 class TrackState(str, Enum):

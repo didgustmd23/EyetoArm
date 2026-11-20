@@ -46,6 +46,10 @@
   `tracking`에 싣는다(공통형·B 파일 무변, B는 관측의 `part_track_id`로 `_dedupe`). B 중복 방지 기록 해제는 `release_proxy`(이 연결부가
   만든 모든 B 단계에 `release`)가 맡는다: B 클라이언트 결과·`no_server`·`busy`, 검사 ③ 거부(`on_not_accepted`, `PICK_PLACE`만), 송신기가
   클라이언트를 부르지 않은 경우, 송신이 꺼진 기록 전용 실행의 수락 뒤. `ALREADY_SENT` SKIP은 풀지 않는다. 단계 T만.
+- W 추적(#217, 선택 `world_tracker`·`world_config`, 진입점 `--tracking-space world`): 실행기 픽셀 추적 대신 이 연결부가 추적
+  스레드(`vision/live_world_tracking`)를 둔다. `offer`가 AI 결과가 있는 현재 응답(건너뜀 사유 없음·`invalid_observation`)을 추적 큐에
+  넣고(제어 흐름 TF 조회 없음), worker는 봉투를 만들기 직전 그 작업 결과를 상한까지 기다려 #215와 같은 규칙(확정 번호만)으로 싣는다.
+  실행 닫힘·보정/프로필 경계에서 추적기 초기화를 요청한다. 정리 단계 `world_tracking`은 dispatcher 다음(TF를 닫기 전).
 - ROS·Qt를 import하지 않는다(TF 수신 묶음·B 단계·표시 발행자·송신 런타임은 주입).
 """
 from __future__ import annotations
@@ -71,6 +75,11 @@ from eyetoarm.vision.live_observation_events import LiveObservationEventWriter
 from eyetoarm.vision.live_observation_state import (SIM_TIME_REWIND, LiveObservationConfig, LiveObservationState)
 from eyetoarm.vision.live_sort_part import LiveSortPartSender, SortPartConfig, SortPartConfigError, parse_sort_part
 from eyetoarm.vision.tracked_observation import TrackedPlanarObservation, confirmed_track_id, with_track
+from eyetoarm.vision.ai_result import AiSegResult
+from eyetoarm.vision.live_world_tracking import LiveWorldTracking
+
+WORLD_TRACKABLE_SKIPS = (None, "invalid_observation")   # #217: 추적 큐에 넣는 실행기 판정(그 밖은 현재 응답이 아님)
+TRACK_PENDING = "track_pending"
 from eyetoarm.vision.view_bias import apply_view_bias
 
 PROFILE_CHANGED = "profile_changed"             # `inputs.live_slot.BoundaryKind.PROFILE_CHANGED` 값(#180 r1 L1)
@@ -247,6 +256,7 @@ class LiveObservationLink:
                  render: Callable | None, clock_ns: Callable[[], int] = time.monotonic_ns,
                  b_input: str = B_INPUT_SINGLE, list_consumer_factory: Callable | None = None,
                  view_bias=None, display_publisher=None, sort_part_runtime=None, tracking: bool = False,
+                 world_tracker=None, world_config=None, world_plane_z_m: float | None = None,
                  display_clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
         """출력 폴더(새로)·상태(start_closed)·기록기·디스패처·TF 준비를 만든다.
 
@@ -263,6 +273,7 @@ class LiveObservationLink:
         - `sort_part_runtime`(#214, 선택): C 송신 런타임(`send`·`stats`·`inflight_ids`·`server_seen`·`close`). 주면 `config.sort_part`가
           있어야 하고 단계 T만 된다. 연결부가 소유해 정리 단계 `sort_part`에서 닫는다. None(기본)이면 송신 없음.
         - `tracking`(#215, 기본 False): 추적 번호 연결. 단계 T만. 끄면 `offer`의 `tracks`를 쓰지 않고 기록·요약이 기존과 같다.
+        - `world_tracker`·`world_config`·`world_plane_z_m`(#217, 선택): W 추적 스레드. `tracking`이 참이어야 하고 단계 T만.
         """
         # 설정 검사는 파일을 열기 전에 한다(#180 #7: 검사 실패가 기록 파일 핸들을 남기지 않게)
         if type(config.skip_queue_capacity) is not int or config.skip_queue_capacity <= 0:
@@ -280,6 +291,9 @@ class LiveObservationLink:
 
         if tracking and b_input != B_INPUT_SINGLE:
             raise ValueError("tracking link is for stage T (b_input single) only")
+
+        if world_tracker is not None and (not tracking or world_config is None or world_plane_z_m is None):
+            raise ValueError("world tracking requires tracking=True, world_config and world_plane_z_m")
 
         if sort_part_runtime is not None:
             if config.sort_part is None:
@@ -338,9 +352,7 @@ class LiveObservationLink:
             list_kw = dict(build_envelope=self._build_list_envelope, compute=self._compute_list, render=None,
                            envelope_errors=(ValueError,))
         else:
-            list_kw = dict(build_envelope=lambda f, o, cam, r: make_live_envelope(f, o, camera=cam, tf_result=r,
-                                                                                  world_frame=config.world_frame,
-                                                                                  extensions=_tracking_extension(f, o)),
+            list_kw = dict(build_envelope=self._build_single,
                            compute=lambda st, env: st[1].consume(env).output,
                            render=None if render is None else (lambda st, f, out: render(st[0], f, out)))
 
@@ -350,6 +362,10 @@ class LiveObservationLink:
                         LiveCenterDisplay(run_id, config.center_display, display_publisher, clock_ns=display_clock_ns,
                                           is_live=self._display_live))
         self.tracking = bool(tracking)
+        self.world = (None if world_tracker is None else
+                      LiveWorldTracking(run_id, world_tracker, world_config, tf_lookup=capture, plane_z_m=world_plane_z_m,
+                                        out_dir=str(self.dir), view_bias=view_bias))
+        self._track_camera = None                  # #217: 추적 스레드에 넘길 현재 카메라(제어 흐름만 씀)
         self.release_proxy = _StageReleaseProxy(self) if self.tracking else None
         self.tracking_counts: dict[str, int] = {}   # 상태별 제출 수·해제 수(잠금 `_lock`)
 
@@ -407,6 +423,33 @@ class LiveObservationLink:
 
         return not ended and self.state.failed is None
 
+    def _build_single(self, frame, obs, camera, tf_result):
+        """단계 T 봉투(worker). W 추적이면 그 작업의 추적 결과를 상한까지 기다려 번호를 싣는다(#217)."""
+        if self.world is not None and isinstance(obs, TrackedPlanarObservation) and obs.track_state == TRACK_PENDING:
+            obs = self._attach_world(frame, obs)
+
+        return make_live_envelope(frame, obs, camera=camera, tf_result=tf_result, world_frame=self.config.world_frame,
+                                  extensions=_tracking_extension(frame, obs))
+
+    def _attach_world(self, frame, obs):
+        """worker: 추적 스레드 결과로 확정 번호만 싣는다. 못 받으면 `track_pending`, 갱신 못 한 사유는 그 사유."""
+        from types import SimpleNamespace
+
+        ctx = SimpleNamespace(frame=frame, generation=obs.generation, job_seq=obs.job_seq,
+                              detector_config_id=obs.detector_config_id)
+        result = self.world.wait(ctx)
+
+        if result is None:
+            track_id, state = None, TRACK_PENDING
+        elif isinstance(result, str):
+            track_id, state = None, result
+        else:
+            track_id, state = confirmed_track_id(result, ctx, obs)
+
+        self._count_tracking(f"world_{state}")
+
+        return with_track(obs, track_id, state)
+
     def _count_tracking(self, key: str) -> None:
         with self._lock:
             self.tracking_counts[key] = self.tracking_counts.get(key, 0) + 1
@@ -462,7 +505,10 @@ class LiveObservationLink:
             raise error
 
     def _close_outputs(self, reason: str) -> None:
-        """실행 닫힘: 송신 게이트 먼저(그 뒤 송신 0), 표시 다음."""
+        """실행 닫힘: 송신 게이트 먼저(그 뒤 송신 0), 표시 다음. W 추적은 초기화 요청."""
+        if self.world is not None:
+            self.world.request_reset(f"run_end:{reason}")
+
         if self.sort_part is not None:
             self.sort_part.close_run(reason)
 
@@ -496,6 +542,9 @@ class LiveObservationLink:
 
         if self.sort_part is not None:
             self.sort_part.start()
+
+        if self.world is not None:
+            self.world.start()
 
         self.writer.start()
         self.dispatcher.start()
@@ -593,11 +642,16 @@ class LiveObservationLink:
 
         profile = getattr(item, "profile", None)
 
+        if self.world is not None:   # #217: 경계(프로필·보정·입력 상태)마다 추적기 초기화 요청(번호 재사용 없음)
+            self.world.request_reset(f"boundary:{kind}")
+
         if profile is not None:
             self._calibration_id = profile.calibration_id
             self.camera_cleared = False
             self.dispatcher.set_camera(profile.camera)
+            self._track_camera = profile.camera
         elif kind == PROFILE_CHANGED:
+            self._track_camera = None
             # 프로필 없음 경계(해석할 수 없는 CameraInfo, #180 r1 L1): 이전 보정 번호를 현재로 두지 않는다. 디스패처의 대기 카메라
             # 교체는 None을 받지 않으므로 카메라는 「없음」으로 표시하고, 그동안 `offer`가 제출을 막는다(유효 프로필이 오면 해제)
             self._calibration_id = None
@@ -610,6 +664,12 @@ class LiveObservationLink:
         self.offers += 1
         frame, obs = outcome.context.frame, outcome.observation
         ids = {"job_seq": outcome.context.job_seq, "generation": outcome.context.generation, "rx_epoch": rx_epoch}
+
+        # #217: 현재 응답(실행기 판정 통과·무효 관측)이면 추적 큐에 넣는다(넣기만, TF 없음). B로 보내지 않는 프레임도 추적은 본다
+        if (self.world is not None and skip_reason in WORLD_TRACKABLE_SKIPS and self._track_camera is not None
+                and isinstance(outcome.display_result, AiSegResult) and frame.calibration_id == self._calibration_id
+                and self.ended is None and not self.reset_pending):
+            self.world.offer(outcome.context, outcome.display_result, self._track_camera)
 
         if skip_reason is not None:
             return self._record_skip("runner", skip_reason, frame, ids)
@@ -645,6 +705,9 @@ class LiveObservationLink:
 
         if self.b_input == B_INPUT_LIST:
             obs = LiveListInput(outcome.context, outcome.display_result)
+        elif self.world is not None:   # #217: 번호는 worker가 추적 스레드 결과로 싣는다(지금은 대기 표시만)
+            obs = with_track(obs, None, TRACK_PENDING)
+            self._count_tracking("submitted_world")
         elif self.tracking:   # #215: 확정 번호만 하위 형 관측에 싣는다(그 밖은 번호 None)
             track_id, state = confirmed_track_id(tracks, outcome.context, obs)
             obs = with_track(obs, track_id, state)
@@ -881,9 +944,11 @@ class LiveObservationLink:
 
         display_step = (() if self.display is None else
                         (("display", lambda: self.display.close(min(limit_s, self.display.config.close_limit_s))),))
+        world_step = (() if self.world is None else (("world_tracking", lambda: self.world.close(limit_s)),))
         sort_step = (() if self.sort_part is None else
                      (("sort_part", lambda: self.sort_part.close(min(limit_s, self.sort_part.config.close_limit_s))),))
-        steps = (("probe", probe_close), ("dispatcher", lambda: self.dispatcher.close(limit_s)), *sort_step, *display_step,
+        steps = (("probe", probe_close), ("dispatcher", lambda: self.dispatcher.close(limit_s)), *world_step, *sort_step,
+                 *display_step,
                  ("writer", writer_close), ("tf", lambda: self._close_tf(limit_s)), ("skips", skip_close))
 
         for name, fn in steps:
@@ -924,12 +989,14 @@ class LiveObservationLink:
         """끝났고 모든 정리 단계 성공 + worker 스레드 종료."""
         with self._lock:
             need = ({"probe", "dispatcher", "writer", "tf", "skips"} | (set() if self.display is None else {"display"})
-                    | (set() if self.sort_part is None else {"sort_part"}))
+                    | (set() if self.sort_part is None else {"sort_part"})
+                    | (set() if self.world is None else {"world_tracking"}))
             done = self.ended is not None and self._cleanup_done >= need
 
         threads = (getattr(self.dispatcher, "_thread", None), self._probe_thread, self._skip_thread,
                    None if self.display is None else self.display.thread,
-                   None if self.sort_part is None else self.sort_part.thread)
+                   None if self.sort_part is None else self.sort_part.thread,
+                   None if self.world is None else self.world.thread)
 
         return done and not any(t is not None and t.is_alive() for t in threads)
 
@@ -971,6 +1038,7 @@ class LiveObservationLink:
                 **({} if self.display is None else {"center_display": self.display.summary()}),
                 **({} if self.sort_part is None else {"sort_part": self.sort_part.summary()}),
                 **({} if not self.tracking else {"tracking_link": self._tracking_summary()}),
+                **({} if self.world is None else {"world_tracking": self.world.summary()}),
                 "skip_queue": self.skip_counts(),
                 "open_attempts": [list(a) for a in self.open_attempts],
                 "skip_write_threads": sorted(self.skip_write_threads)}
@@ -981,7 +1049,7 @@ class LiveObservationLink:
             counts = dict(sorted(self.tracking_counts.items()))
             calls = self.release_proxy.calls
 
-        return {"mode": "heuristic", "counts": counts, "release_proxy_calls": calls}
+        return {"mode": "world" if self.world is not None else "heuristic", "counts": counts, "release_proxy_calls": calls}
 
     def _list_summary(self) -> dict:
         """단계 L 요약 키(#201). 단일 관측 요약에는 넣지 않는다."""

@@ -95,9 +95,12 @@ def event_record(event: LiveObservationEvent, png_name: str | None) -> dict:
         })
 
         # #215: 추적 연결을 켰을 때만(관측이 추적 하위 형) 확정 번호·추적 상태를 남긴다(끔이면 기존 키 그대로)
-        if hasattr(obs, "track_state") and hasattr(obs, "part_track_id"):
-            rec["input"]["part_track_id"] = obs.part_track_id
-            rec["input"]["track_state"] = obs.track_state
+        # B가 실제로 받은 관측(봉투 관측)의 값을 남긴다: W 추적(#217)은 worker가 봉투를 만들 때 번호를 붙이므로 대기 칸 관측과 다르다
+        b_obs = getattr(p.envelope, "observation", obs)
+
+        if hasattr(b_obs, "track_state") and hasattr(b_obs, "part_track_id"):
+            rec["input"]["part_track_id"] = b_obs.part_track_id
+            rec["input"]["track_state"] = b_obs.track_state
 
         # #207: 보정 켬일 때만 B에 넘긴 끝점(봉투 관측)·원 끝점·보정 기록을 남긴다(끔이면 기존 키 그대로)
         if getattr(p, "view_bias", None) is not None:
