@@ -6,8 +6,8 @@
 │   명령·상태 TCP(47090)·D 임시 단일 영상(47091 EAV1)과 별개다.               │
 │ [보내는 것] 사용자가 링크 raw/detect/center 를 누를 때만 이 연결로 한 줄   │
 │   {"type":"SET_DISPLAY_VARIANT","channel":"link","variant":...} + LF 를    │
-│   보낸다(임시 형식, C 와 합의 전). 현재 C relay 는 받은 쪽을 읽지 않으므로  │
-│   송신은 적용 확인이 아니다. 해당 종류 영상이 와야 화면에 보인다.          │
+│   보낸다(임시 형식, C 와 합의 전). 해당 영상 수신으로 확인한다: 고른 종류의│
+│   ETV1 JPEG 프레임이 와야 화면에 보인다(다른 종류 링크 프레임 무시).        │
 │ [결과 없음] C 시제품은 영상만 보낸다. 결과·무효화 사건을 지어내지 않는다.   │
 └────────────────────────────────────────────────────────────────────────────┘
 
@@ -278,6 +278,14 @@ class RelayViewReceiver(QObject):
             return False
         self.requested_variant = variant
         return True
+
+    def reset_link(self) -> None:
+        """링크 표시 종류를 바꿨다: 쌓인 링크 패킷과 링크 순번·확인 기록을 버린다.
+
+        고른 종류의 다음 첫 패킷은 C 캐시일 수 있으므로 「확인 대기」로 넘기고, 같은 종류의 더 새 패킷이 와야 실시간이다."""
+        self._pending = {key: item for key, item in self._pending.items() if key[0] != "link"}
+        self._newest = {key: order for key, order in self._newest.items() if key[0] != "link"}
+        self._confirmed = {key for key in self._confirmed if key[0] != "link"}
 
     def frame_age_ms(self) -> int | None:
         return None if self._last_frame_at is None else int((time.monotonic() - self._last_frame_at) * 1000)

@@ -60,6 +60,22 @@ class DisplayModel(QObject):
         self.run_id = self.link_source_id = None
         self._clear_session(reason)
 
+    def reset_source(self, source_id, reason):
+        """한 소스의 순서·세대·설정·프레임·결과만 버린다. 링크 표시 종류를 실제로 바꿀 때만 부른다.
+
+        raw·detect·center 는 같은 source_id 에 서로 다른 순번·세대·설정을 쓰므로, 전환 뒤 새 종류가 이전 기록에 막히지 않게 한다.
+        다른 소스와 세션(run_id)은 그대로다."""
+        for table in (self.generations, self.active_configs, self.high_water, self.result_keys,
+                      self.invalid_jobs, self.latest_jobs, self.origins):
+            table.pop(source_id, None)
+        self.blocked_sources.discard(source_id)
+        self.frames = {k: v for k, v in self.frames.items() if v["source_id"] != source_id}
+        self.frame_marks = {k: v for k, v in self.frame_marks.items() if v["source_id"] != source_id}
+        if self.result and self.result["source_id"] == source_id:
+            self.result = None
+        self.reason = reason
+        self.changed.emit()
+
     def _clear_session(self, reason):
         self.generations.clear()
         self.active_configs.clear()

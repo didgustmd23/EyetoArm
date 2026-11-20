@@ -167,6 +167,12 @@ class RelayWindow(unittest.TestCase):
         self.assertEqual(self.mode_of("link"), "waiting")
         [b for b in buttons if b._mode == "raw"][0].click()
         self.window._update_status()
+        self.assertEqual(self.mode_of("link"), "waiting")              # old raw frames do not count after a switch
+        self.send(packet("link", 3))
+        self.settle(lambda: self.view.frame_count == 9)
+        self.assertNotEqual(self.mode_of("link"), "live")               # first frame may be C's cache
+        self.send(packet("link", 4))
+        self.settle(lambda: self.view.frame_count == 10)
         self.assertEqual(self.mode_of("link"), "live")
         self.assertIn("raw", self.views()["link"]._footer)
         self.assertEqual(self.requests(3), [self.request(m) for m in ("detect", "center", "raw")])   # one line per click
@@ -210,6 +216,87 @@ class RelayWindow(unittest.TestCase):
         self.assertFalse(until(lambda: self.clients[1].bytesAvailable() > 0, timeout=0.3))
         with self.assertRaises(ValueError):
             self.view.request_variant("bogus")
+
+    def link_color(self):
+        frame = self.window.display.frame("link")
+        if frame is None:
+            return None
+        color = frame["image"].pixelColor(4, 4)   # JPEG shifts values slightly: compare the dominant channel
+        return max((color.red(), "red"), (color.green(), "green"), (color.blue(), "blue"))[1]
+
+    def click(self, variant):
+        [b for b in self.window.mode_buttons if b._mode == variant][-1].click()
+        self.window._update_status()
+
+    def feed(self, *packets):
+        for item in packets:                       # one write each: the receiver keeps only the newest per turn
+            count = self.view.frame_count
+            self.send(item)
+            self.settle(lambda: self.view.frame_count > count)
+
+    def test_selected_variant_frames_confirm_the_choice_and_other_variants_never_interfere(self):
+        meta = dict(fixed={}, gripper={})
+        a = dict(generation=3, capture_generation=7, detector_config_id="a-yolo-v9")   # A detect: own numbers
+        b = dict(detector_config_id="b-center-overlay-v1")                             # B center: own counter
+
+        def vpacket(seq, variant="raw", color="#3080c0", job=None, **extra):
+            value = {"channel": "link", "variant": variant, "source_id": "gz_link", "image_seq": seq,
+                     "generation": 0, "calibration_id": None, "run_id": "run-A", "capture_generation": 0,
+                     "detector_config_id": "raw-camera-v1", "job_seq": seq if job is None else job,
+                     "stamp_sec": 1, "stamp_nanosec": 2}
+            value.update(extra)
+            return pack_packet(value, jpeg(color))
+        self.feed(packet("fixed", 1), packet("gripper", 1), vpacket(1), packet("fixed", 2), packet("gripper", 2), vpacket(2))
+        self.assertEqual([self.mode_of(c) for c in ("fixed", "gripper", "link")], ["live"] * 3)
+
+        self.click("center")                                               # quick roundtrip, no center frame
+        self.click("raw")
+        self.assertEqual([self.mode_of(c) for c in ("fixed", "gripper", "link")], ["live", "live", "waiting"])
+        self.assertIsNone(self.window.display.frame("link"))              # cached raw is not shown as live
+        self.feed(vpacket(3))
+        self.assertNotEqual(self.mode_of("link"), "live")
+        self.feed(vpacket(4))
+        self.assertEqual(self.mode_of("link"), "live")
+
+        self.click("detect")
+        self.assertEqual(self.mode_of("link"), "waiting")
+        self.assertIn("요청 송신됨", self.views()["link"]._reason)
+        self.feed(vpacket(5))                                              # raw still in flight: ignored
+        self.assertEqual(self.mode_of("link"), "waiting")
+        self.feed(vpacket(501, "detect", "#c03030", job=40, **a))
+        self.assertNotEqual(self.mode_of("link"), "live")
+        self.feed(vpacket(502, "detect", "#c03030", job=41, **a), packet("fixed", 3), packet("gripper", 3))
+        self.assertEqual([self.mode_of(c) for c in ("fixed", "gripper", "link")], ["live"] * 3)
+        self.assertEqual(self.link_color(), "red")
+        self.assertEqual(self.window.display.frame("link")["detector_config_id"], "a-yolo-v9")
+
+        self.click("center")                                               # center generation 0 < detect's 3
+        self.feed(vpacket(1, "center", "#30c030", **b))
+        self.feed(vpacket(503, "detect", "#c03030", job=42, **a))          # late detect (generation 3): ignored
+        self.assertNotEqual(self.mode_of("link"), "live")
+        self.feed(vpacket(2, "center", "#30c030", **b))
+        self.assertEqual(self.mode_of("link"), "live")
+        self.assertEqual(self.link_color(), "green")
+
+        self.click("raw")
+        self.feed(vpacket(6))                                              # newest raw, but first after the switch
+        self.assertNotEqual(self.mode_of("link"), "live")                  # may be C's cache: not live yet
+        self.feed(vpacket(7))                                              # raw counter continues independently
+        self.assertEqual(self.mode_of("link"), "live")
+        self.assertEqual((self.link_color(), self.window.display.frame("link")["image_seq"]), ("blue", 7))
+        self.assertEqual((self.view.packet_errors, self.view.decode_errors, self.view.framing_errors), (0, 0, 0))
+        self.assertEqual(self.requests(5), [self.request(m) for m in ("center", "raw", "detect", "center", "raw")])
+
+        self.click("detect")                                               # a relay that keeps its selection
+        self.assertEqual(self.requests(1), [self.request("detect")])
+        self.clients[0].abort()
+        self.assertTrue(until(lambda: self.view.state == "connected" and len(self.clients) == 2))
+        self.assertEqual(self.window.display.mode, "detect")              # D keeps the user's choice, sends nothing
+        self.assertFalse(until(lambda: self.clients[1].bytesAvailable() > 0, timeout=0.3))
+        self.feed(vpacket(504, "detect", "#c03030", job=43, **a))         # resent cache after reconnect
+        self.assertNotEqual(self.mode_of("link"), "live")
+        self.feed(vpacket(505, "detect", "#c03030", job=44, **a))
+        self.assertEqual(self.mode_of("link"), "live")
 
     def test_newest_per_turn_bad_jpeg_and_old_session_cannot_come_back(self):
         self.send(*(packet("link", seq) for seq in range(1, 6)))       # coalesced in one write

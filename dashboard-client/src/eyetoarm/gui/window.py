@@ -8,7 +8,7 @@
   python -m eyetoarm.gui.window --view window  영상 대신 화면에 떠 있는 Gazebo 창(같은 PC 일 때만)
   python -m eyetoarm.gui.window --view camera  D 임시 단일 카메라 중계(127.0.0.1:47091, gz_view_relay.py 필요)
                                            링크 raw/detect/center 를 누르면 영상 연결(47092)로 SET_DISPLAY_VARIANT 요청을
-                                           보낸다(임시 형식). 지금 C 는 요청을 읽지 않고 raw 만 보내므로 detect·center 는 수신 대기다
+                                           보낸다(임시 형식). 해당 영상 수신으로 확인하며, 그 종류의 C 프레임이 오기 전에는 수신 대기다
   python -m eyetoarm.gui.window --demo     모의 분류 조작·상태 확인 (아무 것도 보내지 않음)
   python -m eyetoarm.gui.window --no-motion  모션 줄이기 상태로 시작
   python -m eyetoarm.gui.window --theme light  라이트 테마로 시작 (오른쪽 위 「다크 / 라이트」로 실행 중 전환)
@@ -26,7 +26,7 @@
 │ 메인·보조 3칸     │ 탑뷰·그리퍼·링크 raw(기본 relay)│ C display_relay · 47092  │
 │                   │ 또는 Gazebo 창(--view window)  │ D 임시 경로 · gz_window.py│
 │                   │ 또는 단일 중계(--view camera)  │ D 임시 경로 · gz_view.py │
-│ 링크 detect/center│ 요청 송신 · 영상 올 때까지 대기│ C 미적용 · 형식 미합의   │
+│ 링크 detect/center│ 요청 송신 · 그 종류 프레임 대기│ 영상 수신으로 확인 · 미합의│
 │ 측정·보정 상세    │ 실제 — / D 모의 값            │ A·B 결과 → C 중계 · 미결 │
 │ 공정 단계 · 수량  │ 실제 미확인 · — / 모의 사건 집계│ C 도착 확인 · 미결       │
 │ START/STOP/RECOVER│ 실제 비활성 / 모의에서만 조작  │ C · 부록 A 미승인        │
@@ -273,7 +273,7 @@ class MainWindow(QMainWindow):
                 ("GET_STATUS (준비 조회)", "사용 중 · TCP 1.1"),
                 ("MOVE · CANCEL", "수동 확정 목표 · TCP 1.1"),
                 ("START · STOP · RECOVER", "부록 A 미승인 · 미전송"),
-                ("링크 채널 선택", "누를 때 영상 연결로 요청 · 임시 형식 · C 미적용" if self.relay else "부록 B 미승인 · 미전송"),
+                ("링크 채널 선택", "누를 때 영상 연결로 요청 · 임시 형식 · 프레임 도착으로 확인" if self.relay else "부록 B 미승인 · 미전송"),
             ]
             for value, (_name, text) in zip(self._rows(command_card, rows), rows):
                 self._fit_labels.append(self._elidable(value, text))   # 1180 폭에서도 칸을 넓히지 않게
@@ -676,7 +676,7 @@ class MainWindow(QMainWindow):
         """링크 raw/detect/center 선택. 모의와 C 중계에서만 켠다. 중계면 누를 때 영상 연결로 요청을 보낸다."""
         for mode, name in (("raw", "raw 원본"), ("detect", "detect 검출"), ("center", "center 중심점")):
             tip = ("D 내부 모의 영상 선택" if self.demo else
-                   "영상 연결로 C 에 링크 표시 요청을 보냅니다(임시 형식, C 적용 미확인). 해당 영상이 오기 전에는 수신 대기로 보입니다."
+                   "영상 연결로 C 에 링크 표시 요청을 보냅니다(임시 형식, 해당 영상 수신으로 확인). 그 종류 영상이 오기 전에는 수신 대기로 보입니다."
                    if self.relay else "C 표시 연결 형식 미결")
             button = pill(name, tooltip=tip, checkable=True)   # 눌린 상태가 지금 고른 표시 종류다
             button.setEnabled(self.display is not None)
@@ -688,6 +688,12 @@ class MainWindow(QMainWindow):
             self.mode_buttons.append(button)
 
     def _select_link_mode(self, mode: str) -> None:
+        if self.relay and mode != self.display.mode:
+            # 실제 전환: 이전 링크 프레임·순번·확인 기록을 버린다. 고른 종류의 새 패킷이 와야 다시 보인다
+            # (종류마다 순번·세대·설정이 따로라 이전 기록이 새 종류를 막지 않게도 한다). 보조 칸은 그대로다
+            self.view.reset_link()
+            if self.display.link_source_id:
+                self.display.reset_source(self.display.link_source_id, f"링크 {mode} 선택 · 해당 영상 대기")
         self.display.set_mode(mode)   # 화면은 고른 종류만 보이고, 그 영상이 올 때까지 수신 대기다
         if self.relay:
             self.view.request_variant(mode)   # 실패·미연결은 _display_wait 가 「미송신」으로 보인다. 자동 재시도 없음
@@ -1010,6 +1016,9 @@ class MainWindow(QMainWindow):
             self.stage.main.show_frame(image)
 
     def _on_display_frame(self, channel, image, envelope):
+        if self.relay and channel == "link":
+            if envelope["variant"] != self.display.mode:
+                return   # 고르지 않은 종류의 링크 프레임은 순서·표시에 넣지 않는다(전환 직전 이동 중 프레임 포함)
         self.display.ingest_frame(channel, image, **envelope)
 
     def _update_display(self):
