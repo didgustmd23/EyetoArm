@@ -15,6 +15,10 @@ reviewer 보충 1~3(정답 격리: C `speed_mps`·컨베이어 토픽 속도 값
 - **초기화 요청(`request_reset`)**: 실행 닫힘·세대/보정 변경 때 연결부가 부른다. 다음 항목 전에 추적 스레드가 `reset`한다(단일 소유).
 - **기록**: 출력 폴더 `world_tracks.jsonl`(추적 스레드가 직접 씀, 프레임마다 배정·W 위치·보정 전후·벨트 추정 속도·지연).
   진단 전용 값(`diagnostics`, C `speed_mps` 조회 등)은 요약에만 넣고 **추적기에는 전달하지 않는다**.
+- **마스크 입력(#226)**: 추적기 설정 `mask_fallback`이면 `world_inputs(..., mask_fallback=True)`로 끝점 없는 볼트의 마스크 W 평균을 넣고,
+  `world_tracks.jsonl` 배정마다 입력 종류(`input`: endpoint | mask | none)를 남긴다.
+- **리셋·종료 기록(#226 D3)**: 초기화 요청을 처리할 때 `{"kind": "reset", "reason"}`을 쓰고, 닫을 때 처리 못 한 초기화 요청이 남아 있으면
+  그 자리에서 처리한 뒤 `{"kind": "closed", "pending_reset_applied", "last_reset"}`을 한 번 쓴다.
 - ROS·Qt를 import하지 않는다.
 """
 from __future__ import annotations
@@ -49,6 +53,7 @@ class LiveWorldConfig:
     pending_ratio_limit: float
     lag_persist_n: int
     lag_cooldown_ms: float
+    conveyor_probe_timeout_s: float   # #226 D2: C speed_mps 진단 조회 상한(진단 전용, 추적기에 전달 안 함)
 
     def to_json(self) -> dict:
         """요약용 사전."""
@@ -57,8 +62,8 @@ class LiveWorldConfig:
 
 def parse_live_world(doc) -> LiveWorldConfig:
     """`queue_capacity`·`handoff_wait_s` + `lag` 블록(r1). 모르는 키·누락·범위 오류는 `LagConfigError`."""
-    if not isinstance(doc, dict) or set(doc) != {"queue_capacity", "handoff_wait_s", "lag"}:
-        raise LagConfigError("live world block must have exactly queue_capacity, handoff_wait_s, lag")
+    if not isinstance(doc, dict) or set(doc) != {"queue_capacity", "handoff_wait_s", "lag", "conveyor_probe_timeout_s"}:
+        raise LagConfigError("live world block must have exactly queue_capacity, handoff_wait_s, lag, conveyor_probe_timeout_s")
 
     lag = doc["lag"]
     keys = {"lag_limit_ms", "window_n", "pending_ratio_limit", "lag_persist_n", "lag_cooldown_ms"}
@@ -82,7 +87,8 @@ def parse_live_world(doc) -> LiveWorldConfig:
                            handoff_wait_s=pos(doc["handoff_wait_s"], "handoff_wait_s"),
                            lag_limit_ms=pos(lag["lag_limit_ms"], "lag_limit_ms"), window_n=pos(lag["window_n"], "window_n", True),
                            pending_ratio_limit=ratio, lag_persist_n=pos(lag["lag_persist_n"], "lag_persist_n", True),
-                           lag_cooldown_ms=pos(lag["lag_cooldown_ms"], "lag_cooldown_ms"))
+                           lag_cooldown_ms=pos(lag["lag_cooldown_ms"], "lag_cooldown_ms"),
+                           conveyor_probe_timeout_s=pos(doc["conveyor_probe_timeout_s"], "conveyor_probe_timeout_s"))
 
 
 def load_world_tracking_config(path: str):
@@ -177,6 +183,7 @@ class LiveWorldTracking:
                                       "stale_skipped", "lag_resets", "reset_requests")}
         self.not_updated: dict[str, int] = {}
         self.lag_reset_log: list[dict] = []
+        self.last_reset: str | None = None      # 마지막으로 처리한 초기화 사유(D3)
         self._queue_len_samples: collections.deque[int] = collections.deque(maxlen=4096)
         self._lag_ms_samples: collections.deque[float] = collections.deque(maxlen=4096)
         self._tf_wait_samples: collections.deque[float] = collections.deque(maxlen=4096)
@@ -279,6 +286,7 @@ class LiveWorldTracking:
     def _loop(self) -> None:
         try:
             self._loop_body()
+            self._finish()
         except Exception as exc:   # 추적 스레드 최상단: 비정상 종료를 남긴다(이후 결과 없음 → 번호 None)
             with self._cond:
                 self.crash = f"{type(exc).__name__}: {exc}"
@@ -292,7 +300,7 @@ class LiveWorldTracking:
                     self._cond.wait(0.05)
 
                 if self._stop:
-                    return
+                    break
 
                 reset, self._reset_reason = self._reset_reason, None
                 item = self._queue.popleft() if self._queue else None
@@ -326,7 +334,7 @@ class LiveWorldTracking:
                         item = newest
 
             if reset is not None:
-                self._tracker.reset(reset)
+                self._apply_reset(reset)
 
             if lag_reset is not None:
                 self._tracker.reset("lag")
@@ -334,6 +342,23 @@ class LiveWorldTracking:
 
             if item is not None:
                 self._process(item, lag_ms if lag_reset is None else (now - item.enqueued_ns) / 1e6)
+
+    def _apply_reset(self, reason: str) -> None:
+        """추적 스레드: 전 트랙 종료 + 기록(D3)."""
+        self._tracker.reset(reason)
+        self.last_reset = reason
+        self._write({"kind": "reset", "reason": reason, "t_mono_ns": self._clock_ns()})
+
+    def _finish(self) -> None:
+        """추적 스레드 끝: 처리 못 한 초기화 요청이 있으면 지금 처리하고 종료 사건을 한 번 쓴다(D3)."""
+        with self._cond:
+            pending, self._reset_reason = self._reset_reason, None
+
+        if pending is not None:
+            self._apply_reset(pending)
+
+        self._write({"kind": "closed", "pending_reset_applied": pending is not None, "last_reset": self.last_reset,
+                     "t_mono_ns": self._clock_ns()})
 
     def _process(self, item: WorldTrackItem, lag_ms: float) -> None:
         frame, key = item.frame, item.key
@@ -355,7 +380,7 @@ class LiveWorldTracking:
             cam = item.camera
             inputs = world_inputs(item.display, K=cam.K, dist=cam.dist, T_W_C=tf_result.tf.T_W_C, plane_z_m=self._plane_z,
                                   view_bias=self._view_bias, width=getattr(frame, "width", None),
-                                  height=getattr(frame, "height", None))
+                                  height=getattr(frame, "height", None), mask_fallback=self._tracker.config.mask_fallback)
             track = self._tracker.update(key, int(frame.timestamp_ms), inputs)
             value = track
             self.counts["updated"] += int(track.updated)
@@ -365,6 +390,7 @@ class LiveWorldTracking:
                         "belt_vy_mm_per_s": None if belt is None else round(belt * 1000.0, 3),
                         "tracks": [{"instance_index": a.instance_index, "part_track_id": a.part_track_id,
                                     "state": a.state.value, "hits": a.hits, "reason": a.reason,
+                                    "input": by_index[a.instance_index].kind,
                                     "center_mm": _r(by_index[a.instance_index].center_mm),
                                     "center_raw_mm": _r(by_index[a.instance_index].center_raw_mm),
                                     "length_mm": _r1(by_index[a.instance_index].length_mm)} for a in track.assignments]})

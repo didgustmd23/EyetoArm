@@ -21,14 +21,20 @@
 - **카메라 이동 의심은 두지 않는다**(W에서 팔 이동은 위치를 바꾸지 않는다). 대신 확정 트랙 `jump_min_tracks`개 이상이 같은 방향으로
   `coherent_jump_mm` 넘게 함께 튀면 TF·보정 이상 의심(`world_jump_suspected`)으로 전 트랙 종료.
 - 시각·범위·세대 규칙은 픽셀 추적과 같다(같은·이른 시각은 `stale_frame`, 이전 세대는 `old_generation`, 범위·세대 변경은 전 종료).
+- **마스크 입력(#226 W+M, 설정 `mask_fallback`)**: 켜면 끝점이 없는 볼트(`no_endpoints`)도 다각형(3점 이상)을 채운 마스크 픽셀 전부를
+  촬영 시각 TF로 볼트 평면에 올린 평균을 W 위치로 넣는다(`kind="mask"`, 시야 보정 없음, 길이·각도 없음). 짝짓기에서 길이 비·축 각도 검사는
+  어느 쪽이든 값이 없으면 건너뛰고, 마스크 hit는 트랙의 길이·각도를 바꾸지 않는다. 이중 검출 합치기는 마스크 입력이 낀 쌍에 한해 「W 중심
+  거리 ≤ `dup_endpoint_mm` 또는 마스크 포함률(교집합/작은 면적) ≥ `mask_dup_contain`」을 쓰고, 남기는 순서는 끝점 입력 먼저·다음 점수 순이다
+  (#224 W+M 규칙 그대로). 마스크 입력은 **짝짓기에만** 쓴다: B 입력·번호 규칙(#215 확정·선택 인스턴스)은 바뀌지 않는다. 끄면 #217과 같다.
 - 단일 소유(추적 스레드 하나). ROS·Qt를 import하지 않는다. 설정값은 모두 A 개발 임시값(시험 설정 파일, 기본값 없음).
 """
 from __future__ import annotations
 
 import math
 import statistics
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 
+import cv2
 import numpy as np
 
 from eyetoarm.transforms.planar_transform import pixels_to_w
@@ -65,6 +71,8 @@ class WorldTrackerConfig:
     coherent_jump_mm: float
     jump_coherence_mm: float
     jump_search_mm: float
+    mask_fallback: bool         # #226 W+M: 끝점이 없는 볼트를 마스크 W 평균으로 짝짓기(끄면 #217)
+    mask_dup_contain: float     # #226 W+M: 마스크가 낀 이중 검출 합치기 포함률 기준(#224 값 0.85)
 
     def to_json(self) -> dict:
         """요약용 사전."""
@@ -91,7 +99,7 @@ def parse_world_tracker(doc) -> WorldTrackerConfig:
     for name in names:
         v = doc[name]
 
-        if name == "dup_merge":
+        if name in ("dup_merge", "mask_fallback"):
             if not isinstance(v, bool):
                 raise WorldTrackerConfigError(f"{name} must be a bool: {v!r}")
         elif name in _INT_KEYS:
@@ -104,8 +112,8 @@ def parse_world_tracker(doc) -> WorldTrackerConfig:
 
         values[name] = v
 
-    if values["velocity_alpha"] > 1.0 or values["new_track_min_conf"] > 1.0:
-        raise WorldTrackerConfigError("velocity_alpha and new_track_min_conf must be <= 1")
+    if values["velocity_alpha"] > 1.0 or values["new_track_min_conf"] > 1.0 or values["mask_dup_contain"] > 1.0:
+        raise WorldTrackerConfigError("velocity_alpha, new_track_min_conf and mask_dup_contain must be <= 1")
 
     return WorldTrackerConfig(**values)
 
@@ -125,6 +133,54 @@ class WorldInput:
     endpoints_mm: tuple[tuple[float, float], tuple[float, float]] | None = None
     length_mm: float | None = None
     angle_deg: float | None = None
+    kind: str = "endpoint"                                   # endpoint | mask | none(#226)
+    mask: tuple | None = field(default=None, compare=False)  # (x0, y0, bool 배열) 원본 픽셀, 이중 검출 포함률 판정용
+
+
+def mask_of(polygon) -> tuple | None:
+    """다각형(원본 픽셀, 3점 이상) → (x0, y0, bool 배열). 정수 반올림 뒤 채움(#224 규칙). 없으면 None."""
+    if polygon is None or len(polygon) < 3:
+        return None
+
+    p = np.round(np.asarray(polygon, dtype=np.float64)).astype(np.int32)
+    x0, y0 = p.min(axis=0)
+    w, h = p.max(axis=0) - (x0, y0) + 1
+    m = np.zeros((int(h), int(w)), dtype=np.uint8)
+    cv2.fillPoly(m, [p - (x0, y0)], 1)
+
+    return int(x0), int(y0), m.astype(bool)
+
+
+def mask_center_w(mask, K, dist, T_W_C, plane_z_m) -> tuple[float, float] | None:
+    """마스크 픽셀 전부 → W(mm) 평균. 유한하지 않으면 None."""
+    x0, y0, m = mask
+    ys, xs = np.nonzero(m)
+
+    if len(xs) == 0:
+        return None
+
+    px = np.stack([xs + x0, ys + y0], axis=1).astype(np.float64)
+    w = pixels_to_w(px, K, dist, T_W_C, plane_z_m) * 1000.0
+
+    return (float(w[:, 0].mean()), float(w[:, 1].mean())) if np.all(np.isfinite(w)) else None
+
+
+def containment(a: tuple | None, b: tuple | None) -> float:
+    """두 마스크 교집합 / 작은 쪽 면적. 마스크가 없으면 0."""
+    if a is None or b is None:
+        return 0.0
+
+    (ax, ay, am), (bx, by, bm) = a, b
+    x0, y0 = max(ax, bx), max(ay, by)
+    x1, y1 = min(ax + am.shape[1], bx + bm.shape[1]), min(ay + am.shape[0], by + bm.shape[0])
+
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+
+    inter = np.logical_and(am[y0 - ay:y1 - ay, x0 - ax:x1 - ax], bm[y0 - by:y1 - by, x0 - bx:x1 - bx]).sum()
+    small = min(am.sum(), bm.sum())
+
+    return float(inter / small) if small else 0.0
 
 
 def _is_bolt(class_name) -> bool:
@@ -139,8 +195,11 @@ def _project(endpoints_px, K, dist, T_W_C, plane_z_m) -> np.ndarray | None:
 
 
 def world_inputs(result: AiSegResult, *, K, dist, T_W_C, plane_z_m: float, view_bias=None,
-                 width: int | None = None, height: int | None = None) -> list[WorldInput]:
-    """AI 결과 + 촬영 시각 `T_W_C` → W 추적 입력(인스턴스 순서 그대로). `view_bias`는 `ViewBiasConfig`(#207) 또는 None."""
+                 width: int | None = None, height: int | None = None, mask_fallback: bool = False) -> list[WorldInput]:
+    """AI 결과 + 촬영 시각 `T_W_C` → W 추적 입력(인스턴스 순서 그대로). `view_bias`는 `ViewBiasConfig`(#207) 또는 None.
+
+    `mask_fallback`(#226)이면 볼트 입력에 마스크(포함률용)를 붙이고, 끝점 없는 볼트를 마스크 W 평균 입력(`kind="mask"`)으로 넣는다.
+    """
     if not isinstance(result, AiSegResult):
         raise TrackingContractError(f"world_inputs needs AiSegResult: {type(result).__name__}")
 
@@ -150,19 +209,28 @@ def world_inputs(result: AiSegResult, *, K, dist, T_W_C, plane_z_m: float, view_
         base = dict(index=int(inst.index), class_name=str(inst.class_name), confidence=float(inst.confidence))
 
         if not inst.in_scope:
-            out.append(WorldInput(**base, candidate=False, untracked_reason="not_in_scope"))
+            out.append(WorldInput(**base, candidate=False, untracked_reason="not_in_scope", kind="none"))
             continue
 
         if inst.rejected in _GEOMETRY_REJECTIONS:
-            out.append(WorldInput(**base, candidate=False, untracked_reason="geometry_rejected"))
+            out.append(WorldInput(**base, candidate=False, untracked_reason="geometry_rejected", kind="none"))
             continue
 
         if not _is_bolt(inst.class_name):
-            out.append(WorldInput(**base, candidate=False, untracked_reason="not_bolt"))
+            out.append(WorldInput(**base, candidate=False, untracked_reason="not_bolt", kind="none"))
             continue
 
+        m = mask_of(inst.polygon) if mask_fallback else None
+
         if inst.axis_endpoints_px is None:
-            out.append(WorldInput(**base, candidate=False, untracked_reason="no_endpoints"))
+            c = None if m is None else mask_center_w(m, K, dist, T_W_C, plane_z_m)
+
+            if c is not None:   # #226 W+M: 끝점 없는 볼트 → 마스크 W 평균(짝짓기 전용)
+                out.append(WorldInput(**base, candidate=True, untracked_reason=None, clipped=bool(inst.clipped), center_mm=c,
+                                      center_raw_mm=c, kind="mask", mask=m))
+            else:
+                out.append(WorldInput(**base, candidate=False, untracked_reason="no_endpoints", kind="none", mask=m))
+
             continue
 
         raw = _project(inst.axis_endpoints_px, K, dist, T_W_C, plane_z_m)
@@ -178,7 +246,7 @@ def world_inputs(result: AiSegResult, *, K, dist, T_W_C, plane_z_m: float, view_
                 used = _project(vb.endpoints_px, K, dist, T_W_C, plane_z_m)
 
         if used is None or raw is None:
-            out.append(WorldInput(**base, candidate=False, untracked_reason="projection_failed"))
+            out.append(WorldInput(**base, candidate=False, untracked_reason="projection_failed", kind="none", mask=m))
             continue
 
         d = used[1] - used[0]
@@ -187,7 +255,7 @@ def world_inputs(result: AiSegResult, *, K, dist, T_W_C, plane_z_m: float, view_
                               center_raw_mm=(float(raw[:, 0].mean()), float(raw[:, 1].mean())),
                               endpoints_mm=((float(used[0, 0]), float(used[0, 1])), (float(used[1, 0]), float(used[1, 1]))),
                               length_mm=float(math.hypot(d[0], d[1])),
-                              angle_deg=float(math.degrees(math.atan2(d[1], d[0])) % 180.0)))
+                              angle_deg=float(math.degrees(math.atan2(d[1], d[0])) % 180.0), kind="endpoint", mask=m))
 
     return out
 
@@ -243,12 +311,17 @@ class WorldTracker:
         self._last_ts: int | None = None
         self.last_belt_vy: float | None = None   # mm/ms, 마지막 갱신의 벨트 공통 추정(없으면 None)
         self._stats = {"updates": 0, "not_updated": {}, "tentative_dropped": 0, "ids_retired": 0, "resets": {},
-                       "events": {}, "dup_merged": 0}
+                       "events": {}, "dup_merged": 0, "dup_merged_with_mask": 0}
 
     @property
     def tracker_epoch(self) -> int:
         """현재 epoch."""
         return self._epoch
+
+    @property
+    def config(self) -> WorldTrackerConfig:
+        """설정(읽기 전용)."""
+        return self._config
 
     def stats(self) -> dict:
         """계수 스냅샷(복사)."""
@@ -256,7 +329,7 @@ class WorldTracker:
 
         return {"updates": s["updates"], "not_updated": dict(s["not_updated"]), "tentative_dropped": s["tentative_dropped"],
                 "ids_retired": s["ids_retired"], "resets": dict(s["resets"]), "events": dict(s["events"]),
-                "dup_merged": s["dup_merged"], "tracks": len(self._tracks), "issued": self._issuer.issued,
+                "dup_merged": s["dup_merged"], "dup_merged_with_mask": s["dup_merged_with_mask"], "tracks": len(self._tracks), "issued": self._issuer.issued,
                 "tracker_epoch": self._epoch,
                 "belt_vy_mm_per_s": None if self.last_belt_vy is None else round(self.last_belt_vy * 1000.0, 3)}
 
@@ -329,8 +402,14 @@ class WorldTracker:
 
             seen.add(i.index)
 
-            if i.candidate and (i.center_mm is None or i.endpoints_mm is None or i.length_mm is None
-                                or not all(math.isfinite(v) for v in i.center_mm)):
+            if i.candidate and i.kind == "mask":
+                if not self._config.mask_fallback:
+                    raise TrackingInputError(f"mask candidate {i.index} given but mask_fallback is off")
+
+                if i.center_mm is None or not all(math.isfinite(v) for v in i.center_mm):
+                    raise TrackingInputError(f"mask candidate {i.index} needs a finite W center")
+            elif i.candidate and (i.center_mm is None or i.endpoints_mm is None or i.length_mm is None
+                                  or not all(math.isfinite(v) for v in i.center_mm)):
                 raise TrackingInputError(f"candidate {i.index} needs finite W center/endpoints/length")
 
         return inputs
@@ -340,19 +419,29 @@ class WorldTracker:
         if not self._config.dup_merge:
             return cands, []
 
-        order = sorted(cands, key=lambda c: (-c.confidence, c.index))
+        # 남기는 순서: 끝점 입력 먼저(#226), 다음 점수 높은 순. 끝점 입력만 있으면 #217과 같다
+        order = sorted(cands, key=lambda c: (c.kind != "endpoint", -c.confidence, c.index))
         kept: list[WorldInput] = []
         dropped: list[int] = []
 
         for c in order:
-            if any(k.class_name == c.class_name and _same_bolt(k, c, self._config.dup_endpoint_mm) for k in kept):
+            if any(k.class_name == c.class_name and self._dup(k, c) for k in kept):
                 dropped.append(c.index)
+                self._stats["dup_merged_with_mask"] += int(c.kind == "mask" or any(k.kind == "mask" for k in kept))
             else:
                 kept.append(c)
 
         self._stats["dup_merged"] += len(dropped)
 
         return sorted(kept, key=lambda c: c.index), dropped
+
+    def _dup(self, a: WorldInput, b: WorldInput) -> bool:
+        """이중 검출 판정. 둘 다 끝점이면 끝점 쌍 규칙(#217), 마스크가 끼면 중심 거리 또는 마스크 포함률(#224)."""
+        if a.kind == "endpoint" and b.kind == "endpoint":
+            return _same_bolt(a, b, self._config.dup_endpoint_mm)
+
+        return (math.dist(a.center_mm, b.center_mm) <= self._config.dup_endpoint_mm
+                or containment(a.mask, b.mask) >= self._config.mask_dup_contain)
 
     def _belt_vy(self, belt_running: bool | None) -> float:
         """벨트 공통 Y 속도(mm/ms): 확정·속도 있는 트랙 Y 속도 중앙값, 없으면 0. 정지 신호면 0."""
@@ -431,9 +520,14 @@ class WorldTracker:
                     other_class_near.add(c.index)
                     continue
 
-                ratio = max(c.length_mm, t.length) / max(min(c.length_mm, t.length), 1e-9)
+                # 길이·각도 검사는 둘 다 값이 있을 때만(마스크 입력·마스크로 시작한 트랙은 없음, #226)
+                if c.length_mm is not None and t.length is not None:
+                    ratio = max(c.length_mm, t.length) / max(min(c.length_mm, t.length), 1e-9)
 
-                if ratio > cfg.length_ratio_max or _angle_diff(c.angle_deg, t.angle) > cfg.angle_max_deg:
+                    if ratio > cfg.length_ratio_max:
+                        continue
+
+                if c.angle_deg is not None and t.angle is not None and _angle_diff(c.angle_deg, t.angle) > cfg.angle_max_deg:
                     continue
 
                 elig[c.index].append((cost, k))
@@ -519,7 +613,11 @@ class WorldTracker:
             t.vy = vy if not t.has_v else self._config.velocity_alpha * vy + (1 - self._config.velocity_alpha) * t.vy
             t.has_v = True
 
-        t.x, t.y, t.length, t.angle, t.last_hit_ms = cx, cy, c.length_mm, c.angle_deg, t_ms
+        t.x, t.y, t.last_hit_ms = cx, cy, t_ms
+
+        if c.length_mm is not None:   # 마스크 hit는 길이·각도를 바꾸지 않는다(#226)
+            t.length, t.angle = c.length_mm, c.angle_deg
+
         t.seen += 1
         t.clean = 0 if c.clipped else t.clean + 1
 
@@ -527,8 +625,9 @@ class WorldTracker:
             t.part_track_id = self._issuer.next_id()
 
         state = TrackState.CONFIRMED if t.part_track_id is not None else TrackState.TENTATIVE
+        reason = "clipped" if c.clipped else ("mask_input" if c.kind == "mask" else None)
 
-        return TrackAssignment(c.index, t.part_track_id, state, t.clean, "clipped" if c.clipped else None)
+        return TrackAssignment(c.index, t.part_track_id, state, t.clean, reason)
 
     def _retire_oldest_lost(self, t_ms: int) -> bool:
         lost = [t for t in self._tracks if t.last_hit_ms != t_ms]
@@ -577,5 +676,5 @@ class WorldTracker:
                           assignments=tuple(out))
 
 
-__all__ = ["WORLD_JUMP", "WorldInput", "WorldTracker", "WorldTrackerConfig", "WorldTrackerConfigError",
-           "parse_world_tracker", "world_inputs"]
+__all__ = ["WORLD_JUMP", "WorldInput", "WorldTracker", "WorldTrackerConfig", "WorldTrackerConfigError", "containment",
+           "mask_center_w", "mask_of", "parse_world_tracker", "world_inputs"]
