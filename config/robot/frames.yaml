@@ -36,6 +36,10 @@ pick_zone:
   y_min: -0.45
   y_max: 0.45
 
+# 목표 유효기간 (C-9, B 제안 2026-11-20). valid_until_ns = 촬영 시각 + goal_ttl_s (SIM_TIME ns).
+# C는 실행 직전에 지금 시각이 이보다 늦으면 실행하지 않고 EXPIRED. null이면 0(안 정함)으로 보낸다.
+goal_ttl_s: 2.0
+
 # 높이 기준 (B 결정 2026-11-17, C 요청 CB-02). base_link 기준 z, m
 heights:
   grasp: 0.105                     # 부품 윗면 = part_plane_z
