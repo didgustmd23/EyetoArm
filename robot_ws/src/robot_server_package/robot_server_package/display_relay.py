@@ -16,6 +16,7 @@ MAX_META = 16 * 1024
 MAX_REQUEST_LINE = 4096
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 47092
+DEFAULT_CENTER_TOPIC = "/b/center_overlay/image"
 CAMERAS = {"link": "/link_cam/image", "gripper": "/gripper_cam/image", "fixed": "/overview_cam/image"}
 LINK_VARIANTS = {"raw", "detect", "center"}
 
@@ -82,8 +83,12 @@ class HandoffIngress:
                     raise ValueError("A handoff only accepts link/detect JPEG frames")
                 metadata["source_run_id"] = metadata["run_id"]
                 metadata["run_id"] = self.relay.run_id
-                self.relay.offer("link", pack_packet(metadata, jpeg), variant="detect")
                 self.relay.note_handoff_received()
+                # A의 단방향 handoff는 계속 들어오므로, 선택되지 않은 detect는 표시 캐시에 넣지 않는다.
+                if self.relay.selected_link_variant() != "detect":
+                    continue
+                self.relay.offer("link", pack_packet(metadata, jpeg), variant="detect")
+                self.relay.note_handoff_selected()
         except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             if not self._stop.is_set():
                 print(f"[C 영상] A handoff 패킷 거부: {exc}", flush=True)
@@ -118,7 +123,9 @@ class LatestFrameServer:
         self._selected_link_variant = "raw"
         self.run_id = run_id or str(uuid.uuid4())
         self._rx_count = {name: 0 for name in CAMERAS}
+        self._center_rx_count = 0
         self._handoff_rx_count = 0
+        self._handoff_selected_count = 0
         self._tx_count = {name: 0 for name in CAMERAS}
         self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -148,6 +155,14 @@ class LatestFrameServer:
         with self._lock:
             self._handoff_rx_count += 1
 
+    def note_handoff_selected(self):
+        with self._lock:
+            self._handoff_selected_count += 1
+
+    def note_center_received(self):
+        with self._lock:
+            self._center_rx_count += 1
+
     def select_link_variant(self, variant):
         if variant not in LINK_VARIANTS:
             return False
@@ -160,6 +175,10 @@ class LatestFrameServer:
                 self._revision[key] = self._revision.get(key, 0) + 1
         print(f"[C 영상] 링크 표시 선택 적용 variant={variant}", flush=True)
         return True
+
+    def selected_link_variant(self):
+        with self._lock:
+            return self._selected_link_variant
 
     def _handle_request(self, line, address):
         try:
@@ -219,10 +238,13 @@ class LatestFrameServer:
             previous = now
             with self._lock:
                 rx, self._rx_count = self._rx_count, {name: 0 for name in CAMERAS}
+                center_rx, self._center_rx_count = self._center_rx_count, 0
                 handoff_rx, self._handoff_rx_count = self._handoff_rx_count, 0
+                handoff_selected, self._handoff_selected_count = self._handoff_selected_count, 0
                 tx, self._tx_count = self._tx_count, {name: 0 for name in CAMERAS}
             rates = " ".join(f"{name}:rx={rx[name]/elapsed:.1f},tx={tx[name]/elapsed:.1f}" for name in CAMERAS)
-            print(f"[C video FPS] {rates} A_detect_rx={handoff_rx/elapsed:.1f}", flush=True)
+            print(f"[C video FPS] {rates} A_detect_rx={handoff_rx/elapsed:.1f} "
+                  f"A_detect_selected={handoff_selected/elapsed:.1f} B_center_rx={center_rx/elapsed:.1f}", flush=True)
 
     def _accept(self):
         while not self._stop.is_set():
@@ -302,6 +324,8 @@ def main():
                         help="local A-to-C display-frame ingress bind address")
     parser.add_argument("--handoff-port", type=int, default=47093,
                         help="local A-to-C display-frame ingress port")
+    parser.add_argument("--center-topic", default=DEFAULT_CENTER_TOPIC,
+                        help="B center-overlay sensor_msgs/Image topic")
     parser.add_argument("--quality", type=int, default=80)
     args = parser.parse_args()
     if not 1 <= args.quality <= 100:
@@ -345,13 +369,84 @@ def main():
                 node.get_logger().warning(f"{channel} frame dropped: {exc}")
         return node.create_subscription(Image, topic, on_image, qos_profile_sensor_data)
 
-    subscriptions = [subscribe(channel, topic) for channel, topic in CAMERAS.items()]
-    print(f"[C 영상] {CAMERAS} -> {args.host}:{args.port} 대기 중 · 기본 link variant=raw", flush=True)
+    center_sequence = 0
+
+    def on_center_image(message):
+        nonlocal center_sequence
+        try:
+            image = bridge.imgmsg_to_cv2(message, desired_encoding="bgr8")
+            ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, args.quality])
+            if not ok:
+                return
+            center_sequence += 1
+            seq = center_sequence
+            meta = {
+                "channel": "link", "variant": "center", "source_id": "gz_link",
+                "image_seq": seq, "generation": 0, "calibration_id": None,
+                "run_id": run_id, "capture_generation": 0,
+                "detector_config_id": "b-center-overlay-v1", "job_seq": seq,
+                "producer": "B", "producer_topic": args.center_topic,
+                "frame_id": message.header.frame_id,
+                "stamp_sec": int(message.header.stamp.sec),
+                "stamp_nanosec": int(message.header.stamp.nanosec),
+            }
+            relay.offer("link", pack_packet(meta, encoded.tobytes()), variant="center")
+            relay.note_center_received()
+        except Exception as exc:
+            node.get_logger().warning(f"B center frame dropped: {exc}")
+
+    # 링크 raw는 선택된 경우에만 구독한다. detect는 A handoff, center는 B 토픽에서 받는다.
+    # 구독 생성/해제는 ROS executor 스레드에서 timer로 수행한다.
+    link_subscription = {"value": subscribe("link", CAMERAS["link"])}
+    applied_link_variant = {"value": "raw"}
+    center_subscription = {"value": None}
+    applied_center_enabled = {"value": False}
+    subscriptions = [link_subscription["value"]]
+    subscriptions.extend(subscribe(channel, topic) for channel, topic in CAMERAS.items()
+                         if channel != "link")
+
+    def update_link_input_subscription():
+        selected = relay.selected_link_variant()
+        if selected == applied_link_variant["value"]:
+            return
+        if selected == "raw":
+            link_subscription["value"] = subscribe("link", CAMERAS["link"])
+            subscriptions.append(link_subscription["value"])
+            print("[C 영상] link raw 입력 구독 재개", flush=True)
+        else:
+            current = link_subscription["value"]
+            if current is not None:
+                node.destroy_subscription(current)
+                subscriptions.remove(current)
+                link_subscription["value"] = None
+            print(f"[C 영상] link raw 입력 구독 중지 variant={selected}", flush=True)
+        applied_link_variant["value"] = selected
+
+        center_enabled = selected == "center"
+        if center_enabled != applied_center_enabled["value"]:
+            if center_enabled:
+                center_subscription["value"] = node.create_subscription(
+                    Image, args.center_topic, on_center_image, qos_profile_sensor_data)
+                subscriptions.append(center_subscription["value"])
+                print("[C 영상] B center 입력 구독 재개", flush=True)
+            else:
+                current = center_subscription["value"]
+                if current is not None:
+                    node.destroy_subscription(current)
+                    subscriptions.remove(current)
+                    center_subscription["value"] = None
+                print(f"[C 영상] B center 입력 구독 중지 variant={selected}", flush=True)
+            applied_center_enabled["value"] = center_enabled
+
+    subscription_control_timer = node.create_timer(0.1, update_link_input_subscription)
+    print(f"[C 영상] {CAMERAS} + B center={args.center_topic} -> {args.host}:{args.port} 대기 중 · "
+          "link variant 기본값=raw", flush=True)
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        node.destroy_timer(subscription_control_timer)
         handoff_ingress.close()
         relay.close()
         subscriptions.clear()
