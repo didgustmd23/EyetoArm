@@ -18,7 +18,7 @@ from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
-from eyetoarm.gui import cover, motion  # noqa: E402
+from eyetoarm.gui import cover, icon, motion  # noqa: E402
 
 
 class WavePoseTest(unittest.TestCase):
@@ -61,6 +61,13 @@ class CoverScreenTest(unittest.TestCase):
         QTest.keyClick(screen, Qt.Key.Key_Return)                              # 두 번 눌러도 한 번만 닫힌다
         QTest.qWait(cover.FADE_MS + 200)
         self.assertEqual(done, [1])
+
+    def test_app_icon_has_every_size(self) -> None:
+        built = icon.app_icon()
+        self.assertEqual(sorted(size.width() for size in built.availableSizes()), list(icon.SIZES))
+        small = icon.draw_icon(16).toImage()
+        self.assertEqual(small.pixelColor(8, 1).name().upper(), icon._TILE)   # 타일이 주황으로 채워진다
+        self.assertEqual(small.pixelColor(0, 0).alpha(), 0)                   # 둥근 모서리 밖은 투명
 
     def test_reduced_motion_closes_without_fade(self) -> None:
         motion.set_reduced(True)

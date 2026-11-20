@@ -1222,7 +1222,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.view_port is not None and not 1 <= args.view_port <= 65535:
             parser.error(f"--view-port 범위 밖: {args.view_port}")
 
+    if sys.platform == "win32":
+        # 작업 표시줄이 python.exe 아이콘 대신 이 앱의 아이콘을 쓰게 한다(Windows 는 프로세스 ID 로 묶는다)
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EyeToArms.DashboardClient")
     app = QApplication(sys.argv[:1])
+    from eyetoarm.gui.icon import app_icon
+    app.setWindowIcon(app_icon())   # 좌표축과 점(icon.py). 창 제목줄·작업 표시줄에 쓴다
     store = settings()
     theme.apply(args.theme or str(store.value("theme", theme.DEFAULT_THEME)))
     app.setStyleSheet(theme.QSS)

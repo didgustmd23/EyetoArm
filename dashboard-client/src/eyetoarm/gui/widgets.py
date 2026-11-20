@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from eyetoarm.gui import motion, theme
+from eyetoarm.gui.icon import draw_icon
 
 
 def _font(px: int, weight: int = 500, mono: bool = False) -> QFont:
@@ -99,9 +100,9 @@ class NavRail(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(20, 0, 20, 0)
         layout.setSpacing(10)
-        mark = label("E", "BrandMark")     # 상표 표식. 그림 파일을 쓰지 않는다
+        mark = QLabel()                    # 상표 표식 = 프로그램 아이콘(icon.py, 좌표축과 점). 그림 파일을 쓰지 않는다
+        mark.setPixmap(draw_icon(26))
         mark.setFixedSize(26, 26)
-        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(mark)
         layout.addWidget(label("Eye To Arms", "Brand"))
         layout.addSpacing(10)

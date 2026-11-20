@@ -115,7 +115,6 @@ QMainWindow {{ background: {BG}; }}
 QToolTip {{ background: {SURFACE_2}; color: {TEXT}; border: 1px solid {LINE}; padding: 6px 8px; }}
 
 #NavRail {{ background: {SURFACE}; border: none; border-bottom: 1px solid {LINE}; }}
-#BrandMark {{ background: {ACCENT}; color: #FFFFFF; border-radius: 8px; font-size: 12px; font-weight: 900; }}
 #Brand {{ font-size: 15px; font-weight: 800; }}
 #NavTabs {{ background: {SURFACE_2}; border: 1px solid {LINE}; border-radius: 17px; }}
 #NavButton {{ background: transparent; border: 1px solid transparent; padding: 0 14px;
