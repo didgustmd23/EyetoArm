@@ -9,11 +9,11 @@
 - `method` 키가 정규형에 있으므로 `PlanarConfig`(정규형에 method 없음)와 설정 ID 공간이 겹치지 않는다.
 - 필드 이름·범위는 계획의 **A 내부 제안**이다. `conf_threshold` 등 값은 운영 확정값이 아니며 설정 파일로 조절한다.
 - 1단계(표시용)는 `retina_masks=True`만 받는다. 마스크가 predict에 넘긴 crop 해상도로 나오므로 A는 ROI 오프셋만 더한다.
-- `axis_extractor`(#168, 선택 키, 기본 None=꺼짐): 볼트 축 두 끝점 추출기 opt-in. 현재 값은 `"m1"`(`vision/axis_endpoints.extract_m1`)
-  하나뿐이다. **None이면 정규 JSON에 넣지 않는다**(기존 설정 파일·설정 ID가 그대로다). 켠 설정은 다른 설정 ID가 된다.
+- `axis_extractor`(#168, 선택 키, 기본 None=꺼짐): 볼트 축 두 끝점 추출기 opt-in. 값은 `"m1"`(`vision/axis_endpoints.extract_m1`)과
+  `"m2"`(`extract_m2`, #225 = #223 정책 P7)이다. **None이면 정규 JSON에 넣지 않는다**(기존 설정 파일·설정 ID가 그대로다). 켠 설정은 다른 설정 ID가 된다.
   켠 관측의 `valid=True`는 추출기 형식 조건 통과 뜻이며 정확도·운영 승인이 아니다(#167 K0 사용자 결정).
 - `axis_view_bias`(#207, 선택 키, 기본 None=꺼짐): 시선 기반 끝점 보정(C1, `vision/view_bias`) 설정
-  `{"model": "C1", "k_mm": 양수, "plane_z_m": 실수, "valid_for_model_id": 문자열}`. `axis_extractor="m1"`이어야 하고
+  `{"model": "C1", "k_mm": 양수, "plane_z_m": 실수, "valid_for_model_id": 문자열}`. `axis_extractor`가 켜져 있어야(m1·m2) 하고
   `valid_for_model_id`가 이 설정의 `model_id`와 같아야 한다(가중치가 바뀌면 다시 맞춰야 하는 값, #206). None이면 정규 JSON에 넣지 않는다.
   근거·계수: `_workspace/206_builder2_view_bias_report.md`. 보정은 B 입력 끝점에만 적용한다(detect 기록·주석 = 원 끝점,
   B center = 보정 반영).
@@ -42,7 +42,7 @@ _IMGSZ_STEP, _IMGSZ_MIN, _IMGSZ_MAX = 32, 32, 4096
 _MAX_DET_MAX = 1000
 
 # 볼트 축 끝점 추출기 선택 값(#168). None = 꺼짐
-AXIS_EXTRACTORS = ("m1",)
+AXIS_EXTRACTORS = ("m1", "m2")
 _OPTIONAL_KEYS = frozenset({"axis_extractor", "axis_view_bias"})
 
 # 시선 기반 끝점 보정(#207). 모형은 C1(δ = k·s) 하나, k 상한은 안전 범위(#206 k ≈ 1.39 mm)
@@ -293,13 +293,14 @@ class AiSegConfig:
         if self.axis_extractor is not None and self.axis_extractor not in AXIS_EXTRACTORS:
             raise ValueError(f"axis_extractor must be null or one of {AXIS_EXTRACTORS}: {self.axis_extractor!r}")
 
-        # 시선 기반 끝점 보정(#207): M1 끝점에만, 맞춘 가중치에만 쓴다
+        # 시선 기반 끝점 보정(#207): 끝점 추출을 켠 설정에만, 맞춘 가중치에만 쓴다. k는 M1 끝점으로 맞춘 값이므로
+        # M2에 쓸 때는 #225 재확인 결과를 따른다(설정 파일 몫, 여기서는 막지 않는다)
         bias = parse_view_bias(self.axis_view_bias)
         put("axis_view_bias", bias)
 
         if bias is not None:
-            if self.axis_extractor != "m1":
-                raise ValueError(f"axis_view_bias requires axis_extractor 'm1': {self.axis_extractor!r}")
+            if self.axis_extractor is None:
+                raise ValueError(f"axis_view_bias requires axis_extractor in {AXIS_EXTRACTORS}: {self.axis_extractor!r}")
 
             if bias.valid_for_model_id != self.model_id:
                 raise ValueError(f"axis_view_bias.valid_for_model_id {bias.valid_for_model_id!r} != model_id {self.model_id!r}")

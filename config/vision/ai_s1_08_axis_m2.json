@@ -1,0 +1,26 @@
+{
+  "format_version": 1,
+  "method": "ai",
+  "model_family": "yolov8n-seg",
+  "weights_path": "models/vision/s1_08/best.pt",
+  "weights_sha256": "99be54c285cd05a70ab70b22de676a6ab443cbaa8fd633aecc1dc54c421bc972",
+  "class_map": {
+    "0": "bolt",
+    "1": "nut"
+  },
+  "target_classes": [
+    "bolt",
+    "nut"
+  ],
+  "conf_threshold": 0.05,
+  "iou_threshold": 0.7,
+  "imgsz": 1280,
+  "max_det": 300,
+  "device": "0",
+  "half": false,
+  "retina_masks": true,
+  "roi": null,
+  "min_mask_area_px": 20,
+  "border_margin_px": 2,
+  "axis_extractor": "m2"
+}
