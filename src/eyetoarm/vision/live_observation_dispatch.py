@@ -20,6 +20,10 @@
   기본값(False, 빈 집합)은 기존 동작 그대로다.
 - 건너뜀 통지(#173, 선택): `on_skip(item, reason, detail)`을 worker가 B를 부르지 않고 끝내는 지점마다 부른다(사유: `stale_before_b`·
   `tf_<상태>`(거부 집합일 때)·`b_input_rejected`·`stale_after_tf`). 수락 거부는 `not_accepted`. 예외는 worker 오류로 센다.
+- 시선 기반 끝점 보정(#207, 선택): `view_bias`를 주면 3과 4 사이에서 봉투를 보정한다(단계 T·L 공통 지점).
+- 수락 훅(#213 표시·#214 C 송신, 선택): 검사 ③이 수락한 뒤에만 `on_accepted(item, payload, image, event_seq)`를 부른다(worker 안,
+  잠금 밖). `render`가 `RenderedCenter(png, image)`를 돌려주면 png는 기존대로 payload에, 주석 배열은 `image`로 넘기고, 아니면 `image`는
+  None이다. bytes·None을 돌려주는 기존 render는 그대로다.
 - ROS·Qt를 import하지 않는다.
 """
 from __future__ import annotations
@@ -31,6 +35,14 @@ from typing import Callable
 
 from eyetoarm.vision.observation_envelope import ObservationEnvelopeError
 from eyetoarm.vision.live_observation_state import LiveObservationState, LiveObservationToken
+
+
+@dataclass(frozen=True)
+class RenderedCenter:
+    """표시 송출(#213)이 켜졌을 때 render가 돌려주는 짝: 기록용 PNG와 같은 주석 배열."""
+
+    png: bytes | None
+    image: object
 
 
 @dataclass(frozen=True)
@@ -58,6 +70,7 @@ class LiveObservationPayload:
     received_monotonic_ns: int | None
     submitted_monotonic_ns: int
     compute_done_monotonic_ns: int
+    view_bias: tuple | None = None   # #207: 보정 기록 목록(보정 켬일 때만, 끔이면 None)
 
 
 class LiveObservationDispatcher:
@@ -68,11 +81,18 @@ class LiveObservationDispatcher:
                  clock_ns: Callable[[], int] = time.monotonic_ns, hooks: dict | None = None,
                  tf_lookup_with_epoch: bool = False, refuse_tf_statuses: frozenset = frozenset(),
                  on_skip: Callable | None = None,
-                 envelope_errors: tuple = (ObservationEnvelopeError,)) -> None:
+                 envelope_errors: tuple = (ObservationEnvelopeError,),
+                 view_bias: Callable | None = None, on_accepted: Callable | None = None) -> None:
         """상태·처음 카메라·주입 함수들. `tf_lookup_with_epoch`·`refuse_tf_statuses`는 되감기 epoch 보호 경로용(기본은 기존 동작).
 
         `envelope_errors`(#201): 봉투 생성에서 `b_input_rejected`로 기록할 예외형(기본은 단일 관측 봉투 오류만). 목록 봉투는
         `ValueError` 계열(`ListEnvelopeError`·`FrameObservations` 대조 실패)을 넘긴다.
+
+        `view_bias(envelope, camera) → (envelope', records)`(#207, 선택): 봉투 생성 직후·검사 ② 전에 부르는 공통 보정 지점
+        (`vision/view_bias.apply_view_bias`). None이면 부르지 않는다(기존 동작). 기록은 payload `view_bias`로 넘긴다.
+
+        `on_accepted(item, payload, image, event_seq)`(#213·#214, 선택): 검사 ③ 수락 뒤 항상 부른다(`image`는 `RenderedCenter.image`
+        또는 None). 이 함수의 예외는 worker 오류로 세지 않고 `accept_hook_errors`로 센다(`errors`에 `accept_hook:`로 남김).
         """
         self.state = state
         self._stage_factory = stage_factory
@@ -86,6 +106,10 @@ class LiveObservationDispatcher:
         self._refuse_tf = frozenset(refuse_tf_statuses)
         self._on_skip = on_skip
         self._envelope_errors = tuple(envelope_errors)
+        self._view_bias = view_bias
+        self._on_accepted = on_accepted
+        self.view_bias_applied = 0             # #207 실행 요약용 수(worker가 `_counts_lock` 안에서 씀)
+        self.view_bias_skipped: dict[str, int] = {}
         self._cond = threading.Condition()
         self._slot: LiveObservationItem | None = None
         self._pending_camera = camera
@@ -185,6 +209,11 @@ class LiveObservationDispatcher:
 
     # ------------------------------------------------------------------ worker
 
+    def view_bias_summary(self) -> dict:
+        """#207 보정 수 요약(잠금 안에서 복사)."""
+        with self._counts_lock:
+            return {"applied": self.view_bias_applied, "skipped_by_reason": dict(sorted(self.view_bias_skipped.items()))}
+
     def _count(self, key: str) -> None:
         """계수(별도 짧은 잠금, 대기 칸 조건변수와 섞지 않음)."""
         with self._counts_lock:
@@ -267,6 +296,20 @@ class LiveObservationDispatcher:
             self._skip(item, "b_input_rejected", str(exc))
             return
 
+        # #207 공통 보정 지점: 단계 T·L 봉투 모두 여기서 한 번 보정한다(끔이면 부르지 않음)
+        view_bias = None
+
+        if self._view_bias is not None:
+            envelope, records = self._view_bias(envelope, self._camera)
+            view_bias = tuple(records)
+
+            with self._counts_lock:
+                for r in records:
+                    if r["applied"]:
+                        self.view_bias_applied += 1
+                    else:
+                        self.view_bias_skipped[r["reason"]] = self.view_bias_skipped.get(r["reason"], 0) + 1
+
         compute_id = self.state.begin_compute(item.token)       # ②
         self._hook("after_begin")
 
@@ -280,13 +323,17 @@ class LiveObservationDispatcher:
             out = self._compute(self._stage, envelope)
             self._hook("in_compute")
             png = None if self._render is None else self._render(self._stage, item.frame, out)
+            annotated = None
+
+            if isinstance(png, RenderedCenter):
+                png, annotated = png.png, png.image
         except Exception as exc:
             self.state.abandon(compute_id, type(exc).__name__)
             raise
 
         payload = LiveObservationPayload(item.frame, item.observation, envelope, out, tf_result.status, tf_result.wait_ms, png,
                                getattr(item.frame, "received_monotonic_ns", None), item.submitted_monotonic_ns,
-                               self._clock_ns())
+                               self._clock_ns(), view_bias)
         self._hook("before_accept")
 
         seq = self.state.accept(compute_id, item.token, payload)  # ③
@@ -294,6 +341,12 @@ class LiveObservationDispatcher:
 
         if seq is None:
             self._skip(item, "not_accepted")
+        elif self._on_accepted is not None:
+            try:
+                self._on_accepted(item, payload, annotated, seq)
+            except Exception as exc:   # 수락 훅 실패는 B 결과·기록에 영향 없음(세고 남김, 진입점이 종료 1로 드러냄)
+                self._count("accept_hook_errors")
+                self.errors.append(f"accept_hook: {type(exc).__name__}: {exc}")
 
 
-__all__ = ["LiveObservationDispatcher", "LiveObservationItem", "LiveObservationPayload"]
+__all__ = ["LiveObservationDispatcher", "LiveObservationItem", "LiveObservationPayload", "RenderedCenter"]

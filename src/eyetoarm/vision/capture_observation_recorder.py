@@ -15,6 +15,9 @@
   대조한다. 봉투 오류는 B를 부르지 않고 `b_input_rejected`로 기록한다(실행 끝 판정에서 종료 1). 봉투 전체는 B 입구 어댑터
   (`transforms/observation_envelope_adapter.ObservationEnvelopeAdapter`)로 간다. 어댑터는 계산에 frame·관측만 쓰고 확장은 받아서 돌려준다. TF는 봉투 것
   (`EnvelopeTfLookup`)만 쓴다. 지금 A는 확장 필드를 만들지 않는다. 받은 확장·미지원·계산 사용 여부는 `b_adapter`로 기록한다(기록 키는 기존 계약 문자열 유지).
+- 시선 기반 끝점 보정(#207, 선택 `view_bias`): 봉투를 만든 직후 공통 지점 `vision/view_bias.apply_view_bias`로 끝점을 보정한 봉투를
+  B에 넘긴다. 켰을 때만 `b_output.input`에 B에 넘긴 끝점·원 끝점(`axis_endpoints_px_raw`)·`view_bias`를 남긴다. TF 없는 프레임은
+  보정하지 않고 사유(`no_tf`)를 남긴다. `frames.jsonl`(A 검출 기록)은 원 끝점 그대로다.
 """
 from __future__ import annotations
 
@@ -29,6 +32,7 @@ import cv2
 import numpy as np
 
 from eyetoarm.vision.observation_envelope import ObservationEnvelopeError, CaptureInfo, CaptureTf, make_observation_envelope
+from eyetoarm.vision.view_bias import apply_view_bias, summarize
 
 VALID_MEANING = "extractor-format (not accuracy/operational approval)"
 
@@ -109,13 +113,15 @@ class _Jsonl:
 class CaptureObservationRecorder:
     """B 결과(`b_outputs.jsonl`)·주석 영상(`annotated/*.png`)·terminal 응답(`frames.jsonl`) 기록기."""
 
-    def __init__(self, out_dir: str, stage, meta, adapter, extension_source=None) -> None:
+    def __init__(self, out_dir: str, stage, meta, adapter, extension_source=None, view_bias=None) -> None:
         """출력 폴더를 새로 만든다(있으면 FileExistsError).
 
         `meta`는 CaptureMeta, `adapter`는 그 stage의 ObservationEnvelopeAdapter. `extension_source(frame, obs)`는 봉투에 실을 확장 사전을 주는
-        주입 지점이다(기본 None = 확장 없음; A는 아직 확장을 생산하지 않는다).
+        주입 지점이다(기본 None = 확장 없음; A는 아직 확장을 생산하지 않는다). `view_bias`(#207)는 `ViewBiasConfig` 또는 None(꺼짐).
         """
         self._meta = meta
+        self._view_bias = view_bias
+        self._view_bias_records: list = []
         self._adapter = adapter
         self._extension_source = extension_source
         self.rejected = 0
@@ -176,6 +182,9 @@ class CaptureObservationRecorder:
                 self._b.write({"kind": "b_input_rejected", "input": _frame_keys(frame, obs), "error": str(exc)})
                 return None
 
+            # #207 공통 보정 지점(끔이면 같은 봉투)
+            env, bias = apply_view_bias(env, self._meta.camera, self._view_bias)
+
             adapted = self._adapter.consume(env)
             out = adapted.output
             drawable = out.T_W_C is not None
@@ -218,7 +227,7 @@ class CaptureObservationRecorder:
                                      "selected_index": obs.selected_index,
                                      "axis_endpoints_px": None if obs.axis_endpoints_px is None
                                      else obs.axis_endpoints_px.tolist(),
-                                     "frame_image_sha256": before},
+                                     "frame_image_sha256": before, **self._bias_input(env, bias)},
                            "result_dict": out.result_dict, "goal": out.goal, "b_valid": out.result.valid,
                            "b_reason": out.result.reason, "b_reason_owner": out.result.reason_owner,
                            "b_compute_ms": out.result.compute_ms,
@@ -230,10 +239,26 @@ class CaptureObservationRecorder:
 
         return consumer
 
+    def _bias_input(self, env, bias: list) -> dict:
+        """#207 `input`에 더할 보정 키(켬일 때만). 끝점을 B에 넘긴 값으로 덮고 원 끝점·보정 결과를 더한다(실시간 기록과 같은 키)."""
+        if self._view_bias is None:
+            return {}
+
+        self._view_bias_records.append(bias)
+        vb = bias[0]
+        obs = env.observation
+
+        return {"axis_endpoints_px": None if obs.axis_endpoints_px is None else obs.axis_endpoints_px.tolist(),
+                "axis_endpoints_px_raw": vb["axis_endpoints_px_raw"],
+                "view_bias": {k: vb[k] for k in ("applied", "s", "delta_mm", "reason")}}
+
     def summary(self, record: dict) -> None:
         """끝 요약을 summary.json으로(새 파일)."""
         doc = {"b_outputs": self.calls, "b_input_rejected": self.rejected, "annotated_frames": self.annotated, "goal_kinds": self.kinds,
                "observation_reasons": self.reasons, "valid_meaning": VALID_MEANING, **record}
+
+        if self._view_bias is not None:
+            doc["view_bias"] = {"enabled": True, **self._view_bias.to_json(), **summarize(self._view_bias_records)}
 
         with open(self.dir / "summary.json", "x", encoding="utf-8") as fh:
             json.dump(_plain(doc), fh, ensure_ascii=False, indent=1, allow_nan=False)
