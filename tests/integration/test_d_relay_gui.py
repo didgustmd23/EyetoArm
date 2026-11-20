@@ -11,7 +11,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parents[2]
@@ -136,7 +136,7 @@ class RelayWindow(unittest.TestCase):
         self.assertEqual(self.window.chip_view._level, "ok")
         self.assertTrue(all(value.text() == NO_VALUE for value in self.window.measure_values))   # no results
         self.assertIn("측정 결과 없음", self.window.stage.popup.values["detail"].toolTip())
-        self.assertEqual(self.clients[0].bytesAvailable(), 0)      # D never sends anything to the relay
+        self.assertEqual(self.clients[0].bytesAvailable(), 0)      # D sends nothing until the user picks a link variant
 
     def test_link_selection_is_display_only_synced_and_never_falls_back_to_raw(self):
         self.send(packet("fixed", 1), packet("gripper", 1), packet("link", 1))
@@ -169,7 +169,47 @@ class RelayWindow(unittest.TestCase):
         self.window._update_status()
         self.assertEqual(self.mode_of("link"), "live")
         self.assertIn("raw", self.views()["link"]._footer)
-        self.assertEqual(self.clients[0].bytesAvailable(), 0)           # selection never requested anything from C
+        self.assertEqual(self.requests(3), [self.request(m) for m in ("detect", "center", "raw")])   # one line per click
+
+    def request(self, variant):
+        return {"type": "SET_DISPLAY_VARIANT", "channel": "link", "variant": variant}
+
+    def requests(self, count):
+        client = self.clients[0]
+        self.assertTrue(until(lambda: client.bytesAvailable() and bytes(client.peek(1 << 16)).count(b"\n") >= count))
+        data = bytes(client.readAll())
+        self.assertTrue(data.endswith(b"\n"))
+        lines = data.split(b"\n")[:-1]
+        self.assertTrue(all(b" " not in line for line in lines))        # compact UTF-8 JSON, LF-delimited
+        return [json.loads(line) for line in lines]
+
+    def test_link_request_goes_only_to_the_relay_socket_and_shows_sent_or_unsent_without_ack(self):
+        center = [b for b in self.window.mode_buttons if b._mode == "center"][-1]
+        center.click()
+        self.window._update_status()
+        self.assertEqual(self.requests(1), [self.request("center")])
+        self.link._send.assert_not_called()                              # never the command TCP
+        self.assertIn("요청 송신됨 · C 적용 미확인", self.views()["link"]._reason)
+        self.send(packet("link", 1))                                     # raw frames are not an ack for center
+        self.settle(lambda: self.view.frame_count == 1)
+        self.send(packet("link", 2))
+        self.settle(lambda: self.view.frame_count == 2)
+        self.assertEqual(self.mode_of("link"), "waiting")
+        with patch.object(self.view._socket, "write", return_value=-1) as write:   # failed write: no retry
+            [b for b in self.window.mode_buttons if b._mode == "center"][0].click()   # same variant again
+            self.window._update_status()
+        self.assertEqual(write.call_count, 1)
+        self.assertIsNone(self.view.requested_variant)                   # earlier success is not left as "sent"
+        self.assertEqual(self.view.state, "disconnected")                 # dropped so no partial line can join the next
+        self.assertIn("요청 송신 실패", self.view.last_error)
+        self.assertNotIn("요청 송신됨", self.views()["link"]._reason)
+        self.assertFalse(self.view.request_variant("raw"))                # disconnected: nothing is sent
+        self.assertTrue(until(lambda: self.view.state == "connected" and len(self.clients) == 2))   # normal reconnect
+        self.assertIsNone(self.view.requested_variant)                   # no carried-over or automatic resend
+        self.assertIn("요청 미송신", self.views()["link"]._reason)
+        self.assertFalse(until(lambda: self.clients[1].bytesAvailable() > 0, timeout=0.3))
+        with self.assertRaises(ValueError):
+            self.view.request_variant("bogus")
 
     def test_newest_per_turn_bad_jpeg_and_old_session_cannot_come_back(self):
         self.send(*(packet("link", seq) for seq in range(1, 6)))       # coalesced in one write

@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <!--
-  Robotiq 2F-85, 모든 길이를 원본의 2/3 으로 고정 축소한 시뮬레이션 전용 모델(조절 옵션 없음, 사용자 요청 2026-11-20).
+  Robotiq 2F-85, 모든 길이를 원본의 1/3 으로 고정 축소한 시뮬레이션 전용 모델(조절 옵션 없음, 사용자 요청 2026-11-20. 같은 날 2/3 → 1/3 로 재요청).
 
   출처: ros-jazzy-robotiq-description 0.0.1 (Ubuntu 24.04 패키지 0.0.1-3noble.20260920.234159)
         urdf/robotiq_2f_85_macro.urdf.xacro 의 robotiq_gripper 매크로에서 링크·관절을 옮겨 왔다.
@@ -9,13 +9,13 @@
         이 파일은 그 원본의 수정 파생물이다(simulation/THIRD_PARTY_NOTICES.md 의 robotiq_description 행 참고).
         메시는 설치된 robotiq_description 의 것을 그대로 참조하고 복사하지 않는다.
   바꾼 것(그 밖의 이름·축·각도 한계·effort·velocity·mimic·접촉 파라미터는 원본 그대로):
-    - visual·collision 메시: scale = 2/3 (원점 기준 등방 축소)
-    - 관절 origin xyz, 링크 inertial origin xyz: × 2/3
-    - inertia 텐서: × (2/3)^2. 질량은 바꾸지 않는다(실물 2/3 그리퍼의 질량을 가정하지 않기 위해,
-      같은 질량이 2/3 크기에 분포한 것으로 둔다).
+    - visual·collision 메시: scale = 1/3 (원점 기준 등방 축소)
+    - 관절 origin xyz, 링크 inertial origin xyz: × 1/3
+    - inertia 텐서: × (1/3)^2. 질량은 바꾸지 않는다(실물 1/3 그리퍼의 질량을 가정하지 않기 위해,
+      같은 질량이 1/3 크기에 분포한 것으로 둔다).
     - ros2_control 블록은 넣지 않는다. 호출하는 ur5e_2f85.urdf.xacro 가 팔과 함께 묶는다(원본 include_ros2_control=false 와 같음).
   각도로만 정의된 값(관절 한계 0~0.8 rad, mimic 배율)은 등방 축소에서 그대로이므로 손가락 연결 기구학은 원본과 닮은꼴이다.
-  축소 영향 경계(이 파일 밖, 값은 원본 기준으로 남아 있음): 손끝까지 길이·최대 벌림(원본 85 mm → 약 56.7 mm),
+  축소 영향 경계(이 파일 밖, 값은 원본 기준으로 남아 있음): 손끝까지 길이·최대 벌림(원본 85 mm → 약 28.3 mm),
   tool0 → 집게 중심(G) 오프셋, 그리퍼 카메라 외부 보정. 모델 README 대신 이 주석과 작업 보고에 둔다.
 
   원본 LICENSE 전문 (https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/main/LICENSE):
@@ -51,8 +51,8 @@
   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 -->
 <robot xmlns:xacro="http://wiki.ros.org/xacro">
-  <xacro:macro name="robotiq_2f_85_two_thirds" params="prefix parent *origin">
-    <xacro:property name="s" value="${2.0 / 3.0}"/>
+  <xacro:macro name="robotiq_2f_85_one_third" params="prefix parent *origin">
+    <xacro:property name="s" value="${1.0 / 3.0}"/>
     <xacro:property name="s2" value="${s * s}"/>
     <xacro:property name="mesh" value="file://$(find robotiq_description)/meshes"/>
 

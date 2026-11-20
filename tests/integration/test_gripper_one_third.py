@@ -1,4 +1,4 @@
-"""시뮬레이션 Robotiq 2F-85 를 모든 길이 2/3 로 고정 축소한 모델의 형상 회귀 시험.
+"""시뮬레이션 Robotiq 2F-85 를 모든 길이 1/3 로 고정 축소한 모델의 형상 회귀 시험.
 
 설치된 robotiq_description 원본 매크로를 같은 장착 위치로 펼친 기준 URDF와 우리 모델을 비교한다.
 xacro 와 ROS(robotiq_description·ur_description)가 있는 환경(WSL)에서만 돈다. 그 밖에서는 건너뛴다.
@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MODELS = [ROOT / "simulation/models/ur5e_2f85", ROOT / "robot_ws/src/ur5e_moveit_config/config"]
-S = 2.0 / 3.0
+S = 1.0 / 3.0
 GRIPPER_LINKS = ("base", "left_knuckle", "right_knuckle", "left_finger", "right_finger", "left_inner_knuckle",
                  "right_inner_knuckle", "left_finger_tip", "right_finger_tip")
 
@@ -43,7 +43,7 @@ def by_name(root: ET.Element, tag: str) -> dict[str, ET.Element]:
 
 
 @unittest.skipUnless(shutil.which("xacro") and os.environ.get("AMENT_PREFIX_PATH"), "xacro/ROS 환경 없음")
-class GripperTwoThirds(unittest.TestCase):
+class GripperOneThird(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         with tempfile.TemporaryDirectory() as tmp:
@@ -98,10 +98,13 @@ class GripperTwoThirds(unittest.TestCase):
             self.assertEqual(floats(joints["robotiq_85_base_joint"].find("origin").get("xyz")), [0.0, 0.0, 0.0])
             adapter = by_name(model, "link")["ur_to_robotiq_link"].find("visual/geometry/mesh")
             self.assertIsNone(adapter.get("scale"))
-            self.assertEqual(floats(joints["gripper_cam_joint"].find("origin").get("xyz")), [0.0, 0.0, 0.038])
+            self.assertEqual(floats(joints["gripper_cam_joint"].find("origin").get("xyz")), [0.0, 0.0, 0.008])
             control = [j.get("name") for j in model.findall("ros2_control/joint")]
             self.assertIn("robotiq_85_left_knuckle_joint", control)
             self.assertIn("wrist_3_joint", control)
+            clips = {s.get("name"): s.find("camera/clip") for s in model.findall("gazebo/sensor")}
+            self.assertEqual((clips["gripper_rgbd"].findtext("near"), clips["gripper_rgbd"].findtext("far")), ("0.01", "5.0"))
+            self.assertEqual(clips["link_cam"].findtext("near"), "0.05")
 
 
 if __name__ == "__main__":
