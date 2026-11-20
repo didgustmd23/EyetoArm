@@ -9,7 +9,6 @@ from __future__ import annotations
 import inspect
 import io
 import json
-import subprocess
 import threading
 import time
 import unittest
@@ -609,12 +608,20 @@ class CliOffAndArgsTest(CliBase):
         self.assertFalse(Path(out).exists())
 
     def test_runner_d13_guard_unchanged(self):
-        """U14: 실행기는 실시간 b_consumer를 계속 거부하고(옵션과 무관), pipeline_runner.py는 HEAD와 같다."""
+        """U14: 실행기는 실시간 b_consumer를 계속 거부하고(옵션과 무관), D13 가드 줄이 그대로 있다.
+
+        #215에서 실행기에 `offer(tracks=)` 인자가 승인되어 파일 전체 diff 0 대신 가드 줄 자체를 확인한다.
+        """
         from test_live_observation_harness import D13RegressionTest
 
         D13RegressionTest("test_run_still_rejects_live_observation_consumer").test_run_still_rejects_live_observation_consumer()
-        diff = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", "src/eyetoarm/vision/pipeline_runner.py"], cwd=ROOT)
-        self.assertEqual(diff.returncode, 0)
+        src = (ROOT / "src" / "eyetoarm" / "vision" / "pipeline_runner.py").read_text(encoding="utf-8")
+
+        for line in ('        if live and b_consumer is not None:\n'
+                     '            fail_run("b_consumer_not_allowed", "live source does not allow b_consumer in the display stage")',
+                     'fail_run("b_list_consumer_not_allowed", "live source does not allow b_list_consumer (D13)")',
+                     'fail_run("live_observation_contract", "live_observation_sink requires a live source and no b_consumer")'):
+            self.assertIn(line, src)
 
     def test_on_output_stage_still_refused_with_sending(self):
         """U5·U14: 송신을 켜도 on_output이 있는 B 단계는 거부(수락 0·송신 0·종료 1)."""

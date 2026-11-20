@@ -17,6 +17,17 @@ Q7 = 별도 `sort_part.jsonl`만, Q8 = 클라이언트 `stats`는 참고만), �
   촬영 stamp·`accept_event_seq`)와 `goal_id`를 기록에 남긴다.
 - **취소 없음:** B 클라이언트에 취소 API가 없어 닫힘 때 결과 대기 목표는 `unresolved_at_close`로만 기록한다(C에서는 계속 실행될 수 있음).
 
+추적 번호(#215, `--tracking`): 확정 번호가 관측에 실리면 B `_dedupe`가 번호마다 결과 전 1회만 `PICK_PLACE`로 둔다(그 뒤는
+`SKIP`/`ALREADY_SENT`, 이 송신기는 풀지 않음). B 기록은 결과(B 클라이언트 `_finish`)·`no_server`·`busy`에서 B 클라이언트가 풀고,
+**송신기가 클라이언트를 부르지 않은 `PICK_PLACE`**(게이트 닫힘·상태 실패·재시도 제한)는 송신기가 `release_target.release(번호)`로
+푼다(`release:<사유>` 기록). 추적을 켜면 모든 기록 줄에 `part_track_id`가 붙는다(끄면 형식 그대로).
+
+재시도 제한(#215, 설정 `sort_part.retry` 선택, 없으면 제한 없음 = `retry=off`): ① 번호별로 `FAILED`·`EXPIRED`·`ERROR`·`REJECTED`가
+`max_failures_per_track`회 쌓이면 그 번호의 `PICK_PLACE`를 보내지 않는다(`skip:track_retry_limit`). ② 실패한 목표의 관측 위치
+(`observed_position_mm`, base_link mm) 근방 `failed_point_block_mm` 안의 `PICK_PLACE`를 그 실패 목표 촬영 시각 뒤 `failed_point_block_s`
+(SIM 시간) 동안 보내지 않는다(`skip:failed_point_block`). ②는 번호가 있어도 적용한다(팔·카메라 이동으로 번호가 바뀌면 ①이 무력하므로,
+reviewer Q5). 성공(`SUCCEEDED`)이면 그 번호의 실패 수를 지운다.
+
 `RecordingSortPartClient`는 B `SortPartClient`의 비공개 콜백(`_on_feedback`·`_on_accepted`·`_on_result`·`_finish`)을 덮어써 사건을
 기록 함수로 넘긴다(B 파일 무변, B에 공개 훅 제안 중). 이 모듈은 rclpy를 import하지 않는다(B 클라이언트 생성자만 rclpy를 지연 import).
 """
@@ -33,10 +44,26 @@ from typing import Any, Callable
 from eyetoarm.transforms.sort_part_client import SEND_KINDS, SortPartClient
 
 _CONFIG_KEYS = {"server_wait_s", "result_wait_s", "close_limit_s", "spin_timeout_s"}
+_RETRY_KEYS = {"max_failures_per_track", "failed_point_block_s", "failed_point_block_mm"}
+_FAIL_STATUSES = ("FAILED", "EXPIRED", "ERROR", "REJECTED")
+_NO_CALL_RELEASE = ("gate_closed", "state_failed", "skip:track_retry_limit", "skip:failed_point_block")
 
 
 class SortPartConfigError(ValueError):
     """`sort_part` 설정 오류."""
+
+
+@dataclass(frozen=True)
+class RetryConfig:
+    """실패 재시도 제한 시험값(#215, 기본값 없음)."""
+
+    max_failures_per_track: int
+    failed_point_block_s: float
+    failed_point_block_mm: float
+
+    def to_json(self) -> dict:
+        """요약용 사전."""
+        return {k: getattr(self, k) for k in sorted(_RETRY_KEYS)}
 
 
 @dataclass(frozen=True)
@@ -47,10 +74,12 @@ class SortPartConfig:
     result_wait_s: float     # 닫을 때 결과 대기(기록용)
     close_limit_s: float     # spin 스레드·기록 스레드 join 상한
     spin_timeout_s: float    # spin_once 대기
+    retry: RetryConfig | None = None   # #215 선택(없으면 제한 없음)
 
     def to_json(self) -> dict:
         """요약용 사전."""
-        return {k: getattr(self, k) for k in sorted(_CONFIG_KEYS)}
+        return {**{k: getattr(self, k) for k in sorted(_CONFIG_KEYS)},
+                "retry": "off" if self.retry is None else self.retry.to_json()}
 
 
 def parse_sort_part(doc) -> SortPartConfig:
@@ -58,18 +87,40 @@ def parse_sort_part(doc) -> SortPartConfig:
     if not isinstance(doc, dict):
         raise SortPartConfigError("sort_part must be an object")
 
-    unknown, missing = set(doc) - _CONFIG_KEYS, _CONFIG_KEYS - set(doc)
+    unknown, missing = set(doc) - _CONFIG_KEYS - {"retry"}, _CONFIG_KEYS - set(doc)
 
     if unknown or missing:
         raise SortPartConfigError(f"sort_part: unknown keys {sorted(unknown)}, missing keys {sorted(missing)}")
 
     for key in _CONFIG_KEYS:
-        v = doc[key]
+        _positive(doc[key], f"sort_part.{key}")
 
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
-            raise SortPartConfigError(f"sort_part.{key} must be a positive number: {v!r}")
+    retry = None
 
-    return SortPartConfig(**{k: float(doc[k]) for k in _CONFIG_KEYS})
+    if "retry" in doc:
+        r = doc["retry"]
+
+        if not isinstance(r, dict) or set(r) != _RETRY_KEYS:
+            raise SortPartConfigError(f"sort_part.retry must have exactly {sorted(_RETRY_KEYS)}")
+
+        n = r["max_failures_per_track"]
+
+        if type(n) is not int or n < 1:
+            raise SortPartConfigError(f"sort_part.retry.max_failures_per_track must be an int >= 1: {n!r}")
+
+        retry = RetryConfig(max_failures_per_track=n,
+                            failed_point_block_s=_positive(r["failed_point_block_s"], "sort_part.retry.failed_point_block_s"),
+                            failed_point_block_mm=_positive(r["failed_point_block_mm"], "sort_part.retry.failed_point_block_mm"))
+
+    return SortPartConfig(**{k: float(doc[k]) for k in _CONFIG_KEYS}, retry=retry)
+
+
+def _positive(v, name: str) -> float:
+    """bool 아닌 유한 양수."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+        raise SortPartConfigError(f"{name} must be a positive number: {v!r}")
+
+    return float(v)
 
 
 class RecordingSortPartClient(SortPartClient):
@@ -121,9 +172,17 @@ class LiveSortPartSender:
     """
 
     def __init__(self, run_id: str, config: SortPartConfig, runtime, out_dir: str, *,
-                 is_failed: Callable[[], bool] | None = None, clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
-        """기록 파일(`sort_part.jsonl`, 새 파일)을 연다."""
+                 is_failed: Callable[[], bool] | None = None, clock_ns: Callable[[], int] = time.monotonic_ns,
+                 tracking: bool = False, release_target=None) -> None:
+        """기록 파일(`sort_part.jsonl`, 새 파일)을 연다. `tracking`이면 기록에 `part_track_id`를 붙이고, 클라이언트를 부르지 않은
+        번호 있는 `PICK_PLACE`는 `release_target.release(번호)`로 B 기록을 푼다."""
         self.run_id = run_id
+        self.tracking = bool(tracking)
+        self.release_target = release_target
+        self._track_failures: dict[int, int] = {}      # 번호 → 실패 수(기록 조건변수 안)
+        self._failed_points: list[tuple] = []          # (x_mm, y_mm, z_mm, 촬영 stamp ns)
+        self._goal_meta: dict[str, tuple] = {}         # goal_id → (번호, 관측 위치 mm, 촬영 stamp ns)
+        self.retry_counts = {"track_limit": 0, "point_block": 0, "failures_recorded": 0, "points_recorded": 0}
         self.config = config
         self.runtime = runtime
         self._is_failed = is_failed or (lambda: False)
@@ -150,15 +209,33 @@ class LiveSortPartSender:
         """메모리 큐에 넣는다(기다리지 않음). 계수는 같은 잠금."""
         rec = {"t_mono_ns": self._clock_ns(), "event": event, "goal_id": goal_id, **(keys or {}), **detail}
 
+        if self.tracking:   # #215: 추적을 켜면 모든 줄에 번호 키(목표 없는 줄·모르는 목표는 null)
+            rec.setdefault("part_track_id", None)
+
         with self._qcond:
             self.counts[event] = self.counts.get(event, 0) + 1
             self._queue.append(rec)
             self._qcond.notify_all()
 
     def on_client_event(self, event: str, goal_id: str, detail: dict) -> None:
-        """클라이언트 콜백 사건(spin 스레드). 송신 때 남긴 프레임 키를 붙인다."""
+        """클라이언트 콜백 사건(spin 스레드). 송신 때 남긴 프레임 키를 붙이고, 결과면 재시도 제한 상태를 갱신한다."""
         with self._qcond:
             keys = dict(self.goal_keys.get(goal_id, {}))
+
+            if event.startswith("result:") and self.config.retry is not None:
+                track, pos, stamp = self._goal_meta.get(goal_id, (None, None, None))
+                status = event.split(":", 1)[1]
+
+                if status in _FAIL_STATUSES:
+                    if track is not None:
+                        self._track_failures[track] = self._track_failures.get(track, 0) + 1
+                        self.retry_counts["failures_recorded"] += 1
+
+                    if pos is not None and stamp is not None:
+                        self._failed_points.append((*pos, stamp))
+                        self.retry_counts["points_recorded"] += 1
+                elif status == "SUCCEEDED" and track is not None:
+                    self._track_failures.pop(track, None)
 
         self._record(event, goal_id, keys, **detail)
 
@@ -215,6 +292,10 @@ class LiveSortPartSender:
         keys = {"run_id": self.run_id, "image_seq": getattr(frame, "image_seq", None),
                 "ros_stamp_ns": getattr(frame, "ros_stamp_ns", None), "accept_event_seq": accept_event_seq,
                 "kind": goal.get("kind"), "spec": goal.get("spec"), **ids}
+        track = goal.get("part_track_id")
+
+        if self.tracking:
+            keys["part_track_id"] = track
 
         if res is None or getattr(res, "valid", False) is not True:
             event = f"skip:{getattr(res, 'reason', None) or 'invalid'}"
@@ -222,19 +303,26 @@ class LiveSortPartSender:
             return event
 
         if goal.get("kind") not in SEND_KINDS:
-            event = f"skip:{goal.get('reason') or goal.get('kind')}"
+            event = f"skip:{goal.get('reason') or goal.get('kind')}"   # B ALREADY_SENT 포함: 풀지 않는다
             self._record(event, gid, keys)
             return event
+
+        pos = _position(goal)
+        stamp = goal.get("capture_stamp_ns")
+        stamp = stamp if isinstance(stamp, int) and not isinstance(stamp, bool) else getattr(frame, "ros_stamp_ns", None)
 
         with self._gate:
             if self._closed:
                 event = "gate_closed"
             elif self._is_failed():
                 event = "state_failed"
+            elif (limited := self._retry_block(goal.get("kind"), track, pos, stamp)) is not None:
+                event = limited
             else:
                 with self._qcond:
                     if gid:
                         self.goal_keys[gid] = keys
+                        self._goal_meta[gid] = (track, pos, stamp)
 
                 before = _stats_copy(self.runtime.stats)
                 ok = bool(self.runtime.send(out))
@@ -243,7 +331,43 @@ class LiveSortPartSender:
 
         self._record(event, gid, keys)
 
+        # 클라이언트를 부르지 않은 번호 있는 PICK_PLACE: B `_dedupe` 기록을 푼다(B 클라이언트가 풀지 않는 경우만)
+        if event in _NO_CALL_RELEASE and goal.get("kind") == "PICK_PLACE":
+            self.release(track, event, gid, keys)
+
         return event
+
+    def release(self, track, reason: str, gid: str | None = None, keys: dict | None = None) -> bool:
+        """B 중복 방지 기록 해제(번호·대상이 있을 때만). `release:<사유>`를 기록한다."""
+        if track is None or self.release_target is None:
+            return False
+
+        self.release_target.release(track)
+        self._record(f"release:{reason}", gid, keys)
+
+        return True
+
+    def _retry_block(self, kind, track, pos, stamp) -> str | None:
+        """재시도 제한(설정이 있을 때, PICK_PLACE만). 막으면 사건 이름."""
+        r = self.config.retry
+
+        if r is None or kind != "PICK_PLACE":
+            return None
+
+        with self._qcond:
+            if track is not None and self._track_failures.get(track, 0) >= r.max_failures_per_track:
+                self.retry_counts["track_limit"] += 1
+                return "skip:track_retry_limit"
+
+            if pos is not None and stamp is not None:
+                window_ns = r.failed_point_block_s * 1e9
+
+                for fx, fy, fz, fstamp in self._failed_points:
+                    if 0 <= stamp - fstamp <= window_ns and math.dist(pos, (fx, fy, fz)) <= r.failed_point_block_mm:
+                        self.retry_counts["point_block"] += 1
+                        return "skip:failed_point_block"
+
+        return None
 
     # ------------------------------------------------------------------ 닫기
 
@@ -326,7 +450,13 @@ class LiveSortPartSender:
         with self._qcond:
             counts = dict(sorted(self.counts.items()))
 
+        with self._qcond:
+            retry = ("off" if self.config.retry is None else
+                     {**self.retry_counts, "track_failures": {str(k): v for k, v in sorted(self._track_failures.items())},
+                      "failed_points": len(self._failed_points)})
+
         return {"config": self.config.to_json(), "server_seen": getattr(self.runtime, "server_seen", None),
+                "tracking": self.tracking, "retry": retry,
                 "events": counts, "unresolved_at_close": list(self.unresolved), "close_reason": self.close_reason,
                 "gate_wait_max_ms": round(self.gate_wait_max_ms, 3), "write_error": self.write_error, "crash": self.crash,
                 "client_stats_reference_only": _stats_copy(getattr(self.runtime, "stats", {}))}
@@ -343,6 +473,18 @@ def _stats_copy(stats: Any) -> dict:
     return {}
 
 
+def _position(goal: dict) -> tuple | None:
+    """목표의 관측 위치(base_link mm 세 값, 유한) 또는 None."""
+    p = goal.get("observed_position_mm")
+
+    try:
+        v = tuple(float(x) for x in p)
+    except (TypeError, ValueError):
+        return None
+
+    return v if len(v) == 3 and all(math.isfinite(x) for x in v) else None
+
+
 def _refusal(before: dict, after: dict) -> str:
     """`send`가 False일 때 클라이언트 사유(증가한 계수)."""
     for key, event in (("no_server", "no_server"), ("busy", "busy"), ("skip", "client_skip"), ("error", "send_error")):
@@ -352,4 +494,4 @@ def _refusal(before: dict, after: dict) -> str:
     return "send_refused"
 
 
-__all__ = ["LiveSortPartSender", "RecordingSortPartClient", "SortPartConfig", "SortPartConfigError", "parse_sort_part"]
+__all__ = ["LiveSortPartSender", "RecordingSortPartClient", "RetryConfig", "SortPartConfig", "SortPartConfigError", "parse_sort_part"]

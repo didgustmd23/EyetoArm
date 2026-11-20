@@ -41,6 +41,11 @@
   `LiveSortPartSender`가 B `SortPartClient`로 보낸다(`vision/live_sort_part`). `stage.on_output`은 여전히 None이어야 한다(수락 전 송신
   경로를 만들지 않음). 실행 닫힘(리셋·종료·fail-stop)에 송신 게이트를 먼저 닫고, 정리 단계 `sort_part`는 dispatcher 다음이다. 실행기
   D13 가드(실시간 `b_consumer` 거부)는 그대로다. 주지 않으면 기록·요약이 기존과 같다.
+- 추적 번호(#215, 선택 `tracking=True`, 진입점 `--tracking`): 실행기가 `offer(..., tracks=TrackFrame | None)`로 같은 작업의 추적 결과를
+  넘기면 확정 번호만(`vision/tracked_observation.confirmed_track_id`) A 하위 형 관측(`TrackedPlanarObservation`)과 봉투 확장
+  `tracking`에 싣는다(공통형·B 파일 무변, B는 관측의 `part_track_id`로 `_dedupe`). B 중복 방지 기록 해제는 `release_proxy`(이 연결부가
+  만든 모든 B 단계에 `release`)가 맡는다: B 클라이언트 결과·`no_server`·`busy`, 검사 ③ 거부(`on_not_accepted`, `PICK_PLACE`만), 송신기가
+  클라이언트를 부르지 않은 경우, 송신이 꺼진 기록 전용 실행의 수락 뒤. `ALREADY_SENT` SKIP은 풀지 않는다. 단계 T만.
 - ROS·Qt를 import하지 않는다(TF 수신 묶음·B 단계·표시 발행자·송신 런타임은 주입).
 """
 from __future__ import annotations
@@ -65,6 +70,7 @@ from eyetoarm.vision.live_observation_envelope import LiveCaptureTfLookup, make_
 from eyetoarm.vision.live_observation_events import LiveObservationEventWriter
 from eyetoarm.vision.live_observation_state import (SIM_TIME_REWIND, LiveObservationConfig, LiveObservationState)
 from eyetoarm.vision.live_sort_part import LiveSortPartSender, SortPartConfig, SortPartConfigError, parse_sort_part
+from eyetoarm.vision.tracked_observation import TrackedPlanarObservation, confirmed_track_id, with_track
 from eyetoarm.vision.view_bias import apply_view_bias
 
 PROFILE_CHANGED = "profile_changed"             # `inputs.live_slot.BoundaryKind.PROFILE_CHANGED` 값(#180 r1 L1)
@@ -102,6 +108,24 @@ class LiveListInput:
     def image_seq(self):
         """프레임 순번."""
         return self.context.frame.image_seq
+
+
+class _StageReleaseProxy:
+    """B 클라이언트 `stage` 자리(#215): 연결부가 만든 모든 B 단계에 `release(번호)`를 부른다(프로필 변경으로 새로 만든 단계 포함)."""
+
+    def __init__(self, link) -> None:
+        """연결부(단계 목록 소유자)."""
+        self._link = link
+        self.calls = 0
+
+    def release(self, part_track_id) -> None:
+        """모든 B 단계의 중복 방지 기록에서 그 번호를 지운다(없으면 아무 일 없음)."""
+        with self._link._lock:
+            stages = [st[0] for st in self._link.stages]
+            self.calls += 1
+
+        for stage in stages:
+            stage.release(part_track_id)
 
 
 class LiveObservationConfigError(ValueError):
@@ -195,6 +219,16 @@ def load_live_observation_config(path: str) -> LiveObservationLinkConfig:
         sha256=hashlib.sha256(raw).hexdigest(), center_display=center, sort_part=sort_part)
 
 
+def _tracking_extension(frame, obs):
+    """봉투 확장 `tracking`(#215, 추적 하위 형 관측일 때만). 결합 키는 봉투 검사 규칙과 같다."""
+    if not isinstance(obs, TrackedPlanarObservation):
+        return None
+
+    return {"tracking": {"binding": {"image_seq": obs.image_seq, "job_seq": obs.job_seq, "generation": obs.generation,
+                                     "capture_stamp_ns": frame.ros_stamp_ns},
+                         "part_track_id": obs.part_track_id}}
+
+
 def _join(thread: threading.Thread | None, limit_s: float) -> bool:
     """스레드를 상한까지 기다린다. 시작 안 했으면 True."""
     if thread is None:
@@ -212,7 +246,7 @@ class LiveObservationLink:
     def __init__(self, run_id: str, out_dir: str, *, config: LiveObservationLinkConfig, tf, stage_factory: Callable,
                  render: Callable | None, clock_ns: Callable[[], int] = time.monotonic_ns,
                  b_input: str = B_INPUT_SINGLE, list_consumer_factory: Callable | None = None,
-                 view_bias=None, display_publisher=None, sort_part_runtime=None,
+                 view_bias=None, display_publisher=None, sort_part_runtime=None, tracking: bool = False,
                  display_clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
         """출력 폴더(새로)·상태(start_closed)·기록기·디스패처·TF 준비를 만든다.
 
@@ -228,6 +262,7 @@ class LiveObservationLink:
           단계 T만 된다. 연결부가 소유해 정리 단계 `display`에서 닫는다. None(기본)이면 표시 송출 없음.
         - `sort_part_runtime`(#214, 선택): C 송신 런타임(`send`·`stats`·`inflight_ids`·`server_seen`·`close`). 주면 `config.sort_part`가
           있어야 하고 단계 T만 된다. 연결부가 소유해 정리 단계 `sort_part`에서 닫는다. None(기본)이면 송신 없음.
+        - `tracking`(#215, 기본 False): 추적 번호 연결. 단계 T만. 끄면 `offer`의 `tracks`를 쓰지 않고 기록·요약이 기존과 같다.
         """
         # 설정 검사는 파일을 열기 전에 한다(#180 #7: 검사 실패가 기록 파일 핸들을 남기지 않게)
         if type(config.skip_queue_capacity) is not int or config.skip_queue_capacity <= 0:
@@ -242,6 +277,9 @@ class LiveObservationLink:
 
             if b_input != B_INPUT_SINGLE:
                 raise ValueError("center display is for stage T (b_input single) only")
+
+        if tracking and b_input != B_INPUT_SINGLE:
+            raise ValueError("tracking link is for stage T (b_input single) only")
 
         if sort_part_runtime is not None:
             if config.sort_part is None:
@@ -301,7 +339,8 @@ class LiveObservationLink:
                            envelope_errors=(ValueError,))
         else:
             list_kw = dict(build_envelope=lambda f, o, cam, r: make_live_envelope(f, o, camera=cam, tf_result=r,
-                                                                                  world_frame=config.world_frame),
+                                                                                  world_frame=config.world_frame,
+                                                                                  extensions=_tracking_extension(f, o)),
                            compute=lambda st, env: st[1].consume(env).output,
                            render=None if render is None else (lambda st, f, out: render(st[0], f, out)))
 
@@ -310,11 +349,20 @@ class LiveObservationLink:
         self.display = (None if display_publisher is None else
                         LiveCenterDisplay(run_id, config.center_display, display_publisher, clock_ns=display_clock_ns,
                                           is_live=self._display_live))
+        self.tracking = bool(tracking)
+        self.release_proxy = _StageReleaseProxy(self) if self.tracking else None
+        self.tracking_counts: dict[str, int] = {}   # 상태별 제출 수·해제 수(잠금 `_lock`)
+
         # 송신 기록 파일은 출력 폴더(기록기가 만듦) 안에 둔다
         self.sort_part = (None if sort_part_runtime is None else
                           LiveSortPartSender(run_id, config.sort_part, sort_part_runtime, str(self.dir),
-                                             is_failed=lambda: self.state.failed is not None))
-        display_kw = ({} if self.display is None and self.sort_part is None else {"on_accepted": self._on_accepted})
+                                             is_failed=lambda: self.state.failed is not None, tracking=self.tracking,
+                                             release_target=self.release_proxy))
+        hooked = self.display is not None or self.sort_part is not None or self.tracking
+        display_kw = {} if not hooked else {"on_accepted": self._on_accepted}
+
+        if self.tracking:
+            display_kw["on_not_accepted"] = self._on_not_accepted
         self.dispatcher = LiveObservationDispatcher(
             self.state, camera=None, stage_factory=self._make_stage, tf_lookup=capture,
             clock_ns=clock_ns, refuse_tf_statuses=NON_OK_TF, on_skip=self._worker_skip, view_bias=bias_fn,
@@ -359,11 +407,47 @@ class LiveObservationLink:
 
         return not ended and self.state.failed is None
 
+    def _count_tracking(self, key: str) -> None:
+        with self._lock:
+            self.tracking_counts[key] = self.tracking_counts.get(key, 0) + 1
+
+    def _on_not_accepted(self, item, payload) -> None:
+        """worker(#215): 검사 ③ 거부. B가 이 목표로 남긴 중복 방지 기록(`PICK_PLACE`일 때만)을 푼다. `ALREADY_SENT` SKIP은 풀지 않는다."""
+        goal = getattr(payload.output, "goal", None) or {}
+        track = goal.get("part_track_id")
+
+        if goal.get("kind") != "PICK_PLACE" or track is None:
+            return
+
+        if self.sort_part is not None:
+            obs = item.observation
+            keys = {"run_id": self.run_id, "image_seq": getattr(item.frame, "image_seq", None),
+                    "ros_stamp_ns": getattr(item.frame, "ros_stamp_ns", None), "accept_event_seq": None,
+                    "kind": goal.get("kind"), "spec": goal.get("spec"), "job_seq": getattr(obs, "job_seq", None),
+                    "generation": getattr(obs, "generation", None), "part_track_id": track}
+            self.sort_part.release(track, "not_accepted", goal.get("goal_id"), keys)
+        else:
+            self.release_proxy.release(track)
+
+        self._count_tracking("released_not_accepted")
+
     def _on_accepted(self, item, payload, image, event_seq) -> None:
         """worker 수락 훅: C 송신(#214) 먼저, 표시(#213) 다음. 둘은 서로 독립이다(한쪽 예외가 다른 쪽을 막지 않음)."""
         obs = item.observation
         ids = {"job_seq": getattr(obs, "job_seq", None), "generation": getattr(obs, "generation", None)}
         error = None
+
+        if self.tracking:
+            goal = getattr(payload.output, "goal", None) or {}
+            self._count_tracking("accepted_with_track" if goal.get("part_track_id") is not None else "accepted_without_track")
+
+            if goal.get("kind") == "SKIP" and goal.get("reason") == "ALREADY_SENT":
+                self._count_tracking("b_already_sent")
+
+            # 송신이 꺼진 기록 전용 실행: 보내지 않은 목표의 B 기록을 바로 푼다(결과가 오지 않으므로)
+            if self.sort_part is None and goal.get("kind") == "PICK_PLACE" and goal.get("part_track_id") is not None:
+                self.release_proxy.release(goal["part_track_id"])
+                self._count_tracking("released_record_only")
 
         if self.sort_part is not None:
             try:
@@ -521,8 +605,8 @@ class LiveObservationLink:
 
         self.state.on_applied(item.epoch, generation, self._calibration_id)
 
-    def offer(self, outcome, skip_reason: str | None, rx_epoch: int | None) -> str:
-        """terminal 응답 하나. 결과: submitted | 건너뜀 사유."""
+    def offer(self, outcome, skip_reason: str | None, rx_epoch: int | None, tracks=None) -> str:
+        """terminal 응답 하나. 결과: submitted | 건너뜀 사유. `tracks`(#215)는 추적을 켠 실행의 같은 작업 TrackFrame(없으면 None)."""
         self.offers += 1
         frame, obs = outcome.context.frame, outcome.observation
         ids = {"job_seq": outcome.context.job_seq, "generation": outcome.context.generation, "rx_epoch": rx_epoch}
@@ -561,6 +645,10 @@ class LiveObservationLink:
 
         if self.b_input == B_INPUT_LIST:
             obs = LiveListInput(outcome.context, outcome.display_result)
+        elif self.tracking:   # #215: 확정 번호만 하위 형 관측에 싣는다(그 밖은 번호 None)
+            track_id, state = confirmed_track_id(tracks, outcome.context, obs)
+            obs = with_track(obs, track_id, state)
+            self._count_tracking(f"submitted_{state}")
 
         if not self.dispatcher.submit(frame, obs, rx_epoch=rx_epoch, generation=outcome.context.generation,
                                       calibration_id=frame.calibration_id):
@@ -882,9 +970,18 @@ class LiveObservationLink:
                                                                      **self.dispatcher.view_bias_summary()}}),
                 **({} if self.display is None else {"center_display": self.display.summary()}),
                 **({} if self.sort_part is None else {"sort_part": self.sort_part.summary()}),
+                **({} if not self.tracking else {"tracking_link": self._tracking_summary()}),
                 "skip_queue": self.skip_counts(),
                 "open_attempts": [list(a) for a in self.open_attempts],
                 "skip_write_threads": sorted(self.skip_write_threads)}
+
+    def _tracking_summary(self) -> dict:
+        """추적 연결 요약 키(#215). 추적을 끈 요약에는 넣지 않는다."""
+        with self._lock:
+            counts = dict(sorted(self.tracking_counts.items()))
+            calls = self.release_proxy.calls
+
+        return {"mode": "heuristic", "counts": counts, "release_proxy_calls": calls}
 
     def _list_summary(self) -> dict:
         """단계 L 요약 키(#201). 단일 관측 요약에는 넣지 않는다."""

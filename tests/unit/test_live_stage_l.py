@@ -265,11 +265,22 @@ class StartRefusalAndD13Test(ListBase):
     """시작 거부(단계 T로 바꾸지 않음)·D13 유지."""
 
     def test_no_process_frame_refused(self):
-        """주입 없음 + BStage.process_frame 없음 → 종료 1, 출력·기록·TF 없음, 단계 T로 돌지 않음."""
+        """주입 없음 + 목록 입구 없는 B 단계 → 종료 1, 출력·기록·TF 없음, 단계 T로 돌지 않음.
+
+        실제 B에는 `process_frame`이 생겼으므로(d4fab37), 그 입구가 없는 가짜 B 단계형(`NoListBStage`)을 끼워 거부를 확인한다.
+        """
         self.inject = False
-        self.assertFalse(hasattr(b_stage_mod.BStage, "process_frame"))
+        self.assertTrue(callable(getattr(b_stage_mod.BStage, "process_frame", None)))   # 실제 B에는 있음
+
+        class NoListBStage(b_stage_mod.BStage):
+            """목록 입구(`process_frame`)가 없는 가짜 B 단계형(단계 T `consume` 등은 실제 그대로)."""
+
+            process_frame = None
+
         sc = Scenario(3, masks={i: three_bolts for i in range(3)})
-        code, err, out = self.run_list(sc, tf=FakeTf())
+
+        with mock.patch.object(b_stage_mod, "BStage", NoListBStage):
+            code, err, out = self.run_list(sc, tf=FakeTf())
 
         self.assertEqual(code, 1, err)
         self.assertIn("list consumer unavailable (BStage.process_frame missing); not falling back to stage T", err)

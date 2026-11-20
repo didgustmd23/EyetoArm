@@ -50,7 +50,8 @@
   끝내고(이전 결과 철회) 정리한다. **자동 재시작은 없다**: 새 실행은 이 명령을 다시 실행해야 하며, 같은 프로세스 안에서는 이전
   실행의 정리 완료가 확인되기 전 새 실행을 거부한다(1). `stage.on_output`은 쓰지 않는다(C·D 송신·로봇 목표 없음). 설정 파일의
   값은 미확정 운영값의 시험 설정이며 `"status": "test_only"`가 필수다(`config/vision/live_observation_test.json`). 기록·출력이 이미
-  있으면 덮어쓰지 않고 2. `--tracking`·`--capture-meta`·`--synthetic-observation-*`과 함께 쓸 수 없다(2).
+  있으면 덮어쓰지 않고 2. `--capture-meta`·`--synthetic-observation-*`과 함께 쓸 수 없다(2). `--tracking`(#215)을 더하면 확정 추적
+  번호만 관측·봉투에 실어 B 중복 방지(`_dedupe`·`release`)까지 넘긴다(단계 T만, M2 휴리스틱, 분열은 알려진 한계).
   `--b-input list`(#201)를 더하면 같은 연결·같은 프레임 단위 검사로 유효 볼트 목록(`eyetoarm.b_input/2`, 촬영 stamp TF 하나)을 B 목록
   소비자(`BStage.process_frame`)에 넘기고 소비자 결과를 기록한다(주석 없음). 소비자가 없으면 시작 때 1(단계 T로 바꾸지 않음).
 - **표시 전용 송출(#213 L1.5, opt-in):** `--live-observation-out`에 `--live-center-topic [TOPIC]`(기본 `/b/center_overlay/image`)을 더하면
@@ -189,7 +190,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="B 입력 단계(#189): single = 단계 T(기본, 관측 하나 eyetoarm.b_input/1), list = 단계 L(같은 프레임 "
                              "후보 목록 eyetoarm.b_input/2). list는 --capture-meta 저장 입력 경로 또는 --live-observation-out 실시간 기록 전용 경로에서만 쓰며 B 목록 소비자"
                              "(BStage.process_frame)가 없으면 시작 때 거부한다(단계 T로 바꾸지 않음)")
-    parser.add_argument("--tracking", action="store_true", help="--detector ai 전용. A-6 1차 실험: AI 검출 인스턴스 추적 번호를 붙인다(M2 휴리스틱, 표시·기록 전용, 팔 이동을 넘는 신원·중복 집기 방지 보장 없음, B로 보내지 않음). 기본 꺼짐")
+    parser.add_argument("--tracking", action="store_true", help="--detector ai 전용. A-6 1차 실험: AI 검출 인스턴스 추적 번호를 붙인다(M2 휴리스틱, 팔 이동을 넘는 신원·중복 집기 방지 보장 없음). 기본 꺼짐. 저장·표시 경로는 표시·기록 전용이고, "
+                             "--live-observation-out과 함께면(#215, 단계 T만) 확정 번호만 B 중복 방지에 넘긴다")
 
     return parser
 
@@ -251,8 +253,9 @@ def _check_source_args(args, ros_available) -> None:
             build_parser().error("--live-observation-out requires --ros-link")
         if args.detector != "ai":
             build_parser().error("--live-observation-out requires --detector ai")
-        if args.tracking:
-            build_parser().error("--live-observation-out cannot be combined with --tracking")
+        # #215: 추적 번호 연결은 단계 T만(B-09 목록 규칙 전)
+        if args.tracking and args.b_input != "single":
+            build_parser().error("--live-observation-out --tracking is for stage T only (--b-input single)")
 
     # 표시 전용 송출(#213): 기록 전용 연결의 단계 T 결과만 그린다
     if args.live_center_topic is not None:
@@ -727,6 +730,10 @@ class _RosSortPartRuntime:
             self.close(1.0)
             raise
 
+    def set_release_target(self, target) -> None:
+        """#215: B 클라이언트의 `stage` 자리(결과·no_server·busy 때 `release(번호)`를 받을 곳)."""
+        self.client.stage = target
+
     def set_event_sink(self, sink) -> None:
         """사건 받을 곳(연결부 송신기의 `on_client_event`)."""
         self._sink = sink
@@ -928,7 +935,7 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
             rid, args.live_observation_out, config=link_config, tf=tf, stage_factory=stage_factory, render=render,
             b_input=args.b_input, list_consumer_factory=list_consumer_factory if listed else None,
             view_bias=getattr(settings.detector_config, "axis_view_bias", None), display_publisher=display_pub,
-            sort_part_runtime=sort_rt))
+            sort_part_runtime=sort_rt, tracking=args.tracking))
     except Exception as exc:
         # 세션이 만들어지지 않았다: 이 함수가 만든 TF만 정리한다(세션 등록 없음)
         err.write(f"run_pipeline: cannot start live observation run: {type(exc).__name__}: {exc}\n")
@@ -954,13 +961,27 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         if callable(set_sink):
             set_sink(link.sort_part.on_client_event)
 
+        # #215: B 클라이언트의 release 대상 = 연결부의 모든 B 단계(추적을 켰을 때만, 끄면 stage=None 그대로)
+        set_release = getattr(sort_rt, "set_release_target", None)
+
+        if link.release_proxy is not None and callable(set_release):
+            set_release(link.release_proxy)
+
         seen = getattr(sort_rt, "server_seen", None)
+        retry = link_config.sort_part.retry
+        retry_text = ("off" if retry is None else f"max_failures_per_track={retry.max_failures_per_track} "
+                      f"point_block={retry.failed_point_block_mm}mm/{retry.failed_point_block_s}s")
         err.write(f"run_pipeline: LIVE A->B->C SORT_PART ON action=/sort_part server_seen={str(seen).lower()} "
+                  f"retry={retry_text} tracking={'M2(heuristic)' if args.tracking else 'off'} "
                   "(D13 released by user decision 2026-11-20, accepted risk without pre-release test F6)\n")
 
         if not seen:
             err.write("run_pipeline: warning: /sort_part server not seen at start; goals will be recorded as no_server "
                       "until it appears\n")
+
+    if args.tracking:
+        err.write("run_pipeline: tracking ON M2(heuristic): confirmed part_track_id only -> B _dedupe/release "
+                  "(A-6 experimental ids; split ids are a known limit #156)\n")
 
     if display_on:
         err.write(f"run_pipeline: center display ON topic={args.live_center_topic} sensor_msgs/Image bgr8 "
@@ -1043,7 +1064,8 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
             err.write(f"run_pipeline: live observation problem: {p}\n")
 
         try:
-            display_extra = ({} if not display_on else
+            display_extra = ({} if not args.tracking else {"tracking": None if result is None else result.tracking})
+            display_extra.update({} if not display_on else
                              {"center_display_topic": args.live_center_topic,
                               "center_display_startup_check": getattr(display_pub, "startup_check", "injected")})
             link.write_summary({"exit_code": exit_code, "reset_detected": reset, "problems": problems, **display_extra,

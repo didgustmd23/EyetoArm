@@ -4,7 +4,8 @@
 
 - 모두 CLI `main()`으로 실행한다: 저장 이미지 → `CaptureMetaSource` → 실행기 → `AiSegDetector`(가짜 모델, 실제 convert·M1) →
   코어 → `b_list_gate` → `CaptureListRecorder` → 목록 봉투 v2 → 시험 전용 가짜 목록 소비자(`list_consumer_factory` 주입).
-- B `BStage.process_frame`은 아직 없다. 주입이 없으면 단계 L은 시작 때 거부되어야 한다(단계 T로 떨어지지 않음).
+- 주입이 없고 B 목록 입구(`process_frame`)가 없으면 단계 L은 시작 때 거부되어야 한다(단계 T로 떨어지지 않음). 실제 B에는
+  `process_frame`이 생겼으므로(d4fab37) 거부 시험은 그 입구가 없는 가짜 B 단계형을 끼워 확인한다.
 - 단계 T 단일 소비(`BStage.consume`)와 C 송신은 불리지 않아야 한다(기존 시험 기반 클래스의 감시 그대로).
 """
 import io
@@ -13,6 +14,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from eyetoarm.transforms import b_stage as b_stage_mod
 
 from test_run_pipeline_capture_observation import FRAME_ID, STAMP0, Base, Case, bolt_mask, model_with, rect_mask
 
@@ -128,9 +132,18 @@ class StageLRefusalTest(StageLBase):
     """시작 거부: B 목록 소비자 없음·금지 조합."""
 
     def test_no_process_frame_refused_before_files(self):
-        """주입 없고 BStage.process_frame이 없으면 종료 1, 기록·출력 파일을 만들지 않고 단계 T 소비도 하지 않는다."""
+        """주입 없고 B 단계에 목록 입구가 없으면 종료 1, 기록·출력 파일을 만들지 않고 단계 T 소비도 하지 않는다(가짜 B 단계형)."""
+        self.assertTrue(callable(getattr(b_stage_mod.BStage, "process_frame", None)))   # 실제 B에는 있음
+
+        class NoListBStage(b_stage_mod.BStage):
+            """목록 입구(`process_frame`)가 없는 가짜 B 단계형(단계 T `consume` 등은 실제 그대로)."""
+
+            process_frame = None
+
         c = self.case(1)
-        code, err = self.cli_list(c, c.write_meta(c.meta()), masks=lambda: [bolt_mask()])
+
+        with mock.patch.object(b_stage_mod, "BStage", NoListBStage):
+            code, err = self.cli_list(c, c.write_meta(c.meta()), masks=lambda: [bolt_mask()])
 
         self.assertEqual(code, 1, err)
         self.assertIn("list consumer unavailable", err)
