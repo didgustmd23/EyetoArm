@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <!-- M6×40(ISO 4762)을 균등 1.5배한 시험용 볼트(M9×60 상당, 비표준 규격), 원점 = 머리·축 경계, +Z 머리 쪽 -->
+  <model name="bolt_m9x60">
+    <link name="link">
+      <inertial>
+        <pose>0 0 -0.0255 0 0 0</pose>
+        <mass>0.0424474</mass>
+        <inertia><ixx>1.7223e-05</ixx><iyy>1.7223e-05</iyy><izz>7.6393e-07</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
+      </inertial>
+      <collision name="head"><pose>0 0 0.0045 0 0 0</pose>
+        <geometry><cylinder><radius>0.0075</radius><length>0.009</length></cylinder></geometry></collision>
+      <collision name="shank"><pose>0 0 -0.030 0 0 0</pose>
+        <geometry><cylinder><radius>0.0045</radius><length>0.060</length></cylinder></geometry></collision>
+      <visual name="visual">
+        <geometry><mesh><uri>model://bolt_m9x60/meshes/bolt_m9x60.stl</uri><scale>0.0015 0.0015 0.0015</scale></mesh></geometry>
+        <material>
+          <ambient>0.468 0.480 0.504 1</ambient>
+          <diffuse>0.78 0.8 0.84 1</diffuse>
+          <specular>0.3 0.3 0.3 1</specular>
+          <pbr><metal><metalness>0.35</metalness><roughness>0.35</roughness></metal></pbr>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

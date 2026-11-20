@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <!-- M6×40(ISO 4762)을 균등 0.5배한 시험용 볼트(M3×20 상당), 원점 = 머리·축 경계, +Z 머리 쪽 -->
+  <model name="bolt_m3x20">
+    <link name="link">
+      <inertial>
+        <pose>0 0 -0.0085 0 0 0</pose>
+        <mass>0.0015721</mass>
+        <inertia><ixx>7.0875e-08</ixx><iyy>7.0875e-08</iyy><izz>3.144e-09</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
+      </inertial>
+      <collision name="head"><pose>0 0 0.0015 0 0 0</pose>
+        <geometry><cylinder><radius>0.0025</radius><length>0.003</length></cylinder></geometry></collision>
+      <collision name="shank"><pose>0 0 -0.0100 0 0 0</pose>
+        <geometry><cylinder><radius>0.0015</radius><length>0.020</length></cylinder></geometry></collision>
+      <visual name="visual">
+        <geometry><mesh><uri>model://bolt_m3x20/meshes/bolt_m3x20.stl</uri><scale>0.0005 0.0005 0.0005</scale></mesh></geometry>
+        <material>
+          <ambient>0.468 0.480 0.504 1</ambient>
+          <diffuse>0.78 0.8 0.84 1</diffuse>
+          <specular>0.3 0.3 0.3 1</specular>
+          <pbr><metal><metalness>0.35</metalness><roughness>0.35</roughness></metal></pbr>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>
