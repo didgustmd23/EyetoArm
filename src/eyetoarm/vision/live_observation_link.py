@@ -55,6 +55,7 @@ from eyetoarm.vision.live_observation_dispatch import LiveObservationDispatcher
 from eyetoarm.vision.live_observation_envelope import LiveCaptureTfLookup, make_live_envelope
 from eyetoarm.vision.live_observation_events import LiveObservationEventWriter
 from eyetoarm.vision.live_observation_state import (SIM_TIME_REWIND, LiveObservationConfig, LiveObservationState)
+from eyetoarm.vision.view_bias import apply_view_bias
 
 PROFILE_CHANGED = "profile_changed"             # `inputs.live_slot.BoundaryKind.PROFILE_CHANGED` 값(#180 r1 L1)
 BOUNDARY_HOOK_FAILED = "boundary_hook_failed"   # `inputs.live_slot.NoticeKind.BOUNDARY_HOOK_FAILED` 값(#180 #5, 입력 모듈 import 없이 비교)
@@ -181,11 +182,14 @@ class LiveObservationLink:
 
     def __init__(self, run_id: str, out_dir: str, *, config: LiveObservationLinkConfig, tf, stage_factory: Callable,
                  render: Callable | None, clock_ns: Callable[[], int] = time.monotonic_ns,
-                 b_input: str = B_INPUT_SINGLE, list_consumer_factory: Callable | None = None) -> None:
+                 b_input: str = B_INPUT_SINGLE, list_consumer_factory: Callable | None = None,
+                 view_bias=None) -> None:
         """출력 폴더(새로)·상태(start_closed)·기록기·디스패처·TF 준비를 만든다.
 
         - `b_input`(#201): `"single"`(기본, 단계 T 봉투 1) | `"list"`(단계 L 목록 봉투 2). `"list"`면 `render`는 쓰지 않는다.
         - `list_consumer_factory(stage)`(#201, 시험 주입): 목록 봉투를 받는 함수. None이면 `stage.process_frame`.
+        - `view_bias`(#207): `ViewBiasConfig` 또는 None(기본, 꺼짐). 켜면 디스패처의 공통 지점(봉투 생성 직후)에서 단계 T·L 끝점을
+          보정하고 accept 기록·요약에 보정 필드를 남긴다. None이면 기록·요약이 기존과 같다.
 
         - `tf`: 시작된 TF 수신 묶음(`lookup(parent, child, stamp_ns, timeout_s)`·`has_static`·`close(limit_s)`).
         - `stage_factory(camera)` → `(BStage, ObservationEnvelopeAdapter)`. B 단계의 `on_output`은 None이어야 한다.
@@ -253,9 +257,11 @@ class LiveObservationLink:
                            compute=lambda st, env: st[1].consume(env).output,
                            render=None if render is None else (lambda st, f, out: render(st[0], f, out)))
 
+        self.view_bias = view_bias
+        bias_fn = None if view_bias is None else (lambda env, cam: apply_view_bias(env, cam, view_bias))
         self.dispatcher = LiveObservationDispatcher(
             self.state, camera=None, stage_factory=self._make_stage, tf_lookup=capture,
-            clock_ns=clock_ns, refuse_tf_statuses=NON_OK_TF, on_skip=self._worker_skip, **list_kw)
+            clock_ns=clock_ns, refuse_tf_statuses=NON_OK_TF, on_skip=self._worker_skip, view_bias=bias_fn, **list_kw)
         self.readiness = TfRewindReadiness(self.state, clear=lambda: None, has_static=tf.has_static, lookup=tf.lookup,
                                            world_frame=config.world_frame, static_pairs=config.static_pairs,
                                            wait_limit_s=config.tf_wait_limit_s,
@@ -758,6 +764,8 @@ class LiveObservationLink:
                 "skip_write_error": self.skip_write_error, "drained_before_end": self.drained,
                 "tf_receiver_error": self.tf_receiver_error,
                 **({} if self.b_input == B_INPUT_SINGLE else self._list_summary()),
+                **({} if self.view_bias is None else {"view_bias": {"enabled": True, **self.view_bias.to_json(),
+                                                                     **self.dispatcher.view_bias_summary()}}),
                 "skip_queue": self.skip_counts(),
                 "open_attempts": [list(a) for a in self.open_attempts],
                 "skip_write_threads": sorted(self.skip_write_threads)}

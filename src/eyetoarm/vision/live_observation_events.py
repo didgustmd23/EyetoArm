@@ -44,15 +44,21 @@ def _list_accept_fields(event: LiveObservationEvent, p, png_name: str | None) ->
     f, item, envelope = p.frame, p.observation, p.envelope
     indices = [c.instance_index for c in envelope.observations.candidates]
 
-    return {"compute_id": event.compute_id,
-            "input": {"run_id": f.run_id, "image_seq": f.image_seq, "capture_generation": f.capture_generation,
-                      "ros_stamp_ns": f.ros_stamp_ns, "calibration_id": f.calibration_id,
-                      "job_seq": getattr(item, "job_seq", None), "generation": getattr(item, "generation", None)},
-            "b_input": envelope.to_record(), "list_indices": indices, "list_candidate_count": len(indices),
-            "consumer_result": _plain(p.output), "tf_status": p.tf_status, "tf_wait_ms": p.tf_wait_ms,
-            "k5_ms": None if p.received_monotonic_ns is None
-            else (event.enqueued_monotonic_ns - p.received_monotonic_ns) / 1e6,
-            "annotation": png_name}
+    rec = {"compute_id": event.compute_id,
+           "input": {"run_id": f.run_id, "image_seq": f.image_seq, "capture_generation": f.capture_generation,
+                     "ros_stamp_ns": f.ros_stamp_ns, "calibration_id": f.calibration_id,
+                     "job_seq": getattr(item, "job_seq", None), "generation": getattr(item, "generation", None)},
+           "b_input": envelope.to_record(), "list_indices": indices, "list_candidate_count": len(indices),
+           "consumer_result": _plain(p.output), "tf_status": p.tf_status, "tf_wait_ms": p.tf_wait_ms,
+           "k5_ms": None if p.received_monotonic_ns is None
+           else (event.enqueued_monotonic_ns - p.received_monotonic_ns) / 1e6,
+           "annotation": png_name}
+
+    # #207: 보정 켬일 때만 후보별 보정 기록(원 끝점 포함). b_input 후보 끝점은 B에 넘긴 보정값이다
+    if getattr(p, "view_bias", None) is not None:
+        rec["view_bias"] = _plain(list(p.view_bias))
+
+    return rec
 
 
 def event_record(event: LiveObservationEvent, png_name: str | None) -> dict:
@@ -87,6 +93,13 @@ def event_record(event: LiveObservationEvent, png_name: str | None) -> dict:
             else (event.enqueued_monotonic_ns - p.received_monotonic_ns) / 1e6,
             "annotation": png_name,
         })
+
+        # #207: 보정 켬일 때만 B에 넘긴 끝점(봉투 관측)·원 끝점·보정 기록을 남긴다(끔이면 기존 키 그대로)
+        if getattr(p, "view_bias", None) is not None:
+            vb = p.view_bias[0] if p.view_bias else None
+            rec["input"]["axis_endpoints_px"] = _plain(getattr(p.envelope.observation, "axis_endpoints_px", None))
+            rec["input"]["axis_endpoints_px_raw"] = None if vb is None else vb.get("axis_endpoints_px_raw")
+            rec["input"]["view_bias"] = None if vb is None else {k: vb[k] for k in ("applied", "s", "delta_mm", "reason")}
 
     return rec
 

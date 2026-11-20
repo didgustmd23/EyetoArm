@@ -310,6 +310,26 @@ class _StopSignals:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PART_SPECS_PATH = REPO_ROOT / "config/calibration/part_specs.json"   # B 파일(읽기만, BStage.from_config와 같은 경로)
+VIEW_BIAS_PLANE_TOL_M = 1e-9
+
+
+def _check_view_bias_plane(bias, specs_path: Path | None = None) -> None:
+    """#207: 보정 `plane_z_m`이 B 볼트 기준 높이(BOLT_A·BOLT_B `plane_z`, B `class_plane_z`)와 같은지 본다. 다르면 ValueError.
+
+    `specs_path`가 None이면 부를 때의 `PART_SPECS_PATH`(B 파일, 읽기만)를 쓴다.
+    """
+    from eyetoarm.transforms.work_result import class_plane_z, load_specs
+
+    specs_path = PART_SPECS_PATH if specs_path is None else specs_path
+    specs = load_specs(specs_path)
+    heights = {"bolt": class_plane_z(specs, "bolt"), "BOLT_A": class_plane_z(specs, "bolt", "BOLT_A"),
+               "BOLT_B": class_plane_z(specs, "bolt", "BOLT_B")}
+
+    for name, z in heights.items():
+        if abs(z - bias.plane_z_m) > VIEW_BIAS_PLANE_TOL_M:
+            raise ValueError(f"axis_view_bias.plane_z_m {bias.plane_z_m!r} != B part_specs {name} plane_z {z!r} ({specs_path})")
+
 
 
 def _prepare_synthetic_observation(args, err):
@@ -387,6 +407,17 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
 
         if capture is not None and config.axis_extractor is None:
             raise ValueError("--capture-meta requires an AI config with axis_extractor (e.g. \"m1\")")
+
+        # #207 시선 기반 끝점 보정: 켠 설정만 시작 때 대조한다(키 없음이면 아무것도 읽지 않음)
+        if getattr(config, "axis_view_bias", None) is not None:
+            if synthetic is not None:
+                raise ValueError("axis_view_bias is not supported with --synthetic-observation-fixture (no AI endpoints)")
+
+            _check_view_bias_plane(config.axis_view_bias)
+
+            if capture is None and args.live_observation_out is None:
+                err.write("run_pipeline: axis_view_bias inactive: no B input path (needs --capture-meta or "
+                          "--live-observation-out)\n")
         settings = PipelineSettings(source_id=args.source_id, mode=args.mode, detector_config=config, profile=profile)
     except (OSError, ValueError) as exc:
         err.write(f"run_pipeline: config error: {exc}\n")
@@ -602,7 +633,8 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
     try:
         link = controller.start_run(run_id, make_session=lambda rid: LiveObservationLink(
             rid, args.live_observation_out, config=link_config, tf=tf, stage_factory=stage_factory, render=render,
-            b_input=args.b_input, list_consumer_factory=list_consumer_factory if listed else None))
+            b_input=args.b_input, list_consumer_factory=list_consumer_factory if listed else None,
+            view_bias=getattr(settings.detector_config, "axis_view_bias", None)))
     except Exception as exc:
         # 세션이 만들어지지 않았다: 이 함수가 만든 TF만 정리한다(세션 등록 없음)
         err.write(f"run_pipeline: cannot start live observation run: {type(exc).__name__}: {exc}\n")
@@ -782,7 +814,8 @@ def _run_capture_list(args, settings, runner_config, detector_kw, capture, err, 
         return holder["source"]
 
     try:
-        recorder = CaptureListRecorder(args.observation_out, meta, consumer_kind=consumer_kind)
+        recorder = CaptureListRecorder(args.observation_out, meta, consumer_kind=consumer_kind,
+                                       view_bias=getattr(settings.detector_config, "axis_view_bias", None))
     except OSError as exc:
         err.write(f"run_pipeline: cannot create a-to-b-out: {exc}\n")
         return 2
@@ -878,7 +911,8 @@ def _run_capture_observation(args, settings, runner_config, detector_kw, capture
 
     try:
         recorder = CaptureObservationRecorder(args.observation_out, stage, meta, ObservationEnvelopeAdapter(stage, tf_lookup),
-                                   extension_source=extension_source)
+                                   extension_source=extension_source,
+                                   view_bias=getattr(settings.detector_config, "axis_view_bias", None))
     except OSError as exc:
         err.write(f"run_pipeline: cannot create a-to-b-out: {exc}\n")
         return 2
