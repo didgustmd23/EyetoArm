@@ -1,0 +1,355 @@
+"""실시간 A→B→C 목표 송신(#214, D13 해제): 실시간 기록 연결이 수락한 B 결과의 C 목표를 B `SortPartClient`로 `/sort_part`에 보낸다.
+
+근거: 계획 `_workspace/214_builder2_d13_release_plan_r0.md`(reviewer PASS 2026-11-20: Q1 = 검사 ③ 뒤 송신 (c), Q5 = 서버 없어도 실행,
+Q7 = 별도 `sort_part.jsonl`만, Q8 = 클라이언트 `stats`는 참고만), 사용자 결정 「승인하고 위험으로 기록만해」(A 상세설계 1.27 §11 「D13 해제
+위험」, 해제 전 시험 F6 없이 수용).
+
+- **송신 자리:** 디스패처 검사 ③ 수락 뒤 worker(`offer`). `BStage.on_output`은 B 계산 안·수락 전에 불리므로 쓰지 않는다(연결부의
+  `on_output` 거부 유지). 실행기 D13 가드(`pipeline_runner`의 실시간 `b_consumer`·`b_list_consumer` 거부)도 그대로다.
+- **보내는 조건:** 수락 + `out.result.valid` + `goal.kind`가 `PICK_PLACE`·`PASS_THROUGH` + 게이트 열림 + 상태 fail-stop 아님 + 클라이언트
+  규칙(`no_server`·`busy`면 클라이언트가 보내지 않음). 단계 T만(프레임당 1회 시도 = 사진 한 장에 목표 최대 1개).
+- **게이트:** 잠금 하나. `offer`는 잠금 안에서 「닫힘·실패 아님 확인 → `client.send`(기다리지 않는 호출)」를 하고, `close_run`도 같은
+  잠금으로 닫는다. 그래서 `close_run`이 돌아온 뒤 시작하는 송신은 0이다. 대가로 `close_run`(소스 slot 잠금 안의 되감기 훅에서도 불림)이
+  진행 중 송신 한 번을 기다릴 수 있다(`gate_wait_max_ms`).
+- **기록:** `sort_part.jsonl`(새 파일). 넣는 쪽(worker·spin 스레드)은 메모리 큐에만 넣고 기록 스레드가 쓴다. 판정은 이 기록으로 하며
+  클라이언트 `stats`(B, 잠금 없는 Counter)는 요약에 참고로만 둔다.
+- **식별 필드:** A는 `sort_job_id`·`run_epoch`(C)·`valid_until_ns`(B·C)를 채우지 않는다. 대조용으로 A 키(`run_id`·세대·`job_seq`·
+  촬영 stamp·`accept_event_seq`)와 `goal_id`를 기록에 남긴다.
+- **취소 없음:** B 클라이언트에 취소 API가 없어 닫힘 때 결과 대기 목표는 `unresolved_at_close`로만 기록한다(C에서는 계속 실행될 수 있음).
+
+`RecordingSortPartClient`는 B `SortPartClient`의 비공개 콜백(`_on_feedback`·`_on_accepted`·`_on_result`·`_finish`)을 덮어써 사건을
+기록 함수로 넘긴다(B 파일 무변, B에 공개 훅 제안 중). 이 모듈은 rclpy를 import하지 않는다(B 클라이언트 생성자만 rclpy를 지연 import).
+"""
+from __future__ import annotations
+
+import json
+import math
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable
+
+from eyetoarm.transforms.sort_part_client import SEND_KINDS, SortPartClient
+
+_CONFIG_KEYS = {"server_wait_s", "result_wait_s", "close_limit_s", "spin_timeout_s"}
+
+
+class SortPartConfigError(ValueError):
+    """`sort_part` 설정 오류."""
+
+
+@dataclass(frozen=True)
+class SortPartConfig:
+    """송신 시험 설정(기본값 없음, 모두 필수, 시험값)."""
+
+    server_wait_s: float     # 시작 때 서버 대기(보이지 않아도 실행, Q5)
+    result_wait_s: float     # 닫을 때 결과 대기(기록용)
+    close_limit_s: float     # spin 스레드·기록 스레드 join 상한
+    spin_timeout_s: float    # spin_once 대기
+
+    def to_json(self) -> dict:
+        """요약용 사전."""
+        return {k: getattr(self, k) for k in sorted(_CONFIG_KEYS)}
+
+
+def parse_sort_part(doc) -> SortPartConfig:
+    """`sort_part` 블록을 검사한다. 모르는 키·누락·양수 아닌 값은 `SortPartConfigError`."""
+    if not isinstance(doc, dict):
+        raise SortPartConfigError("sort_part must be an object")
+
+    unknown, missing = set(doc) - _CONFIG_KEYS, _CONFIG_KEYS - set(doc)
+
+    if unknown or missing:
+        raise SortPartConfigError(f"sort_part: unknown keys {sorted(unknown)}, missing keys {sorted(missing)}")
+
+    for key in _CONFIG_KEYS:
+        v = doc[key]
+
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+            raise SortPartConfigError(f"sort_part.{key} must be a positive number: {v!r}")
+
+    return SortPartConfig(**{k: float(doc[k]) for k in _CONFIG_KEYS})
+
+
+class RecordingSortPartClient(SortPartClient):
+    """B 클라이언트 + 사건 기록(`event_sink(event, goal_id, detail)`). 사건은 spin 스레드(콜백)나 worker(송신 오류)에서 온다."""
+
+    def __init__(self, node, event_sink: Callable[[str, str, dict], None], stage=None, **kw) -> None:
+        """B 생성자(rclpy·인터페이스 지연 import) 뒤 기록 함수를 둔다."""
+        super().__init__(node, stage, **kw)
+        self.event_sink = event_sink
+        self._arrived: dict[str, int] = {}
+
+    def _on_feedback(self, gid: str, fb) -> None:
+        super()._on_feedback(gid, fb)
+        self.event_sink(f"feedback:{fb.feedback.stage}", gid, {})
+
+    def _on_accepted(self, gid: str, goal: dict, fut) -> None:
+        try:
+            accepted = bool(fut.result().accepted)
+        except Exception:   # 실패는 super가 `_finish(ERROR)`로 남긴다
+            accepted = False
+
+        if accepted:
+            self.event_sink("accepted", gid, {})
+
+        super()._on_accepted(gid, goal, fut)
+
+    def _on_result(self, gid: str, goal: dict, fut) -> None:
+        try:
+            self._arrived[gid] = int(fut.result().result.arrived_stamp_ns)
+        except Exception:   # 결과 받기 실패는 super가 `_finish(ERROR)`로 남긴다
+            pass
+
+        super()._on_result(gid, goal, fut)
+
+    def _finish(self, gid: str, goal: dict, status: str, reason: str) -> None:
+        super()._finish(gid, goal, status, reason)
+        self.event_sink(f"result:{status}", gid, {"reason": reason, "arrived_stamp_ns": self._arrived.pop(gid, None)})
+
+    def inflight_ids(self) -> list[str]:
+        """결과 대기 중인 goal_id(잠금 안에서 복사)."""
+        with self._lock:
+            return list(self.inflight)
+
+
+class LiveSortPartSender:
+    """실행 하나의 C 목표 송신기. 게이트(잠금)는 worker·닫는 쪽이, 기록 큐는 모든 넣는 쪽이 같이 쓰고 기록 스레드가 소유한다.
+
+    `runtime`: `send(out) → bool`, `stats`(Counter 유사), `inflight_ids() → list`, `server_seen`(bool), `close(limit_s)`.
+    """
+
+    def __init__(self, run_id: str, config: SortPartConfig, runtime, out_dir: str, *,
+                 is_failed: Callable[[], bool] | None = None, clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
+        """기록 파일(`sort_part.jsonl`, 새 파일)을 연다."""
+        self.run_id = run_id
+        self.config = config
+        self.runtime = runtime
+        self._is_failed = is_failed or (lambda: False)
+        self._clock_ns = clock_ns
+        self._gate = threading.Lock()
+        self._closed = False
+        self.close_reason: str | None = None
+        self.gate_wait_max_ms = 0.0
+        self._fh = open(Path(out_dir) / "sort_part.jsonl", "x", encoding="utf-8")
+        self._qcond = threading.Condition()
+        self._queue: list[dict] = []
+        self._stop = False
+        self._thread: threading.Thread | None = None
+        self.write_error: str | None = None
+        self.crash: str | None = None
+        self.counts: dict[str, int] = {}
+        self.goal_keys: dict[str, dict] = {}     # goal_id → 프레임 키(콜백 기록에 붙임)
+        self.unresolved: list[str] = []
+        self._runtime_closed = False
+
+    # ------------------------------------------------------------------ 기록
+
+    def _record(self, event: str, goal_id: str | None, keys: dict | None = None, **detail) -> None:
+        """메모리 큐에 넣는다(기다리지 않음). 계수는 같은 잠금."""
+        rec = {"t_mono_ns": self._clock_ns(), "event": event, "goal_id": goal_id, **(keys or {}), **detail}
+
+        with self._qcond:
+            self.counts[event] = self.counts.get(event, 0) + 1
+            self._queue.append(rec)
+            self._qcond.notify_all()
+
+    def on_client_event(self, event: str, goal_id: str, detail: dict) -> None:
+        """클라이언트 콜백 사건(spin 스레드). 송신 때 남긴 프레임 키를 붙인다."""
+        with self._qcond:
+            keys = dict(self.goal_keys.get(goal_id, {}))
+
+        self._record(event, goal_id, keys, **detail)
+
+    def start(self) -> None:
+        """기록 스레드를 시작한다."""
+        self._thread = threading.Thread(target=self._loop, name="eyetoarm-live-sort-part-records", daemon=True)
+        self._thread.start()
+
+    @property
+    def thread(self) -> threading.Thread | None:
+        """기록 스레드(정리 확인용)."""
+        return self._thread
+
+    def _loop(self) -> None:
+        try:
+            while True:
+                with self._qcond:
+                    while not self._queue and not self._stop:
+                        self._qcond.wait(0.05)
+
+                    batch, self._queue = self._queue, []
+                    stop = self._stop
+
+                if batch and self.write_error is None:
+                    try:
+                        for rec in batch:
+                            self._fh.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":"), default=str) + "\n")
+
+                        self._fh.flush()
+                    except (OSError, ValueError) as exc:
+                        self.write_error = f"{type(exc).__name__}: {exc}"
+
+                if stop:
+                    with self._qcond:
+                        if self._queue:
+                            continue
+
+                    return
+        except Exception as exc:   # 기록 스레드 최상단: 비정상 종료를 남긴다(정리 확인 거짓)
+            self.crash = f"{type(exc).__name__}: {exc}"
+        finally:
+            try:
+                self._fh.close()
+            except OSError as exc:
+                self.write_error = self.write_error or f"close: {type(exc).__name__}: {exc}"
+
+    # ------------------------------------------------------------------ 송신(worker)
+
+    def offer(self, out, frame, ids: dict, accept_event_seq: int | None) -> str:
+        """수락된 B 결과 하나. 결과 사건 이름을 돌려준다(sent | skip:… | gate_closed | state_failed | no_server | busy | send_error)."""
+        goal = getattr(out, "goal", None) or {}
+        res = getattr(out, "result", None)
+        gid = goal.get("goal_id")
+        keys = {"run_id": self.run_id, "image_seq": getattr(frame, "image_seq", None),
+                "ros_stamp_ns": getattr(frame, "ros_stamp_ns", None), "accept_event_seq": accept_event_seq,
+                "kind": goal.get("kind"), "spec": goal.get("spec"), **ids}
+
+        if res is None or getattr(res, "valid", False) is not True:
+            event = f"skip:{getattr(res, 'reason', None) or 'invalid'}"
+            self._record(event, gid, keys)
+            return event
+
+        if goal.get("kind") not in SEND_KINDS:
+            event = f"skip:{goal.get('reason') or goal.get('kind')}"
+            self._record(event, gid, keys)
+            return event
+
+        with self._gate:
+            if self._closed:
+                event = "gate_closed"
+            elif self._is_failed():
+                event = "state_failed"
+            else:
+                with self._qcond:
+                    if gid:
+                        self.goal_keys[gid] = keys
+
+                before = _stats_copy(self.runtime.stats)
+                ok = bool(self.runtime.send(out))
+                after = _stats_copy(self.runtime.stats)
+                event = "sent" if ok else _refusal(before, after)
+
+        self._record(event, gid, keys)
+
+        return event
+
+    # ------------------------------------------------------------------ 닫기
+
+    def close_run(self, reason: str) -> None:
+        """게이트를 닫는다. 진행 중 송신 한 번이 끝날 때까지 기다린 뒤 돌아온다(그 뒤 송신 0)."""
+        t0 = time.monotonic_ns()
+
+        with self._gate:
+            waited_ms = (time.monotonic_ns() - t0) / 1e6
+            self.gate_wait_max_ms = max(self.gate_wait_max_ms, waited_ms)
+
+            if self._closed:
+                return
+
+            self._closed = True
+            self.close_reason = reason
+
+        self._record("gate_closed_by", None, None, reason=reason, waited_ms=round(waited_ms, 3))
+
+    def close(self, limit_s: float) -> bool:
+        """게이트 닫기 → 결과 대기(`result_wait_s`) → 남은 목표 기록 → 런타임(spin·노드) 정리 → 기록 스레드 멈춤. 재시도할 수 있다.
+
+        런타임 정리가 실패해도 기록 스레드는 멈추고(그때까지의 기록은 씀) 그 실패를 다시 던진다. 재시도는 런타임 정리만 다시 한다.
+        """
+        self.close_run(self.close_reason or "close")
+        runtime_error = None
+
+        if not self._runtime_closed:
+            deadline = time.monotonic() + self.config.result_wait_s
+
+            while self.runtime.inflight_ids() and time.monotonic() < deadline:
+                time.sleep(0.02)
+
+            for gid in self.runtime.inflight_ids():
+                if gid not in self.unresolved:
+                    self.unresolved.append(gid)
+                    self.on_client_event("unresolved_at_close", gid, {})
+
+            try:
+                self.runtime.close(limit_s)
+                self._runtime_closed = True
+            except Exception as exc:   # 기록 스레드를 멈춘 뒤 다시 던진다(정리 확인 거짓, 재시도 대상)
+                runtime_error = exc
+
+        with self._qcond:
+            self._stop = True
+            self._qcond.notify_all()
+
+        if self._thread is not None:
+            self._thread.join(timeout=limit_s)
+
+            if self._thread.is_alive():
+                return False
+        elif not self._fh.closed:   # 시작 전 실패: 남은 것을 이 자리에서 쓰고 닫는다
+            self._stop = True
+            self._loop()
+
+        if runtime_error is not None:
+            raise runtime_error
+
+        if self.crash is not None:
+            raise RuntimeError(f"sort_part record writer crashed: {self.crash}")
+
+        return True
+
+    # ------------------------------------------------------------------ 요약
+
+    def problem(self) -> str | None:
+        """진입점이 종료 1로 드러낼 문제(기록 실패). 서버 없음·busy는 문제가 아니다(Q5)."""
+        if self.crash is not None:
+            return f"sort_part record writer crashed: {self.crash}"
+
+        if self.write_error is not None:
+            return f"sort_part record write error: {self.write_error}"
+
+        return None
+
+    def summary(self) -> dict:
+        """요약 블록 `sort_part`."""
+        with self._qcond:
+            counts = dict(sorted(self.counts.items()))
+
+        return {"config": self.config.to_json(), "server_seen": getattr(self.runtime, "server_seen", None),
+                "events": counts, "unresolved_at_close": list(self.unresolved), "close_reason": self.close_reason,
+                "gate_wait_max_ms": round(self.gate_wait_max_ms, 3), "write_error": self.write_error, "crash": self.crash,
+                "client_stats_reference_only": _stats_copy(getattr(self.runtime, "stats", {}))}
+
+
+def _stats_copy(stats: Any) -> dict:
+    """클라이언트 Counter 사본(다른 스레드가 쓰는 중이면 한 번 다시)."""
+    for _ in range(3):
+        try:
+            return {str(k): int(v) for k, v in dict(stats).items()}
+        except RuntimeError:   # 복사 중 크기 변경(spin 스레드): 다시 시도
+            continue
+
+    return {}
+
+
+def _refusal(before: dict, after: dict) -> str:
+    """`send`가 False일 때 클라이언트 사유(증가한 계수)."""
+    for key, event in (("no_server", "no_server"), ("busy", "busy"), ("skip", "client_skip"), ("error", "send_error")):
+        if after.get(key, 0) > before.get(key, 0):
+            return event
+
+    return "send_refused"
+
+
+__all__ = ["LiveSortPartSender", "RecordingSortPartClient", "SortPartConfig", "SortPartConfigError", "parse_sort_part"]

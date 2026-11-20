@@ -1,0 +1,23 @@
+{
+  "status": "test_only",
+  "note": "실시간 A→B 기록 전용 + B 중심점 주석 영상 표시 전용 송출 시험 설정(#213). 기존 시험값(live_observation_test.json)에 center_display 블록을 더했다. 발견 대기·확인 주기·실패 한도·QoS 깊이·종료 상한·상태 화면 hold/주기는 시험값이며 운영 승인값이 아니다(사용자 선택 Q7: 상태 화면 낮은 빈도).",
+  "world_frame": "world",
+  "tf_wait_limit_s": 0.05,
+  "static_pairs": [],
+  "future_tolerance_ns": 500000000,
+  "write_capacity": 8,
+  "reserved_capacity": 64,
+  "lag_warn_s": 2.0,
+  "close_limit_s": 2.0,
+  "skip_queue_capacity": 256,
+  "center_display": {
+    "discovery_wait_s": 1.5,
+    "graph_check_s": 2.0,
+    "publish_fail_limit": 3,
+    "qos_depth": 2,
+    "close_limit_s": 2.0,
+    "status_enabled": true,
+    "status_hold_s": 1.0,
+    "status_max_hz": 1.0
+  }
+}

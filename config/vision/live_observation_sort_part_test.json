@@ -1,0 +1,19 @@
+{
+  "status": "test_only",
+  "note": "실시간 A→B 기록 + C 목표 송신(#214 D13 해제, 사용자 결정 2026-11-20 「승인하고 위험으로 기록만해」) 시험 설정. 기존 시험값(live_observation_test.json)에 sort_part 블록을 더했다. 서버 대기·결과 대기·종료 상한·spin 대기는 시험값이며 운영 승인값이 아니다.",
+  "world_frame": "world",
+  "tf_wait_limit_s": 0.05,
+  "static_pairs": [],
+  "future_tolerance_ns": 500000000,
+  "write_capacity": 8,
+  "reserved_capacity": 64,
+  "lag_warn_s": 2.0,
+  "close_limit_s": 2.0,
+  "skip_queue_capacity": 256,
+  "sort_part": {
+    "server_wait_s": 2.0,
+    "result_wait_s": 3.0,
+    "close_limit_s": 2.0,
+    "spin_timeout_s": 0.05
+  }
+}

@@ -12,6 +12,11 @@
 - `axis_extractor`(#168, 선택 키, 기본 None=꺼짐): 볼트 축 두 끝점 추출기 opt-in. 현재 값은 `"m1"`(`vision/axis_endpoints.extract_m1`)
   하나뿐이다. **None이면 정규 JSON에 넣지 않는다**(기존 설정 파일·설정 ID가 그대로다). 켠 설정은 다른 설정 ID가 된다.
   켠 관측의 `valid=True`는 추출기 형식 조건 통과 뜻이며 정확도·운영 승인이 아니다(#167 K0 사용자 결정).
+- `axis_view_bias`(#207, 선택 키, 기본 None=꺼짐): 시선 기반 끝점 보정(C1, `vision/view_bias`) 설정
+  `{"model": "C1", "k_mm": 양수, "plane_z_m": 실수, "valid_for_model_id": 문자열}`. `axis_extractor="m1"`이어야 하고
+  `valid_for_model_id`가 이 설정의 `model_id`와 같아야 한다(가중치가 바뀌면 다시 맞춰야 하는 값, #206). None이면 정규 JSON에 넣지 않는다.
+  근거·계수: `_workspace/206_builder2_view_bias_report.md`. 보정은 B 입력 끝점에만 적용한다(detect 기록·주석 = 원 끝점,
+  B center = 보정 반영).
 """
 from __future__ import annotations
 
@@ -38,7 +43,12 @@ _MAX_DET_MAX = 1000
 
 # 볼트 축 끝점 추출기 선택 값(#168). None = 꺼짐
 AXIS_EXTRACTORS = ("m1",)
-_OPTIONAL_KEYS = frozenset({"axis_extractor"})
+_OPTIONAL_KEYS = frozenset({"axis_extractor", "axis_view_bias"})
+
+# 시선 기반 끝점 보정(#207). 모형은 C1(δ = k·s) 하나, k 상한은 안전 범위(#206 k ≈ 1.39 mm)
+VIEW_BIAS_MODELS = ("C1",)
+_VIEW_BIAS_KEYS = frozenset({"model", "k_mm", "plane_z_m", "valid_for_model_id"})
+_VIEW_BIAS_K_MAX_MM = 10.0
 
 
 def _is_int(v) -> bool:
@@ -126,6 +136,51 @@ def _roi(v) -> tuple[int, int, int, int] | None:
 
 
 @dataclass(frozen=True)
+class ViewBiasConfig:
+    """시선 기반 끝점 보정 설정(#207). 생성 때 형식·범위를 검사한다. 모델 ID 대조는 `AiSegConfig`가 한다."""
+
+    model: str
+    k_mm: float
+    plane_z_m: float
+    valid_for_model_id: str
+
+    def __post_init__(self) -> None:
+        """모형·계수·높이·모델 ID 형식 검사. 잘못된 값은 ValueError."""
+        if not isinstance(self.model, str) or self.model not in VIEW_BIAS_MODELS:
+            raise ValueError(f"axis_view_bias.model must be one of {VIEW_BIAS_MODELS}: {self.model!r}")
+
+        k = _finite_float(self.k_mm, "axis_view_bias.k_mm")
+
+        if not 0.0 < k <= _VIEW_BIAS_K_MAX_MM:
+            raise ValueError(f"axis_view_bias.k_mm must be in (0, {_VIEW_BIAS_K_MAX_MM}]: {self.k_mm!r}")
+
+        object.__setattr__(self, "k_mm", k)
+        object.__setattr__(self, "plane_z_m", _finite_float(self.plane_z_m, "axis_view_bias.plane_z_m"))
+        _text(self.valid_for_model_id, "axis_view_bias.valid_for_model_id")
+
+    def to_json(self) -> dict:
+        """정규 JSON·기록용 사전."""
+        return {"model": self.model, "k_mm": self.k_mm, "plane_z_m": self.plane_z_m,
+                "valid_for_model_id": self.valid_for_model_id}
+
+
+def parse_view_bias(v) -> ViewBiasConfig | None:
+    """설정 값(None·사전·ViewBiasConfig) → ViewBiasConfig 또는 None. 모르는 키·빠진 키는 ValueError."""
+    if v is None or isinstance(v, ViewBiasConfig):
+        return v
+
+    if not isinstance(v, dict):
+        raise ValueError(f"axis_view_bias must be an object or null: {v!r}")
+
+    missing, unknown = _VIEW_BIAS_KEYS - v.keys(), v.keys() - _VIEW_BIAS_KEYS
+
+    if missing or unknown:
+        raise ValueError(f"axis_view_bias keys mismatch: missing={sorted(missing)} unknown={sorted(unknown)}")
+
+    return ViewBiasConfig(**v)
+
+
+@dataclass(frozen=True)
 class AiSegConfig:
     """검증한 AI 분할 검출 설정의 변경 불가 스냅샷(계획 §4.1). 직접 생성해도 검증을 우회하지 않는다.
 
@@ -152,6 +207,7 @@ class AiSegConfig:
     min_mask_area_px: int
     border_margin_px: int
     axis_extractor: str | None = None
+    axis_view_bias: ViewBiasConfig | None = None
     config_sha256: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -237,6 +293,17 @@ class AiSegConfig:
         if self.axis_extractor is not None and self.axis_extractor not in AXIS_EXTRACTORS:
             raise ValueError(f"axis_extractor must be null or one of {AXIS_EXTRACTORS}: {self.axis_extractor!r}")
 
+        # 시선 기반 끝점 보정(#207): M1 끝점에만, 맞춘 가중치에만 쓴다
+        bias = parse_view_bias(self.axis_view_bias)
+        put("axis_view_bias", bias)
+
+        if bias is not None:
+            if self.axis_extractor != "m1":
+                raise ValueError(f"axis_view_bias requires axis_extractor 'm1': {self.axis_extractor!r}")
+
+            if bias.valid_for_model_id != self.model_id:
+                raise ValueError(f"axis_view_bias.valid_for_model_id {bias.valid_for_model_id!r} != model_id {self.model_id!r}")
+
         put("config_sha256", hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest())
 
     @property
@@ -269,6 +336,8 @@ class AiSegConfig:
 
             if key == "class_map":
                 value = {str(i): name for i, name in value}
+            elif isinstance(value, ViewBiasConfig):
+                value = value.to_json()
             elif isinstance(value, tuple):
                 value = list(value)
 
@@ -336,4 +405,5 @@ def load_ai_config(path: str | os.PathLike) -> AiSegConfig:
     return AiSegConfig(**doc)
 
 
-__all__ = ["AXIS_EXTRACTORS", "AiSegConfig", "FORMAT_VERSION", "MODEL_FAMILIES", "load_ai_config"]
+__all__ = ["AXIS_EXTRACTORS", "AiSegConfig", "FORMAT_VERSION", "MODEL_FAMILIES", "VIEW_BIAS_MODELS", "ViewBiasConfig",
+           "load_ai_config", "parse_view_bias"]

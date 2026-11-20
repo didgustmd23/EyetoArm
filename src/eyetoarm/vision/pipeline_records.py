@@ -159,13 +159,19 @@ def _detector_block(cfg) -> dict:
     if not isinstance(cfg, AiSegConfig):
         return {"method": "opencv", "config_id": cfg.config_sha256}
 
-    return {"method": "ai", "config_id": cfg.config_sha256, "model_id": cfg.model_id,
-            "model_family": cfg.model_family, "weights_path": cfg.weights_path,
-            "weights_sha256": cfg.weights_sha256, "class_map": {str(i): n for i, n in cfg.class_map},
-            "target_classes": list(cfg.target_classes), "conf_threshold": cfg.conf_threshold,
-            "iou_threshold": cfg.iou_threshold, "imgsz": cfg.imgsz, "max_det": cfg.max_det, "device": cfg.device,
-            "half": cfg.half, "retina_masks": cfg.retina_masks, "roi": None if cfg.roi is None else list(cfg.roi),
-            "min_mask_area_px": cfg.min_mask_area_px, "border_margin_px": cfg.border_margin_px}
+    block = {"method": "ai", "config_id": cfg.config_sha256, "model_id": cfg.model_id,
+             "model_family": cfg.model_family, "weights_path": cfg.weights_path,
+             "weights_sha256": cfg.weights_sha256, "class_map": {str(i): n for i, n in cfg.class_map},
+             "target_classes": list(cfg.target_classes), "conf_threshold": cfg.conf_threshold,
+             "iou_threshold": cfg.iou_threshold, "imgsz": cfg.imgsz, "max_det": cfg.max_det, "device": cfg.device,
+             "half": cfg.half, "retina_masks": cfg.retina_masks, "roi": None if cfg.roi is None else list(cfg.roi),
+             "min_mask_area_px": cfg.min_mask_area_px, "border_margin_px": cfg.border_margin_px}
+
+    # 시선 기반 끝점 보정(#207): 켠 설정만 남긴다(키 없음이면 기존 기록과 같다)
+    if getattr(cfg, "axis_view_bias", None) is not None:
+        block["axis_view_bias"] = cfg.axis_view_bias.to_json()
+
+    return block
 
 
 def _plain(value: Any) -> Any:
