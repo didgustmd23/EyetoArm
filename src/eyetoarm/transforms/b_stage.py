@@ -14,6 +14,11 @@ A 실행기(`vision/pipeline_runner.run`)의 B 자리 `b_consumer(frame, obs)`�
     out.goal          # C 목표 사전 (PICK_PLACE / PASS_THROUGH / SKIP, DB-02)
     stage.render_center(frame.image, [out])   # center 주석 영상 (같은 원본 프레임 위)
 
+같은 사진의 볼트 여러 개(A 단계 L, B-09 합의)는 목록 봉투 하나로 받는다:
+
+    rec = stage.process_frame(list_envelope)   # 앞 8개 계산 → 1개 골라 on_output으로, 결과는 JSON 사전
+    rec["selected_instance_index"], rec["goal"], rec["results"]   # 후보별 결과에 instance_index·selected
+
 카메라 위치(`T_W_C`)는 `tf_lookup(frame)`이 **촬영 시각**의 TF로 준다.
 - ROS 안에서는 `RosTfLookup(buffer)` (tf2 Buffer를 넘김)
 - 시험·저장 영상에서는 `StaticTfLookup(T_W_C)`
@@ -24,9 +29,11 @@ TF를 못 읽으면 계산하지 않고 `SKIP`(`TF_UNAVAILABLE`, 책임 B)으로
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable
 
 import numpy as np
@@ -41,6 +48,12 @@ from eyetoarm.transforms.work_result import (
 )
 
 TfLookup = Callable[[object], "np.ndarray | None"]
+
+# 목록 입구 `process_frame` (A 협업 요청 B-09, B 회신 2026-11-19, A 동의 2026-11-19)
+LIST_ENVELOPE_VERSION = "eyetoarm.b_input/2"   # A `vision/list_envelope`와 같은 값 (그 모듈이 이 파일을 import하므로 글자로 둠)
+FRAME_OUTPUT_VERSION = "eyetoarm.b_frame_output/1"
+MAX_FRAME_CANDIDATES = 8                       # 앞 8개(`instance_index` 순)만 계산, 잘린 수는 기록
+TIE_Y_M = 0.005                                # y 차이 5 mm 이내면 같은 것으로 보고 작은 `instance_index`
 
 
 # ---------- 카메라 위치(TF) 읽기 ----------
@@ -111,6 +124,7 @@ class BStage:
         self.run_epoch: int | None = None      # C 실행 세대 (C 상세설계 §16.5.2)
         self.on_output: Callable[[BOutput], None] | None = None   # B 출력 받을 곳 (C 대기열 등)
         self.last: BOutput | None = None
+        self.last_frame: list[BOutput] = []    # `process_frame`의 마지막 사진 후보별 결과
         self.compute_budget_ms = 20.0          # B 계산 시간 상한 (A-7). 넘으면 C로 안 보냄(SKIP B_TIMEOUT). TF 대기는 RosTfLookup 0.05 s
         self._pending: dict[object, str] = {}   # part_track_id → 보낸 goal_id (결과 받을 때까지 다시 안 보냄)
         self._pending_epoch: int | None = None
@@ -128,7 +142,17 @@ class BStage:
     def process(self, obs, frame) -> BOutput:
         """A 관측 + 그 프레임 → B 결과·표시 사전·C 목표."""
         T_W_C = self.tf_lookup(frame) if obs.valid else None
+        out = self._build(obs, frame, T_W_C)
 
+        if out.result.compute_ms > self.compute_budget_ms and out.goal.get("kind") != "SKIP":
+            out.goal["kind"], out.goal["reason"] = "SKIP", "B_TIMEOUT"
+
+        self._dedupe(out.goal)
+
+        return out
+
+    def _build(self, obs, frame, T_W_C: np.ndarray | None) -> BOutput:
+        """계산 → C 목표 → 표시 사전. 시간 상한·같은 부품 거르기는 부르는 쪽(`process`·`process_frame`)이 한다."""
         if obs.valid and T_W_C is None:
             result = self._failed(obs, "TF_UNAVAILABLE", "B")
         else:
@@ -140,11 +164,6 @@ class BStage:
         keys = correlation_keys(obs, frame)              # A 관측 → B → C·D 연결 키 (CB-05, D DB-01)
         goal.update(keys)
         goal.update({"goal_id": str(uuid.uuid4()), "sort_job_id": self.sort_job_id, "run_epoch": self.run_epoch})
-
-        if result.compute_ms > self.compute_budget_ms and goal.get("kind") != "SKIP":
-            goal["kind"], goal["reason"] = "SKIP", "B_TIMEOUT"
-
-        self._dedupe(goal)
 
         result_dict = to_output_dict(result, frame.source_id)
         result_dict.update(keys)
@@ -197,6 +216,99 @@ class BStage:
             self.on_output(out)
 
         return out
+
+    # ---------- 목록 입구 (A 단계 L, B-09) ----------
+    def process_frame(self, envelope) -> dict:
+        """A 목록 봉투(`eyetoarm.b_input/2`) → 후보별 B 결과 + 고른 C 목표 1개 (B-09 합의).
+
+        1. 앞 `MAX_FRAME_CANDIDATES`개만 계산한다(넘는 수는 `truncated`).
+        2. TF는 봉투의 프레임 공통 `tf` 하나만 쓴다. 없거나 촬영 시각·광학 프레임이 다르면 모두 `SKIP TF_UNAVAILABLE`.
+        3. 고르기: 집을 수 있는 볼트(`PICK_PLACE`) 중 y 최대(`TIE_Y_M` 이내 동률은 작은 `instance_index`),
+           없으면 너트(`PASS_THROUGH`) 중 y 최대, 없으면 고르지 않는다.
+        4. 안 고른 후보의 보낼 수 있는 목표는 `SKIP NOT_SELECTED`로 바꾼다. C(`on_output`)로는 고른 1개만 넘긴다.
+        5. 계산 시간 상한(`compute_budget_ms`)은 사진 한 장 전체 시간으로 본다. 넘으면 고른 목표를 `SKIP B_TIMEOUT`.
+        돌려주는 값은 A 기록기가 그대로 JSON으로 쓰는 사전이다. 봉투 버전이 다르면 ValueError.
+        """
+        if getattr(envelope, "version", None) != LIST_ENVELOPE_VERSION:
+            raise ValueError(f"process_frame requires {LIST_ENVELOPE_VERSION} envelope: "
+                             f"{getattr(envelope, 'version', type(envelope).__name__)!r}")
+
+        fo = envelope.observations
+        frame, tf = fo.frame, fo.tf
+        T_W_C = (tf.T_W_C if tf is not None and tf.child == frame.optical_frame
+                 and tf.stamp_ns == frame.ros_stamp_ns else None)
+
+        t0 = time.perf_counter()
+        computed = fo.candidates[:MAX_FRAME_CANDIDATES]
+        outs = [self._build(self._candidate_view(c, fo), frame, T_W_C) for c in computed]
+        selected, selection = self._select(outs, computed)
+
+        chosen = None
+
+        for o, c in zip(outs, computed):
+            if c.instance_index == selected:
+                chosen = o
+            elif o.goal.get("kind") != "SKIP":
+                o.goal["kind"], o.goal["reason"] = "SKIP", "NOT_SELECTED"
+
+        frame_ms = (time.perf_counter() - t0) * 1000.0
+
+        if chosen is not None:
+            if frame_ms > self.compute_budget_ms:
+                chosen.goal["kind"], chosen.goal["reason"] = "SKIP", "B_TIMEOUT"
+
+            self._dedupe(chosen.goal)
+            self.last = chosen
+
+            if self.on_output is not None:
+                self.on_output(chosen)
+
+        self.last_frame = outs                       # 같은 프레임 결과 묶음 (`render_center(frame.image, stage.last_frame)`)
+
+        return {
+            "version": FRAME_OUTPUT_VERSION,
+            "candidate_count": len(fo.candidates),
+            "computed": len(computed),
+            "truncated": len(fo.candidates) - len(computed),
+            "selected_instance_index": selected,
+            "selection": selection,
+            "frame_compute_ms": round(frame_ms, 3),
+            "goal": None if chosen is None else chosen.goal,
+            "results": [dict(o.result_dict, instance_index=c.instance_index, selected=c.instance_index == selected,
+                             goal_kind=o.goal.get("kind"), goal_reason=o.goal.get("reason"))
+                        for o, c in zip(outs, computed)],
+        }
+
+    @staticmethod
+    def _candidate_view(c, fo) -> SimpleNamespace:
+        """후보 하나 + 프레임 공통 값 → 기존 계산(`from_observation`·`correlation_keys`)이 읽는 관측 모양.
+
+        상관 키 값은 A `list_envelope._correlation`과 같다(프레임의 run_id·capture_generation, 목록의 generation·job_seq).
+        """
+        f = fo.frame
+
+        return SimpleNamespace(
+            valid=True, reason=None, class_name=c.class_name, pixel_basis=c.pixel_basis,
+            axis_endpoints_px=c.axis_endpoints_px, calc_contour=c.calc_contour,
+            calibration_id=fo.capture.calibration_id, source_id=f.source_id, image_seq=f.image_seq,
+            part_track_id=None, run_id=f.run_id, capture_generation=f.capture_generation,
+            generation=fo.generation, job_seq=fo.job_seq, detector_config_id=fo.detector_config_id)
+
+    @staticmethod
+    def _select(outs: list[BOutput], cands) -> tuple[int | None, str]:
+        """고를 후보의 `instance_index`와 이유(`BOLT_MAX_Y` / `NUT_MAX_Y` / `TF_UNAVAILABLE` / `NONE`)."""
+        for kind, why in (("PICK_PLACE", "BOLT_MAX_Y"), ("PASS_THROUGH", "NUT_MAX_Y")):
+            pool = [(o.result.center_w_m[1], c.instance_index) for o, c in zip(outs, cands)
+                    if o.goal.get("kind") == kind]
+
+            if pool:
+                y_max = max(y for y, _ in pool)
+                return min(i for y, i in pool if y >= y_max - TIE_Y_M), why
+
+        if outs and all(o.result.reason == "TF_UNAVAILABLE" for o in outs):
+            return None, "TF_UNAVAILABLE"
+
+        return None, "NONE"
 
     def render_center(self, image: np.ndarray, outputs: list[BOutput], guides: bool = True) -> np.ndarray:
         """center 주석 영상: 원본 프레임 복사본 위에 B 결과(+작업 좌표 안내선)를 그린다 (DB-01).

@@ -1,11 +1,22 @@
 <?xml version="1.0"?>
 <sdf version="1.9">
-  <!-- 원점=바닥 중심, 진행 방향 +X, 벨트 윗면 Z 0.100 m(임시값). 구동 없음(외형 전용) -->
+  <!-- 원점=바닥 중심, 진행 방향 +X, 벨트 윗면 Z 0.100 m(임시값). TrackController 구동 -->
   <model name="conveyor_belt">
     <static>true</static>
     <link name="link">
-      <collision name="belt_top"><pose>0 0 0.090 0 0 0</pose>
-        <geometry><box><size>1.26 0.20 0.020</size></box></geometry></collision>
+      <collision name="belt_top">
+        <pose>0 0 0.090 0 0 0</pose>
+        <geometry><box><size>1.26 0.20 0.020</size></box></geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>0.7</mu>
+              <mu2>150</mu2>
+              <fdir1>0 1 0</fdir1>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
       <visual name="frame">
         <geometry><mesh><uri>model://conveyor_belt/meshes/frame.stl</uri></mesh></geometry>
         <material>
@@ -34,5 +45,10 @@
         </material>
       </visual>
     </link>
+    <plugin filename="gz-sim-track-controller-system"
+            name="gz::sim::systems::TrackController">
+      <link>link</link>
+      <odometry_publish_frequency>1</odometry_publish_frequency>
+    </plugin>
   </model>
 </sdf>

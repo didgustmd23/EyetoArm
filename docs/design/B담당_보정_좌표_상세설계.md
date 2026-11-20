@@ -1,6 +1,6 @@
 # B 담당 보정·좌표 상세설계
 
-문서 버전 1.7 · 설계 초안 · 2026-11-11, 갱신 2026-11-18
+문서 버전 1.8 · 설계 초안 · 2026-11-11, 갱신 2026-11-20
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
@@ -15,6 +15,7 @@
 | 1.4 (담당 경계 RB) | 2026-11-11 | 2026-11-11 담당 경계 RB-01~03 정리: 구현·수정 책임자/제공 정보/협력 담당 구분. §4 설정 값 범위, §13 미결 3행, §15.2 손목 yaw 후보·선택 구분 |
 | 1.6 (단위 경계 정정) | 2026-11-16 | 사용자 승인 D 정합 정리(문서만, B 소유·스키마 승인 상태 변경 아님): §5.5·§7.3의 「표시용 mm 변환은 D가 한 번」을 정정 — B 내부 `WorkPlanarResult`(`transforms/work_result.py`)는 m·m² 유지, 내보내기(`to_output_dict()` 표시 사전·`build_sort_goal()` C 목표)에서 B가 mm·deg로 한 번 변환, D는 재변환하지 않음. 필드 이름(`center_w_m`·`contour_w_m` 등)은 바꾸지 않음. 이전 문구는 정정 표기로 남김 |
 | 1.6 | 2026-11-16 | 협업 회신·구현 반영(§16 신설): ① 링크 카메라는 `upper_arm_link`에 고정 → 사진마다 촬영 시각 TF로 `T_W_C` ② 벨트 안 멈춤(정지·재검출 왕복 §15.4 대체) ③ IK·경로·충돌은 C(MoveIt), 잡는 시점 예측도 C ④ B→C 목표는 mm·쿼터니언 [x, y, z, w]·`base_link`, 후보 2개 ⑤ 너트 `PASS_THROUGH` ⑥ 부품 평면 0.105 m ⑦ 구현 파일·시험 위치. D 요청 DB-01·DB-02 회신은 B 협업 요청 §6 |
+| 1.8 | 2026-11-20 | §16.4에 목록 입구 `BStage.process_frame`(A 동의한 B-09: 앞 8개 계산, y 최대 볼트 1개 선택, 안 고른 후보 `SKIP NOT_SELECTED`, 사진 한 장 20 ms)과 시험 `test_b_process_frame.py` 추가 |
 | 1.7 | 2026-11-18 | §16.4 구현 위치에 B→C 액션 클라이언트(`sort_part_client.py`)·액션 양식 패키지·시험 추가. A-8(볼트 두 끝점 공통형)은 A 구현 `4edf845`로 main 반영, B 수정 없음 |
 | 1.5 | 2026-11-12 | 팀 결정 2026-11-12 반영: ① 11/22 팀 통합·11/26 발표 일정으로 §12를 날짜별 일정으로 변경, 11/26까지 범위는 컨베이어 볼트·너트 분류만(사람 자세 제어 §15.5는 11/26 이후) ② 통신 경로: A·B·C는 WSL ROS 안에서 연결, TCP는 C↔D만. **B는 D와 직접 통신하지 않으며** B 결과·보정 상태는 C를 거쳐 D에 전달(§2·§3·§5.5·§7.3·§7.5·§11) ③ A 협업 요청 v0.6의 B 회신(A 제안 수락, B-01~05·B-07·X-01~03) 반영: 원본 픽셀 전달·B 1회 보정 확정(§6.2), 관측면은 `observed_face` 파일럿 결정(§2), §13 확정/미결 구분과 결정 날짜 |
 | 1.4 (담당 결정) | 2026-11-11 | 사용자 결정 2026-11-11: common/types.py 관리 A, A·B 파이프라인 실행 진입점 A(계산·액션 어댑터 B), 그리퍼 실행 혼합 설정 최종 관리 C, 동등 파지 후보 계산 B·실행 해 선택 C. B→C PICK_PLACE 목표 계약(제안) 구체화. §4·§13(결정된 미결 3행 제거)·§15.2·§15.4 |
@@ -729,6 +730,7 @@ B의 책임: 기준 자세 보정, 의도 판정(유지 시간·히스테리시�
 | `src/eyetoarm/transforms/grasp.py` | `build_sort_goal()`: B 결과 → C 목표 사전 |
 | `src/eyetoarm/transforms/overlay.py` | 중심점 주석 영상 그리기 |
 | `src/eyetoarm/transforms/b_stage.py` | **A가 부를 B 입구** `BStage.process(관측, 프레임)`·`consume(frame, obs)`: 촬영 시각 TF(`RosTfLookup`) → 판정 → C 목표·D 표시 사전. 두 사전에 같은 연결 키(`correlation_keys`: `run_id`·`capture_generation`·`generation`·`job_seq`·`detector_config_id`·촬영 시각)를 붙이고, 표시 사전에는 `center_px`(원본 사진 픽셀 중심)도 넣음. `make_c_handoff(loop, queue)`로 C asyncio 대기열에 스레드 안전하게 넘김(SKIP 제외, 가득 차면 가장 오래된 것 버림). `render_center()`로 center 영상 |
+| `src/eyetoarm/transforms/b_stage.py` `process_frame` | **목록 입구** (B-09, A 단계 L): A 목록 봉투 `eyetoarm.b_input/2` → 앞 8개 계산 → 집을 수 있는 볼트 중 y 최대(5 mm 이내 동률은 작은 `instance_index`), 없으면 너트 y 최대 → 고른 1개만 `on_output`. 안 고른 후보는 `SKIP NOT_SELECTED`. TF는 봉투의 프레임 공통 `tf`. 시간 상한 20 ms는 사진 한 장 전체. 결과는 JSON 사전(`eyetoarm.b_frame_output/1`, 후보별 `instance_index`·`selected`) |
 | `src/eyetoarm/transforms/sort_part_client.py` | **B → C 액션 클라이언트** `/sort_part`. `goal_to_msg()`: B 목표 사전 → `SortPart.Goal`. `SortPartClient.send`를 `stage.on_output`에 붙임. `SKIP`은 보내지 않고, C 서버가 없으면 기다리지 않고 건너뜀. 진행(`stage`)·결과(`status`·`reason`)를 기록하고, 결과가 오면 `stage.release(part_track_id)`. 같은 종류(`PICK_PLACE`/`PASS_THROUGH`)가 결과 대기 중이면 새 목표를 보내지 않음(`busy`, 팔 1대) |
 | `robot_ws/src/eyetoarm_interfaces/` | 액션 양식 `action/SortPart.action`, `msg/GraspCandidate.msg` (B 협업 요청 §7.2 필드, C-14) |
 | `config/robot/b_c_test_vectors.json` | B→C 시험값 4건(C 요청 CB-02): 알려진 입력 → B 목표. `test_b_transforms.py`가 B 코드 결과와 같은지 확인 |
@@ -737,10 +739,11 @@ B의 책임: 기준 자세 보정, 의도 판정(유지 시간·히스테리시�
 | `scripts/b_live_view.py` | 시뮬레이션 링크 카메라에 B 좌표·판정을 겹쳐 보기, `--publish`로 `/b/center_overlay/image` |
 | `scripts/b_demo_synthetic.py` | ROS 없이 합성 영상으로 B 계산 확인 |
 | `tests/unit/test_b_transforms.py` | 렌즈 값·투영 왕복·판정·A 관측→C 목표·B 입구·A 실행기 연결·YOLO 클래스 이름·연결 키·center_px·C 대기열 넘기기·집는 구간·높이·같은 부품·두 끝점·종류별 높이·시간 상한 48개 |
+| `tests/unit/test_b_process_frame.py` | 목록 입구 9개: A 실제 자료형·`make_list_envelope`로 봉투를 만들어 선택·동률·구간 밖·8개 자르기·TF 없음·시간 초과·연결 키·버전 확인 |
 | `tests/unit/test_b_sort_part_client.py` | 목표 → 액션 메시지 변환·보내기·결과 받기·`release` 6개 (ROS 없이 가짜 클래스로) |
 
 A 실행기 연결(`b_consumer=stage.consume`)과 연결 전 확인 사항은 [B 협업 요청 §8](B담당_협업_요청_초안.md#8-연결-전-확인-main-코드-대조-2026-11-16), B→C 액션 필드 제안은 [B 협업 요청 §7](B담당_협업_요청_초안.md#7-c에게-액션-정의-제안-b--c)에 있습니다.
-시험 실행: `PYTHONPATH=src python3 -m pytest tests/unit/test_b_transforms.py tests/unit/test_b_sort_part_client.py -q`
+시험 실행: `PYTHONPATH=src python3 -m pytest tests/unit/test_b_transforms.py tests/unit/test_b_sort_part_client.py tests/unit/test_b_process_frame.py -q`
 
 ### 16.4.1 B 결정 (2026-11-17)
 
