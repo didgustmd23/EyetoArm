@@ -492,11 +492,11 @@ class TestEndpointInput(unittest.TestCase):
     def test_nut_uses_top_face_height(self):
         from eyetoarm.transforms.work_result import class_plane_z
         self.assertEqual((class_plane_z(SPECS, "nut"), class_plane_z(SPECS, "bolt"), class_plane_z(SPECS, None)),
-                         (0.1057, 0.105, 0.105))
+                         (0.1052, 0.105, 0.105))
         a = np.linspace(0, 2 * np.pi, 6, endpoint=False)
         hexagon = np.column_stack([0.55 + 0.0058 * np.cos(a), 0.0058 * np.sin(a)])
-        r = compute_work_result(to_px(hexagon, z=0.1057), CAM, T_W_C, SPECS, class_name="nut")
-        self.assertEqual((r.plane_z_m, r.spec), (0.1057, "NUT"))
+        r = compute_work_result(to_px(hexagon, z=0.1052), CAM, T_W_C, SPECS, class_name="nut")
+        self.assertEqual((r.plane_z_m, r.spec), (0.1052, "NUT"))
 
     def test_from_observation_endpoints(self):
         h, t, _ = self._endpoints(0.046, 0.55, -0.05, 0.0)

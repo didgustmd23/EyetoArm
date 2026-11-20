@@ -134,7 +134,7 @@ def _classify(class_name, length_m, width_m, aspect, specs) -> tuple[str, str | 
 
 
 def class_plane_z(specs: dict, class_name: str | None, spec: str | None = None) -> float:
-    """종류별 기준 높이 (B 선택 2026-11-17). 볼트 축 105.0 mm, 너트 윗면 105.7 mm. 모르면 기본 plane_z."""
+    """종류별 기준 높이 (B 선택 2026-11-17). 볼트 축 105.0 mm, 너트 윗면 105.2 mm (2026-11-20 Gazebo 실측). 모르면 기본 plane_z."""
     key = spec if spec in specs["specs"] else {"bolt": "BOLT_A", "nut": "NUT"}.get(normalize_class(class_name) or "")
 
     return float(specs["specs"].get(key, {}).get("plane_z", specs["plane_z"])) if key else float(specs["plane_z"])
@@ -198,7 +198,7 @@ def compute_work_result(contour_px, camera: CameraProfile, T_W_C: np.ndarray, sp
     - `observed_calibration_id`: A 관측에 붙은 보정 식별자. 다르면 무효(책임 A).
     """
     t0 = time.perf_counter()
-    plane_z = class_plane_z(specs, class_name) if plane_z is None else plane_z    # 너트 105.7, 볼트·모름 105.0 mm
+    plane_z = class_plane_z(specs, class_name) if plane_z is None else plane_z    # 너트 105.2, 볼트·모름 105.0 mm
     pts = np.asarray(contour_px, dtype=np.float64).reshape(-1, 2)
 
     reason, owner = None, None
