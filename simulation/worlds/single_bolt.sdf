@@ -74,12 +74,12 @@
       </link>
     </model>
 
-    <!-- 로봇 정면(+X) 위의 고정 CCTV. 조준점 약 (0.2, 0.1, 0.43)m.
+    <!-- 로봇 정면(+X) 위의 고정 CCTV. 시야 중심은 벨트 높이에서 약 (0.17, 0.16, 0.10)m(로봇·벨트·상자를 함께 보는 GUI 시점에 맞춤, 2026-11-20).
          Gazebo 영상만 발행하며 ROS 브리지·자동 뷰어 연결은 추가하지 않는다. -->
     <include>
       <uri>model://overview_camera</uri>
       <name>overview_cam</name>
-      <pose>2.04 0.02 1.99 0 0.7027648944 3.0981417582</pose>
+      <pose>1.738 0.141 1.185 0 0.6056 3.1281</pose>
     </include>
   </world>
 </sdf>
