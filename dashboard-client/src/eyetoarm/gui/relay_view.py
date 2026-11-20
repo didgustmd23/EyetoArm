@@ -4,8 +4,10 @@
 │ [C 시제품] robot_server_package/display_relay.py (기본 포트 47092) 의 ETV1   │
 │   패킷만 받는다. 승인된 C↔D 계약이 아니며 C README 도 "pending agreement".  │
 │   명령·상태 TCP(47090)·D 임시 단일 영상(47091 EAV1)과 별개다.               │
-│ [보내지 않음] C 는 접속한 쪽을 읽지 않는다. 이 수신기는 아무것도 보내지 않고 │
-│   raw/detect/center 선택도 D 화면 안의 표시 선택일 뿐이다(C 송출 전환 없음). │
+│ [보내는 것] 사용자가 링크 raw/detect/center 를 누를 때만 이 연결로 한 줄   │
+│   {"type":"SET_DISPLAY_VARIANT","channel":"link","variant":...} + LF 를    │
+│   보낸다(임시 형식, C 와 합의 전). 현재 C relay 는 받은 쪽을 읽지 않으므로  │
+│   송신은 적용 확인이 아니다. 해당 종류 영상이 와야 화면에 보인다.          │
 │ [결과 없음] C 시제품은 영상만 보낸다. 결과·무효화 사건을 지어내지 않는다.   │
 └────────────────────────────────────────────────────────────────────────────┘
 
@@ -45,6 +47,7 @@ CONNECT_TIMEOUT_MS = 2000              # 명령 연결 connect_timeout_ms 초기
 READ_CHUNK = 1024 * 1024               # 한 번에 읽어 파서에 넣는 최대 바이트
 SOCKET_BUFFER = 2 * (MAX_PACKET + 8)  # Qt 소켓 내부 버퍼 상한. 차면 TCP 흐름 제어로 C 송신이 기다린다
 RETIRED_RUNS = 32
+VARIANT_REQUEST = "SET_DISPLAY_VARIANT"
 
 
 class PacketError(ValueError):
@@ -175,6 +178,7 @@ class RelayViewReceiver(QObject):
         self.socket_error = ""   # 마지막 연결 오류(Qt errorString). 오류 수에는 넣지 않는다
         self._last_error = ""
         self.run_id: str | None = None
+        self.requested_variant: str | None = None   # 이 연결에서 마지막으로 보낸 링크 요청(송신만, C 적용 미확인)
         self._retired: deque[str] = deque(maxlen=RETIRED_RUNS)
         self._last_frame_at: float | None = None
         self._parser = EtvParser()
@@ -255,6 +259,26 @@ class RelayViewReceiver(QObject):
         self._set_state("disconnected")   # 먼저 바꿔야 abort() 뒤 재접속이 예약되지 않는다
         self._socket.abort()
 
+    def request_variant(self, variant: str) -> bool:
+        """연결된 이 영상 소켓으로 링크 표시 종류 요청 한 줄을 보낸다. 연결 안 됨·쓰기 실패면 False(재시도 없음).
+
+        shortcut: C 와 합의된 요청 형식이 없어 UTF-8 compact JSON + LF 를 임시로 쓴다. 합의되면 형식만 바꾼다."""
+        if variant not in VARIANTS:
+            raise ValueError(f"variant {variant!r} 불허")
+        self.requested_variant = None   # 실패하면 이전 요청을 「송신됨」으로 남기지 않는다
+        if self.state != "connected":
+            return False
+        line = json.dumps({"type": VARIANT_REQUEST, "channel": "link", "variant": variant},
+                          separators=(",", ":")).encode("utf-8") + b"\n"
+        if self._socket.write(line) != len(line):
+            # Qt 는 쓰기 버퍼에 통째로 넣거나 -1 이다. 그래도 일부만 들어갔다면 다음 줄과 붙지 않게 끊고 재접속한다
+            self._last_error = f"링크 {variant} 요청 송신 실패"
+            self._parser.last_error = ""
+            self._drop()
+            return False
+        self.requested_variant = variant
+        return True
+
     def frame_age_ms(self) -> int | None:
         return None if self._last_frame_at is None else int((time.monotonic() - self._last_frame_at) * 1000)
 
@@ -269,6 +293,7 @@ class RelayViewReceiver(QObject):
         self._parser.reset()   # 재접속해도 누적 오류 수와 마지막 오류는 남긴다
         self._pending.clear()
         self._reset_confirmation()   # 새 연결의 첫 패킷은 C 캐시일 수 있다
+        self.requested_variant = None   # 요청은 연결마다. 새 연결에 자동으로 다시 보내지 않는다
         self._set_state("connecting")
         self._connect_deadline.start()
         self._socket.connectToHost(QHostAddress(self.host), self.port)

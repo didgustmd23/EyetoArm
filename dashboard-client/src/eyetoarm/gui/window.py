@@ -7,8 +7,8 @@
                                            47092, 시제품 ETV1, C display_relay 필요. 다르면 --view-host/--view-port).
   python -m eyetoarm.gui.window --view window  영상 대신 화면에 떠 있는 Gazebo 창(같은 PC 일 때만)
   python -m eyetoarm.gui.window --view camera  D 임시 단일 카메라 중계(127.0.0.1:47091, gz_view_relay.py 필요)
-                                           링크 raw/detect/center 는 D 화면 표시 선택이다(C 송출 전환 아님).
-                                           C 는 지금 raw 만 보내므로 detect·center 는 수신 대기로 보이고, 측정값은 — 이다
+                                           링크 raw/detect/center 를 누르면 영상 연결(47092)로 SET_DISPLAY_VARIANT 요청을
+                                           보낸다(임시 형식). 지금 C 는 요청을 읽지 않고 raw 만 보내므로 detect·center 는 수신 대기다
   python -m eyetoarm.gui.window --demo     모의 분류 조작·상태 확인 (아무 것도 보내지 않음)
   python -m eyetoarm.gui.window --no-motion  모션 줄이기 상태로 시작
   python -m eyetoarm.gui.window --theme light  라이트 테마로 시작 (오른쪽 위 「다크 / 라이트」로 실행 중 전환)
@@ -26,7 +26,7 @@
 │ 메인·보조 3칸     │ 탑뷰·그리퍼·링크 raw(기본 relay)│ C display_relay · 47092  │
 │                   │ 또는 Gazebo 창(--view window)  │ D 임시 경로 · gz_window.py│
 │                   │ 또는 단일 중계(--view camera)  │ D 임시 경로 · gz_view.py │
-│ 링크 detect/center│ D 표시 선택 · 지금은 수신 대기 │ C 미송출 · 결과 미결     │
+│ 링크 detect/center│ 요청 송신 · 영상 올 때까지 대기│ C 미적용 · 형식 미합의   │
 │ 측정·보정 상세    │ 실제 — / D 모의 값            │ A·B 결과 → C 중계 · 미결 │
 │ 공정 단계 · 수량  │ 실제 미확인 · — / 모의 사건 집계│ C 도착 확인 · 미결       │
 │ START/STOP/RECOVER│ 실제 비활성 / 모의에서만 조작  │ C · 부록 A 미승인        │
@@ -38,6 +38,7 @@
 [공통 상태] 연결 객체(StatusLink 와 화면 수신기 GzWindowCapture/GzViewReceiver)는 창에 하나씩만 있고 세 화면이 함께 쓴다.
   화면을 바꿔도 연결·수신·기록이 초기화되지 않는다(D 상세설계 §A.2).
 [보내는 신호] 준비/명령 GET_STATUS, 사용자 확정 수동 MOVE, 기존 ID의 CANCEL. 모의 분류는 TCP를 사용하지 않는다.
+  영상 연결(relay)에는 사용자가 링크 종류를 누를 때만 SET_DISPLAY_VARIANT 한 줄을 보낸다(명령 TCP 아님).
 """
 
 from __future__ import annotations
@@ -263,7 +264,7 @@ class MainWindow(QMainWindow):
                 ("GET_STATUS (준비 조회)", "사용 중 · TCP 1.1"),
                 ("MOVE · CANCEL", "수동 확정 목표 · TCP 1.1"),
                 ("START · STOP · RECOVER", "부록 A 미승인 · 미전송"),
-                ("링크 채널 선택", "D 표시 선택 · C 요청 없음" if self.relay else "부록 B 미승인 · 미전송"),
+                ("링크 채널 선택", "누를 때 영상 연결로 요청 · 임시 형식 · C 미적용" if self.relay else "부록 B 미승인 · 미전송"),
             ]
             for value, (_name, text) in zip(self._rows(command_card, rows), rows):
                 self._fit_labels.append(self._elidable(value, text))   # 1180 폭에서도 칸을 넓히지 않게
@@ -663,10 +664,10 @@ class MainWindow(QMainWindow):
         self._update_command_controls()
 
     def _add_mode_buttons(self, row) -> None:
-        """링크 raw/detect/center 표시 선택. 모의와 C 중계에서만 켠다. C 에 요청을 보내지 않는다."""
+        """링크 raw/detect/center 선택. 모의와 C 중계에서만 켠다. 중계면 누를 때 영상 연결로 요청을 보낸다."""
         for mode, name in (("raw", "raw 원본"), ("detect", "detect 검출"), ("center", "center 중심점")):
             tip = ("D 내부 모의 영상 선택" if self.demo else
-                   "D 화면의 표시 선택입니다. C 송출을 바꾸지 않으며 해당 영상이 오기 전에는 수신 대기로 보입니다."
+                   "영상 연결로 C 에 링크 표시 요청을 보냅니다(임시 형식, C 적용 미확인). 해당 영상이 오기 전에는 수신 대기로 보입니다."
                    if self.relay else "C 표시 연결 형식 미결")
             button = pill(name, tooltip=tip, checkable=True)   # 눌린 상태가 지금 고른 표시 종류다
             button.setEnabled(self.display is not None)
@@ -678,7 +679,9 @@ class MainWindow(QMainWindow):
             self.mode_buttons.append(button)
 
     def _select_link_mode(self, mode: str) -> None:
-        self.display.set_mode(mode)   # D 화면 표시만 바뀐다. C 에 보내는 요청은 없다
+        self.display.set_mode(mode)   # 화면은 고른 종류만 보이고, 그 영상이 올 때까지 수신 대기다
+        if self.relay:
+            self.view.request_variant(mode)   # 실패·미연결은 _display_wait 가 「미송신」으로 보인다. 자동 재시도 없음
         for button in self.mode_buttons:   # 조작·설정과 운영 화면의 선택을 같게 맞춘다
             button.setChecked(button._mode == mode)
 
@@ -1037,7 +1040,9 @@ class MainWindow(QMainWindow):
         if self.view.state != "connected":
             return "empty", "C 영상 중계 연결 안 됨"
         if channel == "link" and variant != "raw":
-            return "waiting", f"링크 {variant} 표시 선택 · 수신 대기. C 중계는 지금 raw 만 보냅니다(raw 로 대신 보이지 않음)"
+            sent = ("요청 송신됨 · C 적용 미확인" if self.view.requested_variant == variant
+                    else "요청 미송신(다시 누르면 송신)")
+            return "waiting", f"링크 {variant} {sent} · 수신 대기(raw 로 대신 보이지 않음)"
         return "waiting", f"{CHANNEL_NAMES[channel]} 새 프레임 수신 대기 또는 노후"
 
     def _relay_status(self) -> None:
