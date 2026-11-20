@@ -191,6 +191,16 @@ class HandoffProbe:
             print(f"[C handoff] {common} data={extras}", flush=True)
 
     def _consume(self) -> None:
+        try:
+            self._consume_loop()
+        except Exception as exc:
+            # A consumer crash must fail-stop the producer through the handoff contract;
+            # otherwise the worker can disappear silently while A keeps producing.
+            reason = f"{type(exc).__name__}: {exc}"
+            print(f"[C handoff] consumer failed: {reason}", flush=True)
+            self._handoff.report_consumer_failure(reason)
+
+    def _consume_loop(self) -> None:
         while True:
             # Clear before draining so a producer notification during the drain is retained.
             self.wakeup.clear()

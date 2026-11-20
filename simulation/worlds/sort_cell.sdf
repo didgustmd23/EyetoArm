@@ -55,7 +55,7 @@
     <include><uri>model://sort_bin_nut</uri><name>bin_nut</name><pose>0.55 0.70 0 0 0 0</pose></include>
 
     <!-- 외형 확인용 부품(벨트 위). 볼트는 옆으로 눕힌 자세(축이 X) -->
-    <include><uri>model://bolt_m6x12</uri><name>part_00</name><pose>0.55 -0.30 0.105 0 1.5708 0</pose></include>
+    <include><uri>model://bolt_m3x20</uri><name>part_00</name><pose>0.55 -0.30 0.105 0 1.5708 0</pose></include>
     <include><uri>model://bolt_m6x40</uri><name>part_01</name><pose>0.55 -0.15 0.105 0 1.5708 0</pose></include>
     <include><uri>model://nut_m6</uri><name>part_02</name><pose>0.55 0.00 0.1005 0 0 0</pose></include>
 

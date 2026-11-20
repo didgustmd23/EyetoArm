@@ -1,24 +1,29 @@
-# C raw camera relay
+# C video relay and B input receivers
 
-`display_relay` subscribes to three Gazebo image topics and sends the newest changed JPEG frame from each over TCP port `47092` using the prototype `ETV1` envelope. It is separate from command/status TCP (`47090`) and the legacy D-only single-image relay (`47091`).
+`display_relay` sends the latest changed ETV1/JPEG frame over TCP `47092`. It accepts Gazebo raw cameras, A's current AI detect frames, and B's center-overlay image. It is separate from command/status TCP (`47090`).
 
-| Channel | ROS topic | Source ID |
+| Input | Receive path | Relay representation |
 | --- | --- | --- |
-| `link` | `/link_cam/image` | `gz_link` |
-| `gripper` | `/gripper_cam/image` | `gz_gripper` |
-| `fixed` (top view) | `/overview_cam/image` | `gz_fixed` |
+| Gazebo link / gripper / fixed cameras | ROS `sensor_msgs/Image` | `link/raw`, `gripper/raw`, `fixed/raw` |
+| A AI detect frame | AToCHandoff consumer in `run_pipeline.py` → local TCP `127.0.0.1:47093` | `link/detect` |
+| B center-overlay frame | ROS `sensor_msgs/Image`, default `/b/center_overlay/image` (`--center-topic` overrides it) | `link/center` |
+
+The center-image subscription assigns C-side display sequence metadata because a plain ROS `Image` does not carry the full B frame identity. It is for video display; it does not synchronize a center image with a B sort goal or authorize a robot action.
+
+`sort_goal_receiver` provides the B→C ROS action server `/sort_part` using `eyetoarm_interfaces/action/SortPart`. It logs received goal fields and acknowledges receipt. Until the robot execution backend is connected, it returns `FAILED / EXECUTION_NOT_CONFIGURED`; it does not move the robot or report a sort as successful.
 
 ## Run in WSL
 
-Launch the simulation, which starts the ROS/Gazebo bridges, in one ROS-sourced terminal. In another terminal (build the package first if `robot_ws/install` is not present or the entry point has not been installed):
+Build and source the workspace:
 
 ```bash
 cd ~/EyetoArm/robot_ws
 source /opt/ros/jazzy/setup.bash
-colcon build --packages-select robot_server_package
+colcon build --packages-select eyetoarm_interfaces robot_server_package
+source install/setup.bash
 ```
 
-Then source the workspace and run the relay:
+Run the video relay in one terminal:
 
 ```bash
 cd ~/EyetoArm
@@ -27,8 +32,17 @@ source robot_ws/install/setup.bash
 ros2 run robot_server_package display_relay
 ```
 
-The relay listens on `0.0.0.0:47092` by default. `--host` and `--port` can override the bind address and port. The command/status server and this image relay are separate processes.
+Run B's action receiver in another terminal:
 
-## Current verification boundary
+```bash
+cd ~/EyetoArm
+source /opt/ros/jazzy/setup.bash
+source robot_ws/install/setup.bash
+ros2 run robot_server_package sort_goal_receiver
+```
 
-A Windows TCP test client received packets for all three channels. JPEG byte decoding still needs a corrected signature check or an image decoder. D's `window.py` does not currently receive this `ETV1` stream; its existing `--view camera` mode uses the legacy 47091 `EAV1` stream from `/appearance_check/image`. D GUI integration, A detect handoff, B center frames, result/invalidation events, mode requests and reconnect/session synchronization are not implemented in this relay prototype. The 47092 port and `ETV1` packet are implementation details pending C/D agreement, not an approved interface contract.
+The relay listens on `0.0.0.0:47092` for D and `127.0.0.1:47093` for the local A handoff. The B center topic can be changed with `--center-topic` if B publishes it under another agreed name.
+
+## Boundary
+
+The receiver and relay paths are implemented in C, but need a live integrated run to confirm B's publisher uses the agreed topic and message type. The center feed does not yet preserve B's run/image/generation identifiers. The action receiver is receipt-only; planning, execution, cancellation-to-stop behavior, and success/arrival reporting remain outside this receiver step. D's GUI selection signal must be connected by D so C can send `raw`, `detect`, or `center` on request.
