@@ -18,8 +18,9 @@ from __future__ import annotations
 import math
 import time
 from collections import deque
+from functools import lru_cache
 
-from PySide6.QtCore import QPointF, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QHeaderView, QLabel, QPushButton, QSizePolicy,
@@ -218,6 +219,182 @@ class PageZoom(QWidget):
         painter.scale(scale, scale)
         painter.translate(-self.width() / 2.0, -self.height() / 2.0)
         painter.drawPixmap(self.rect(), self._pixmap)
+
+
+def _angle_gap(a: float, b: float) -> float:
+    return abs((a - b + math.pi) % (2.0 * math.pi) - math.pi)
+
+
+# 잠식 효과의 촉수: (방향 rad, 길이, 폭 rad). 실행할 때마다 같은 모양이 되도록 난수 대신 고정 식으로 만든다
+_TENDRILS = [(k * 2.0 * math.pi / 11 + 0.4 * math.sin(k * 12.9898),
+              0.16 + 0.30 * abs(math.sin(k * 78.233)),
+              0.05 + 0.07 * abs(math.sin(k * 37.719))) for k in range(11)]
+_BLOB_STEPS = 180
+
+
+@lru_cache(maxsize=2)
+def _ink_arrival(width: int, height: int, ox: int, oy: int) -> QImage:
+    """Pixel index = when the new theme reaches it; both colours follow the same outward flow."""
+    longest = max(width, height, 1)
+    cols = max(4, 4 * math.ceil(80 * width / longest))
+    rows = max(2, round(320 * height / longest))
+    reach = max(math.hypot(ox-x, oy-y) for x in (0, width) for y in (0, height)) / longest
+    data = bytearray(cols * rows)
+    sin = math.sin
+    for row in range(rows):
+        y = ((row + .5) * height / rows - oy) / longest
+        for col in range(cols):
+            x = ((col + .5) * width / cols - ox) / longest
+            distance = math.hypot(x, y)
+            # Bend the fine veins around broad lobes so the moving edge splits and rejoins.
+            u = x + .073 * sin(10*y + 2*sin(9*x)) + .028 * sin(25*y - 12*x)
+            v = y + .080 * sin(9*x - 5*y) + .029 * sin(22*x + 10*y)
+            fold = sin(23*u + 13*v + 2.7*sin(14*v - 6*u))
+            fine = sin(49*v - 11*u + 4.9*fold)
+            grain = (.058*sin(10*u - 8*v) + .034*fold
+                     + .023*fine + .010*sin(104*x + 71*y + 4.6*fine) + .003*sin(191*v - 74*u + 3.3*fine))
+            arrival = distance + min(1, 6*distance) * grain
+            data[row*cols + col] = min(255, max(0, round(255 * arrival / (reach + .12))))
+    return QImage(data, cols, rows, cols, QImage.Format.Format_Indexed8).copy()
+
+
+class ThemeWipe(QWidget):
+    """Reveal the live theme through the old snapshot, leaving the video stage uncovered."""
+
+    STYLES = {"ink": "번짐", "venom": "잠식", "tiles": "타일"}
+    TILE = 96   # 타일 한 변(px)
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.style = "ink"
+        self._pixmap: QPixmap | None = None
+        self._progress = 0.0
+        self._spreading = True
+        self._origin = QPointF()
+        self._reach = 1.0
+        self._keep: QRect | None = None
+        self._animation = None
+        self._ink_field = self._ink_base = None
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)   # 전환 중에도 아래 화면을 바로 누를 수 있다
+        self.hide()
+
+    def stop(self) -> None:
+        if self._animation is not None:
+            self._animation.stop()
+        self._animation = self._pixmap = self._ink_field = self._ink_base = None
+        self.hide()
+
+    def play(self, pixmap: QPixmap, origin: QPointF, spreading: bool, keep: QRect | None = None) -> None:
+        """pixmap: 옛 테마의 창 그림. origin: 누른 버튼의 가운데. spreading: 다크로 갈 때 True."""
+        self.stop()
+        if motion.is_reduced() or pixmap.isNull():
+            return
+        self._pixmap, self._origin, self._spreading, self._keep, self._progress = pixmap, QPointF(origin), spreading, keep, 0.0
+        self.setGeometry(self.parentWidget().rect())
+        self._active_style = self.style
+        if self._active_style == "ink":
+            self._ink_field = _ink_arrival(self.width(), self.height(), round(origin.x()), round(origin.y()))
+            self._ink_base = pixmap.toImage().convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+        # 얼룩이 다 컸을 때 가장 먼 모서리까지 덮는 반지름(여유 2%)
+        self._reach = 1.02 * max(math.hypot(origin.x() - x, origin.y() - y)
+                                 for x in (0, self.width()) for y in (0, self.height()))
+        self.raise_()
+        self.show()
+
+        def step(value: float) -> None:
+            if self.parentWidget().size() != self.size() or motion.is_reduced():
+                self.stop()
+                return
+            self._progress = float(value)
+            self.update()
+
+        duration = theme.MS_INK if self._active_style == "ink" else theme.MS_THEME
+        curve = QEasingCurve.Type.InOutSine if self._active_style == "ink" else motion.EASE_IO
+        self._animation = motion.tween(self, 0.0, 1.0, duration, step, curve, self.stop)
+
+    def _paint_ink(self, painter: QPainter) -> None:
+        if self._progress <= 0:
+            painter.drawPixmap(self.rect(), self._pixmap)
+            return
+        if self._progress >= 1:
+            return
+        threshold = self._progress * 256
+        cut = int(threshold)
+        mask = QImage(self._ink_field)
+        mask.setColorTable([0] * cut + [round(255*(1-threshold+cut)) << 24] + [0xff000000] * (255-cut))
+        layer = self._ink_base.copy()
+        with QPainter(layer) as blend:
+            blend.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            blend.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+            blend.drawImage(QRectF(self.rect()), mask.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied))
+        painter.drawImage(self.rect(), layer)
+
+    def blob(self, size: float) -> QPainterPath:
+        """어두운 얼룩의 외곽. size 0 이면 점, 1 이면 창 전체를 덮는다. 중간에서만 가장자리가 흐트러진다."""
+        lead = math.sin(math.pi * size)   # 처음과 끝에서 0. 그래서 시작과 끝 모양은 두 효과가 같다
+        path = QPainterPath()
+        path.setFillRule(Qt.FillRule.WindingFill)
+        for index in range(_BLOB_STEPS):
+            angle = 2.0 * math.pi * index / _BLOB_STEPS
+            ahead = sum(length * math.exp(-(_angle_gap(angle, at + 0.25 * math.sin(size * 7.0 + k)) / width) ** 2)
+                        for k, (at, length, width) in enumerate(_TENDRILS))
+            radius = size + lead * (ahead + 0.02 * math.sin(9.0 * angle + 12.0 * size))
+            point = self._origin + QPointF(math.cos(angle), math.sin(angle)) * (radius * self._reach)
+            path.lineTo(point) if index else path.moveTo(point)
+        path.closeSubpath()
+        return path
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        if self._pixmap is None:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        shown = QPainterPath()          # 덮어도 되는 영역(창에서 영상 영역을 뺀 곳)
+        shown.addRect(QRectF(self.rect()))
+        if self._keep is not None:
+            hole = QPainterPath()
+            hole.addRect(QRectF(self._keep))
+            shown = shown.subtracted(hole)
+        painter.setClipPath(shown)
+        if self._active_style == "ink":
+            self._paint_ink(painter)
+            return
+        if self._active_style == "tiles":
+            self._paint_tiles(painter)
+            return
+        blob = self.blob(self._progress if self._spreading else 1.0 - self._progress)
+        # 옛 그림이 남는 곳: 다크로 갈 때는 얼룩 바깥(밝은 옛 화면), 라이트로 갈 때는 얼룩 안(어두운 옛 화면)
+        painter.setClipPath(shown.subtracted(blob) if self._spreading else shown.intersected(blob))
+        painter.drawPixmap(self.rect(), self._pixmap)
+        painter.setClipPath(shown)
+        painter.strokePath(blob, QPen(QColor("#060607"), 5.0))
+
+
+    def tile_turn(self, column: int, row: int, progress: float) -> float:
+        """타일 하나가 넘어간 정도(0 옛 면 그대로 ~ 1 다 넘어감).
+
+        버튼에서 왼쪽 아래 모서리로 가는 대각선 위에서 얼마나 나아간 자리인지(far 0~1)로 시작 시각을 정한다.
+        """
+        tile = self.TILE
+        across, down = -self._origin.x(), self.height() - self._origin.y()   # 버튼 → 왼쪽 아래 모서리
+        far = (((column + 0.5) * tile - self._origin.x()) * across + ((row + 0.5) * tile - self._origin.y()) * down)             / max(1.0, across * across + down * down)
+        delay = 0.72 * min(1.0, max(0.0, far)) + 0.06 * ((column + row) % 2)
+        return min(1.0, max(0.0, (progress - delay) / 0.22))
+
+    def _paint_tiles(self, painter: QPainter) -> None:
+        tile = self.TILE
+        ratio = self._pixmap.devicePixelRatio()
+        for row in range(self.height() // tile + 1):
+            for column in range(self.width() // tile + 1):
+                turn = self.tile_turn(column, row, self._progress)
+                if turn >= 1.0:
+                    continue   # 다 넘어간 타일: 아래의 새 테마가 보인다
+                cell = QRectF(column * tile, row * tile, tile, tile)
+                height = tile * math.cos(turn * math.pi / 2.0)   # 아랫변을 축으로 아래로 넘어간다
+                target = QRectF(cell.x(), cell.bottom() - height, tile, height)
+                source = QRectF(cell.x() * ratio, cell.y() * ratio, tile * ratio, tile * ratio)
+                painter.drawPixmap(target, self._pixmap, source)
+                painter.fillRect(target, QColor(0, 0, 0, round(110 * turn)))   # 돌아가는 면의 그늘
 
 
 class KeyHint(QLabel):

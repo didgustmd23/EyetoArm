@@ -1,34 +1,27 @@
-"""표지 화면: 앱을 켜면 대시보드 위에 잠깐 덮이고, UR5e 그림이 인사하듯 손을 흔든다.
-
-[담당] D 전용. 사용자 지정 2026-11-20.
-[꾸밈일 뿐이다] 이 로봇은 QPainter 로 그린 그림이다. Gazebo 로봇·실제 관절 자세·C 서버 상태와 무관하다.
-  표지가 떠 있는 동안에도 아래 창의 연결·수신·기록은 평소대로 시작한다(표지가 막거나 늦추지 않는다).
-  표지는 정해진 시간 뒤에 사라질 뿐이며 「불러오는 중」이나 준비 완료를 뜻하지 않는다.
-[닫기] HOLD_MS 뒤 자동으로, 또는 클릭·Enter·Space·Esc 로 바로 닫힌다. 닫히면 finished 신호를 한 번 낸다.
-[모션 줄이기] 팔을 든 자세로 멈춘 그림만 보이고 곧 닫힌다. 흔들림·흐려짐이 없다.
-[그림 자산 없음] 로고·사진·3D 모델 파일을 쓰지 않는다. 선과 원으로만 그린다(회색 팔 + 파란 관절 덮개 + 손에 든 「Welcome」 피켓).
-"""
+"""Eye To Arm 키네틱 타이포 표지. 카메라 좌표와 로봇 작업 좌표의 정렬을 활자로 표현한다."""
 
 from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QRadialGradient
-from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
+from PySide6.QtCore import QEasingCurve, QElapsedTimer, QEvent, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtWidgets import QWidget
 
 from eyetoarm.gui import motion, theme
 
 HOLD_MS = 3600        # 표지가 떠 있는 시간
-RISE_MS = 900         # 접힌 팔이 일어서는 시간
-FADE_MS = 360         # 닫힐 때 흐려지는 시간
-STILL_MS = 1200       # 모션 줄이기일 때 멈춘 그림을 보여 주는 시간
+IRIS_MS = 1450        # 타이틀에서 운영 화면으로 조리개가 열리는 시간
+FADE_MS = 360         # 수동 건너뛰기의 짧은 전환 시간
+STILL_MS = 1200       # 모션 줄이기일 때 완성 타이틀을 보여 주는 시간
+_SKIP_KEYS = (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space, Qt.Key.Key_Escape)
+
+# 이전 호출자가 사용하는 자세 계산 API. 타이포 표지에는 쓰지 않는다.
+RISE_MS = 900
 WAVE_HZ = 1.7         # 손을 흔드는 빠르기(1초에 왕복 횟수)
 
 _FOLDED = (-62.0, 128.0, 10.0)   # (어깨, 팔꿈치, 손목) 각도. 도. 위쪽이 0, 시계 방향이 +, 앞 마디 기준 상대각
 _RAISED = (-14.0, 24.0, 0.0)
-_LINK = "#D3D8DF"                # 팔 마디(밝은 회색)
-_CAP = "#4DB5FF"                 # 관절 덮개(파랑)
 
 
 def wave_pose(ms: float) -> tuple[float, float, float, float]:
@@ -55,6 +48,149 @@ def _font(px: float, weight: int, mono: bool = False) -> QFont:
     return font
 
 
+def _ease(ms: float, start: float, end: float) -> float:
+    t = min(1.0, max(0.0, (ms - start) / (end - start)))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _mix(a: float, b: float, t: float) -> float:
+    return a + (b - a) * t
+
+
+def _lettering(word: str, weight: int) -> QPainterPath:
+    font = QFont()
+    font.setFamilies(["Bahnschrift", "Archivo Narrow", *theme.FONT_FAMILIES, "DejaVu Sans"])
+    font.setPixelSize(200)
+    font.setWeight(QFont.Weight(weight))
+    font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, -7)
+    font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+    path = QPainterPath()
+    path.addText(QPointF(0, 0), font, word)
+    path.translate(-path.boundingRect().left(), 0)
+    return path
+
+
+def _print_word(p: QPainter, path: QPainterPath, x: float, baseline: float, scale: float,
+                shear: float, direction: int, ms: float, ink: QColor) -> None:
+    p.save()
+    p.translate(x, baseline)
+    p.scale(scale, scale)
+    p.shear(shear, 0)
+    if ms >= 950 or direction == 0:
+        p.fillPath(path, ink)
+    else:
+        # Move three horizontal exposures separately, then draw one continuous outline.
+        bounds = path.boundingRect().adjusted(-1, -1, 1, 1)
+        cuts = (0.0, .36, .69, 1.0)
+        for i, offset in enumerate((135, -92, 63)):
+            travel = 1 - _ease(ms, 75*i, 670+140*i)
+            top = bounds.top() + bounds.height()*cuts[i]
+            band = QRectF(-200, top, bounds.width()+400, bounds.height()*(cuts[i+1]-cuts[i]))
+            p.save()
+            p.setClipRect(band, Qt.ClipOperation.IntersectClip)
+            p.translate(direction * offset * travel, 0)
+            p.fillPath(path, ink)
+            p.restore()
+    p.restore()
+
+
+class _SpiralIris(QWidget):
+    """Only the curved blades are painted. The dashboard stays live inside the opening."""
+
+    def __init__(self, parent: QWidget, title: QPixmap, duration: int) -> None:
+        super().__init__(parent)
+        self._title = title
+        self._progress = 0.0
+        self.setGeometry(parent.rect())
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAccessibleName("대시보드 열기")
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.show()
+        self.raise_()
+        self.setFocus()
+        motion.tween(self, 0.0, 1.0, duration, self._advance, QEasingCurve.Type.Linear, self.close)
+
+    def _advance(self, progress: float) -> None:
+        self._progress = progress
+        if progress >= .18 and not self._title.isNull():
+            self._title = QPixmap()
+        self.setGeometry(self.parentWidget().rect())
+        self.update()
+
+    def mousePressEvent(self, _event) -> None:  # noqa: N802
+        self.close()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in _SKIP_KEYS:
+            self.close()
+        else:
+            super().keyPressEvent(event)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        t = self._progress
+        opening = _ease(t, .18, .99)
+        if opening >= 1:
+            return
+        w, h = self.width(), self.height()
+        centre = QPointF(w * _mix(.60, .53, opening), h * .5)
+        reach = math.hypot(max(centre.x(), w-centre.x()), h/2)
+        radius, outer = 1.12 * reach * opening, 1.30 * reach
+        span = outer - radius
+        angle = -1.4 + 1.45 * _ease(t, 0, 1)
+        step = math.tau / 8
+
+        def radial(a):
+            return QPointF(math.cos(a), math.sin(a))
+
+        hole = QPainterPath()
+        hole.moveTo(centre + radial(angle)*radius)
+        for i in range(8):
+            a = angle + i*step
+            unit, tangent = radial(a), radial(a + math.pi/2)
+            tip = centre + unit*radius
+            next_tip = centre + radial(a+step)*radius
+            hole.cubicTo(tip + (tangent*.40 + unit*.05)*radius,
+                         next_tip - radial(a+step+math.pi/2)*(.22*radius), next_tip)
+
+        hole.closeSubpath()
+        # Radial speed starts at zero: each tapered seam leaves the aperture tangentially.
+        previous = QPointF(radius, 0)
+        seam = QPainterPath(previous)
+        far_edge = []
+        for j in range(1, 41):
+            s = j / 40
+            distance = radius + span * s*s*(2-s)
+            twist = 1.72 * s*(1.65-.65*s)
+            point = radial(twist)*distance
+            delta = point - previous
+            length = math.hypot(delta.x(), delta.y())
+            width = min(w, h) * .029 * s*(2-s)
+            seam.lineTo(point)
+            far_edge.append(point + QPointF(delta.y(), -delta.x()) * (width / max(length, .001)))
+            previous = point
+        for point in reversed(far_edge):
+            seam.lineTo(point)
+        seam.closeSubpath()
+        blades = QPainterPath()
+        blades.setFillRule(Qt.FillRule.OddEvenFill)
+        blades.addRect(QRectF(self.rect()))
+        blades.addPath(hole)
+        with QPainter(self) as p:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.fillPath(blades, QColor("#161817"))
+            p.save()
+            p.translate(centre)
+            p.rotate(math.degrees(angle))
+            edge = QColor("#e9e9e2")
+            for _ in range(8):
+                p.fillPath(seam, edge)
+                p.rotate(45)
+            p.restore()
+            if not self._title.isNull():
+                p.setOpacity(1 - _ease(t, 0, .18))
+                p.drawPixmap(self.rect(), self._title)
+
+
 class CoverScreen(QWidget):
     """parent 를 꽉 덮는 표지. 만들면 바로 보이고, 닫힌 뒤 스스로 지워진다."""
 
@@ -62,13 +198,15 @@ class CoverScreen(QWidget):
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
+        self._words = tuple(_lettering(word, weight) for word, weight in (("Eye", 700), ("To", 350), ("Arm", 700)))
+        self._widths = tuple(path.boundingRect().width() for path in self._words)
         self._clock = QElapsedTimer()
         self._clock.start()
         self._closing = False
         self._ticker = QTimer(self, interval=16)
         self._ticker.timeout.connect(self._tick)
-        self.setAccessibleName("표지 화면")
-        self.setAccessibleDescription("UR5e 그림이 인사합니다. 클릭하거나 Enter 를 누르면 대시보드로 넘어갑니다.")
+        self.setAccessibleName("Eye To Arm")
+        self.setAccessibleDescription("영상 좌표와 로봇 작업 좌표를 뜻하는 글자가 Eye To Arm으로 정렬됩니다. 클릭하거나 Enter를 눌러 건너뛸 수 있습니다.")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         parent.installEventFilter(self)   # 창 크기가 바뀌면 따라서 덮는다
@@ -86,16 +224,14 @@ class CoverScreen(QWidget):
         if self._closing:
             return
         self._closing = True
-
-        def end() -> None:
-            self._ticker.stop()
-            self.hide()
-            self.finished.emit()
-            self.deleteLater()
-
-        effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(effect)
-        motion.tween(self, 1.0, 0.0, FADE_MS, effect.setOpacity, done=end)   # 모션 줄이기면 즉시 닫힌다
+        self._ticker.stop()
+        if not motion.is_reduced():
+            duration = IRIS_MS if self._clock.elapsed() >= HOLD_MS else FADE_MS
+            _SpiralIris(self.parentWidget(), self.grab(), duration)
+        self.hide()
+        # Start the dashboard's staggered entrance behind the iris, before it becomes visible.
+        self.finished.emit()
+        self.deleteLater()
 
     # ── 입력 ────────────────────────────────────────────────────────────
 
@@ -108,7 +244,7 @@ class CoverScreen(QWidget):
         self.dismiss()
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space, Qt.Key.Key_Escape):
+        if event.key() in _SKIP_KEYS:
             self.dismiss()
         else:
             super().keyPressEvent(event)
@@ -121,139 +257,74 @@ class CoverScreen(QWidget):
     # ── 그리기 ──────────────────────────────────────────────────────────
 
     def paintEvent(self, _event) -> None:  # noqa: N802
-        ms = float(RISE_MS + 400) if motion.is_reduced() else float(self._clock.elapsed())
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        width, height = self.width(), self.height()
-        unit = min(width, height) / 820.0   # 창 크기에 맞춰 그림 전체를 키우거나 줄인다
+        with QPainter(self) as painter:
+            self._paint_frame(painter, HOLD_MS if motion.is_reduced() else self._clock.elapsed())
 
-        background = QLinearGradient(0, 0, width, height)
-        background.setColorAt(0.0, QColor(theme.GLOW_A))
-        background.setColorAt(0.25, QColor(theme.BG))
-        background.setColorAt(0.75, QColor(theme.BG))
-        background.setColorAt(1.0, QColor(theme.GLOW_B))
-        painter.fillRect(self.rect(), background)
+    def _paint_frame(self, p: QPainter, ms: float) -> None:
+        dark = theme.name == "dark"
+        paper = QColor("#191b1a" if dark else "#eeece5")
+        ink = QColor("#eeece4" if dark else "#1d201e")
+        muted = QColor("#b3b5aa" if dark else "#50574e")
+        hairline = QColor("#4e534c" if dark else "#b9bcb0")
+        copper = QColor("#dc946c" if dark else "#a74f30")
+        p.fillRect(self.rect(), paper)
+        scale = min(self.width() / 1000, self.height() / 580)
+        if scale <= 0:
+            return
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        p.translate((self.width() - 1000*scale)/2, (self.height() - 580*scale)/2)
+        p.scale(scale, scale)
+        left, right = 52, 948
+        p.setPen(QPen(hairline, 1))
+        p.drawLine(QPointF(left, 65), QPointF(right, 65))
+        p.drawLine(QPointF(left, 515), QPointF(right, 515))
+        p.setFont(_font(13, 600, True))
+        p.setPen(muted)
+        p.drawText(QPointF(left, 53), "MACHINE VISION")
 
-        base = QPointF(width / 2.0, height * 0.46 + 150.0 * unit)
-        halo = QRadialGradient(QPointF(base.x(), base.y() - 150.0 * unit), 330.0 * unit)
-        glow = QColor(theme.ACCENT)
-        glow.setAlpha(34 if theme.name == "dark" else 70)
-        halo.setColorAt(0.0, glow)
-        halo.setColorAt(1.0, QColor(0, 0, 0, 0))
-        painter.fillRect(self.rect(), halo)
+        eye, to, arm = self._words
+        gap = 30
+        fit = (right-left - 2*gap) / sum(self._widths)
+        eye_w, to_w, arm_w = self._widths
+        centre_x = left + eye_w*fit + gap
+        arm_x = right - arm_w*fit
+        acquire = _ease(ms, 0, 980)
+        align = _ease(ms, 1300, 2610)
+        transfer = _ease(ms, 930, 2510)
+        baseline = 339
 
-        self._draw_robot(painter, base, unit, ms)
-        self._draw_text(painter, base, unit, ms)
+        # The same registration line travels from the image plane to the working plane.
+        # It contracts to a short calibration mark below the connecting word.
+        datum_y = _mix(278, 403, align)
+        arrival_x = _mix(550, centre_x+to_w*fit, transfer)
+        depart_x = _mix(450, centre_x, transfer)
+        p.save()
+        p.setOpacity(_ease(ms, 500, 980))
+        p.setPen(QPen(copper, 1.4))
+        p.drawLine(QPointF(depart_x, datum_y), QPointF(arrival_x, datum_y))
+        p.drawLine(QPointF(depart_x, datum_y-4), QPointF(depart_x, datum_y+4))
+        p.drawLine(QPointF(arrival_x, datum_y-4), QPointF(arrival_x, datum_y+4))
+        p.setFont(_font(12, 500, True))
+        p.setPen(muted)
+        p.drawText(QRectF(depart_x-20, datum_y+8, arrival_x-depart_x+40, 23),
+                   Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, "px → mm")
+        p.restore()
 
-    def _draw_robot(self, painter: QPainter, base: QPointF, unit: float, ms: float) -> None:
-        shoulder_angle, elbow_angle, wrist_angle, strength = wave_pose(ms)
-
-        def step(origin: QPointF, degrees: float, length: float) -> QPointF:
-            radians = math.radians(degrees)
-            return QPointF(origin.x() + math.sin(radians) * length * unit, origin.y() - math.cos(radians) * length * unit)
-
-        shoulder = QPointF(base.x(), base.y() - 46.0 * unit)
-        elbow = step(shoulder, shoulder_angle, 128.0)
-        wrist = step(elbow, shoulder_angle + elbow_angle, 112.0)
-        hand_angle = shoulder_angle + elbow_angle + wrist_angle
-        palm = step(wrist, hand_angle, 40.0)
-
-        edge = QColor(theme.DIM)
-        edge.setAlpha(150)
-        link = QColor(_LINK)
-
-        # 받침대
-        painter.setPen(QPen(edge, 1.5 * unit))
-        painter.setBrush(QColor(theme.SURFACE_2))
-        painter.drawRoundedRect(QRectF(base.x() - 62.0 * unit, base.y() - 6.0 * unit, 124.0 * unit, 22.0 * unit), 8.0 * unit, 8.0 * unit)
-        painter.setBrush(link)
-        painter.drawRoundedRect(QRectF(base.x() - 26.0 * unit, base.y() - 46.0 * unit, 52.0 * unit, 42.0 * unit), 10.0 * unit, 10.0 * unit)
-
-        # 마디: 굵은 둥근 선. 아래에 어두운 선을 한 번 더 그어 테두리를 만든다
-        for start, end, thickness in ((shoulder, elbow, 30.0), (elbow, wrist, 24.0), (wrist, palm, 18.0)):
-            for color, extra in ((edge, 3.0), (link, 0.0)):
-                pen = QPen(color, (thickness + extra) * unit)
-                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-                painter.setPen(pen)
-                painter.drawLine(start, end)
-
-        radians = math.radians(hand_angle)
-        along = QPointF(math.sin(radians), -math.cos(radians))
-        across = QPointF(along.y(), -along.x())
-
-        # 피켓(사용자 지정 2026-11-20): 손에 쥔 막대와 「Welcome」 판. 손과 함께 기울어 흔들린다. 손가락보다 먼저 그려 쥔 것처럼 보이게 한다
-        pole_end = QPointF(palm.x() + along.x() * 46.0 * unit, palm.y() + along.y() * 46.0 * unit)
-        for color, thickness in ((edge, 9.0), (QColor(theme.SURFACE_2), 6.0)):
-            pen = QPen(color, thickness * unit)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-            painter.drawLine(palm, pole_end)
-        painter.save()
-        painter.translate(palm.x() + along.x() * 72.0 * unit, palm.y() + along.y() * 72.0 * unit)
-        painter.rotate(hand_angle)
-        board = QRectF(-82.0 * unit, -28.0 * unit, 164.0 * unit, 56.0 * unit)
-        painter.setPen(QPen(edge, 1.5 * unit))
-        painter.setBrush(QColor(theme.ACCENT))
-        painter.drawRoundedRect(board, 12.0 * unit, 12.0 * unit)
-        painter.setPen(QColor(theme.ON_ACCENT))
-        painter.setFont(_font(30.0 * unit, 800))
-        painter.drawText(board, Qt.AlignmentFlag.AlignCenter, "Welcome")
-        painter.restore()
-
-        # 손가락 두 개(2지 그리퍼)
-        for side in (-1.0, 1.0):
-            root = QPointF(palm.x() + across.x() * side * 11.0 * unit, palm.y() + across.y() * side * 11.0 * unit)
-            tip = QPointF(root.x() + along.x() * 26.0 * unit, root.y() + along.y() * 26.0 * unit)
-            pen = QPen(link, 7.0 * unit)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-            painter.drawLine(root, tip)
-
-        # 관절 덮개
-        for center, radius in ((shoulder, 22.0), (elbow, 19.0), (wrist, 15.0)):
-            painter.setPen(QPen(edge, 1.5 * unit))
-            painter.setBrush(QColor(_CAP))
-            painter.drawEllipse(center, radius * unit, radius * unit)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(theme.ON_ACCENT))
-            painter.drawEllipse(center, radius * 0.32 * unit, radius * 0.32 * unit)
-
-        # 피켓 양옆의 흔들림 선(인사 표시). 흔들기 시작하면 나타난다
-        if strength > 0.0:
-            mark = QColor(theme.ACCENT_INK)
-            mark.setAlphaF(0.75 * strength)
-            pen = QPen(mark, 4.0 * unit)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            for reach in (150.0, 170.0):
-                box = QRectF(wrist.x() - reach * unit, wrist.y() - reach * unit, 2 * reach * unit, 2 * reach * unit)
-                for side in (-1.0, 1.0):   # Qt 의 호 각도: 3시 방향이 0, 반시계가 +
-                    painter.drawArc(box, round((90.0 - hand_angle + side * 46.0 - 6.0) * 16), round(12.0 * 16))
-
-    def _draw_text(self, painter: QPainter, base: QPointF, unit: float, ms: float) -> None:
-        shown = max(0.0, min(1.0, (ms - 300.0) / 500.0))   # 글자는 팔이 일어서는 동안 올라오며 나타난다
-        lift = (1.0 - shown) * 14.0 * unit
-        painter.setOpacity(shown)
-        painter.setPen(QColor(theme.DIM))
-        painter.setFont(_font(12.0 * unit, 700, mono=True))
-        painter.drawText(QRectF(0, base.y() + 46.0 * unit + lift, self.width(), 20.0 * unit), Qt.AlignmentFlag.AlignCenter, "U R 5 e  ·  안녕하세요")
-        painter.setPen(QColor(theme.TEXT))
-        painter.setFont(_font(46.0 * unit, 800))
-        painter.drawText(QRectF(0, base.y() + 70.0 * unit + lift, self.width(), 62.0 * unit), Qt.AlignmentFlag.AlignCenter, "Eye To Arms")
-        painter.setPen(QColor(theme.DIM))
-        painter.setFont(_font(14.0 * unit, 500))
-        painter.drawText(QRectF(0, base.y() + 136.0 * unit + lift, self.width(), 24.0 * unit), Qt.AlignmentFlag.AlignCenter, "팀명: 좌표로")
-        painter.setOpacity(1.0)
-
-        # 아래: 닫는 방법과 남은 시간 줄(시간 표시일 뿐 불러오기 진행률이 아니다)
-        painter.setPen(QColor(theme.DIM))
-        painter.setFont(_font(11.0, 600, mono=True))
-        painter.drawText(QRectF(0, self.height() - 58.0, self.width(), 18.0), Qt.AlignmentFlag.AlignCenter, "클릭 · Enter 로 바로 시작")
-        track = QRectF(self.width() / 2.0 - 90.0, self.height() - 30.0, 180.0, 3.0)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(theme.LINE))
-        painter.drawRoundedRect(track, 1.5, 1.5)
-        if not motion.is_reduced():
-            painter.setBrush(QColor(theme.ACCENT_INK))
-            painter.drawRoundedRect(QRectF(track.left(), track.top(), track.width() * min(1.0, ms / HOLD_MS), track.height()), 1.5, 1.5)
+        p.save()
+        p.setClipRect(QRectF(left-4, 77, right-left+8, 423))
+        opening_scale = fit * 1.26
+        eye_start = _mix(239, left+7, acquire)
+        arm_start = _mix(432, right-arm_w*opening_scale-7, acquire)
+        lean = -.105 * (1-align)
+        _print_word(p, eye, _mix(eye_start, left, align), _mix(268, baseline, align),
+                    _mix(opening_scale, fit, align), lean, 1, ms, ink)
+        _print_word(p, arm, _mix(arm_start, arm_x, align), _mix(446, baseline, align),
+                    _mix(opening_scale, fit, align), lean, -1, ms, ink)
+        small = fit * .41
+        p.setOpacity(_ease(ms, 450, 960))
+        _print_word(p, to, _mix(500-to_w*small/2, centre_x, transfer),
+                    _mix(264, baseline, transfer), _mix(small, fit, transfer), 0, 0, ms, ink)
+        p.restore()
+        p.restore()

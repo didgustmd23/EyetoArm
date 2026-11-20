@@ -53,7 +53,7 @@ if not __package__:
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from PySide6.QtCore import QIODevice, QSaveFile, QSettings, Qt, QTimer
+from PySide6.QtCore import QIODevice, QPoint, QPointF, QRect, QSaveFile, QSettings, Qt, QTimer
 from PySide6.QtGui import QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QScrollArea, QStackedWidget,
@@ -65,7 +65,7 @@ from eyetoarm.gui.client import ACK_METRIC_BOUNDARY
 from eyetoarm.gui.gz_view_relay import DEFAULT_PORT as VIEW_PORT
 from eyetoarm.gui.relay_view import DEFAULT_PORT as RELAY_PORT
 from eyetoarm.gui.widgets import (
-    Card, DisplayStage, KeyHint, NavRail, PageZoom, RingProgress, StageStrip, StatusChip, TrafficTable, label, pill,
+    Card, DisplayStage, KeyHint, NavRail, PageZoom, RingProgress, StageStrip, StatusChip, ThemeWipe, TrafficTable, label, pill,
 )
 from eyetoarm.tcp.protocol import MoveTarget
 
@@ -126,6 +126,15 @@ class MainWindow(QMainWindow):
             button.clicked.connect(lambda _checked, k=key: self.set_theme(k))
             self.theme_buttons[key] = button
             theme_row.addWidget(button)
+        # 테마 전환 효과 선택(번짐 ↔ 잠식). 누를 때마다 바뀌고 다음 실행 때도 유지된다
+        self.theme_wipe = ThemeWipe(root)
+        self.reduce.toggled.connect(lambda reduced: self.theme_wipe.stop() if reduced else None)
+        self.fx_button = pill("", "small", "테마를 바꿀 때의 전환 효과를 고릅니다(번짐 → 잠식 → 타일).")
+        styles = list(ThemeWipe.STYLES)
+        self.fx_button.clicked.connect(
+            lambda: self.set_theme_fx(styles[(styles.index(self.theme_wipe.style) + 1) % len(styles)]))
+        theme_row.addWidget(self.fx_button)
+        self.set_theme_fx("ink", save=False)
         self.nav.footer.addWidget(self.source, 0, Qt.AlignmentFlag.AlignVCenter)
         self.nav.footer.addLayout(theme_row)
         self.nav.footer.addWidget(self.reduce)
@@ -768,6 +777,8 @@ class MainWindow(QMainWindow):
     def _show_page(self, index: int, animate: bool = True) -> None:
         """본문은 즉시 바뀐다. 떠나는 화면의 그림이 줌되며 옅어지고, 새 화면의 카드가 차례로 등장한다. 연결·기록은 건드리지 않는다."""
         previous = self.pages.currentIndex()
+        if index != previous:
+            self.theme_wipe.stop()
         # 떠나는 화면을 그림으로 찍어 둔다(영상 칸을 옮기기 전에). 새 화면은 그 아래에서 바로 살아 있다
         snapshot = (self.pages.grab() if animate and index != previous and self.pages.isVisible() and not motion.is_reduced()
                     else None)
@@ -799,8 +810,16 @@ class MainWindow(QMainWindow):
         2) 앱 전체 스타일시트를 다시 건다(QSS 로 꾸민 위젯)
         3) 색을 보관해 둔 위젯(refresh_theme 가 있는 것)을 맞추고, 직접 그리는 위젯을 다시 그린다
         """
+        previous = theme.name
+        root = self.centralWidget()
+        # 옛 테마의 창 그림. 전환 효과(ThemeWipe)가 새 테마 위에 잠깐 겹쳐 쓴다
+        snapshot = root.grab() if name != previous and self.isVisible() and not motion.is_reduced() else None
         theme.apply(name)
         QApplication.instance().setStyleSheet(theme.QSS)
+        if snapshot is not None and theme.name != previous:
+            button = self.theme_buttons[theme.name]
+            keep = QRect(self.stage.mapTo(root, QPoint(0, 0)), self.stage.size()) if self.stage.isVisible() else None
+            self.theme_wipe.play(snapshot, QPointF(button.mapTo(root, button.rect().center())), theme.name == "dark", keep)
         for widget in self.findChildren(QWidget):
             if hasattr(widget, "refresh_theme"):
                 widget.refresh_theme()
@@ -808,6 +827,13 @@ class MainWindow(QMainWindow):
         self.theme_buttons[theme.name].setChecked(True)
         if save:
             settings().setValue("theme", theme.name)
+
+    def set_theme_fx(self, style: str, save: bool = True) -> None:
+        """테마 전환 효과를 고른다(ink 번짐 · venom 잠식 · tiles 타일). 모르는 이름은 ink."""
+        self.theme_wipe.style = style if style in ThemeWipe.STYLES else "ink"
+        self.fx_button.setText(f"전환: {ThemeWipe.STYLES[self.theme_wipe.style]}")
+        if save:
+            settings().setValue("theme_fx", self.theme_wipe.style)
 
     # ══ 값 반영 ═════════════════════════════════════════════════════════════
 
@@ -1267,6 +1293,7 @@ def main(argv: list[str] | None = None) -> int:
             # C 영상 중계는 보통 명령 서버와 같은 C PC 에서 돈다. 따로 주면 그 주소를 쓴다
             view = RelayViewReceiver(args.view_host or link.host, args.view_port or RELAY_PORT)
     window = MainWindow(link, view, demo=args.demo, store=store)
+    window.set_theme_fx(str(store.value("theme_fx", "ink")), save=False)
     window.show()
     if args.page != 1:
         window._show_page(args.page)
