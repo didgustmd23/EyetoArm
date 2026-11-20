@@ -95,6 +95,8 @@ MS_FLASH = 520          # 상태 칸에 색이 한 번 쓸고 지나가는 시�
 MS_PAGE = 300           # 화면 전환 시 카드 등장
 MS_STAGGER = 55         # 카드가 차례로 등장할 때 간격
 MS_HINT = 900           # 단축키 표시가 떠 있는 시간
+MS_THEME = 780          # 잠식·타일
+MS_INK = 1750           # 버튼에서 반대 모서리까지 잉크가 번지는 시간
 
 _FONT = ", ".join(f'"{name}"' for name in FONT_FAMILIES)
 _MONO = ", ".join(f'"{name}"' for name in MONO_FAMILIES)
