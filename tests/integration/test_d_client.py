@@ -121,6 +121,32 @@ class Readiness(ClientCase):
         self.assertTrue(await until(lambda: self.client.conn_id > first, 3))
         self.assertTrue(self.rows("LOCAL", "준비 응답 시간 초과"))
 
+    async def test_callback_exceptions_do_not_stop_rx_or_reconnect(self):
+        """D-07: notify·listener 가 매번 예외를 내도 수신·정기 조회·재접속이 계속되고 다른 listener 는 받는다."""
+        seen = []
+
+        def broken(*_args):
+            raise RuntimeError("GUI callback failure")
+        self.peer = Peer(lambda r: [status()] if r["type"] == "GET_STATUS" else None)
+        port = await self.peer.start()
+        self.log = EventLog(None)
+        self.log.listeners.extend([broken, seen.append])   # 앞 listener 실패가 뒤 listener 를 막지 않아야 한다
+        self.client = TcpClient(ClientConfig(port=port, **FAST), self.log, notify=broken)
+        with self.assertLogs("eyetoarm.tcp", level="ERROR") as logs:
+            self.client.connect()
+            self.assertTrue(await until(lambda: self.client.robot_ready is True))
+            polls = len(self.peer.requests)
+            self.assertTrue(await until(lambda: len(self.peer.requests) >= polls + 2))   # 정기 조회 계속
+            first = self.client.conn_id
+            await self.peer.drop_clients()
+            self.assertTrue(await until(lambda: self.client.conn_id > first and self.client.connected, 3))
+            self.assertTrue(await until(lambda: self.client.robot_ready is True))
+        self.assertFalse(self.client._runner.done())
+        self.client.notify, self.log.listeners[0] = (lambda: None), (lambda _row: None)   # 정리 단계 로그 소음 방지
+        self.assertTrue(any(row["dir"] == "RX" for row in seen))
+        self.assertTrue(any("Traceback" in line and "GUI callback failure" in line for line in logs.output))
+        self.assertTrue(any("notify" in line for line in logs.output) and any("listener" in line for line in logs.output))
+
     async def test_invalid_reply_is_logged_only(self):
         await self.start(lambda r: [b'{"version":"1.1","type":"STATUS","robot_ready":true}\n'])
         self.assertTrue(await until(lambda: self.client.kpi["invalid_rx"] >= 1))
