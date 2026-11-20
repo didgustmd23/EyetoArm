@@ -82,7 +82,8 @@ class LiveObservationDispatcher:
                  tf_lookup_with_epoch: bool = False, refuse_tf_statuses: frozenset = frozenset(),
                  on_skip: Callable | None = None,
                  envelope_errors: tuple = (ObservationEnvelopeError,),
-                 view_bias: Callable | None = None, on_accepted: Callable | None = None) -> None:
+                 view_bias: Callable | None = None, on_accepted: Callable | None = None,
+                 on_not_accepted: Callable | None = None) -> None:
         """상태·처음 카메라·주입 함수들. `tf_lookup_with_epoch`·`refuse_tf_statuses`는 되감기 epoch 보호 경로용(기본은 기존 동작).
 
         `envelope_errors`(#201): 봉투 생성에서 `b_input_rejected`로 기록할 예외형(기본은 단일 관측 봉투 오류만). 목록 봉투는
@@ -93,6 +94,9 @@ class LiveObservationDispatcher:
 
         `on_accepted(item, payload, image, event_seq)`(#213·#214, 선택): 검사 ③ 수락 뒤 항상 부른다(`image`는 `RenderedCenter.image`
         또는 None). 이 함수의 예외는 worker 오류로 세지 않고 `accept_hook_errors`로 센다(`errors`에 `accept_hook:`로 남김).
+
+        `on_not_accepted(item, payload)`(#215, 선택): B 계산 뒤 검사 ③이 거부했을 때 부른다(B가 남긴 중복 방지 기록을 풀 기회).
+        예외는 `accept_hook_errors`로 같이 센다.
         """
         self.state = state
         self._stage_factory = stage_factory
@@ -108,6 +112,7 @@ class LiveObservationDispatcher:
         self._envelope_errors = tuple(envelope_errors)
         self._view_bias = view_bias
         self._on_accepted = on_accepted
+        self._on_not_accepted = on_not_accepted
         self.view_bias_applied = 0             # #207 실행 요약용 수(worker가 `_counts_lock` 안에서 씀)
         self.view_bias_skipped: dict[str, int] = {}
         self._cond = threading.Condition()
@@ -341,6 +346,13 @@ class LiveObservationDispatcher:
 
         if seq is None:
             self._skip(item, "not_accepted")
+
+            if self._on_not_accepted is not None:
+                try:
+                    self._on_not_accepted(item, payload)
+                except Exception as exc:   # 기록 해제 실패는 B 결과·기록에 영향 없음(세고 남김, 진입점이 종료 1로 드러냄)
+                    self._count("accept_hook_errors")
+                    self.errors.append(f"accept_hook: {type(exc).__name__}: {exc}")
         elif self._on_accepted is not None:
             try:
                 self._on_accepted(item, payload, annotated, seq)

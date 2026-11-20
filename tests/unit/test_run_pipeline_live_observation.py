@@ -639,7 +639,9 @@ class D13AndArgsTest(Base):
             ["--ros-link", "--detector", "opencv", "--detect-config", str(ROOT / "config/vision/opencv_planar.json"),
              "--log", str(Path(self.tmp.name) / "y.jsonl"), "--live-observation-out", self.out(),
              "--live-observation-config", str(CONFIG)],
-            ["--ros-link", *base, "--tracking", "--live-observation-out", self.out(), "--live-observation-config", str(CONFIG)],
+            # #215: --tracking은 이제 허용(단계 T). 단계 L과 함께면 거부
+            ["--ros-link", *base, "--tracking", "--b-input", "list", "--live-observation-out", self.out(),
+             "--live-observation-config", str(CONFIG)],
             ["--ros-link", *base, "--live-observation-out", self.out(), "--live-observation-config", str(bad_cfg)],
             ["--ros-link", *base, "--live-observation-out", self.out(), "--live-observation-config", str(no_cap)],
             ["--ros-link", *base, "--live-observation-out", str(exists), "--live-observation-config", str(CONFIG)],

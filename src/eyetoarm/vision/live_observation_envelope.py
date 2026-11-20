@@ -83,13 +83,17 @@ class LiveCaptureTfLookup:
         return TfLookupResult(CaptureTf(self.world_frame, child, stamp, np.asarray(T, dtype=np.float64)), "ok", wait_ms)
 
 
-def make_live_envelope(frame, observation, *, camera, tf_result: TfLookupResult, world_frame: str) -> ObservationEnvelope:
-    """실시간 프레임으로 촬영 정보를 만들고 기존 봉투 검사를 거친다. 오류는 `ObservationEnvelopeError`."""
+def make_live_envelope(frame, observation, *, camera, tf_result: TfLookupResult, world_frame: str,
+                       extensions=None) -> ObservationEnvelope:
+    """실시간 프레임으로 촬영 정보를 만들고 기존 봉투 검사를 거친다. 오류는 `ObservationEnvelopeError`.
+
+    `extensions`(#215, 선택): 봉투 확장(예 `tracking`). None이면 지금과 같다(확장 없음).
+    """
     capture = CaptureInfo(stamp_ns=frame.ros_stamp_ns, optical_frame=frame.optical_frame,
                           calibration_id=frame.calibration_id, width=frame.width, height=frame.height)
 
     return make_observation_envelope(frame, observation, capture=capture, camera=camera, tf=tf_result.tf,
-                                world_frame=world_frame)
+                                world_frame=world_frame, extensions=extensions)
 
 
 def camera_info_pairing(frame, info_stamps_ns) -> str:

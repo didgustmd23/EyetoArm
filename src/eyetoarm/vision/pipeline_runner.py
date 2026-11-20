@@ -651,6 +651,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
       보류, 이어진 재접속에서 reset). 추적 예외는 `tracking_failed` 기록·stderr·추적 끔으로 격리하며 종료 코드·코어 계수를 바꾸지 않는다
       (그 기록 쓰기 실패는 기존 log_failure). `PartTracker`가 아닌 값은 소스를 만들기 전에 `tracker_contract`로 종료 1. B·공통 관측으로 전파하지 않는다.
     - `live_observation_sink`(#173, 기본 None=꺼짐): **실시간 소스 전용 기록 전용 시험 연결**(`vision.live_observation_link`).
+      `part_tracker`도 주면(#215) `offer(..., tracks=TrackFrame | None)`로 같은 작업의 추적 결과를 함께 넘긴다(끄면 인자 없음).
       D13은 그대로다: 실시간 소스의 `b_consumer`는 여전히 `b_consumer_not_allowed`로 거부한다. 이 연결부는 B를 이 제어 흐름에서
       부르지 않고, terminal 응답마다 기록·표시 뒤에 `offer(outcome, skip_reason, rx_epoch)`(skip_reason = `b_skip_reason`, 통과면
       None)로 넘길 뿐이다(전용 디스패처가 대기 1개 최신 우선·검사 ①②③으로 처리). 실시간 입력 항목은 반영·`input_applied` 뒤
@@ -770,6 +771,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         """terminal 응답을 기록하고, (추적)·표시·연결부 전달 뒤 소비 조건을 통과하면 그 자리에서 B 지점을 한 번 부른다."""
         _logged(log.log_outcome, outcome)
         sync_records()
+        track_frame = None
 
         if display_sink is not None or handoff_sink is not None or part_tracker is not None:
             current = display_gate(pipeline, outcome) and (not live or source.frame_current(outcome.context.frame))
@@ -807,7 +809,9 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             else:
                 reason = b_skip_reason(pipeline, outcome, source)
 
-            live_observation_sink.offer(outcome, reason, source.frame_epoch(outcome.context.frame))
+            # #215: 추적을 켠 실행만 같은 작업 TrackFrame(없으면 None)을 넘긴다. 끄면 호출이 지금과 같다
+            sink_kw = {} if part_tracker is None else {"tracks": track_frame}
+            live_observation_sink.offer(outcome, reason, source.frame_epoch(outcome.context.frame), **sink_kw)
 
     def finish_detection(job: JobContext, value, exc: BaseException | None) -> None:
         """detector 반환·예외를 terminal로 정확히 한 번 보낸다(동기·worker 경로 공통 분류).
