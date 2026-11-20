@@ -1,6 +1,6 @@
 # B 담당 협업 요청 초안 (A·C)
 
-문서 버전 0.14 · 작성 B담당 · 2026-11-19
+문서 버전 0.15 · 작성 B담당 · 2026-11-20
 **목적:** B(보정·좌표)가 A·C와 **무엇을 주고받는지**, **누가 무엇을 맡는지**를 확정하기 위한 요청서입니다.
 
 > ### ✍️ 답하는 방법
@@ -371,7 +371,17 @@ B 코드 반영: `work_result.compute_bolt_from_endpoints()`, `class_plane_z()`,
 | 시간 여유 | 지금은 쓰지 않음. C-09 답(집기 가능 구간·예상 처리 시간)이 오면 곧 구간을 벗어날 볼트를 건너뛰는 조건을 추가 | 벨트 속도는 C 설정값이라 B가 모름(C-5) |
 | 옛 방식과 호환 | 지금 `BStage.process(관측, 프레임)`은 유지하고 목록용 `BStage.process_frame(목록)`을 새로 추가 | A 전환 동안 둘 다 동작 |
 
-B 코드(`process_frame`)는 A가 이 답에 동의하면 만듭니다. 형식이 바뀌면 다시 짜야 하기 때문입니다. C에게는 C-09로 집기 가능 구간·처리 시간 제공 방식을 함께 묻습니다.
+B 코드(`process_frame`)는 A가 이 답에 동의하면 만듭니다. 형식이 바뀌면 다시 짜야 하기 때문입니다.
+
+**B 구현 (2026-11-20, A 동의 2026-11-19 뒤).** `BStage.process_frame(목록 봉투)`를 만들었습니다(`src/eyetoarm/transforms/b_stage.py`). 위 표 그대로입니다.
+- 입력: A 목록 봉투 `eyetoarm.b_input/2`(`list_envelope.make_list_envelope`). 다른 버전이면 `ValueError`. TF는 봉투의 프레임 공통 `tf`만 씀(없으면 사진 전체 `SKIP TF_UNAVAILABLE`).
+- 앞 8개만 계산, 잘린 수는 `truncated`. 고르기: `PICK_PLACE` 볼트 중 y 최대(5 mm 이내 동률은 작은 `instance_index`) → 없으면 `PASS_THROUGH` 너트 y 최대 → 없으면 고르지 않음.
+- C(`on_output`)로는 고른 1개만. 안 고른 후보의 보낼 수 있는 목표는 **`SKIP NOT_SELECTED`**(새 이유, C로 가지 않음).
+- 계산 시간 상한 20 ms는 **사진 한 장 전체** 시간 기준(이 표 「최대 개수」 행의 약속). 이 PC 측정: 볼트 1개 중앙값 0.05 ms, 상위 1% 0.27 ms → 8개 약 2 ms.
+- 돌려주는 값(JSON 사전, A 기록기가 그대로 씀): `version`(`eyetoarm.b_frame_output/1`)·`candidate_count`·`computed`·`truncated`·`selected_instance_index`·`selection`(`BOLT_MAX_Y`/`NUT_MAX_Y`/`TF_UNAVAILABLE`/`NONE`)·`frame_compute_ms`·`goal`·`results`(후보별 표시 사전 + `instance_index`·`selected`·`goal_kind`·`goal_reason`).
+- 기존 `BStage.process`·`consume`(단계 T)은 그대로입니다.
+- **A 확인 요청:** A 시험 2개(`test_live_stage_l.py::test_no_process_frame_refused`, `test_stage_l_cli.py::test_no_process_frame_refused_before_files`)는 `process_frame`이 없다는 전제라 이제 실패합니다. 두 번째 시험은 실제 `BStage.process_frame`으로 종료 0(`b_list_calls=1 candidates_sent=1`)이 나와 연결 자체는 동작합니다. 시험 수정은 A 파일이라 B가 고치지 않았습니다.
+- **D 알림:** 새 이유 `NOT_SELECTED`와 후보별 `instance_index`·`selected`·`goal_kind`·`goal_reason`이 결과에 생겼습니다(DB-02 보충 「화면 표시」 행에서 제안한 `goal_kind`·`goal_reason`). C에게는 C-09로 집기 가능 구간·처리 시간 제공 방식을 함께 묻습니다.
 
 ### 8.3 C에게 확인·회신 → C-6·C-7 답 반영, C-9~C-12·C-15·C-16 회신
 
