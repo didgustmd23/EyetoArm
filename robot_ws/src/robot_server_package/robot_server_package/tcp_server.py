@@ -1,6 +1,6 @@
 """TCP 1.1 listener and request routing."""
 from __future__ import annotations
-import argparse, asyncio, copy, itertools, json, logging, math, os, time
+import argparse, asyncio, copy, itertools, json, logging, math, os, signal, time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,6 +64,7 @@ class TcpServer:
         self._server: asyncio.AbstractServer | None = None
         self._connections = itertools.count(1)
         self._sessions: dict[int, _ClientSession] = {}
+        self._client_tasks: set[asyncio.Task] = set()
         self._log_retry_task: asyncio.Task[None] | None = None
 
     def _readiness(self, include_active: bool = True) -> ReadinessFields:
@@ -104,15 +105,46 @@ class TcpServer:
         if m.log_unavailable: raise CommandLogError("recovery state is not durably stored")
         m.recovering = False
 
-    async def start(self) -> None:
+    async def start(self, shutdown_event: asyncio.Event | None = None) -> None:
         if self.command_manager.log_unavailable: self._ensure_log_retry()
         self._server = await asyncio.start_server(self._handle_client, self.host, self.port, limit=self.max_line_bytes + 1)
         LOG.info("TCP server listening at %s", [s.getsockname() for s in self._server.sockets or []])
-        async with self._server: await self._server.serve_forever()
+        if shutdown_event is None:
+            await self._server.serve_forever()
+        else:
+            await shutdown_event.wait()
 
     async def close(self) -> None:
-        if self._server:
-            self._server.close(); await self._server.wait_closed(); self._server = None
+        server, self._server = self._server, None
+        if server:
+            LOG.info("Shutdown: closing TCP listener")
+            server.close()
+        # Closing the listening socket does not close established TCP clients. Close
+        # each session so reader.read() wakes up and its writer task can be joined.
+        sessions = tuple(self._sessions.values())
+        LOG.info("Shutdown: closing %d TCP client sessions", len(sessions))
+        for session in sessions:
+            if not session.writer.is_closing():
+                session.writer.close()
+        client_tasks = tuple(task for task in self._client_tasks if task is not asyncio.current_task())
+        if client_tasks:
+            done, pending = await asyncio.wait(client_tasks, timeout=2.0)
+            LOG.info("Shutdown: client handlers done=%d pending=%d", len(done), len(pending))
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+        for session in sessions:
+            if session.writer_task is not None and not session.writer_task.done():
+                session.writer_task.cancel()
+        writer_tasks = tuple(session.writer_task for session in sessions
+                             if session.writer_task is not None)
+        if writer_tasks:
+            await asyncio.gather(*writer_tasks, return_exceptions=True)
+        LOG.info("Shutdown: client writers closed")
+        if server:
+            await server.wait_closed()
+            LOG.info("Shutdown: TCP listener closed")
         if self._log_retry_task:
             self._log_retry_task.cancel()
             try: await self._log_retry_task
@@ -131,6 +163,9 @@ class TcpServer:
             if not m.pending_terminal_statuses: m.log_unavailable = False
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self._client_tasks.add(current_task)
         cid = next(self._connections); session = _ClientSession(cid, writer); self._sessions[cid] = session
         session.writer_task = asyncio.create_task(self._writer_loop(session))
         buf = bytearray(); discard = False; signature: list[str | None] = [None]
@@ -165,6 +200,8 @@ class TcpServer:
             try: await writer.wait_closed()
             except ConnectionError: pass
             self._sessions.pop(cid, None)
+            if current_task is not None:
+                self._client_tasks.discard(current_task)
             for key in session.command_ids:
                 r = self.command_manager.records.get(key)
                 if r: r.subscribers.discard(cid)
@@ -344,7 +381,7 @@ def load_tcp_settings(config_path: str | Path = DEFAULT_CONFIG_PATH) -> dict[str
             if not isinstance(b,list) or len(b)!=2 or any(type(v) not in (int,float) or not math.isfinite(v) for v in b) or b[0]>b[1]: raise ValueError(f"invalid workspace_mm.{axis}")
     return {"host":host,"port":port,"max_line_bytes":maximum,"record_retention":retention,"log_retry_ms":retry,"command_log_path":lp.resolve(),"workspace_mm":workspace}
 
-async def serve(host=None,port=None,*,config_path=DEFAULT_CONFIG_PATH,readiness_provider=get_readiness_fields,workspace_mm=None,move_executor=None,execution_manager=None):
+async def serve(host=None,port=None,*,config_path=DEFAULT_CONFIG_PATH,readiness_provider=get_readiness_fields,workspace_mm=None,move_executor=None,execution_manager=None,shutdown_event=None):
     cfg=load_tcp_settings(config_path)
     if host is not None: cfg["host"]=host
     if port is not None: cfg["port"]=port
@@ -353,13 +390,34 @@ async def serve(host=None,port=None,*,config_path=DEFAULT_CONFIG_PATH,readiness_
         readiness_provider=execution_manager.readiness_provider
         move_executor=execution_manager.execute_move
     server=TcpServer(**cfg,readiness_provider=readiness_provider,move_executor=move_executor)
-    try: await server.start()
+    try: await server.start(shutdown_event=shutdown_event)
     finally:
         try:
             await server.close()
         finally:
             if execution_manager is not None:
                 await execution_manager.close()
+
+async def _serve_until_signal(config_path: str | Path, execution_manager: ExecutionManager) -> None:
+    """Use one idempotent signal path so launch Ctrl-C always reaches async cleanup."""
+    loop = asyncio.get_running_loop()
+    stopping = asyncio.Event()
+    handled_signals = (signal.SIGINT, signal.SIGTERM)
+    for sig in handled_signals:
+        loop.add_signal_handler(sig, stopping.set)
+    server_task = asyncio.create_task(serve(config_path=config_path, execution_manager=execution_manager, shutdown_event=stopping))
+    stop_task = asyncio.create_task(stopping.wait())
+    try:
+        done, _ = await asyncio.wait((server_task, stop_task), return_when=asyncio.FIRST_COMPLETED)
+        if stop_task in done:
+            LOG.info("Server shutdown requested")
+        await server_task
+    finally:
+        stop_task.cancel()
+        await asyncio.gather(stop_task, return_exceptions=True)
+        for sig in handled_signals:
+            loop.remove_signal_handler(sig)
+
 
 def main():
     parser=argparse.ArgumentParser(description="EyetoArm TCP 1.1 server"); parser.add_argument("--config",default=str(DEFAULT_CONFIG_PATH)); parser.add_argument("--initialize-command-log",action="store_true"); args=parser.parse_args()
@@ -374,7 +432,7 @@ def main():
         LOG.addHandler(file_handler)
         backend=UnconfiguredRobotBackend()
         manager=ExecutionManager(backend)
-        asyncio.run(serve(config_path=args.config,execution_manager=manager))
+        asyncio.run(_serve_until_signal(args.config, manager))
     except KeyboardInterrupt: LOG.info("Server shutdown requested")
     except (ValueError,CommandLogError) as e: LOG.error("TCP configuration failed: %s",e); raise SystemExit(2) from e
 
