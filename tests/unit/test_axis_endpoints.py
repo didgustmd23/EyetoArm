@@ -3,6 +3,7 @@
 정답은 추출기와 독립인 합성 기하로 만든다: 직교 투영한 원기둥(머리 지름 10·높이 6 mm, 축 지름 6 mm,
 축 끝 면취 반지름 2.5 mm)의 실루엣을 끝면 타원 볼록 껍질로 그리고, 축선 위 기준점(머리 끝면 중심·축 끝면 중심)을
 같은 투영식으로 계산한다(A-8 점 의미, #149·#159 G1과 같은 정의). 추출기 코드로 정답을 역산하지 않는다.
+`dim_scale`을 주면 모든 치수를 그 배수로 줄인다(0.5 = 월드 BOLT_A `bolt_m3x20`, #245 E1).
 """
 from __future__ import annotations
 
@@ -31,20 +32,26 @@ def _hull_of_discs(discs, k_px_mm, origin, u, v, tilt_rad):
 
 
 def render_bolt(*, shank_mm=12.0, theta_deg=30.0, tilt_deg=0.0, k_px_mm=4.0, size=(240, 320), center=(160.0, 120.0),
-                head_d_mm=10.0):
-    """합성 볼트 마스크와 축선 위 정답 두 점(행 0 머리 끝면 중심, 행 1 축 끝면 중심)."""
+                head_d_mm=10.0, dim_scale=1.0):
+    """합성 볼트 마스크와 축선 위 정답 두 점(행 0 머리 끝면 중심, 행 1 축 끝면 중심).
+
+    `shank_mm`은 실제 축 길이, `dim_scale`은 머리 지름·높이·축 반지름·면취(반지름·길이)에 곱하는 배수다.
+    """
     h, w = size
     th, tl = math.radians(theta_deg), math.radians(tilt_deg)
     u = np.array([math.cos(th), math.sin(th)])          # 화면 위 축 방향(머리 쪽 +)
     v = np.array([-u[1], u[0]])
     origin = np.asarray(center, float)                   # 머리·축 경계(z 0)
     mask = np.zeros((h, w), np.uint8)
-    head_r = head_d_mm / 2.0
-    for discs in ([(0.0, head_r), (6.0, head_r)],
-                  [(-shank_mm + 0.5, 3.0), (0.0, 3.0)],
-                  [(-shank_mm, 2.5), (-shank_mm + 0.5, 3.0)]):
+    head_r = head_d_mm / 2.0 * dim_scale
+    head_h, shaft_r, tip_r, chamfer = 6.0 * dim_scale, 3.0 * dim_scale, 2.5 * dim_scale, 0.5 * dim_scale
+
+    for discs in ([(0.0, head_r), (head_h, head_r)],
+                  [(-shank_mm + chamfer, shaft_r), (0.0, shaft_r)],
+                  [(-shank_mm, tip_r), (-shank_mm + chamfer, shaft_r)]):
         cv2.fillConvexPoly(mask, _hull_of_discs(discs, k_px_mm, origin, u, v, tl), 1, lineType=cv2.LINE_8, shift=SHIFT)
-    head = origin + u * (6.0 * math.cos(tl) * k_px_mm)
+
+    head = origin + u * (head_h * math.cos(tl) * k_px_mm)
     tip = origin - u * (shank_mm * math.cos(tl) * k_px_mm)
     return mask.astype(bool), np.array([head, tip])
 
@@ -90,12 +97,39 @@ def test_m1_corrects_rim_protrusion_when_tilted(shank, tilt):
     assert h0 > h1 + 2.0                                  # 기울기가 있으면 극값(M0)은 머리 테두리만큼 바깥
 
 
-def test_m1_class_estimate_and_tilt_diag():
-    """진단값: 축 길이로 고른 종류와 추정 기울기가 합성 조건과 맞는다(BOLT_B, 30°)."""
+def test_m1_tilt_diag_without_size_estimates():
+    """진단값: 추정 기울기가 합성 조건(30°)과 맞고, 크기(mm) 진단(축척·총길이·종류)은 남기지 않는다(#245 E1)."""
     mask, _ = render_bolt(shank_mm=40.0, tilt_deg=30.0)
     est = ax.extract_m1(mask)
-    assert est.diag["class_est"] == "BOLT_B"
     assert abs(est.diag["tilt_deg"] - 30.0) <= 6.0
+    assert not {"scale_px_per_mm", "observed_length_mm", "total_length_est_mm", "class_est"} & est.diag.keys()
+
+
+@pytest.mark.parametrize("method", [ax.extract_m1, ax.extract_m2])
+@pytest.mark.parametrize("tilt,theta", [(0.0, 20.0), (25.0, 20.0), (40.0, 133.0), (30.0, 251.0)])
+def test_m3x20_endpoints_follow_axis_reference(method, tilt, theta):
+    """월드 BOLT_A M3×20(M6×40의 0.5배 축소, 축 20 mm)도 같은 비 상수로 축선 기준점 2 px 안이다(#245 E1, k 8 px/mm)."""
+    mask, truth = render_bolt(shank_mm=20.0, dim_scale=0.5, tilt_deg=tilt, theta_deg=theta, k_px_mm=8.0,
+                              size=(320, 320), center=(160.0, 160.0))     # 길이 약 184 px: 어느 방향이든 화면 안
+    est = method(mask)
+    assert est.valid, est.reason
+    head_err, tip_err = _err(est, truth)
+    assert head_err <= 2.0 and tip_err <= 2.0
+
+
+@pytest.mark.parametrize("method", [ax.extract_m1, ax.extract_m2])
+@pytest.mark.parametrize("tilt", [0.0, 30.0, 45.0])
+def test_scaled_bolt_gives_same_endpoints_as_full_size_at_double_scale(method, tilt):
+    """M3×20을 k 8 px/mm로 그린 마스크와 M6×40을 k 4 px/mm로 그린 마스크는 같은 모양이라 끝점도 같다(크기 무관, #245 E1).
+
+    두 그림은 축 길이(20·0.5배 머리 대 40·원래 머리)만 다르고 화면 크기가 같다. 래스터가 같으면 추출기 결과가 같아야 한다.
+    """
+    small, _ = render_bolt(shank_mm=20.0, dim_scale=0.5, tilt_deg=tilt, k_px_mm=8.0)
+    full, _ = render_bolt(shank_mm=40.0, tilt_deg=tilt, k_px_mm=4.0)
+    assert np.array_equal(small, full)
+    a, b = method(small), method(full)
+    assert a.valid and b.valid, (a.reason, b.reason)
+    np.testing.assert_array_equal(a.endpoints_px, b.endpoints_px)
 
 
 def test_head_ambiguous_when_both_ends_same_width():
@@ -182,9 +216,11 @@ def test_m0_matches_rule_k_definition():
 
 
 def test_model_constants_are_model_derived():
-    """고정값은 모델 치수에서 나온 값이며 #159 결과로 바꾸지 않는다(문서화된 값과 같음)."""
+    """고정값은 모델 치수의 비에서 나온 값이며 #159 결과로 바꾸지 않는다(문서화된 값과 같음). 크기(mm) 상수는 없다(#245 E1)."""
     m = ax.MODEL_DERIVED
-    assert (m.head_diameter_mm, m.head_height_mm, m.tip_radius_mm) == (10.0, 6.0, 2.5)
-    assert m.shank_lengths_mm == {"BOLT_A": 12.0, "BOLT_B": 40.0}
+    assert m.tip_to_head_radius == 2.5 / 5.0 == 1.25 / 2.5          # M6×40 축 끝 돌출 r 2.5 / 머리 r 5 = M3×20 1.25 / 2.5
     assert (m.band_frac, m.ambiguity_ratio, m.min_pixels) == (0.12, 1.2, 20)
-    assert (m.class_split_mm, m.max_tilt_deg, m.max_head_step_frac) == (32.0, 60.0, 0.7)
+    assert (m.max_tilt_deg, m.max_head_step_frac) == (60.0, 0.7)
+    assert (m.vote_band_frac, m.vote_min_ratio) == (0.25, 1.1)
+    fields = set(ax.AxisModel.__dataclass_fields__)
+    assert not fields & {"head_diameter_mm", "head_height_mm", "tip_radius_mm", "shank_lengths_mm", "class_split_mm"}

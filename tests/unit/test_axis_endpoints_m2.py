@@ -178,10 +178,10 @@ class SyntheticTest(unittest.TestCase):
         self.assertEqual(m1.reason, "AXIS_VIEW_OBLIQUE")
         self.assertTrue(m2.valid, m2.reason)
         self.assertTrue(m2.diag["tilt_capped"])
-        k = m2.diag["scale_px_per_mm"]
+        r_head = m2.diag["head_diameter_px"] / 2.0                         # 머리 반지름 px(#245 E1: 축척 mm 없음)
         sin60 = math.sin(math.radians(60.0))
-        self.assertAlmostEqual(m2.diag["protrusion_head_px"], 5.0 * sin60 * k, places=9)
-        self.assertAlmostEqual(m2.diag["protrusion_tip_px"], 2.5 * sin60 * k, places=9)
+        self.assertAlmostEqual(m2.diag["protrusion_head_px"], r_head * sin60, places=9)
+        self.assertAlmostEqual(m2.diag["protrusion_tip_px"], 0.5 * r_head * sin60, places=9)
         self.assertLess(np.linalg.norm(m2.endpoints_px[0] - head), np.linalg.norm(m2.endpoints_px[0] - tip))
 
     def test_headless_shapes_rejected(self):
