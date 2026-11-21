@@ -92,13 +92,13 @@ def test_c1_live175_polygon_becomes_valid_with_head_first():
 
     assert est.valid and est.reason is None
     assert est.diag["head_step_frac"] < MODEL_DERIVED.max_head_step_frac
-    assert est.diag["tilt_clamped"] is False and est.diag["class_est"] == "BOLT_B"
+    assert est.diag["tilt_clamped"] is False
     assert est.endpoints_px[0][0] > est.endpoints_px[1][0]
     assert np.max(np.hypot(*(est.endpoints_px - ref).T)) < 6.0
 
 
 def test_t1_clamped_tilt_has_no_length_or_class():
-    """머리 앞 부족 면적이 반지름을 넘어 sinα를 1로 자르면 tilt_clamped=True, 총길이·종류 None, 사유 AXIS_VIEW_OBLIQUE."""
+    """머리 앞 부족 면적이 반지름을 넘어 sinα를 1로 자르면 tilt_clamped=True, 사유 AXIS_VIEW_OBLIQUE. 총길이·종류 진단은 없다(#245 E1)."""
     mask = flat_bolt(ramp=5)
 
     est = extract_m1(mask)
@@ -106,13 +106,13 @@ def test_t1_clamped_tilt_has_no_length_or_class():
 
     assert not est.valid and est.reason == "AXIS_VIEW_OBLIQUE" and est.endpoints_px is None
     assert d["tilt_clamped"] is True and d["tilt_deg"] == pytest.approx(90.0)
-    assert d["total_length_est_mm"] is None and d["class_est"] is None
+    assert not {"total_length_est_mm", "class_est", "observed_length_mm", "scale_px_per_mm"} & d.keys()
     assert d["head_cap_px"] >= d["head_diameter_px"] / 2.0
-    assert math.isfinite(d["observed_length_mm"])
+    assert math.isfinite(d["head_cap_px"]) and math.isfinite(d["head_diameter_px"])
 
 
 def test_t1_unclamped_tilt_keeps_finite_values():
-    """잘리지 않으면 tilt_clamped=False이고 총길이는 유한, 종류는 BOLT_A/BOLT_B 중 하나."""
+    """잘리지 않으면 tilt_clamped=False이고 기울기·머리 진단은 유한, 크기(mm) 진단은 없다(#245 E1)."""
     mask = flat_bolt(ramp=3)
 
     est = extract_m1(mask)
@@ -120,11 +120,12 @@ def test_t1_unclamped_tilt_keeps_finite_values():
 
     assert est.valid
     assert d["tilt_clamped"] is False and d["tilt_deg"] < 90.0
-    assert math.isfinite(d["total_length_est_mm"]) and d["class_est"] in {"BOLT_A", "BOLT_B"}
+    assert d["head_cap_px"] < d["head_diameter_px"] / 2.0 and math.isfinite(d["tilt_deg"])
+    assert not {"total_length_est_mm", "class_est", "observed_length_mm", "scale_px_per_mm"} & d.keys()
 
 
 def test_t1_none_values_are_dropped_by_record_diag():
-    """기록용 진단 선택(`ai_convert._diag`)은 None 총길이·종류를 깨지지 않고 빼고, 유한 수는 남긴다."""
+    """기록용 진단 선택(`ai_convert._diag`)은 추출기에 없는 총길이·종류 키(#245 E1)를 깨지지 않고 빼고, 유한 수는 남긴다."""
     from eyetoarm.vision.ai_convert import _diag
 
     est = extract_m1(flat_bolt(ramp=5))
