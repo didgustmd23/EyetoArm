@@ -177,9 +177,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "--live-sort-part, B center는 --b-center-overlay일 때만. D·로봇 송신 없음")
     parser.add_argument("--live-observation-config", dest="live_observation_config", metavar="JSON", default=None,
                         help="--live-observation-out 전용: 시험 설정(TF 상한·용량·종료 상한 등, status=test_only 필수)")
-    parser.add_argument("--tracking-space", dest="tracking_space", choices=("pixel", "world"), default="pixel",
-                        help="--tracking 추적 좌표(#217): pixel(기본, 기존 픽셀 추적) | world(작업 좌표 W 추적, --live-observation-out "
-                             "전용, --world-tracker-config 필수)")
+    parser.add_argument("--tracking-space", dest="tracking_space", choices=("pixel", "world"), default=None,
+                        help="--tracking 추적 좌표(#217): pixel(기존 픽셀 추적) | world(작업 좌표 W 추적, --live-observation-out "
+                             "전용, --world-tracker-config 필수). 생략하면(#239) --live-observation-out은 world, 그 밖은 pixel")
     parser.add_argument("--world-tracker-config", dest="world_tracker_config", metavar="JSON", default=None,
                         help="--tracking-space world 전용: W 추적 시험 설정(status=test_only)")
     parser.add_argument("--live-sort-part", dest="live_sort_part", action="store_true",
@@ -255,6 +255,17 @@ def _check_source_args(args, ros_available) -> None:
         # #215: 추적 번호 연결은 단계 T만(B-09 목록 규칙 전)
         if args.tracking and args.b_input != "single":
             build_parser().error("--live-observation-out --tracking is for stage T only (--b-input single)")
+
+    # #239: 추적 공간 생략 시 실시간 기록 연결(--live-observation-out)은 W, 그 밖(저장 입력·기본 --ros-link 등)은 픽셀.
+    # W 설정 파일은 숨은 기본 경로 없이 명시해야 한다(설정은 모두 test_only, 기본값 없음 규칙)
+    args.tracking_space_source = "explicit" if args.tracking_space is not None else "default"
+
+    if args.tracking_space is None:
+        args.tracking_space = "world" if args.tracking and args.live_observation_out is not None else "pixel"
+
+        if args.tracking_space == "world" and args.world_tracker_config is None:
+            build_parser().error("--live-observation-out --tracking uses W tracking by default: --world-tracker-config JSON "
+                                 "is required (e.g. config/vision/world_tracker_test.json), or give --tracking-space pixel")
 
     # #217: W 추적은 실시간 기록 연결 안에서만(촬영 시각 TF 필요)
     if args.tracking_space == "world":
@@ -868,6 +879,19 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
                      else "config block sort_part given without --live-sort-part\n"))
         return 2
 
+    # #239 D4: 추적 켬(단계 T)이면 require_track_id 필수(기본값 없음). 번호가 없는 실행(추적 끔·단계 L)의 true는 볼트 송신 0이라 거부
+    require = None if link_config.sort_part is None else link_config.sort_part.require_track_id
+
+    if sort_on and args.tracking and require is None:
+        err.write("run_pipeline: live observation config error: sort_part.require_track_id is required with --tracking "
+                  "(true = send only confirmed part_track_id PICK_PLACE)\n")
+        return 2
+
+    if sort_on and require is True and (not args.tracking or args.b_input == "list"):
+        err.write("run_pipeline: live observation config error: sort_part.require_track_id=true needs --tracking stage T "
+                  "(no track ids here: no PICK_PLACE would ever be sent)\n")
+        return 2
+
     for path in (args.log, args.live_observation_out):
         if Path(path).exists():
             err.write(f"run_pipeline: output exists, refusing to overwrite: {path}\n")
@@ -1046,7 +1070,13 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
                       + (" (stage L: point block only, no track ids)" if listed else ""))
         err.write(f"run_pipeline: LIVE A->B->C SORT_PART ON action=/sort_part server_seen={str(seen).lower()} "
                   f"retry={retry_text} tracking={('world' if world_on else 'M2(heuristic)') if args.tracking else 'off'} "
+                  f"require_track_id={({True: 'true', False: 'false'}).get(link_config.sort_part.require_track_id, 'unset')} "
                   "(D13 released by user decision 2026-11-20, accepted risk without pre-release test F6)\n")
+
+        if link_config.sort_part.require_track_id:
+            err.write("run_pipeline: require_track_id=true: PICK_PLACE without a confirmed part_track_id is not sent "
+                      "(skip:no_track_id); bolts leaving view before confirmation are never sent "
+                      "(see tracking tentative_dropped, sort_part.no_track_id_states)\n")
 
         if not seen:
             err.write("run_pipeline: warning: /sort_part server not seen at start; goals will be recorded as no_server "
@@ -1066,7 +1096,9 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
             probe = {"node": "/conveyor_controller", "speed_mps": None, "status": f"error: {type(exc).__name__}: {exc}"}
 
         link.world.diagnostics["conveyor_speed_mps"] = probe
-        err.write(f"run_pipeline: tracking ON space=world(W, belt plane z={world_plane_z:.3f} m) config_sha256={world_cfg[2]} "
+        space_note = "default for live" if getattr(args, "tracking_space_source", "explicit") == "default" else "explicit"
+        err.write(f"run_pipeline: tracking ON space=world({space_note}; W, belt plane z={world_plane_z:.3f} m) "
+                  f"config_sha256={world_cfg[2]} "
                   f"lag_reset>{world_cfg[1].lag_limit_ms:.0f}ms; prediction uses W differencing only "
                   f"(conveyor speed_mps diagnostic={probe.get('speed_mps')} not used)\n")
 
@@ -1082,6 +1114,13 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
         # #233: A 검출 → C 연결부(기본 --ros-link와 같이 항상). 실행기 제어 흐름 하나가 생산자다
         handoff, handoff_probe = (live_handoff_factory or _default_live_handoff)()
+
+        # #239: W 추적이면 detect 영상 주석에 같은 작업의 W 번호를 그릴 때 읽게 한다(start_run 전, 기다리지 않는 조회)
+        set_track_source = getattr(handoff, "set_track_source", None)
+
+        if world_on and callable(set_track_source):
+            set_track_source(link.world.peek)
+
         handoff_probe.start(handoff)
         link.start()
         stream = open(args.log, "x", encoding="utf-8")
@@ -1178,6 +1217,10 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
         try:
             tracking_extra = ({} if not args.tracking else {"tracking": None if result is None else result.tracking})
+
+            if args.tracking:   # #239: 추적 공간과 그 출처(생략 = 실시간 기본 W)
+                tracking_extra["tracking_space"] = {"space": "world" if world_on else "pixel",
+                                                    "source": getattr(args, "tracking_space_source", "explicit")}
 
             # #233: C 연결부 종료 보고·center 발행 계수(발행 오류는 종료 코드에 넣지 않는다, 요약·마지막 줄만)
             tracking_extra["handoff"] = None if result is None else result.handoff

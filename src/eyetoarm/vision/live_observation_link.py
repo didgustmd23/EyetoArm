@@ -457,6 +457,8 @@ class LiveObservationLink:
         ids = {"job_seq": getattr(obs, "job_seq", None), "generation": getattr(obs, "generation", None)}
 
         if self.tracking:
+            # #239: 송신기가 skip:no_track_id 줄에 남길 관측 추적 상태(그 밖의 기록 줄에는 넣지 않음)
+            ids["track_state"] = getattr(obs, "track_state", None)
             goal = getattr(payload.output, "goal", None) or {}
             self._count_tracking("accepted_with_track" if goal.get("part_track_id") is not None else "accepted_without_track")
 

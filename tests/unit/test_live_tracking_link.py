@@ -67,14 +67,19 @@ class ReleasingRuntime(FakeRuntime):
         self._release(goal)
 
 
-def sort_config(tmp, retry=None) -> str:
-    """송신 시험 설정(+ retry 블록 선택)."""
+# #239: 실시간 --tracking 기본 공간이 W가 되어, 픽셀 추적 시험은 공간을 명시한다
+PIXEL = ("--tracking-space", "pixel")
+
+
+def sort_config(tmp, retry=None, require=False) -> str:
+    """송신 시험 설정(+ retry 블록 선택). #239: 추적 켬 송신은 `require_track_id`가 필수라 기본 false(번호 None도 보냄, 기존 동작)."""
     doc = json.loads(SORT_CONFIG.read_text(encoding="utf-8"))
+    doc["sort_part"]["require_track_id"] = require
 
     if retry is not None:
         doc["sort_part"]["retry"] = retry
 
-    path = Path(tmp) / f"sort_{'retry' if retry else 'plain'}.json"
+    path = Path(tmp) / f"sort_{'retry' if retry else 'plain'}_{'req' if require else 'noreq'}.json"
     path.write_text(json.dumps(doc), encoding="utf-8")
 
     return str(path)
@@ -100,7 +105,7 @@ class TrackCli(CliBase):
         p.start()
         self.addCleanup(p.stop)
 
-    def run_track(self, scenario, *, runtime=None, retry=None, extra=("--live-sort-part", "--tracking"), config=None,
+    def run_track(self, scenario, *, runtime=None, retry=None, extra=("--live-sort-part", "--tracking", *PIXEL), config=None,
                   max_frames=None):
         """추적 + 송신 실행."""
         cfg = config or sort_config(self.tmp.name, retry)
@@ -444,7 +449,7 @@ class TrackingCliTest(TrackCli):
 
     def test_record_only_tracking_releases_after_accept(self):
         """T7: 송신을 끈 기록 전용 + 추적이면 수락 뒤 바로 release(ALREADY_SENT로 굳지 않음), 기록에 번호."""
-        code, err, out = self.run_sort(Scenario(7), config=CONFIG, extra=("--tracking",))
+        code, err, out = self.run_sort(Scenario(7), config=CONFIG, extra=("--tracking", *PIXEL))
         self.assertEqual(code, 0, err)
         acc = [r for r in self.accepts(out) if r["input"]["part_track_id"] is not None]
         self.assertTrue(acc and all(r["goal_kind"] == "PICK_PLACE" for r in acc))
@@ -459,7 +464,7 @@ class TrackingCliTest(TrackCli):
         def change(s):
             s.src.handle_camera_info(info_msg(fx=310.0, width=W, height=H, frame_id=FRAME_ID))
 
-        code, err, out, rt = self.run_track(Scenario(12, during={5: change}), extra=("--tracking", "--live-sort-part"))
+        code, err, out, rt = self.run_track(Scenario(12, during={5: change}), extra=("--tracking", "--live-sort-part", *PIXEL))
         self.assertEqual(code, 0, err)
         acc = self.accepts(out)
         cal = [r["input"]["calibration_id"] for r in acc]
@@ -524,7 +529,7 @@ class TrackingCliTest(TrackCli):
 
         rt = ReleasingRuntime()
         code, err, out = self.run_sort(Scenario(3), config=sort_config(self.tmp.name), factory=self.factory(rt),
-                                       extra=("--live-sort-part", "--tracking"), hook=hook)
+                                       extra=("--live-sort-part", "--tracking", *PIXEL), hook=hook)
         self.assertEqual(code, 1)
         self.assertEqual((self.accepts(out), rt.sent), ([], []))
 

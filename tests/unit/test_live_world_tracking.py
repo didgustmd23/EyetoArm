@@ -14,8 +14,8 @@ import unittest
 from pathlib import Path
 
 from eyetoarm.vision.live_observation_link import LiveObservationLink
-from test_live_sort_part import SORT_CONFIG, FakeRuntime
-from test_live_tracking_link import ReleasingRuntime, TrackCli
+from test_live_sort_part import FakeRuntime
+from test_live_tracking_link import PIXEL, ReleasingRuntime, TrackCli, sort_config
 from test_run_pipeline_capture_observation import model_with
 from test_run_pipeline_live_observation import CONFIG, FakeTf, Scenario
 
@@ -27,10 +27,11 @@ WORLD = ("--tracking", "--tracking-space", "world", "--world-tracker-config", st
 class WorldCli(TrackCli):
     """CLI 실행 도우미(+ 진단 조회 주입)."""
 
-    def run_world(self, scenario, *, extra=WORLD + ("--live-sort-part",), config=SORT_CONFIG, runtime=None, probe=None,
+    def run_world(self, scenario, *, extra=WORLD + ("--live-sort-part",), config=None, runtime=None, probe=None,
                   out=None):
         """main 실행 → (종료 코드, stderr, 출력 폴더, 런타임)."""
         out = out or self.out()
+        config = config or sort_config(self.tmp.name)   # #239: 추적 켬 송신은 require_track_id 필수(false = 기존 동작)
         log = str(Path(self.tmp.name) / f"{Path(out).name}.jsonl")
         rt = runtime or ReleasingRuntime()
         scenario.link = lambda: self.controller.current
@@ -174,7 +175,7 @@ class WorldArgsTest(WorldCli):
         cases = [[*live, "--tracking-space", "world", "--world-tracker-config", str(WORLD_CONFIG)],
                  ["--ros-link", *base, "--tracking", "--tracking-space", "world", "--world-tracker-config", str(WORLD_CONFIG)],
                  [*live, "--tracking", "--tracking-space", "world"],
-                 [*live, "--tracking", "--world-tracker-config", str(WORLD_CONFIG)],
+                 [*live, "--tracking", *PIXEL, "--world-tracker-config", str(WORLD_CONFIG)],   # #239: 생략은 이제 W라 명시 pixel
                  [*live, "--tracking", "--tracking-space", "world", "--world-tracker-config", str(bad)]]
 
         for argv in cases:
@@ -190,9 +191,9 @@ class WorldArgsTest(WorldCli):
 
                 self.assertEqual(code, 2, err.getvalue())
 
-    def test_pixel_default_unchanged(self):
-        """W8: --tracking만(기본 pixel)이면 #215 동작 그대로(world_tracks 없음, 실행기 추적 tracks 인자 있음)."""
-        code, err, out, rt = self.run_world(Scenario(5), extra=("--tracking", "--live-sort-part"))
+    def test_pixel_explicit_unchanged(self):
+        """W8(#239 수정): --tracking-space pixel을 명시하면 #215 동작 그대로(world_tracks 없음, 실행기 추적 tracks 인자 있음)."""
+        code, err, out, rt = self.run_world(Scenario(5), extra=("--tracking", *PIXEL, "--live-sort-part"))
         self.assertEqual(code, 0, err)
         self.assertFalse((Path(out) / "world_tracks.jsonl").exists())
         self.assertIn("tracking ON M2(heuristic)", err)
