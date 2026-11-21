@@ -1,19 +1,8 @@
 #!/usr/bin/env python3
-"""AI 후보 학습기 CLI(학습기 설계 r2). 부모는 torch·ultralytics를 import하지 않는다(학습·검사 자식만).
+"""AI 후보 학습기 CLI(check·prepare-weights·train·resume·status·recover·register-legacy·eval).
 
-하위 명령(저장소 루트 기준, 설정 기본값 `config/training/s1_common.json`·`s1_candidates.json`):
-- `check`: 설정 검증·공식 가중치 확인(내려받지 않음)·데이터 fingerprint 비교. 종료 0 정상, 1 가중치 문제, 2 설정·데이터 오류.
-- `prepare-weights [--allow-download]`: 공식 가중치 확인·(명시할 때만) 내려받기. 부모가 전체 기한을 쥔 자식 다운로드.
-- `train RUN_SET`: 후보를 순서대로 새로 학습(`outputs/training/RUN_SET/`). 종료 0/1/2(설계 §5).
-- `resume RUN_SET EXP_ID`: 그 실험의 weights/last.pt에서 이어 학습(재개 (a)~(d) 확인).
-- `status RUN_SET`: lock·job_state·자기 작업 프로세스·에포크 수(JSON).
-- `recover RUN_SET [--kill-own]`: 명시적 복구(토큰으로 확인한 자기 작업만 신호, 조건이 맞으면 lock 해제).
-- `register-legacy RUN_SET [--source outputs/s1_candidates]`: 기존 S1 결과를 검증해 새 run_set에 등록(원본 무변, 학습 없음).
-- `eval RUN_SET`: 완료 후보의 best.pt를 평가(`--eval-config`, 기본 `config/training/s1_eval.json`). 크기별 시간 자식 → 정확도 자식.
-숨은 명령 `_child-train`·`_child-inspect`·`_child-eval-timing`·`_child-eval-accuracy`는 부모가 띄우는 자식이다.
-
-주의: ultralytics의 `exist_ok`는 True로 넘긴다. 실험 폴더는 부모가 `os.mkdir`로 원자적으로 먼저 만들고(있으면 거부),
-ultralytics가 그 폴더에 쓰게 하려는 것이다(False면 `name2`로 새 폴더를 만든다). 덮어쓰기 방지는 부모의 mkdir이 맡는다.
+부모는 torch·ultralytics를 import하지 않고, 부모가 띄우는 `_child-*` 숨은 명령의 자식만 import한다.
+ultralytics `exist_ok`는 True로 넘긴다. 실험 폴더는 부모가 `os.mkdir`로 먼저 만들어 덮어쓰기를 막는다.
 """
 from __future__ import annotations
 
@@ -338,7 +327,7 @@ def _eval_env(args):
 
 
 def child_eval_timing(args) -> int:
-    """시간 자식(크기 하나): 영상을 미리 읽고 → 준비(import·YOLO 생성) → cold → 워밍업 → 본 측정. 정확도 평가는 하지 않는다."""
+    """시간 자식(크기 하나): 영상 선읽기 → 준비(import·YOLO 생성) → cold → 워밍업 → 본 측정."""
     ecfg = _eval_env(args)
     import time as _time
     import cv2
@@ -424,7 +413,10 @@ COMMANDS = {"check": cmd_check, "prepare-weights": cmd_prepare_weights, "train":
 
 
 def main(argv=None) -> int:
-    """진입점. 설정·사전 입력 오류는 traceback 대신 error JSON과 종료 2(학습 중 예외는 실행기가 정리·보고한다)."""
+    """진입점. 설정·사전 입력 오류는 traceback 대신 error JSON과 종료 2로 끝낸다.
+
+    학습 중 예외는 실행기가 정리·보고한다.
+    """
     args = build_parser().parse_args(argv)
     args.repo_root = os.path.abspath(args.repo_root)
     try:

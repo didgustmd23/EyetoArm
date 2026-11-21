@@ -1,15 +1,7 @@
-"""실시간 검출 확인 창의 순수 부분(#138) — 표시 전달 칸(`DisplayBridge`)과 그리기(`render_view`).
+"""실시간 검출 확인 창의 순수 부분: 표시 전달 칸(`DisplayBridge`)과 그리기(`render_view`).
 
-근거: reviewer 지시 138(A 개발 확인 도구, D 운영 GUI 아님), A 상세설계 §5.2(표시용 결과와 계산용 구분)·§5.4(세대·무검출 재사용
-금지), 계획 `docs/superpowers/plans/2026-11-16-live-link-camera.md` r3 §3.5(결과 공개 전 입력 반영).
-
-- 창·ROS·GPU를 import하지 않는다(OpenCV 그리기 함수와 numpy만). 창 루프는 `scripts/view_live_detection.py`가 맡는다.
-- **제어 흐름 쪽**(runner 스레드)은 `on_outcome`·`on_input`·`finish`만 부른다. 잠금 안에서 참조를 바꿀 뿐 창을 기다리지 않는다.
-- **창 쪽**(메인 스레드)은 `snapshot`·`is_current`·`request_stop`을 부른다. 그리기는 꺼낸 참조로 잠금 밖에서 한다.
-- 칸은 1개다. 새 결과가 이전 결과를 덮어써 참조를 놓는다. 입력 경계·실패는 결과를 즉시 지운다. 모든 변경에서 `version`이 1 오르고,
-  창은 그리기 직전 `is_current(version)`로 꺼낸 뒤 바뀌었는지 확인한다(바뀌었으면 버리고 다시 꺼냄).
-- AI 관측은 표시용(valid=False)이다. 화면은 「표시용 검출」만 말하며 작업 가능·좌표 유효를 뜻하는 표시(초록)를 쓰지 않는다.
-- 화면 글자는 영문이다(OpenCV Hershey 글꼴은 한글을 그리지 못함). 색·투명도는 **A 개발 기본값**이며 사용자 확정값이 아니다.
+제어 흐름(runner 스레드)은 `on_outcome`·`on_input`·`finish`만 부르고 창을 기다리지 않으며, 창(메인 스레드)은 꺼낸 참조로
+잠금 밖에서 그린다. AI 관측은 표시용이라 작업 가능을 뜻하는 초록을 쓰지 않는다(Hershey 글꼴이라 화면 글자는 영문).
 """
 from __future__ import annotations
 
@@ -25,7 +17,7 @@ from eyetoarm.vision.ai_result import AiSegResult
 from eyetoarm.vision.pipeline_types import JobOutcome, JobStatus
 from eyetoarm.vision.tracking import TrackAssignment, TrackFrame, TrackState, matches_job
 
-# 표시 기본값(A 개발 기본값). BGR. 초록 계열은 쓰지 않는다(작업 가능 신호로 오해 방지)
+# 표시 기본값(BGR). 초록 계열은 작업 가능 신호로 오해할 수 있어 쓰지 않는다
 MASK_ALPHA = 0.35
 CLASS_COLORS_BGR = ((255, 160, 0), (255, 0, 200), (0, 200, 255), (200, 120, 255))  # 파랑·자홍·주황·분홍 순환
 REJECTED_COLOR_BGR = (150, 150, 150)
@@ -56,12 +48,12 @@ class ViewItem:
     generation: int
     conf_threshold: float | None
     reason: str | None          # 관측 reason(표시용 invalid 사유)
-    tracks: TrackFrame | None = None  # 같은 작업의 추적 결과(#151 S3, 추적을 켰을 때만). 표시 실험 번호
-    valid: bool | None = None         # 관측 valid 그대로(#196 A1-5). 축 끝점 경로를 켜면 True일 수 있다. 로봇 목표 승인이 아니다
+    tracks: TrackFrame | None = None  # 같은 작업의 추적 결과(추적 켬일 때만, 표시 실험 번호)
+    valid: bool | None = None         # 관측 valid 그대로. True여도 로봇 목표 승인이 아니다
 
 
 def status_text(valid) -> str:
-    """확인 창 상태 문구(#196 A1-5): 관측의 실제 valid 값을 쓰고, 로봇 목표가 아니라는 문구는 그대로 둔다."""
+    """확인 창 상태 문구: 관측의 실제 valid 값과 로봇 목표가 아니라는 문구."""
     return f"display-only detection (valid={valid}, not for robot)"
 
 
@@ -98,8 +90,8 @@ class DisplayBridge:
     def on_outcome(self, outcome: JobOutcome, current: bool, *, tracks: TrackFrame | None = None) -> None:
         """terminal 응답 하나. `current`는 runner의 `display_gate`(+수신 epoch) 판정이다.
 
-        duplicate는 무시한다. current면 칸을 교체한다. 그 밖(늦은·폐기·실패·중단)은 결과를 지우고 상태만 바꾼다.
-        `tracks`(#151, 선택)는 같은 작업의 TrackFrame이어야 하며(7개 식별자 대조) 아니면 ValueError(칸 무변). 칸 항목에 같이 둔다.
+        duplicate는 무시하고, current면 칸을 교체하며, 그 밖은 결과를 지우고 상태만 바꾼다.
+        `tracks`는 같은 작업의 TrackFrame이어야 하며 아니면 ValueError(칸 무변).
         """
         if outcome.duplicate:
             return
@@ -218,7 +210,7 @@ def _color(class_index: int) -> tuple[int, int, int]:
 
 
 def track_label(a: TrackAssignment | None) -> str:
-    """추적 판정 라벨(#151 S3): confirmed `#ID`, tentative `trk?`, ambiguous `amb`, 그 밖 빈 문자열. 표시 실험 번호다."""
+    """추적 판정 라벨: confirmed `#ID`, tentative `trk?`, ambiguous `amb`, 그 밖 빈 문자열."""
     if a is None:
         return ""
 
@@ -230,17 +222,10 @@ def track_label(a: TrackAssignment | None) -> str:
 
 def draw_detections(image: np.ndarray, result: AiSegResult, tracks: TrackFrame | None = None, *,
                     mode_text: str | None = None) -> tuple[np.ndarray, int]:
-    """원본을 복사해 인스턴스를 그린 표시용 영상과 그린 대상 수를 돌려준다. **원본 배열은 바꾸지 않는다.**
+    """원본을 복사해 in_scope 인스턴스를 그린 영상과 그린 대상 수를 돌려준다(원본 배열은 바꾸지 않음).
 
-    `tracks`(선택, #151)가 있으면 그 결과와 같은 인스턴스 index 집합이어야 하며(아니면 ValueError) 라벨 끝에 `track_label`을 붙이고,
-    영상 왼쪽 위에 실험 표기(`TRACKING EXPERIMENTAL (<mode>) - ids display-only, no identity guarantee`)를 그린다. 그래서 이 영상만 받는
-    쪽(C 전달 `annotate`)에도 번호의 실험 상태가 남는다. tracks가 없으면 기존 그림과 같다. `mode_text`(#242)를 주면 배너의 모드 자리에
-    그 문자열을 쓴다(예: `world, prev` = 직전 W 결과를 짝지은 표시 전용 번호). 주지 않으면 `tracks.mode` 값.
-    색·채우기·거부/잘림 표기는 바꾸지 않는다(추적 성공을 초록 등 작업 가능 신호로 표시하지 않음).
-
-    좌표는 `AiInstance`의 원본 픽셀 좌표(ROI 오프셋 반영 끝)를 그대로 쓴다(ROI를 다시 더하지 않음). 대상 범위(in_scope)
-    인스턴스는 클래스 색으로 윤곽 다각형 반투명 채우기(α=`MASK_ALPHA`)·윤곽선·박스·`클래스 conf`를 그린다. 기하 거부(EMPTY/SMALL)는
-    사유를 붙인다. 비대상 클래스·점수 미달은 그리지 않는다(수는 정보 줄에 따로).
+    `tracks`는 결과와 같은 인스턴스 index 집합이어야 하며(아니면 ValueError) 라벨과 실험 배너를 붙인다.
+    `mode_text`를 주면 배너의 모드 자리에 쓰고, 아니면 `tracks.mode` 값. 좌표는 ROI 반영된 원본 픽셀 그대로다.
     """
     by_index = None
 
@@ -293,7 +278,7 @@ def draw_detections(image: np.ndarray, result: AiSegResult, tracks: TrackFrame |
 
 
 def draw_track_unavailable(canvas: np.ndarray, mode: str, why: str) -> None:
-    """번호를 그릴 수 없는 추적 프레임의 실험 표기(#239 W 표시). `canvas`에 직접 그린다.
+    """번호를 그릴 수 없는 추적 프레임의 실험 표기를 `canvas`에 직접 그린다.
 
     `why`: `pending`(그 작업 결과가 아직 없음) 또는 사유(`tf_*`·`job_mismatch` 등). 번호 라벨은 그리지 않는다.
     """

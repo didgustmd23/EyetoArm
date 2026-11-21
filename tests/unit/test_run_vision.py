@@ -1,8 +1,6 @@
 """scripts/run_vision.py 저장 입력 재현 CLI 시험.
 
-근거: scripts/run_vision.py 모듈 docstring의 출력·종료 코드 계약. 실제 CLI는 subprocess로 실행하고
-(sys.executable, 절대 스크립트 경로, PYTHONPATH=저장소 src, cwd 명시, timeout 10초),
-예외 경로의 close 보장만 모듈을 직접 불러 소스를 주입해 확인한다.
+실제 CLI는 subprocess로 실행하고, 예외 경로의 close 보장만 모듈을 직접 불러 소스를 주입해 확인한다.
 """
 import importlib.util
 import io
@@ -103,7 +101,7 @@ class OutputContractTest(CliTestBase):
     """표준 출력 JSON 줄의 순서·키·집계 계약을 확인한다(`run_vision.py` 모듈 docstring)."""
 
     def test_images_order_and_record_shapes(self):
-        """`--images` 순서대로 start·frame×3·END_OF_STREAM 사건·end가 나오고, 각 레코드 키·시각 기준·순번·크기·실행 ID가 계약과 같다."""
+        """`--images` 순서대로 start·frame×3·END_OF_STREAM·end가 나오고 각 레코드 키·값이 계약과 같다."""
         recs = self.assertOk(run_cli(["--images", self.c, self.a, self.b], cwd=self.dir))
         kinds = [r["kind"] for r in recs]
 
@@ -143,7 +141,7 @@ class OutputContractTest(CliTestBase):
         self.assertEqual({r["source_id"] for r in recs}, {"stored0"})
 
     def test_mixed_failures_and_indices(self):
-        """실패가 섞이면 사건으로 출력되고 `source_index`는 목록 위치, `image_seq`는 성공만 센다. end 집계와 `--source-id`가 반영된다."""
+        """실패는 사건으로 나오고 `source_index`는 목록 위치, `image_seq`는 성공만 센다. end 집계도 맞다."""
         recs = self.assertOk(run_cli(
             ["--images", self.a, self.missing, self.broken, self.b, "--source-id", "s9"],
             cwd=self.dir))
@@ -169,7 +167,7 @@ class OutputContractTest(CliTestBase):
         self.assertEqual({r["source_id"] for r in recs}, {"s9"})
 
     def test_image_list_order_blank_lines_and_cwd_relative(self):
-        """`--image-list`는 빈 줄·앞뒤 공백을 버리고 순서를 지키며, 상대 경로는 목록 파일 위치가 아니라 실행 cwd 기준이다."""
+        """`--image-list`는 빈 줄·앞뒤 공백을 버리고 순서를 지키며, 상대 경로는 실행 cwd 기준이다."""
         # 목록은 다른 폴더(sub/)에 두고, 이미지 상대 경로는 실행 cwd(self.dir) 기준
         sub = os.path.join(self.dir, "sub")
         os.mkdir(sub)
@@ -193,7 +191,7 @@ class OutputContractTest(CliTestBase):
         self.assertEqual(recs2[-1]["failures"], 3)
 
     def test_max_frames_stops_without_fake_eof(self):
-        """`--max-frames`에 닿으면 가짜 END_OF_STREAM 없이 멈추고 end 사유가 `max_frames`다(실패는 프레임 수에 넣지 않음)."""
+        """`--max-frames`에 닿으면 END_OF_STREAM 없이 멈추고 end 사유가 `max_frames`다(실패는 안 셈)."""
         recs = self.assertOk(run_cli(
             ["--images", self.missing, self.a, self.b, "--max-frames", "1"], cwd=self.dir))
 
@@ -238,7 +236,7 @@ class ArgumentErrorTest(CliTestBase):
         self.assertIn("error:", proc.stderr, args)
 
     def test_option_errors_exit_2(self):
-        """입력 옵션 누락·중복·값 없음, 양의 정수가 아닌 `--max-frames`, 빈 `--source-id`는 종료 코드 2다."""
+        """입력 옵션 누락·중복·값 없음, 양의 정수 아닌 `--max-frames`, 빈 `--source-id`는 종료 코드 2다."""
         list_path = self._list_file([self.a])
 
         for args in (
@@ -282,7 +280,7 @@ class ExceptionPathTest(unittest.TestCase):
             sys.path.remove(SRC)
 
     def test_unexpected_error_closes_and_exits_1(self):
-        """소스 읽기에서 예상 못 한 예외가 나면 소스를 닫고 종료 코드 1이며, 표준 오류에 예외를 남기고 end를 쓰지 않는다."""
+        """소스 읽기에서 예상 못 한 예외가 나면 소스를 닫고 종료 코드 1이며, 오류를 남기고 end를 안 쓴다."""
         closed = []
 
         class ExplodingSource:
@@ -337,7 +335,7 @@ class PublicSampleCliTest(unittest.TestCase):
     """실제 공개 데이터 표본으로 CLI를 확인한다."""
 
     def test_public_samples_cli(self):
-        """공개 데이터 표본 3장이 저장소 루트 기준 상대 경로로 640×640 프레임 3개가 되고 정상 종료한다(파일이 없으면 UNVERIFIED로 건너뜀)."""
+        """공개 데이터 표본 3장이 상대 경로로 640×640 프레임 3개가 되고 정상 종료한다(없으면 건너뜀)."""
         missing = [p for p in PUBLIC_SAMPLES if not os.path.isfile(os.path.join(REPO_ROOT, p))]
 
         if missing:
@@ -368,7 +366,7 @@ DETECT_CFG = {
     "min_area_source_px2": 100, "max_area_source_px2": None, "border_margin_processed_px": 2,
 }
 REPO_CONFIG = os.path.join(REPO_ROOT, "config", "vision", "opencv_planar.json")
-REPO_CONFIG_SHA = "b54dec5729bf5dc4f5af1ae0921ede34a5db3124050e9dfe6c110571c1e51422"  # REPO_CONFIG의 식별자
+REPO_CONFIG_SHA = "b54dec5729bf5dc4f5af1ae0921ede34a5db3124050e9dfe6c110571c1e51422"
 OBS_KEYS = {"kind", "run_id", "source_id", "image_seq", "capture_generation", "timestamp_ms",
             "timestamp_base", "received_monotonic_ns", "config_sha256", "processed_wh", "transform",
             "threshold_used", "raw_contour_count", "eligible_count", "process_ms", "display_only",
@@ -435,7 +433,7 @@ class DetectOutputTest(DetectCliBase):
         self.assertEqual(set(recs[-1]), END_KEYS)
 
     def test_frame_then_observation_and_no_observation_for_events(self):
-        """프레임마다 바로 뒤에 observation이 오고 사건에는 오지 않는다. observation의 식별·시각·설정·후보 값이 손 계산과 같고 end에 observation 수가 붙는다."""
+        """프레임 바로 뒤에 observation이 오고, 식별·시각·설정·후보 값이 손 계산과 같으며 end에 수가 붙는다."""
         recs = self.assertOk(run_cli(
             ["--images", self.two, self.missing, self.broken, "--detect-config", self.cfg], cwd=self.dir))
 
@@ -486,7 +484,7 @@ class DetectOutputTest(DetectCliBase):
         self.assertEqual(set(end), END_KEYS | {"observations"})
 
     def test_blank_and_edge_candidates(self):
-        """빈 영상은 후보 없음, 변에 닿은 사각형은 `source_edge`로 부적격, 2×2 잡음은 `area_below_min`으로 부적격이다."""
+        """빈 영상은 후보 없음, 변 접촉 사각형은 `source_edge`, 2×2 잡음은 `area_below_min`으로 부적격이다."""
         recs = self.assertOk(run_cli(
             ["--images", self.blank, self.edge, "--detect-config", self.cfg], cwd=self.dir))
         blank, edge = self.observations(recs)
@@ -510,7 +508,7 @@ class DetectOutputTest(DetectCliBase):
         self.assertEqual((end["frames"], end["failures"], end["observations"]), (2, 0, 2))
 
     def test_repo_config_hash_and_max_frames(self):
-        """저장소 설정을 쓰면 start·observation에 고정된 설정 식별자가 나오고, `--max-frames`와 함께 써도 집계가 맞다."""
+        """저장소 설정은 start·observation에 고정 설정 식별자를 내고, `--max-frames`와 써도 집계가 맞다."""
         recs = self.assertOk(run_cli(
             ["--images", self.two, self.blank, "--detect-config", REPO_CONFIG, "--max-frames", "1"],
             cwd=self.dir))
@@ -554,7 +552,7 @@ class DetectErrorTest(DetectCliBase):
                 self.assertUsage2(["--images", self.two, "--detect-config", path])
 
     def test_roi_outside_frame_exit_1(self):
-        """설정은 맞지만 ROI가 실제 영상 밖이면 start·frame까지 쓰고 종료 코드 1이며 표준 오류에 roi를 남긴다."""
+        """ROI가 실제 영상 밖이면 start·frame까지 쓰고 종료 코드 1이며 표준 오류에 roi를 남긴다."""
         cfg = self._cfg("roi.json", {**DETECT_CFG, "roi": [100, 0, 30, 80]})   # 120 < 100+30
         proc = run_cli(["--images", self.two, "--detect-config", cfg], cwd=self.dir)
 
@@ -571,7 +569,7 @@ class DetectErrorTest(DetectCliBase):
         self.assertFalse(os.path.exists(os.path.join(self.dir, "ov")))
 
     def test_overlay_existing_or_bad_path_exit_2(self):
-        """오버레이 폴더가 이미 있거나 파일이거나 부모가 없으면 종료 코드 2이고, 기존 폴더 내용은 그대로다."""
+        """오버레이 폴더가 이미 있거나 파일이거나 부모가 없으면 종료 코드 2이고 기존 내용은 그대로다."""
         existing = os.path.join(self.dir, "exists")
         os.mkdir(existing)
         keep = os.path.join(existing, "keep.txt")
@@ -591,7 +589,7 @@ class OverlayTest(DetectCliBase):
     """오버레이 영상 저장을 확인한다."""
 
     def test_overlay_written_and_inputs_preserved(self):
-        """프레임마다 번호 파일명의 오버레이가 원본 크기로 저장되고, 적격·탈락 후보 색이 다르며 배경과 입력 파일은 바뀌지 않는다."""
+        """오버레이가 번호 파일명·원본 크기로 저장되고 적격·탈락 색이 다르며 배경·입력은 바뀌지 않는다."""
         before = {p: file_bytes(p) for p in (self.edge, self.two, self.cfg)}
         ov = os.path.join(self.dir, "ov")
         recs = self.assertOk(run_cli(
@@ -639,7 +637,7 @@ class OverlayTest(DetectCliBase):
 
 
 class DetectExceptionPathTest(unittest.TestCase):
-    """검출·저장 실패 경로. 실제 저장 소스를 쓰고, 실패는 실제 조건(폴더 삭제)이나 검출 함수 교체로 만든다."""
+    """검출·저장 실패 경로. 실패는 실제 조건(폴더 삭제)이나 검출 함수 교체로 만든다."""
 
     setUpClass = classmethod(ExceptionPathTest.setUpClass.__func__)
     tearDownClass = classmethod(ExceptionPathTest.tearDownClass.__func__)

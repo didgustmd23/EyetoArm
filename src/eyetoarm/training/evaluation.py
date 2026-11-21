@@ -1,15 +1,8 @@
-"""학습기 I3 — 평가 순수 로직(학습기 설계 r2 §6). torch·ultralytics를 import하지 않는다(시험 가능).
+"""AI 후보 평가 순수 로직: 평가 설정, 시간 측정·정확도 절차, 기록 검사, 요약. torch·ultralytics 없음.
 
-- 평가 설정(`config/training/s1_eval.json`): 신뢰도·IoU·크기 구간, 공개 test·Gazebo 세트, 시간 측정 크기·횟수. 엄격 JSON,
-  `eval_config_id`(정규 JSON sha256). 학습 설정(config_id)과 분리해 평가 조건만 바꿔도 학습 기록이 흔들리지 않게 한다.
-- 시간 측정 절차(`run_timing`): **준비 → 첫 호출(cold) → 워밍업 → 본 측정** 순서를 이 함수가 고정한다. 준비는 모델 생성이고
-  첫 호출 전에는 predict를 부르지 않는다. 단계마다 GPU 최대 메모리를 초기화·기록한다. 크기마다 **새 자식·새 모델**에서 부르는 것은
-  실행기(eval_runner)가 보장한다(한 자식은 크기 하나만 잰다). 기존 임시 `s1_eval.py`처럼 정확도 평가 뒤에 재지 않는다.
-- 정확도 절차(`run_accuracy`): 계획(공개 test·Gazebo 640·1280) 순서로 같은 모델에 `evaluate_fn`·`val_fn`을 부른다.
-  매칭은 기존 `scripts/eval_size_recall.evaluate()`(같은 클래스·마스크 IoU ≥ 기준, 신뢰도 높은 예측부터 일대일)를 자식이 넘긴다.
-- Gazebo 세부 클래스(`fine_recall`): manifest의 labeled 부품 순서를 정답 라벨 줄 순서에 대응시킨다. 개수가 다르면 EvalError.
-  정답(manifest·라벨)은 평가 경로에서만 쓴다.
-- 기록 검사(`validate_timing`·`validate_accuracy`): 일부만 쓰였거나 형식이 다르면 문제 목록을 돌려준다(평가 failed, 요약 제외).
+평가 설정(`eval_config_id`)은 학습 설정과 분리해 평가 조건만 바꿔도 학습 기록이 흔들리지 않게 한다.
+시간 측정은 준비 → cold → 워밍업 → 본 측정 순서를 고정하고, 크기마다 새 자식·새 모델은 실행기가 보장한다.
+정답(manifest·라벨)은 평가 경로에서만 쓴다.
 """
 from __future__ import annotations
 
@@ -28,7 +21,7 @@ PHASES = ("prepare", "cold", "warmup", "measure")
 ACC_REQUIRED = ("split", "images", "imgsz", "conf", "iou", "by_size", "total", "predictions", "per_gt",
                 "map50_box", "map50_mask")
 FINE_CLASSES = ("BOLT_A", "BOLT_B", "NUT")
-SUMMARY_COLUMNS = (   # A 상세설계 §7.1 「1단계 실험 기록」 표의 열 순서
+SUMMARY_COLUMNS = (   # 1단계 실험 기록 표의 열 순서
     "번호", "모델·가중치(출처·해시)", "학습 설정(imgsz·에포크·시드·증강 등)", "데이터 목록", "라이브러리 버전",
     "공개 test mAP50 박스/마스크·크기 구간 재현율", "Gazebo 재현율 볼트/너트·BOLT_A/BOLT_B/NUT(추론 640·1280)", "오검출",
     "추론 P95·GPU 최대·학습 시간", "해석·실패·중단")
@@ -61,7 +54,7 @@ class EvalConfig:
 
 
 def _unit(v, name: str) -> float:
-    """(0, 1] 실수. 거대 정수(float 변환 넘침)도 ConfigError(#196 A4-2)."""
+    """(0, 1] 실수. 거대 정수(float 변환 넘침)도 ConfigError."""
     f = _as_float(v)
     if f is None or not math.isfinite(f) or not 0 < f <= 1:
         raise ConfigError(f"{name} must be in (0, 1]: {v!r}")
@@ -155,9 +148,8 @@ def run_timing(*, prepare: Callable[[], Any], images: list, predict: Callable[[A
                calls_seen: Callable[[], int] | None = None) -> dict:
     """준비 → cold → 워밍업 → 본 측정. 호출마다 predict 반환까지(call)와 sync 뒤까지(sync)를 따로 잰다.
 
-    images는 미리 메모리에 읽어 둔 영상이다(디코딩 제외). prepare는 모델 생성(import 뒤 `YOLO(path)`)이며 predict를 부르지 않아야 한다.
-    `calls_seen`은 모델의 실제 predict 호출 누계(자식이 감싼 계수기)다. 준비가 끝난 시점의 값을 남겨 cold 이전 호출을 검사한다
-    (주지 않으면 None → 기록 검사 실패).
+    images는 미리 읽어 둔 영상(디코딩 제외), prepare는 predict를 부르지 않는 모델 생성이다.
+    `calls_seen`은 실제 predict 호출 누계이며, 준비 끝 시점 값으로 cold 이전 호출을 검사한다(없으면 실패).
     """
     if not images:
         raise EvalError("timing needs at least one preloaded image")
@@ -205,7 +197,7 @@ def summarize_timing(raw: dict) -> dict:
 
 
 def _finite(v) -> bool:
-    """유한 실수. 거대 정수는 유한 실수로 보지 않는다(#196 A4-2: OverflowError 대신 False)."""
+    """유한 실수. 거대 정수는 OverflowError 대신 False(유한 실수로 보지 않음)."""
     f = _as_float(v)
     return f is not None and math.isfinite(f)
 
@@ -298,7 +290,7 @@ def _count_ok(t) -> bool:
     return (isinstance(t, dict) and _is_int(t.get("n")) and _is_int(t.get("tp")) and 0 <= t["tp"] <= t["n"])
 
 
-# ---------------------------------------------------------------- 실제 평가 입력 fingerprint·완료 수용(I3 r1 F2·F3)
+# ---------------------------------------------------------------- 실제 평가 입력 fingerprint·완료 수용
 def _file_sha(path: str) -> str:
     """파일 sha256."""
     h = hashlib.sha256()
@@ -318,9 +310,9 @@ def _dir_digest(path: str) -> dict:
 
 
 def eval_inputs_fingerprint(repo_root: str, eval_cfg: "EvalConfig") -> dict:
-    """정확도 계획의 실제 평가 입력: 영상·라벨(개수·내용 누적 해시), dataset.yaml(클래스 대응), Gazebo manifest(해시·줄 수).
+    """정확도 계획의 실제 평가 입력 fingerprint: 영상·라벨 누적 해시, dataset.yaml, Gazebo manifest.
 
-    `eval_config_id`는 경로·설정 식별자일 뿐이라 자료 내용을 대신하지 못한다. 같은 경로의 내용이 바뀌면 이 값이 바뀐다.
+    `eval_config_id`는 경로·설정 식별자일 뿐이라, 같은 경로의 내용이 바뀌면 이 값으로 잡는다.
     """
     out = {}
     for key, data_dir, split, imgsz in eval_cfg.accuracy_plan():
@@ -346,9 +338,9 @@ def canonical_sha(obj) -> str:
 def accepted_eval(eval_dir: str) -> tuple[dict | None, list[str]]:
     """완료로 받아들일 수 있는 eval.json인가(게시 계약).
 
-    완료 = eval.json이 읽히고, 그 `attempt`의 `attempt_<n>/status.json`이 status evaluated이며 `eval_sha256`이 eval.json의
-    정규 해시와 같고, 요약 행을 만들 수 있다. 필수 기록(status·attempts end)은 eval.json보다 **먼저** 쓰므로, 그 기록이 실패하면
-    eval.json이 없고, eval.json만 남거나 바뀐 경우는 해시가 맞지 않아 완료가 아니다.
+    eval.json이 읽히고, 그 `attempt_<n>/status.json`이 evaluated이며 `eval_sha256`이 eval.json 정규 해시와
+    같고, 요약 행을 만들 수 있어야 한다. 필수 기록을 eval.json보다 먼저 쓰므로 eval.json만 남거나
+    바뀐 경우는 해시가 맞지 않아 완료가 아니다.
     """
     path = os.path.join(eval_dir, "eval.json")
     try:
@@ -439,7 +431,7 @@ def _f(v, nd: int = 3) -> str:
 
 
 def summary_row(*, exp_id: str, train: dict, record: dict) -> dict:
-    """A §7.1 표 열 순서의 한 행(사실 값만, 해석 칸은 사람이 채운다)."""
+    """1단계 실험 기록 표 열 순서의 한 행(사실 값만, 해석 칸은 사람이 채운다)."""
     acc, tim = record["accuracy"], record["timing"]
     pub = next((v for k, v in acc.items() if k.startswith("test")), None)
     gz = {k: v for k, v in acc.items() if k.startswith("gz")}

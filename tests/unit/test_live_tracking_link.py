@@ -1,11 +1,7 @@
-"""#215 추적 번호 → 실시간 A→B→C 연결 시험(T1~T12).
+"""추적 번호 → 실시간 A→B→C 연결 시험.
 
-근거: 계획 `_workspace/215_builder2_tracking_live_plan_r0.md`(reviewer PASS 2026-11-20: Q1 (가) A 하위 형, Q2 `offer(tracks=)` 허용,
-`not_accepted` release는 `PICK_PLACE`만, Q5 근방 금지는 번호가 있어도 적용, Q6 `retry` 선택·없으면 `retry=off`).
-- 실제 ROS·Gazebo는 쓰지 않는다. CLI 시험은 기존 실시간 기록 연결 시험의 가짜 수신·가짜 모델(같은 볼트 마스크 → 같은 박스)·가짜 TF와
-  #214 가짜 송신 런타임을 쓴다. 추적기는 실제 `PartTracker`(M2, 기본 임시값: 연속 3 hit 확정)다.
-- B 계산은 실제 `BStage`다: 봉투 → B 입구 어댑터 → `BStage.consume`까지 하위 형 관측·번호가 남아 `goal.part_track_id`·`ALREADY_SENT`가
-  나오는지 끝까지 본다(reviewer 조건).
+실제 ROS·Gazebo 없이 가짜 수신·모델·TF·송신 런타임을 쓰고, 추적기 `PartTracker`와 `BStage`는 실제다.
+`goal.part_track_id`·`ALREADY_SENT`가 나오는지 B 계산 끝까지 본다.
 """
 from __future__ import annotations
 
@@ -67,12 +63,12 @@ class ReleasingRuntime(FakeRuntime):
         self._release(goal)
 
 
-# #239: 실시간 --tracking 기본 공간이 W가 되어, 픽셀 추적 시험은 공간을 명시한다
+# 실시간 --tracking 기본 공간은 W라 픽셀 추적 시험은 공간을 명시한다
 PIXEL = ("--tracking-space", "pixel")
 
 
 def sort_config(tmp, retry=None, require=False) -> str:
-    """송신 시험 설정(+ retry 블록 선택). #239: 추적 켬 송신은 `require_track_id`가 필수라 기본 false(번호 None도 보냄, 기존 동작)."""
+    """송신 시험 설정(+ retry 블록 선택). `require_track_id` 기본 false(번호 None도 보냄)."""
     doc = json.loads(SORT_CONFIG.read_text(encoding="utf-8"))
     doc["sort_part"]["require_track_id"] = require
 
@@ -140,7 +136,7 @@ def asg(index, state, tid=None):
 
 
 class ConfirmedRuleTest(unittest.TestCase):
-    """T3(규칙): 확정 번호만."""
+    """확정 번호만."""
 
     def test_only_confirmed_selected_instance(self):
         """CONFIRMED + 선택 index만 번호, 나머지 상태·조건은 None과 사유."""
@@ -166,7 +162,7 @@ class ConfirmedRuleTest(unittest.TestCase):
                          (None, NO_SELECTION))
 
     def test_subtype_keeps_fields_and_replace(self):
-        """하위 형: 상위 필드 그대로·isinstance·replace(#207 보정) 뒤 번호 유지, bool·0 번호 거부."""
+        """하위 형: 상위 필드 그대로·isinstance·replace 뒤 번호 유지, bool·0 번호 거부."""
         import numpy as np
 
         from eyetoarm.common.types import PlanarObservation
@@ -191,10 +187,10 @@ class ConfirmedRuleTest(unittest.TestCase):
 
 
 class ProxyTest(unittest.TestCase):
-    """T8: 프록시는 연결부가 만든 모든 B 단계에 release."""
+    """프록시는 연결부가 만든 모든 B 단계에 release."""
 
     def test_releases_every_stage(self):
-        """이전 단계(프로필 변경 전)·현재 단계 모두 release, 호출 수."""
+        """프로필 변경 전 단계·현재 단계 모두 release, 호출 수."""
         stages = [mock.Mock(), mock.Mock()]
         link = SimpleNamespace(_lock=threading.Lock(), stages=[(stages[0], None), (stages[1], None)])
         proxy = _StageReleaseProxy(link)
@@ -213,7 +209,7 @@ def out_of(gid, track=None, kind="PICK_PLACE", pos=(400.0, 0.0, 105.0), stamp=1_
 
 
 class SenderRetryTest(unittest.TestCase):
-    """T7·T9·T10(송신기)."""
+    """송신기 재시도·release."""
 
     def make(self, retry=None, *, tracking=True):
         """송신기·가짜 런타임·release 기록."""
@@ -245,7 +241,8 @@ class SenderRetryTest(unittest.TestCase):
 
         self.assertEqual(s.offer(out_of("g2", 7, stamp=3 * 10 ** 9), frame, {}, 2), "skip:track_retry_limit")
         self.assertEqual(self.target.release.call_args_list, [mock.call(7)])
-        self.assertEqual(s.offer(out_of("g3", 8, stamp=4 * 10 ** 9), frame, {}, 3), "sent")   # 다른 번호는 보냄
+        # 다른 번호는 보냄
+        self.assertEqual(s.offer(out_of("g3", 8, stamp=4 * 10 ** 9), frame, {}, 3), "sent")
         self.rt.finish("g3", "SUCCEEDED")
         recs = self.recs()
         self.assertTrue(all("part_track_id" in r for r in recs))
@@ -260,7 +257,7 @@ class SenderRetryTest(unittest.TestCase):
         self.rt.finish("g0", "FAILED")
         cases = [(out_of("a", None, pos=(405.0, 5.0, 105.0), stamp=5 * 10 ** 9), "skip:failed_point_block"),
                  (out_of("b", 9, pos=(410.0, 0.0, 105.0), stamp=5 * 10 ** 9), "skip:failed_point_block"),
-                 (out_of("c", 9, pos=(420.0, 0.0, 105.0), stamp=5 * 10 ** 9), "sent"),        # 20 mm 밖
+                 (out_of("c", 9, pos=(420.0, 0.0, 105.0), stamp=5 * 10 ** 9), "sent"),  # 20 mm 밖
                  ]
 
         for out, expect in cases:
@@ -268,8 +265,9 @@ class SenderRetryTest(unittest.TestCase):
                 self.assertEqual(s.offer(out, frame, {}, 1), expect)
 
         self.rt.finish("c", "SUCCEEDED")
-        self.assertEqual(s.offer(out_of("d", None, stamp=12 * 10 ** 9), frame, {}, 2), "sent")   # 창(10 s) 밖
-        self.assertEqual(self.target.release.call_args_list, [mock.call(9)])                   # 번호 있는 것만 release
+        # 창(10 s) 밖
+        self.assertEqual(s.offer(out_of("d", None, stamp=12 * 10 ** 9), frame, {}, 2), "sent")
+        self.assertEqual(self.target.release.call_args_list, [mock.call(9)])  # 번호 있는 것만 release
         self.recs()
 
     def test_no_call_release_cases(self):
@@ -293,7 +291,7 @@ class SenderRetryTest(unittest.TestCase):
         self.recs()
 
     def test_tracking_off_record_shape(self):
-        """추적 끔: 기록에 part_track_id 키 없음(#214 형식 그대로), retry 없음이면 요약 retry=off."""
+        """추적 끔: 기록에 part_track_id 키 없음, retry 없음이면 요약 retry=off."""
         s = self.make(tracking=False)
         s.offer(out_of("g1", None), SimpleNamespace(image_seq=1, ros_stamp_ns=1), {}, 1)
         recs = self.recs()
@@ -317,10 +315,10 @@ class SenderRetryTest(unittest.TestCase):
 # ---------------------------------------------------------------------- CLI(실제 추적기·실제 BStage)
 
 class TrackingCliTest(TrackCli):
-    """T1·T3·T4·T5·T6·T7·T10·T11·T12."""
+    """실제 추적기·BStage를 쓴 CLI 경로."""
 
     def test_confirmed_id_reaches_b_goal_and_dedupe(self):
-        """T3·T4·T6: 확정 뒤 B 입력은 하위 형 + 번호, goal.part_track_id = 번호, 결과 전 두 번째부터 ALREADY_SENT, 송신 1회."""
+        """확정 뒤 B 입력은 하위 형 + 번호, goal.part_track_id = 번호, 결과 전 두 번째부터 ALREADY_SENT, 송신 1회."""
         code, err, out, rt = self.run_track(Scenario(8))
         self.assertEqual(code, 0, err)
         self.assertIn("tracking ON M2(heuristic)", err)
@@ -348,7 +346,7 @@ class TrackingCliTest(TrackCli):
         self.assertIsNotNone(s["tracking"])                       # 실행기 추적 보고
 
     def test_result_releases_then_sends_again(self):
-        """T6: 결과(성공)가 오면 B 기록이 풀려(프록시) 같은 번호를 다시 PICK_PLACE로 보낸다."""
+        """결과(성공)가 오면 B 기록이 풀려(프록시) 같은 번호를 다시 PICK_PLACE로 보낸다."""
         holder = {}
 
         def finish(sc):
@@ -370,7 +368,7 @@ class TrackingCliTest(TrackCli):
         self.assertIn(tracked[0]["part_track_id"], rt.released)
 
     def test_not_accepted_releases_pick_place_only(self):
-        """T7: 검사 ③ 거부가 PICK_PLACE면 release(다음 수락이 다시 PICK_PLACE), ALREADY_SENT 거부는 release 없음."""
+        """검사 ③ 거부가 PICK_PLACE면 release(다음 수락이 다시 PICK_PLACE), ALREADY_SENT 거부는 release 없음."""
         from eyetoarm.vision.live_observation_dispatch import LiveObservationDispatcher
 
         # 첫 번호 있는 결과(PICK_PLACE)를 거부 → release → 다음 번호 있는 수락은 PICK_PLACE(송신)
@@ -407,7 +405,7 @@ class TrackingCliTest(TrackCli):
         self.assertEqual(len([g for g in rt.sent if g["part_track_id"] is not None]), 1)
 
     def test_already_sent_not_accepted_not_released(self):
-        """T7: ALREADY_SENT(SKIP) 결과가 검사 ③에서 거부돼도 release하지 않는다(그 뒤도 ALREADY_SENT)."""
+        """ALREADY_SENT(SKIP) 결과가 검사 ③에서 거부돼도 release하지 않는다(그 뒤도 ALREADY_SENT)."""
         from eyetoarm.vision.live_observation_dispatch import LiveObservationDispatcher
 
         seen = {"skip_rejected": 0}
@@ -440,7 +438,7 @@ class TrackingCliTest(TrackCli):
         self.assertEqual(len([g for g in rt.sent if g["part_track_id"] is not None]), 1)
 
     def test_no_server_releases_each_time(self):
-        """T7: 서버 없음이면 B 클라이언트가 매번 release → ALREADY_SENT 없이 매 수락 no_server."""
+        """서버 없음이면 B 클라이언트가 매번 release → ALREADY_SENT 없이 매 수락 no_server."""
         code, err, out, rt = self.run_track(Scenario(7), runtime=ReleasingRuntime(server=False))
         self.assertEqual(code, 0, err)
         acc = [r for r in self.accepts(out) if r["input"]["part_track_id"] is not None]
@@ -448,7 +446,7 @@ class TrackingCliTest(TrackCli):
         self.assertTrue(rt.released)
 
     def test_record_only_tracking_releases_after_accept(self):
-        """T7: 송신을 끈 기록 전용 + 추적이면 수락 뒤 바로 release(ALREADY_SENT로 굳지 않음), 기록에 번호."""
+        """송신을 끈 기록 전용 + 추적이면 수락 뒤 바로 release(ALREADY_SENT로 굳지 않음), 기록에 번호."""
         code, err, out = self.run_sort(Scenario(7), config=CONFIG, extra=("--tracking", *PIXEL))
         self.assertEqual(code, 0, err)
         acc = [r for r in self.accepts(out) if r["input"]["part_track_id"] is not None]
@@ -457,7 +455,7 @@ class TrackingCliTest(TrackCli):
         self.assertFalse((Path(out) / "sort_part.jsonl").exists())
 
     def test_profile_change_resets_ids(self):
-        """T5: 프로필 변경(세대 변경) 뒤 이전 번호가 실리지 않고 새 번호로 다시 확정된다."""
+        """프로필 변경(세대 변경) 뒤 이전 번호가 실리지 않고 새 번호로 다시 확정된다."""
         from test_ros_image_adapter import info_msg
         from test_run_pipeline_capture_observation import H, W, FRAME_ID
 
@@ -477,7 +475,7 @@ class TrackingCliTest(TrackCli):
         self.assertIsNone(after[0])                                            # 새 트랙은 다시 3 hit 필요
 
     def test_view_bias_keeps_track(self):
-        """T4: 시야 보정 켬에서도 B 입력 하위 형·번호 유지, goal 번호 = 기록 번호."""
+        """시야 보정 켬에서도 B 입력 하위 형·번호 유지, goal 번호 = 기록 번호."""
         self.case.ai = write_bias_config(self.case.ai, Path(self.tmp.name) / "ai_vb.json")
         code, err, out, rt = self.run_track(Scenario(6))
         self.assertEqual(code, 0, err)
@@ -487,7 +485,7 @@ class TrackingCliTest(TrackCli):
         self.assertTrue(all(t == "TrackedPlanarObservation" for t, *_ in self.b_seen))
 
     def test_retry_limit_end_to_end(self):
-        """T9: 실패 서버 흉내 + retry → 같은 번호 실패 1회 뒤 skip:track_retry_limit, 시작 줄·요약 표기."""
+        """실패 서버 흉내 + retry → 같은 번호 실패 1회 뒤 skip:track_retry_limit, 시작 줄·요약 표기."""
         holder = {}
 
         def fail_first(sc):
@@ -511,7 +509,7 @@ class TrackingCliTest(TrackCli):
         self.assertNotEqual(self.summary(out)["sort_part"]["retry"], "off")
 
     def test_tracking_failure_isolated(self):
-        """T12: 추적 예외 → 실행기 latch(추적 끔), 이후 번호 None(no_tracks)으로 송신 규칙 계속, 종료 0."""
+        """추적 예외 → 실행기 latch(추적 끔), 이후 번호 None(no_tracks)으로 송신 규칙 계속, 종료 0."""
         with mock.patch.object(trk.PartTracker, "update", side_effect=RuntimeError("tracker boom")):
             code, err, out, rt = self.run_track(Scenario(4))
 
@@ -523,7 +521,7 @@ class TrackingCliTest(TrackCli):
         self.assertIn("tracking_failed", err)
 
     def test_on_output_still_refused_with_tracking(self):
-        """T11: 추적을 켜도 on_output 있는 B 단계는 거부(수락 0·송신 0·종료 1)."""
+        """추적을 켜도 on_output 있는 B 단계는 거부(수락 0·송신 0·종료 1)."""
         def hook(stage):
             stage.on_output = lambda out: None
 
@@ -535,10 +533,10 @@ class TrackingCliTest(TrackCli):
 
 
 class TrackingOffTest(TrackCli):
-    """T1·T2: 조합과 끔 동작."""
+    """조합과 끔 동작."""
 
     def test_off_offer_has_no_tracks_and_records_unchanged(self):
-        """T2: 추적 끔이면 offer에 tracks 인자 없음, accept input·sort_part 형식·요약이 #214와 같다."""
+        """추적 끔이면 offer에 tracks 인자 없음, accept input·sort_part 형식·요약은 추적 없는 형식."""
         from eyetoarm.vision.live_observation_link import LiveObservationLink
 
         kwargs = []
@@ -565,7 +563,7 @@ class TrackingOffTest(TrackCli):
         self.assertIn("tracking=off", err)
 
     def test_on_offer_gets_tracks(self):
-        """T1: --live-observation-out --tracking 허용, offer에 tracks 인자(TrackFrame 또는 None)."""
+        """--live-observation-out --tracking 허용, offer에 tracks 인자(TrackFrame 또는 None)."""
         from eyetoarm.vision.live_observation_link import LiveObservationLink
 
         kwargs = []
@@ -583,7 +581,7 @@ class TrackingOffTest(TrackCli):
         self.assertTrue(any(isinstance(kw["tracks"], trk.TrackFrame) for kw in kwargs))
 
     def test_list_with_tracking_allowed(self):
-        """T1(#244 변경): 단계 L + 픽셀 추적은 허용(0). 전에는 단계 T 전용이라 2였다."""
+        """단계 L + 픽셀 추적은 허용(종료 0)."""
         code, err, out = self.run_sort(Scenario(2), config=CONFIG, extra=("--tracking", *PIXEL, "--b-input", "list"))
         self.assertEqual(code, 0, err)
 

@@ -1,7 +1,6 @@
-"""학습기 I1 — 데이터 fingerprint(`eyetoarm.training.fingerprint`) 시험. 임시 데이터로 계산·비교한다.
+"""학습 데이터 fingerprint(`eyetoarm.training.fingerprint`) 시험. 임시 데이터로 계산·비교한다.
 
-근거: 학습기 설계 r2 §3(분할 목록·manifest·dataset.yaml sha256과 줄 수, 분할별 영상·라벨 수·stem 일치·클래스별 인스턴스·누적 해시,
-기대값과 다르면 학습 거부, 원본을 바꾸지 않음).
+기대값과 다르면 학습을 거부하고 원본은 바꾸지 않는다.
 """
 import os
 import tempfile

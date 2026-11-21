@@ -1,19 +1,8 @@
-"""공식 사전학습 가중치 확인·준비(학습기 설계 r2 §3). ultralytics 자동 내려받기를 쓰지 않는다.
+"""공식 사전학습 가중치 확인·준비. ultralytics 자동 내려받기를 쓰지 않는다.
 
-- 있으면 sha256·크기를 대조한다. 일치하면 재사용(method existing), 불일치면 덮어쓰지 않고 WeightsError.
-- 없으면 `allow_download=True`를 명시했을 때만 후보의 공식 url에서 `<파일>.part`로 받는다. sha256·크기가 맞을 때만
-  `os.replace`로 최종 이름을 만들고, 아니면 `.part`를 지운다. 남은 `.part`가 있으면 덮어쓰지 않고 거부한다.
-- 결과는 `<weights_dir>/provenance.json`에 파일별로 남긴다(원자 교체).
-- 실제 네트워크 내려받기(기본 경로, r2 F1 잔여)는 **자식 프로세스**(`download_with_deadline`)에서 한다.
-  - 부모가 단조 시계 기준 **전체 기한** `timeout_s`를 쥐고, 넘으면 자식 프로세스 그룹을 SIGKILL하고 상한 있는 회수를 한 번 한다.
-  - 그래서 헤더 대기와, `HTTPResponse.read` 한 호출 안에서 데이터가 조금씩 계속 들어오는 경우까지 같은 예산에 묶인다.
-    소켓 timeout(개별 I/O 제한)은 무진행 대기의 상한일 뿐 요청 전체 시간을 보장하지 않으므로 거기에 기대지 않는다.
-    로컬 서버 시나리오에서 같은 프로세스 방식은 기한 2 s에 12 s가 걸렸다.
-  - 자식은 표준 라이브러리 urllib만 쓰고(`-I` 격리 모드), 개별 I/O 제한과 크기 상한을 스스로 지킨다.
-  - 크기: Content-Length가 허용 크기(후보 `size_bytes`)보다 크면 읽기 전에, 헤더가 없어도 누적 바이트가 넘는 즉시 자식이 멈춘다(종료 코드 3).
-- 같은 프로세스 경로 `_stream_download`는 **주입한 가짜 응답(`opener`) 시험용**이다. 바깥 루프에서만 기한을 보므로 실제 네트워크에서
-  전체 기한을 보장하지 않는다. `downloader`를 주면 그것을 그대로 쓴다(상한은 그 함수 책임).
-- 실패하면 자기 `.part`를 지우고 WeightsError로 보고한다(자식 정리 결과는 예외의 `child` 속성).
+있으면 sha256·크기를 대조하고(불일치면 덮어쓰지 않음), 없으면 `allow_download=True`일 때만 `.part`로 받아
+맞을 때만 `os.replace`한다. 실제 내려받기는 부모가 전체 기한을 쥔 자식 프로세스에서 한다(소켓 timeout은
+요청 전체 시간을 보장하지 않으므로). `_stream_download`는 가짜 응답 시험용이다.
 """
 from __future__ import annotations
 
@@ -41,7 +30,7 @@ class WeightsError(RuntimeError):
         self.child = child
 
 
-# 자식 내려받기 코드(표준 라이브러리만). 인자: url dest max_bytes io_timeout. 종료 코드 0 성공, 3 크기 초과, 그 밖 오류
+# 자식 내려받기 코드(표준 라이브러리만). 인자: url dest max_bytes io_timeout. 종료 코드 0 성공, 3 크기 초과
 _CHILD_CODE = r"""
 import sys, urllib.request
 url, dest, max_bytes, io_timeout = sys.argv[1], sys.argv[2], int(sys.argv[3]), float(sys.argv[4])
@@ -88,12 +77,9 @@ def _kill_and_reap(p, info: dict, reap_s: float) -> None:
 def download_with_deadline(url: str, dest: str, *, max_bytes: int, deadline_s: float, io_timeout_s: float,
                            reap_s: float = 5.0, child_argv: list | None = None, should_stop=None,
                            poll_s: float = 0.2, on_child=None) -> dict:
-    """자식 프로세스로 받는다. 부모가 전체 기한을 쥐고 넘으면 그룹 SIGKILL → 상한 있는 회수 한 번. 실패는 WeightsError.
+    """자식 프로세스로 받는다. 기한을 넘으면 그룹 SIGKILL → 상한 있는 회수 한 번. 실패는 WeightsError.
 
-    `child_argv`는 시험 주입 지점이다(기본은 `sys.executable -I -c _CHILD_CODE url dest max_bytes io_timeout`).
-    `should_stop`(CLI 정지 플래그)을 `poll_s`마다 확인해 참이면 자식을 정리하고 WeightsError(stop_requested)다.
-    대기 중 KeyboardInterrupt·그 밖의 예외가 나도 자식 핸들을 잃지 않고 정리한 뒤 원래 예외를 다시 올린다(예외의 `child`).
-    `on_child(info)`는 자식을 띄운 직후 정보를 알린다. 성공하면 자식 정보 dict를 돌려준다.
+    `should_stop`이 참이면 자식을 정리하고 WeightsError, 그 밖의 예외도 자식을 정리한 뒤 다시 올린다.
     """
     argv = child_argv or [sys.executable, "-I", "-c", _CHILD_CODE, url, dest, str(max_bytes), str(io_timeout_s)]
     t0 = time.monotonic()

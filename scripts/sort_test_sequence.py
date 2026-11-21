@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
-"""분류 시험 공급 순서표 생성·검증 도구(#186, 계획서 §2.6.2 「A 시험 순서표 작성」, A 상세설계 §2).
+"""분류 시험 공급 순서표 생성(generate)·검증(validate) 도구. 순서표는 평가 경로에서만 읽는다.
 
-    PYTHONPATH=src python3 scripts/sort_test_sequence.py generate --seed 42 --count 20 --pattern mixed \\
-        --out-dir evaluation/ground_truth/sort_sequences
-    PYTHONPATH=src python3 scripts/sort_test_sequence.py validate path/to/sequence.json
-    PYTHONPATH=src python3 scripts/sort_test_sequence.py validate path/to/sequence.csv --sequence-id my_seq
-
-- 생성 결과는 정본 `.json` + 사람용 `.csv`·`.md`. 같은 이름이 있으면 덮어쓰지 않는다.
-- 순서표는 **독립 정답**이다. 평가 경로에서만 읽는다(코드 규약 §5). 런타임 실행에 넘기지 않는다.
-- 너트 행은 `--include-nut`일 때만 넣는다(기본 볼트만, 사용자 2026-11-19 — 포함 여부는 사용자 결정 항목).
-- 종료 코드: 0 = 성공·검증 통과, 1 = 검증 실패, 2 = 인자 거부·파일 오류.
+사용: PYTHONPATH=src python3 scripts/sort_test_sequence.py generate --seed 42 --count 20 \\
+      --pattern mixed --out-dir evaluation/ground_truth/sort_sequences
+종료 코드: 0 통과, 1 검증 실패, 2 인자·파일 오류. 같은 이름 파일은 덮어쓰지 않는다.
 """
 from __future__ import annotations
 

@@ -1,8 +1,6 @@
-"""YOLO 연결 T4 — 모델 원시 출력 → 표시 결과 → 표시용 무효 관측 변환(`ai_convert`) 시험(가짜 원시 배열).
+"""모델 원시 출력 → 표시 결과 → 표시용 무효 관측 변환(`ai_convert`) 시험(가짜 원시 배열).
 
-근거: 계획 `docs/superpowers/plans/2026-11-15-yolo-pipeline.md` r2 §2(retina 마스크는 넘긴 crop 해상도 → A는 ROI 오프셋만),
-§4.3(입력 검사·ROI·인스턴스별 판정 순서·좌표), §4.3.1(polygon 규칙), §4.4(관측 계약·reason 우선순위), T4.
-좌표 기대값은 손으로 정한 상수다(사각형 꼭짓점). 변환 구현으로 기대값을 만들지 않는다. 실제 모델·torch를 쓰지 않는다.
+좌표 기대값은 손으로 정한 상수(사각형 꼭짓점)다. 실제 모델·torch를 쓰지 않는다.
 """
 import unittest
 
@@ -94,7 +92,7 @@ class ConvertGeometryTest(unittest.TestCase):
     """좌표 복원·거부·기하."""
 
     def test_roi_offset_only_no_letterbox_inverse(self):
-        """ROI (100,50,64,48)에서 crop 마스크 사각형 x10..19·y5..14 → 원본 꼭짓점 (110,55)·(119,55)·(119,64)·(110,64), 박스도 오프셋만."""
+        """crop 마스크 사각형 x10..19·y5..14 → ROI (100,50) 오프셋만 더한 원본 꼭짓점·박스."""
         cw = (64, 48)
         r = convert(raw([rect_mask(cw, 10, 5, 19, 14)], cw), big_frame(), ai_config(roi=[100, 50, 64, 48]))
         inst = r.instances[0]
@@ -149,7 +147,7 @@ class ConvertGeometryTest(unittest.TestCase):
         self.assertEqual((r.instances[0].rejected, r.candidate_count), ("LOW_CONFIDENCE", 0))
 
     def test_non_target_or_low_conf_with_empty_or_degenerate_mask(self):
-        """r2 P4 혼합: 비대상+1화소·점수 미달+빈 마스크·대상+1화소 → 거부 [NON_TARGET, LOW_CONF, EMPTY], polygon 모두 None, instances 3·candidate 1·eligible 0, reason NO_OBJECT."""
+        """비대상+1화소·점수 미달+빈 마스크·대상+1화소 → 거부 3종, polygon None, reason NO_OBJECT."""
         cw = (W, H)
         one = rect_mask(cw, 20, 20, 20, 20)
         empty = np.zeros((H, W), bool)
@@ -173,7 +171,7 @@ class ConvertGeometryTest(unittest.TestCase):
                          ("EMPTY_MASK", None, 31.0))
 
     def test_mixed_non_target_low_conf_small_clipped(self):
-        """r1 C1: 비대상 1·점수 미달 1·작고 잘린 대상 1 → candidate 1(작고 잘림만 in_scope), reason NO_OBJECT(CONTOUR_CLIPPED 아님)."""
+        """비대상·점수 미달·작고 잘린 대상 → candidate 1, reason NO_OBJECT(CONTOUR_CLIPPED 아님)."""
         cw = (W, H)
         cfg = ai_config(target_classes=["bolt"], min_mask_area_px=50)
         fr = big_frame()
@@ -186,7 +184,7 @@ class ConvertGeometryTest(unittest.TestCase):
         self.assertEqual(display_reason(r, fr, profile(width=W, height=H)), "NO_OBJECT")
 
     def test_clipped_eligible_size_gives_contour_clipped(self):
-        """면적을 통과한 대상이 border_margin_px(2) 안에서 crop 경계에 닿으면 clipped·CONTOUR_CLIPPED. 경계에서 3 px 떨어지면 잘림 아님."""
+        """면적 통과 대상이 경계 2 px 안이면 clipped·CONTOUR_CLIPPED, 3 px 떨어지면 잘림 아님."""
         cw = (64, 48)
         fr = big_frame()
         cfg = ai_config(roi=[100, 50, 64, 48], border_margin_px=2)
@@ -199,7 +197,7 @@ class ConvertGeometryTest(unittest.TestCase):
         self.assertEqual(display_reason(inside, fr, profile(width=W, height=H)), "TOP_FACE_UNRESOLVED")
 
     def test_hole_and_disjoint_counted_largest_outer_used(self):
-        """구멍 난 사각형은 component 1·hole 1, 큰 사각형 + 작은 사각형은 component 2이며 polygon은 가장 큰 바깥 윤곽(큰 사각형)."""
+        """구멍 난 사각형은 component 1·hole 1, 떨어진 두 사각형은 component 2·polygon은 큰 쪽."""
         cw = (W, H)
         ring = rect_mask(cw, 20, 20, 59, 59)
         ring[30:50, 30:50] = False
@@ -256,7 +254,7 @@ class ReasonAndObservationTest(unittest.TestCase):
         return convert(raw(masks, (fr.width, fr.height), **kw), fr, cfg or ai_config())
 
     def test_reason_priority(self):
-        """CALIBRATION_MISMATCH > TOP_FACE_UNRESOLVED(복수 대상도, Q2) > CONTOUR_CLIPPED > NO_OBJECT."""
+        """CALIBRATION_MISMATCH > TOP_FACE_UNRESOLVED(복수 대상도) > CONTOUR_CLIPPED > NO_OBJECT."""
         fr = big_frame()
         cw = (W, H)
         good = profile(width=W, height=H)
@@ -266,14 +264,14 @@ class ReasonAndObservationTest(unittest.TestCase):
         none = self.result_with([], fr)
 
         self.assertEqual(display_reason(one, fr, None), "CALIBRATION_MISMATCH")
-        self.assertEqual(display_reason(one, fr, profile()), "CALIBRATION_MISMATCH")   # 6×4 프로파일 불일치
+        self.assertEqual(display_reason(one, fr, profile()), "CALIBRATION_MISMATCH")   # 6×4 불일치
         self.assertEqual(display_reason(one, fr, good), "TOP_FACE_UNRESOLVED")
         self.assertEqual(display_reason(two, fr, good), "TOP_FACE_UNRESOLVED")
         self.assertEqual(display_reason(clipped, fr, good), "CONTOUR_CLIPPED")
         self.assertEqual(display_reason(none, fr, good), "NO_OBJECT")
 
     def test_observation_never_valid_and_ai_fields(self):
-        """관측은 valid=False, method ai, model_id 값, 선택·관측면·계산 윤곽·표시 마스크·class_name·confidence None, candidate_count = in_scope 수."""
+        """관측은 valid=False·method ai·model_id 값, 계산 필드는 None, candidate_count = in_scope 수."""
         cfg = ai_config()
         fr = big_frame()
         job = job_for(cfg, fr, profile(width=W, height=H))

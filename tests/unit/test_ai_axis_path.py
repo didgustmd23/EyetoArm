@@ -1,11 +1,6 @@
-"""AI 볼트 축 끝점 opt-in 경로(#168) 단위시험: 설정 키·convert 안 M1 호출·프레임 판정 사유·기록·B 호출 조건.
+"""AI 볼트 축 끝점 opt-in 경로 단위시험: 설정 키·convert 안 M1 호출·프레임 판정 사유·기록·B 호출 조건.
 
-근거: `_workspace/168_a_to_b_real_path_implementation_spec.md` §1·§2, #163 명세 r1 §3~§5(사유 표 순서·마스크 수명),
-#167 계획 r2 K0(opt-in의 valid는 추출기 형식 조건 통과 뜻).
-
-- 마스크는 numpy로 그린 합성 볼트(머리 18×10 px + 축 10×34 px)이며 정답을 같은 추출기로 역산하지 않는다.
-  기대 끝점은 그린 도형의 머리 끝·축 끝 화소 중심(축선 위)이다.
-- 이 시험의 「유효」는 추출기 형식 조건 통과이고 정확도 판정이 아니다.
+마스크는 numpy로 그린 합성 볼트이고, 「유효」는 추출기 형식 조건 통과이지 정확도 판정이 아니다.
 """
 import unittest
 from pathlib import Path
@@ -60,10 +55,9 @@ class AxisConfigTest(unittest.TestCase):
     """설정 키: 선택·기본 None·해시 보존·값 검사."""
 
     def test_optional_key_keeps_existing_hash(self):
-        """axis_extractor가 없는(=None) 설정은 키를 생략한 설정과 해시가 같고, 저장소 AI 설정 파일의 해시도 변경 전 기록값과 같다."""
+        """axis_extractor가 None인 설정은 키 생략 설정·저장소 AI 설정 파일과 해시가 같다."""
         self.assertEqual(ai_config().config_sha256, AiSegConfig(**AI_FIELDS).config_sha256)
         self.assertNotIn("axis_extractor", ai_config().canonical_json())
-        # 변경 전 기록값: _workspace/168_evidence/ai_config_sha_before.txt
         self.assertEqual(load_ai_config(ROOT / "config/vision/ai_s1_01_live.json").config_sha256,
                          "e4f57ffa68a4159999087d0b5f5b725830017007850bba0c4f5b8b96eb7bf355")
 
@@ -82,7 +76,7 @@ class AxisOffTest(unittest.TestCase):
     """기본 꺼짐: 기존 표시용 무효 관측·기록 그대로."""
 
     def test_off_keeps_display_invalid_and_no_axis_fields(self):
-        """axis_extractor None이면 볼트가 있어도 TOP_FACE_UNRESOLVED 무효, 인스턴스에 끝점 평가 없음, 기록에 axis 키 없음."""
+        """axis_extractor None이면 TOP_FACE_UNRESOLVED 무효이고 끝점 평가·axis 기록이 없다."""
         _, result, obs = run_job(ai_config(), [bolt_mask()])
 
         self.assertEqual((obs.valid, obs.reason, obs.observed_face, obs.axis_endpoints_px), (False, "TOP_FACE_UNRESOLVED",
@@ -92,10 +86,10 @@ class AxisOffTest(unittest.TestCase):
 
 
 class AxisSelectionTest(unittest.TestCase):
-    """켬: #163 §4 표 순서의 첫 사유 또는 유일 볼트의 계약 관측."""
+    """켬: 표 순서의 첫 사유 또는 유일 볼트의 계약 관측."""
 
     def test_single_bolt_valid_contract_observation(self):
-        """유일한 볼트의 추출 성공은 valid·axis·[머리 끝, 축 끝]·선택 인덱스·클래스 bolt 관측이고 끝점은 그린 도형 양 끝(축선 위)이다."""
+        """유일 볼트 추출 성공은 valid·axis 관측이고 끝점은 그린 도형 양 끝(축선 위)이다."""
         _, result, obs = run_job(axis_cfg(), [bolt_mask()])
 
         self.assertTrue(obs.valid)
@@ -112,8 +106,7 @@ class AxisSelectionTest(unittest.TestCase):
         self.assertGreater(obs.axis_endpoints_px[0, 0], obs.axis_endpoints_px[1, 0])
 
     def test_reasons_in_table_order(self):
-        """프로파일 없음→CALIBRATION_MISMATCH, 볼트 없음(너트만)→TOP_FACE_UNRESOLVED, 무검출→NO_OBJECT, 겹침→MULTIPLE_CANDIDATES,
-        2개→MULTIPLE_OBJECTS, 모호→AXIS_HEAD_AMBIGUOUS, 조각→MASK_FRAGMENTED. 모두 끝점 없는 무효다."""
+        """프레임 판정 사유가 표 순서대로 나오고 모두 끝점 없는 무효다."""
         rect = np.zeros((H, W), bool)
         rect[50:60, 40:90] = True
         frag = bolt_mask()
@@ -181,7 +174,7 @@ class AxisSelectionTest(unittest.TestCase):
         np.testing.assert_allclose(obs.axis_endpoints_px, [[50.0, 59.5], [93.0, 59.5]], atol=0.5)
 
     def test_core_accepts_valid_and_records_axis(self):
-        """코어 complete가 유효 관측을 현재 관측으로 받고(계약 위반 아님), 인스턴스 기록에 axis 끝점·사유·IoU가 남는다."""
+        """코어 complete가 유효 관측을 현재 관측으로 받고 기록에 axis 끝점·사유·IoU가 남는다."""
         cfg = axis_cfg()
         fr = frame(0, image=np.zeros((H, W, 3), np.uint8), width=W, height=H, calibration_id=CAL)
         p = VisionPipeline(settings(detector_config=cfg, profile=profile(width=W, height=H, calibration_id=CAL)),
@@ -201,10 +194,10 @@ class AxisSelectionTest(unittest.TestCase):
 
 
 class PolygonRasterTest(unittest.TestCase):
-    """M1 입력 = 표시 polygon 래스터(#168 §1, F2). 위상은 인스턴스 계수로."""
+    """M1 입력 = 표시 polygon 래스터. 위상은 인스턴스 계수로."""
 
     def test_raster_reproduces_simple_masks(self):
-        """조각·구멍 없는 마스크(볼트·기운 볼트·원·불규칙 덩어리)는 polygon 래스터가 원본 마스크와 화소 단위로 같다."""
+        """조각·구멍 없는 마스크는 polygon 래스터가 원본 마스크와 화소 단위로 같다."""
         import cv2
 
         shapes = [bolt_mask(), bolt_mask(flip=True)]
@@ -231,7 +224,7 @@ class PolygonRasterTest(unittest.TestCase):
                 np.testing.assert_array_equal(raster, m)
 
     def test_topology_from_counts_matches_raw_extractor(self):
-        """구멍 있는 볼트는 MASK_HOLE, 조각난 볼트는 MASK_FRAGMENTED이며 원본 마스크를 M1에 넣었을 때의 사유와 같다."""
+        """구멍·조각 볼트는 MASK_HOLE·MASK_FRAGMENTED이고 원본 마스크를 넣었을 때 사유와 같다."""
         from eyetoarm.vision.axis_endpoints import extract_m1
 
         holed = bolt_mask()
@@ -246,7 +239,7 @@ class PolygonRasterTest(unittest.TestCase):
                 self.assertEqual(extract_m1(m).reason, reason)
 
     def test_non_integer_polygon_is_extraction_error(self):
-        """정수 화소 중심이 아닌 polygon은 래스터 규약 위반이라 AXIS_EXTRACTION_ERROR 무효다(관측 예외로 새지 않음)."""
+        """정수 화소 중심이 아닌 polygon은 AXIS_EXTRACTION_ERROR 무효다(관측 예외로 새지 않음)."""
         with self.assertRaises(ValueError):
             ai_convert.rasterize_polygon(np.array([[1.5, 1.0], [5.0, 1.0], [5.0, 5.0]]), np.zeros(2), (10, 10))
 
@@ -255,7 +248,7 @@ class BAdmitTest(unittest.TestCase):
     """B 호출 조건: b_gate + 실시간이면 수신 epoch 현재."""
 
     def test_live_stale_frame_not_admitted(self):
-        """b_gate를 통과한 결과도 실시간 소스의 frame_current가 거짓이면 B로 가지 않고, 참이면 간다(D13 해제 전 대비 조건)."""
+        """b_gate를 통과해도 실시간 소스의 frame_current가 거짓이면 B로 가지 않고, 참이면 간다."""
         cfg = axis_cfg()
         fr = frame(0, image=np.zeros((H, W, 3), np.uint8), width=W, height=H, calibration_id=CAL)
         p = VisionPipeline(settings(detector_config=cfg, profile=profile(width=W, height=H, calibration_id=CAL)),

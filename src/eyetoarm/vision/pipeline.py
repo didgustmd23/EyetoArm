@@ -1,26 +1,7 @@
-"""A 비전 파이프라인 상태 코어 — 세대·설정 전이·최신 대기 프레임·작업 시작·재처리.
+"""A 비전 파이프라인 상태 코어: 세대·설정 전이·최신 대기 프레임·작업 시작·재처리.
 
-근거: 계획 `docs/superpowers/plans/2026-11-15-a-vision-pipeline.md` r3 「인터페이스 제안」·작업 2~4,
-A 상세설계 §3(최신 프레임 1개·처리 중 버퍼 비덮어쓰기)·§5.1(image_seq 수명)·§5.2(예외·중단은 관측 없음)·
-§5.4(세대 증가 조건·설정 스냅샷과 폐기·동일 프레임 재처리 조건·무효화 적용 규칙 1~5)·§9(처리 건수),
-공통 자료형 관리 초안 §3.3·§3.5·§4, 작업 4 보완 `_workspace/103_builder_task4_q13_policy.md` §4.
-
-사용법:
-    pipeline = VisionPipeline(settings, run_id=issuer.run_id, clock_ns=time.monotonic_ns)
-    source = StoredImageSource(paths, source_id=settings.source_id, issuer=issuer,
-                               generation_provider=pipeline.current_generation)
-    pipeline.offer_frame(source.read())      # 소유 복사 후 최신 대기 1개
-    job = pipeline.start_next()              # JobContext 또는 None
-    outcome = pipeline.complete(job, observation)   # 또는 pipeline.fail(job, kind, cause)
-    event = pipeline.change_settings(new_settings, cause=GenerationCause.DETECTOR_CONFIG_CHANGED)
-    outcomes = pipeline.close()
-
-- 이름·API는 계획의 **제안**이다. 상태 코어는 단일 제어 흐름에서 호출하며 내부에서 스레드를 만들지 않는다.
-  시계는 주입한 `clock_ns`만 읽는다.
-- 처리 기록(ProcessRecord)·JSONL은 작업 5, 실행기·외부 전달은 작업 6 범위다. 이 코어는 메모리 안의
-  결과·사건·계수만 다룬다. 사건을 C/D로 보내지 않는다.
-- 입력 사건은 `note_input_status(event)`로 알린다(작업 6a): 현재 관측·선택을 비우고 대기를 폐기하며 세대를 올리지 않는다.
-- TCP·ROS·Qt·B/C/D 모듈을 import하지 않는다. A가 최종 후보·좌표·규격을 정하지 않는다.
+단일 제어 흐름에서 호출하며 스레드를 만들지 않고, 주입한 `clock_ns`만 읽는다. C/D로 보내지 않는다.
+사용: pipeline.offer_frame(frame); job = pipeline.start_next(); pipeline.complete(job, observation)
 """
 from __future__ import annotations
 
@@ -57,11 +38,7 @@ from eyetoarm.vision.planar import PlanarConfig, PlanarResult
 
 
 class GenerationCause(str, Enum):
-    """세대 증가 원인(A 상세설계 §5.4 「세대 증가 조건」). 문자열 값은 A 내부 임시 결정이다.
-
-    앞의 네 값은 설정 객체의 차이로 확인하는 변경이고, 탐색·재접속·시각 되감기는 설정이 같아도
-    세대를 올리는 전이다. 재처리를 허용하는 것은 검출 설정 변경뿐이다.
-    """
+    """세대 증가 원인. 앞의 네 값은 설정 차이로 확인하고, 나머지는 설정이 같아도 세대를 올린다."""
 
     SOURCE_CHANGED = "source_changed"
     PROFILE_CHANGED = "profile_changed"
@@ -85,29 +62,23 @@ class PipelineContractError(ValueError):
     """파이프라인 호출 계약 위반(다른 run/source 프레임, 앞선 수신 세대, 잘못된 설정·원인 조합 등)."""
 
 
-# fail()이 받는 작업 오류 종류. 프레임 없는 로딩 실패·세대 전이는 작업 실패가 아니다(공통 초안 §3.5)
+# fail()이 받는 작업 오류 종류. 프레임 없는 로딩 실패·세대 전이는 작업 실패가 아니다
 _FAIL_KINDS = (InvalidationKind.INFERENCE_ERROR, InvalidationKind.JOB_ABORTED,
                InvalidationKind.MODEL_CONFIG_INVALID)
 
-# 관측 식별자 계약 위반의 cause 접두어(계획 r3 작업 4). 새 kind를 만들지 않고 INFERENCE_ERROR로 정리한다
+# 관측 식별자 계약 위반의 cause 접두어. 새 kind를 만들지 않고 INFERENCE_ERROR로 정리한다
 ADAPTER_CONTRACT_VIOLATION = "adapter_contract_violation"
 
 
 def _same_id(value, expected) -> bool:
-    """식별자가 기대값과 같은 타입·같은 값인지. 배열·bool·numpy 정수 등은 일치로 보지 않는다.
-
-    `expected`는 작업이 가진 str·int·None이다. 타입을 먼저 확인하므로 배열의 원소별 비교(진릿값
-    오류)가 일어나지 않고, `False == 0` 같은 느슨한 일치도 거부한다.
-    """
+    """식별자가 기대값과 같은 타입·같은 값인지. 타입을 먼저 봐 배열 비교 예외·`False == 0` 일치를 막는다."""
     return type(value) is type(expected) and value == expected
 
 
 def _endpoints_ok(observation, width, height) -> bool:
-    """A-8 끝점 경로가 공통형 조합 규칙을 지키고, `raw` 끝점이면 전체 입력 영상 범위 안인지(#157 I2).
+    """A-8 끝점 경로가 공통형 조합 규칙을 지키고, `raw` 끝점이면 영상 범위 안인지 본다.
 
-    조합·형식은 공통형 `check_axis_path`를 그대로 쓴다(관측면 axis·calc_contour None·클래스 None/볼트·끝점 형식·유한성·
-    두 점 구분·유효 axis의 끝점 필수, 강제 숫자 변환 없음). 범위: 두 점 모두 0 ≤ u ≤ width − 1, 0 ≤ v ≤ height − 1.
-    `undistorted`는 범위를 보지 않는다(보정 뒤 범위 규칙 미결). 생성 뒤 변조된 값도 예외 없이 False로 돌려준다.
+    `undistorted`는 범위를 보지 않는다. 생성 뒤 변조된 값도 예외 없이 False로 돌려준다.
     """
     try:
         points = check_axis_path(
@@ -138,7 +109,7 @@ def _endpoints_ok(observation, width, height) -> bool:
 
 @dataclass(frozen=True)
 class _JobMeta:
-    """시작한 작업의 스칼라 식별자. 영상·설정 객체를 붙잡지 않으려고 따로 둔다(103 §1)."""
+    """시작한 작업의 스칼라 식별자. 영상·설정 객체를 붙잡지 않으려고 따로 둔다."""
 
     generation: int
     image_seq: int
@@ -148,10 +119,7 @@ class _JobMeta:
 
 @dataclass(frozen=True)
 class _TerminalMeta:
-    """종료한 작업의 최초 terminal 의미. 영상·윤곽·JobContext를 담지 않는다(103 §1·§4).
-
-    `first_applied`는 최초 응답의 applied 이력이며 duplicate 응답에는 복제하지 않는다.
-    """
+    """종료한 작업의 최초 terminal 의미(영상·윤곽 없음). `first_applied`는 duplicate에 복제하지 않는다."""
 
     status: JobStatus
     error: str | None
@@ -160,10 +128,7 @@ class _TerminalMeta:
 
 
 def _revalidated_config(config):
-    """검출 설정이 자기 형(`PlanarConfig`·`AiSegConfig`)의 생성자 검증을 다시 통과하는지 확인한다.
-
-    생성 뒤 값이 바뀌었으면(검증 실패 또는 해시 불일치) 계약 오류. 형별로 같은 형의 생성자로만 다시 만든다(G2).
-    """
+    """검출 설정이 자기 형의 생성자 검증을 다시 통과하는지 확인한다. 생성 뒤 변조면 계약 오류."""
     if not isinstance(config, (PlanarConfig, AiSegConfig)):
         raise PipelineContractError(f"detector_config must be PlanarConfig or AiSegConfig: {type(config).__name__}")
 
@@ -214,42 +179,9 @@ def _validated_settings(settings) -> PipelineSettings:
 class VisionPipeline:
     """A 처리 상태 코어: 현재 세대·현재 관측·최신 대기 프레임 1개·활성 작업 1개·선택 프레임.
 
-    수신 계약(`offer_frame`)
-    - `run_id`가 파이프라인과 다르거나 `source_id`가 현재 설정과 다르면 `PipelineContractError`.
-      `capture_generation`이 현재 세대보다 크면(공급자가 앞섬) 역시 계약 오류다(M4 임시 결정).
-      계약 오류는 수신 수·대기·기록에 영향을 주지 않는다.
-    - 계약을 통과하면 `received` +1. 현재 세대보다 오래된 캡처는 시작하지 않고 폐기 기록(False).
-    - 통과한 프레임은 이 자리에서 영상을 독립 복사하고 읽기 전용으로 표시해 소유한다. 복사 프레임은
-      원본과 같은 타입(공통형·A 확장형)이며 모든 식별자·시각·A 확장 필드를 그대로 갖는다.
-      복사 시간을 따로 재거나 `process_ms`에 합치지 않는다.
-    - 대기 프레임이 있으면 교체하고 이전 대기 프레임을 폐기 기록한다. 처리 중 작업은 건드리지 않는다.
-
-    작업 시작
-    - `start_next()`는 활성 작업이 없고 대기 프레임이 있을 때만 시작한다. 시작한 프레임이 선택 프레임이 된다.
-    - `start_reprocess()`는 선택 프레임을 같은 객체로 다시 쓴다. 입력 소스·발급기를 부르지 않는다.
-    - `generation`·`job_seq`는 0에서 시작한다. `job_seq`는 세대 변경으로 초기화하지 않는다.
-
-    세대 전이(`change_settings`)
-    - 전이마다 세대를 1 올리고 현재 관측을 즉시 None으로 두며 남은 대기 프레임을 폐기 기록한다.
-    - 검출 설정만 바뀐 전이는 선택 프레임을 유지하고, 그 밖의 전이는 선택을 비운다.
-    - 세대 전이 사건은 `invalidation_applied_by_kind["GENERATION_CHANGED"]`에 1건 센다. 오류 차단선은 아니다.
-
-    terminal 처리(`complete`·`fail`·`close`)와 무효화(`apply_invalidation`)
-    - 시작한 작업은 completed·세대 폐기·failed·aborted 중 정확히 한 번 끝난다. 같은 작업의 재통지는
-      `duplicate=True` 응답(applied=False, 관측·표시 결과 None)이며 결과·계수·사건을 다시 바꾸지 않는다.
-    - 작업 판별은 `job_seq`로 찾은 등록 JobContext와의 `is` 비교다. 복제·위조·발급하지 않은 작업은
-      계약 오류다(ndarray를 가진 dataclass의 ==/hash를 쓰지 않는다).
-    - 무효화 적용 규칙(A §5.4 1~5): 이전 세대 사건은 기록·ignored. 현재 세대 작업 오류는 job_seq 이하
-      결과를 막는 차단선을 세운다. 프레임 없는 오류는 그때까지 시작한 모든 작업을 막는다. 차단선 뒤에
-      시작한 작업의 완료만 현재 관측이 된다. 검출 방식을 자동 전환하지 않는다.
-    - `apply_invalidation`은 후보 사용 차단이며 활성 작업을 끝내지 않는다.
-
-    보관 정책(103 §1): 등록표는 JobContext를 약한 참조로만 두고, 종료한 작업은 스칼라 요약만 남긴다.
-    코어가 강하게 붙잡는 영상은 대기·선택·활성 프레임(각 최대 1장)과 현재 관측 1개뿐이다. 작업 요약·
-    terminal 요약·세대 이력·사건·폐기 기록의 스칼라 메타데이터는 실행 길이에 비례해 늘어난다.
-
-    종료 후 계약: `offer_frame`·`change_settings`·`apply_invalidation`은 계약 오류, `start_next`·
-    `start_reprocess`는 None, 등록 작업의 `complete`·`fail`은 duplicate 응답, `close` 재호출은 빈 tuple.
+    수신 프레임은 소유 복사(읽기 전용)한다. 계약 오류는 수신 수·대기·기록에 영향을 주지 않는다.
+    시작한 작업은 정확히 한 번 끝나고 재통지는 duplicate 응답이다. 작업 판별은 등록 JobContext와의 `is` 비교다.
+    등록표는 JobContext를 약한 참조로만 두며, 종료 후 API는 계약 오류·None·duplicate·빈 tuple을 돌려준다.
     """
 
     def __init__(self, settings: PipelineSettings, *, run_id: str,
@@ -269,7 +201,7 @@ class VisionPipeline:
         self._generation = 0
         self._next_job_seq = 0
 
-        # 마지막 비검출 전이 직후의 세대. 이보다 오래 전에 받은 프레임은 재처리하지 않는다(§5.4 조건 2)
+        # 마지막 비검출 전이 직후의 세대. 이보다 오래 전에 받은 프레임은 재처리하지 않는다
         self._non_detector_barrier = 0
 
         # 프레임 슬롯: 최신 대기 1개, 활성 작업 1개, 선택 프레임
@@ -277,7 +209,7 @@ class VisionPipeline:
         self._active: JobContext | None = None
         self._selected: FramePacket | None = None
 
-        # 현재 관측(작업 4의 complete가 채운다)
+        # 현재 관측(complete가 채운다)
         self._current_observation: PlanarObservation | None = None
 
         # 계수·기록 목록
@@ -329,7 +261,7 @@ class VisionPipeline:
 
     @property
     def pending_frame(self) -> FramePacket | None:
-        """최신 대기 프레임(소유 복사). 없으면 None. 보존식 확인용 조회(구현 추가)."""
+        """최신 대기 프레임(소유 복사). 없으면 None."""
         return self._pending
 
     @property
@@ -357,7 +289,7 @@ class VisionPipeline:
 
     @property
     def invalidation_records(self) -> tuple[InvalidationRecord, ...]:
-        """기록한 사건과 applied 판정 쌍(발생 순, `invalidation_events`와 1:1). 읽기 전용 조회(#142 D1)."""
+        """기록한 사건과 applied 판정 쌍(발생 순, `invalidation_events`와 1:1)."""
         return tuple(self._invalidation_records)
 
     @property
@@ -425,7 +357,7 @@ class VisionPipeline:
         return job
 
     def start_reprocess(self) -> JobContext | None:
-        """선택 프레임 재처리를 시작한다. 조건(§5.4 1~3)을 만족하지 않거나 활성 작업이 있으면 None."""
+        """선택 프레임 재처리를 시작한다. 재처리 조건을 만족하지 않거나 활성 작업이 있으면 None."""
         frame = self._selected
 
         if self._closed or self._active is not None or frame is None or not self._reprocess_allowed(frame):
@@ -447,14 +379,8 @@ class VisionPipeline:
                         cause: GenerationCause | str) -> CandidateInvalidationEvent | None:
         """설정 변경·전이를 적용한다. 세대를 1 올리면 `GENERATION_CHANGED` 사건, 변경이 아니면 None.
 
-        - 설정 차이로 확인하는 원인(소스·프로파일·모드·검출 설정)에서 설정이 같으면(검출 설정은 같은
-          `config_sha256`) 변경으로 세지 않고 None. 차이가 있는데 선언한 원인의 항목이 안 바뀌었으면
-          계약 오류.
-        - 탐색·재접속·시각 되감기는 설정이 같아도 세대를 올린다.
-        - 검출 설정만 바뀐 경우에만 선택 프레임을 유지한다. 다른 항목이 함께 바뀌면 비검출 전이로 본다.
-        - 검증은 상태를 바꾸기 전에 끝낸다. 실패하면 세대·현재 결과·선택·대기·기록이 그대로다.
-        - 실제 전이는 사건을 기록하고 `GENERATION_CHANGED` applied 1건을 센다. 오류 차단선은 세우지 않는다.
-        - 종료 후에는 계약 오류다.
+        설정 차이 원인에서 차이가 없으면 None, 선언한 원인이 안 바뀌었으면 계약 오류다.
+        검출 설정만 바뀐 경우에만 선택 프레임을 유지한다. 검증은 상태를 바꾸기 전에 끝낸다.
         """
         # 검증(실패 시 상태 무변)
         if self._closed:
@@ -505,11 +431,9 @@ class VisionPipeline:
 
     def complete(self, job: JobContext, observation: PlanarObservation, *,
                  display_result: PlanarResult | AiSegResult | None = None) -> JobOutcome:
-        """작업 완료를 적용한다. 무효 관측(무검출 등)도 정상 완료다.
+        """작업 완료를 적용한다. 무효 관측도 정상 완료다.
 
-        순서: 작업 판별(미등록·복제는 계약 오류) → 재통지면 duplicate 응답 → 관측 타입·식별자 검사
-        (어긋나면 INFERENCE_ERROR 실패, `adapter_contract_violation:필드`) → 시작 세대가 현재와 다르면
-        세대 폐기(관측 발행 없음) → 완료 계수 → 오류 차단선 뒤에 시작한 작업이면 현재 관측으로 반영.
+        식별자 불일치는 INFERENCE_ERROR 실패, 세대가 바뀌었으면 폐기, 차단선 뒤 작업만 현재 관측이 된다.
         """
         self._require_registered(job)
 
@@ -539,7 +463,7 @@ class VisionPipeline:
             reasons = c.invalid_completed_by_reason
             reasons[observation.reason] = reasons.get(observation.reason, 0) + 1
 
-        # 차단선 이하(오류 전 시작) 작업은 현재 관측이 될 수 없다(A §5.4 규칙 4)
+        # 차단선 이하(오류 전 시작) 작업은 현재 관측이 될 수 없다
         applied = job.job_seq > self._error_watermarks.get(self._generation, -1)
 
         if applied:
@@ -554,10 +478,7 @@ class VisionPipeline:
     def fail(self, job: JobContext, error_kind: InvalidationKind, cause: str) -> JobOutcome:
         """작업 실패·중단을 적용한다. 관측을 만들지 않고 해당 작업의 사건을 한 번 평가·기록한다.
 
-        - `error_kind`는 INFERENCE_ERROR·MODEL_CONFIG_INVALID(→FAILED), JOB_ABORTED(→ABORTED)만 받는다.
-          MODEL_LOAD_FAILED·GENERATION_CHANGED는 작업 실패가 아니므로 계약 오류다.
-        - 이미 끝난 작업이면 인자와 관계없이 duplicate 응답(최초 status 유지)이다.
-        - 이전 세대 작업의 사건은 기록·ignored로 남고 현재 결과를 지우지 않는다(A §5.4 규칙 1).
+        `error_kind`는 INFERENCE_ERROR·MODEL_CONFIG_INVALID·JOB_ABORTED만 받는다. 끝난 작업이면 duplicate.
         """
         self._require_registered(job)
 
@@ -580,12 +501,7 @@ class VisionPipeline:
     def apply_invalidation(self, event: CandidateInvalidationEvent) -> bool:
         """외부(어댑터·로더)에서 온 무효화 사건을 적용한다. 현재 세대 차단에 반영하면 True.
 
-        - 출처를 먼저 검증한다: 같은 run, 발행한 적 있는 세대(미래 세대 아님), 그 세대의 source_id·
-          detector_config_id. 작업 사건은 발급한 job_seq이고 그 작업의 세대·image_seq·출처와 같아야 한다.
-          어긋나면 계약 오류(상태 무변). 옛 소스라도 등록된 출처의 지연 사건은 기록·ignored다.
-        - 9개 필드가 모두 같은 사건은 같은 통지로 보고 무변·False다(이미 기록한 자체 사건 포함).
-        - 새 `GENERATION_CHANGED`는 받지 않는다. 세대는 `change_settings`로만 바꾼다.
-        - 활성 작업을 끝내지 않는다. 그 작업이 나중에 완료돼도 차단선 이하라 현재 관측이 되지 않는다.
+        출처가 맞지 않으면 계약 오류, 같은 사건이면 False다. 활성 작업을 끝내지 않는다.
         """
         if self._closed:
             raise PipelineContractError("apply_invalidation after close")
@@ -605,11 +521,9 @@ class VisionPipeline:
         return self._evaluate_event(event)
 
     def note_input_status(self, event: InputStatusEvent) -> None:
-        """입력 사건(입력 오류·EOF 등)을 반영한다: 현재 관측·선택 프레임을 비우고 대기를 사유 input_status로 폐기한다.
+        """입력 사건(입력 오류·EOF 등)을 반영한다: 현재 관측·선택을 비우고 대기를 폐기한다.
 
-        - 세대를 올리지 않는다(재접속·탐색 같은 명시 전이가 아님, 계획 작업 6). 가짜 image_seq·job_seq를 만들지 않는다.
-        - 활성 작업은 건드리지 않는다(그 작업은 정상 terminal 경로로 끝난다). 무효화 사건을 만들지 않는다.
-        - 다른 run/source의 사건, 종료 후 호출은 계약 오류(상태 무변).
+        세대를 올리지 않고 무효화 사건을 만들지 않는다. 활성 작업은 건드리지 않는다.
         """
         if self._closed:
             raise PipelineContractError("note_input_status after close")
@@ -627,18 +541,12 @@ class VisionPipeline:
     def close(self) -> tuple[JobOutcome, ...]:
         """종료 처리. 활성 작업을 ABORTED로 한 번 정리하고 관측·선택·대기를 비운다. 재호출은 빈 tuple.
 
-        순서: 시계를 한 번 읽어 검증 → 활성 작업의 실제 식별자로 JOB_ABORTED 사건을 기존 규칙으로 평가
-        (현재 세대 applied, 이전 세대 ignored) → 현재 관측·선택 비움 → 대기를 사유 closed로 폐기 → 닫힘 표시.
-        세대를 올리지 않는다. 활성 작업이 없으면 사건·무효화 계수를 만들지 않는다.
-        시계 예외·비정수는 상태 변경 전에 나므로 상태가 그대로이고 다시 부를 수 있다. 그 뒤 단계에는
-        시계·외부 호출이 없다. 중단 결과는 정리를 마친 이 호출에서만 반환하며 재호출은 빈 tuple이다.
+        시계 예외·비정수는 상태 변경 전에 나므로 다시 부를 수 있다.
         """
         if self._closed:
             return ()
 
-        # 시계는 상태를 바꾸기 전에 한 번만 읽고 검증한다. 중단 사건과 대기 폐기가 같은 시각을 쓰므로
-        # 정리 도중 시계 예외로 중단 결과를 반환하지 못한 채 일부만 정리되는 일이 없다(r1 L1).
-        # 시계가 예외를 내거나 정수가 아니면 상태는 그대로이고 close를 다시 부를 수 있다
+        # 시계를 미리 한 번만 읽어 정리 도중 시계 예외로 일부만 정리되는 일을 막는다
         now = self._clock_ns()
 
         if type(now) is not int:
@@ -659,7 +567,7 @@ class VisionPipeline:
     # ------------------------------------------------------------------ 내부 헬퍼
 
     def _release_active(self, job: JobContext) -> None:
-        """그 작업이 활성 작업이면 활성 슬롯만 비운다. 결과·계수·기록은 바꾸지 않는다(terminal 처리 내부용)."""
+        """그 작업이 활성 작업이면 활성 슬롯만 비운다."""
         if self._active is job:
             self._active = None
 
@@ -673,10 +581,7 @@ class VisionPipeline:
             source_id=job.frame.source_id, detector_config_id=job.detector_config_id)
 
     def _require_registered(self, job) -> None:
-        """이 파이프라인이 발급한 바로 그 JobContext인지 `is`로 확인한다. 아니면 계약 오류.
-
-        job_seq로 등록표를 찾으므로 ndarray를 가진 dataclass의 ==/hash를 부르지 않는다.
-        """
+        """이 파이프라인이 발급한 바로 그 JobContext인지 `is`로 확인한다. 아니면 계약 오류."""
         if not isinstance(job, JobContext):
             raise PipelineContractError(f"job must be JobContext: {type(job).__name__}")
 
@@ -705,10 +610,7 @@ class VisionPipeline:
                   now_ns: int | None = None) -> JobOutcome:
         """작업 실패·중단: 실제 작업 식별자로 사건을 만들어 평가·기록하고 FAILED/ABORTED로 끝낸다.
 
-        같은 9필드 사건이 이미 apply로 기록됐으면 사건·계수는 다시 반영하지 않지만 terminal 정리
-        (상태·failed/aborted 계수·요약·활성 해제)는 최초 한 번 정상 수행한다.
-        `now_ns`를 주면 시계를 다시 읽지 않는다(close가 미리 읽은 시각).
-        사건 생성(시각 검증 포함)이 상태 변경보다 먼저라 여기서 예외가 나면 상태는 그대로다.
+        `now_ns`를 주면 시계를 다시 읽지 않는다. 사건 생성이 먼저라 예외가 나면 상태는 그대로다.
         """
         event = CandidateInvalidationEvent(
             run_id=self._run_id, source_id=job.frame.source_id, kind=kind, cause=cause,
@@ -730,13 +632,10 @@ class VisionPipeline:
         return self._finish(job, outcome)
 
     def _evaluate_event(self, event: CandidateInvalidationEvent) -> bool:
-        """A §5.4 규칙 1~3으로 사건을 평가·기록한다. 현재 세대에 반영하면 True(applied 계수).
+        """사건을 평가·기록한다. 현재 세대에 반영하면 True(applied 계수).
 
-        - 이전 세대: 기록·ignored만(규칙 1).
-        - 작업 사건: 그 job_seq까지 차단선을 올리고, 현재 관측이 그 이하 작업의 것이면 지운다(규칙 2).
-        - 프레임 없는 사건: 지금까지 시작한 모든 작업까지 차단선을 올리고 현재 관측을 지운다(규칙 3).
-        - 9개 필드가 같은 사건이 이미 기록돼 있으면 같은 통지이므로 기록·차단선·계수를 다시 반영하지 않고
-          False다. apply→fail/close처럼 경로가 달라도 같다(r1 F1). 호출한 terminal 처리 자체는 계속한다.
+        이전 세대는 ignored, 작업 사건은 그 job_seq까지, 프레임 없는 사건은 시작한 모든 작업까지 차단한다.
+        같은 9필드 사건이 이미 있으면 다시 반영하지 않고 False다.
         """
         if event in self._event_keys:
             return False
@@ -773,10 +672,7 @@ class VisionPipeline:
         counts[event.kind.value] = counts.get(event.kind.value, 0) + 1
 
     def _validate_event_origin(self, event: CandidateInvalidationEvent) -> None:
-        """사건이 이 실행에서 실제로 있었던 세대·출처·작업에서 왔는지 확인한다. 아니면 계약 오류.
-
-        생성 뒤 변조된 필드(배열 등)도 비교 예외 대신 계약 오류로 거부하도록 타입을 먼저 확인한다.
-        """
+        """사건이 이 실행에서 실제로 있었던 세대·출처·작업에서 왔는지 확인한다. 아니면 계약 오류."""
         int_or_none = (int, type(None))
         typed = all((
             type(event.run_id) is str, type(event.source_id) is str,
@@ -814,11 +710,7 @@ class VisionPipeline:
             raise PipelineContractError(f"event does not match job {event.job_seq}")
 
     def _observation_mismatches(self, job: JobContext, observation, display_result) -> list[str]:
-        """관측 타입·식별자가 작업과 어긋난 필드 이름 목록. 비어 있으면 계약을 지킨 관측이다.
-
-        비교 기준: run/source/image_seq/capture_generation/calibration_id는 `job.frame`,
-        generation/job_seq/detector_config_id는 JobContext(103 §4 M7).
-        """
+        """관측 타입·식별자가 작업과 어긋난 필드 이름 목록. 비어 있으면 계약을 지킨 관측이다."""
         if not isinstance(observation, PlanarObservation):
             return ["observation_type"]
 
@@ -831,8 +723,7 @@ class VisionPipeline:
         }
         bad = [name for name, value in expected.items() if not _same_id(getattr(observation, name), value)]
 
-        # 생성 뒤 변조된 판정 필드(계수 키·현재 관측 판단에 쓰므로 예외로 새지 않게 여기서 거른다).
-        # 공통형 규칙을 새로 만들지 않고 PlanarObservation 생성자 규칙을 다시 확인할 뿐이다
+        # 생성 뒤 변조된 판정 필드가 계수·현재 관측 판단에서 예외로 새지 않게 여기서 거른다
         valid, reason = observation.valid, observation.reason
 
         if type(valid) is not bool:
@@ -842,15 +733,14 @@ class VisionPipeline:
         elif not valid and (type(reason) is not str or not reason):
             bad.append("reason")
 
-        # A-8 끝점 경로: 공통형 조합 규칙 재확인 + raw이면 전체 입력 영상 범위(공통형은 프레임 크기를 모름, #157 I2).
-        # 끝점은 axis·볼트(또는 class None)·계산 윤곽 없음에서만, 유효 axis에는 필수(무효 axis의 끝점 None은 허용)
+        # 공통형은 프레임 크기를 모르므로 raw 끝점의 영상 범위는 여기서 본다
         if not _endpoints_ok(observation, f.width, f.height):
             bad.append("axis_endpoints_px")
 
-        # 방식 일치(G3): OpenCV 설정 작업은 opencv 관측·PlanarResult, AI 설정 작업은 ai 관측·AiSegResult(시작 설정 해시)
+        # 방식 일치: 시작 설정의 검출 방식과 관측·표시 결과 형이 같아야 한다
         is_ai = isinstance(job.settings.detector_config, AiSegConfig)
 
-        # 생성 뒤 변조된 배열·비문자열이 진릿값 예외로 새지 않도록 타입까지 같은지 본다(`_same_id`, r1 F1)
+        # 생성 뒤 변조된 배열·비문자열이 진릿값 예외로 새지 않도록 타입까지 같은지 본다
         if not _same_id(observation.method, "ai" if is_ai else "opencv"):
             bad.append("method")
 
@@ -863,11 +753,11 @@ class VisionPipeline:
         return bad
 
     def _clear_selection(self) -> None:
-        """선택 프레임을 비운다. close와 입력 사건(`note_input_status`)에서 쓴다(M2)."""
+        """선택 프레임을 비운다."""
         self._selected = None
 
     def _reprocess_allowed(self, frame: FramePacket) -> bool:
-        """선택 프레임 재처리 조건(§5.4 2·3): 수신 뒤 비검출 전이 없음, 현재 소스·프로파일이 그 프레임에 유효."""
+        """선택 프레임 재처리 조건: 수신 뒤 비검출 전이 없음, 현재 소스·프로파일이 그 프레임에 유효."""
         if frame.capture_generation < self._non_detector_barrier:
             return False
 

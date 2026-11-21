@@ -1,31 +1,7 @@
-"""저장 이미지·영상 입력 실행기(계획 r4 작업 6a). 입력 → 작업 시작 → 검출 → terminal → 기록 → 정리.
+"""저장 이미지·영상·실시간 입력 실행기: 입력 → 작업 시작 → 검출 → terminal → 기록 → 정리.
 
-근거: 계획 `docs/superpowers/plans/2026-11-15-a-vision-pipeline.md` r4 작업 6(P1~P3 보완 포함), A 상세설계 §5.4·§9,
-작업 4 순환 시험(terminal 통지가 없으면 코어는 활성 작업을 풀지 않음), 작업 5 fail-stop 기록 정책.
-
-범위·한계(6a·6b)
-- C 서버·ROS·YOLO를 연결하지 않는다. 저장 입력 재현 경로다. A→C 같은 프로세스 통합은 별도 단계다.
-- **감시 켬(6b, 기본):** detector는 같은 프로세스의 **검출 전용 worker 스레드 1개**에서 돌고, 제어 흐름이 시간 상한으로
-  감시한다(설계 113 r3 A1). 코어·기록·B 지점 호출은 제어 흐름만 한다. 상한은 사용자 확정 **개발 초기값** 첫 검출
-  10 s·이후 1 s이며 운영 최종값·최악 실행 시간 보장이 아니다. 시간 초과는 `JOB_ABORTED`(원인 `detect_timeout`)이고
-  worker가 실제로 반환할 때까지 다음 작업을 시작하지 않는다. 유예 안에 반환하지 않으면 STALLED로 새 검출을 멈추고
-  종료 1. 멈춘 Python 스레드는 강제로 끝낼 수 없으며(데몬이어도 자원 회수 보장 없음), GIL을 놓지 않는 네이티브 호출·
-  제어 흐름 자체의 블로킹(입력·B 지점·기록 I/O)에서는 감시가 돌지 못한다(미검증).
-- **감시 끔(6a 동기 경로):** 상한 둘 다 None이면 detector를 **제어 흐름 안에서 동기 호출**한다. terminal 보장은 호출이
-  반환(정상·예외)하거나 실행기에 전달된 중단(`KeyboardInterrupt`, `JobCancelled`, `should_stop`)까지다.
-- 실제 B 계산은 없다. `b_consumer`는 소비 조건(`b_gate`)을 통과한 응답을 받은 그 자리에서 한 번 부르는 지점이다.
-- 단계 L(#189, `b_list_consumer`): 같은 자리에서 목록 조건(`b_list_gate`)을 통과하면 `b_list_consumer(context, display_result)`를 한 번
-  부른다. 단계 T(`b_consumer`)와 동시에 줄 수 없고 실시간 소스에서는 거부한다(D13). 목록 생성은 소비자 쪽 기록기가 한다.
-
-종료 코드(A 내부 임시 결정)
-- 0: 입력 끝(EOF)·`max_frames` 도달·`should_stop` 요청으로 끝났고 **처리 실패·입력 오류가 하나도 없음**.
-- 1: 실행 수준 실패(입력 없음(빈 목록·닫힘), 연속 입력 오류 상한 초과, 기록 실패, 소비자 실패, `KeyboardInterrupt` 등
-  중단, 예상하지 못한 예외, close 최종 실패), **또는** 끝까지 처리했지만 작업 처리 실패(`failed`: INFERENCE_ERROR·
-  MODEL_CONFIG_INVALID)·입력 오류(EOF 아닌 입력 사건)·검출 시간 초과가 1건 이상 있음, 또는 검출 worker 멈춤(STALLED). 작업 실패·입력 오류는 그 자리에서 실행을 멈추지
-  않고 기록한 뒤 다음 입력을 계속 처리하며, 마지막에 누적 수를 stderr에 적고 1로 끝낸다(계획 r4 「1=처리·전달·기록 실행
-  오류」, 「정상 EOF는 디코딩 오류와 구분」에 맞춤, r1 Q1). `JobCancelled`로 정리한 작업(aborted)은 의도한 취소라 실패로
-  세지 않는다. 세대 폐기도 실패가 아니다.
-- 2: 인자·설정 오류(CLI에서 argparse·설정 읽기).
+감시를 켜면 detector를 worker 스레드 1개에서 돌리고, 코어·기록·B 지점 호출은 제어 흐름만 한다.
+종료 코드: 0 정상, 1 실행 실패 또는 처리 실패·입력 오류·시간 초과, 2 인자·설정 오류(CLI).
 """
 from __future__ import annotations
 
@@ -54,7 +30,7 @@ from eyetoarm.vision.tracking import FrameKey, PartTracker, inputs_from_ai
 from eyetoarm.vision.pipeline_types import (JobContext, JobOutcome, JobStatus, PipelineCounters, PipelineSettings,
                                             SourceProfile)
 
-# 저장 입력 소스가 「더 읽을 것이 없음」으로 돌려주는 사건 설명(inputs/stored_images.py)
+# 저장 입력 소스가 「더 읽을 것이 없음」으로 돌려주는 사건 설명
 _NO_INPUT_DETAILS = ("empty list", "closed")
 
 
@@ -63,11 +39,7 @@ class JobCancelled(Exception):
 
 
 class CancelToken:
-    """협조 취소 표지(6b). 실행기가 시간 초과·정지 요청·정리 때 세우고, detector는 읽기만 한다.
-
-    `run(..., detector_takes_token=True)`일 때만 `detector(job, token)`으로 넘긴다. detector가 확인해야만 효과가 있다
-    (OpenCV·YOLO 단일 네이티브 호출 안에서는 확인할 수 없음). 확인했으면 `JobCancelled`를 올려 끝내면 된다.
-    """
+    """협조 취소 표지. 실행기가 세우고 detector는 읽기만 한다(확인해야만 효과가 있음)."""
 
     __slots__ = ("_event",)
 
@@ -97,25 +69,9 @@ def _positive_finite(value) -> bool:
 
 @dataclass(frozen=True)
 class RunnerConfig:
-    """실행기 설정(A 내부). 시험은 값을 명시해 넣는다.
+    """실행기 설정(A 내부). 시간 값은 개발 초기값이며 운영 최종값이 아니다.
 
-    - `close_attempts`(기본 3)·`close_retry_interval_s`(기본 0.05 s): 코어 close 재시도. 무한 재시도하지 않는다.
-    - `max_consecutive_input_errors`(기본 8): 프레임 없이 연속된 입력 오류 상한. 영상 열기 실패처럼 진행 없이
-      같은 실패가 반복될 때 실행이 끝나도록 한다. 저장 이미지의 파일별 실패는 프레임이 오면 0으로 되돌린다.
-    - `max_frames`: 받은 프레임 수 상한(None이면 끝까지).
-    - 검출 감시(6b). `first_detect_timeout_s`(기본 10.0)·`detect_timeout_s`(기본 1.0)는 **사용자 확정 개발 초기값**
-      (2026-11-15 「일단 개발값으로 10, 1로 넣고 운용 테스트하면서 조절」)이며 운영 최종값이 아니다. 첫 값은 run 한 번에서
-      실제 detector에 넘긴 최초 작업 하나에만, 둘째 값은 그 뒤 모든 작업에 쓴다. **둘 다 None이면 감시 끔**(6a 동기
-      경로), 한쪽만 None은 오류다.
-    - `model_load_timeout_s`(10.0): AI 모델 준비(`prepare`: 파일 확인·해시·import·생성·검사) 상한. **A 임시 개발 기본값**
-      (YOLO 연결 구현 지시 Q1)이며 사용자 확정 첫 검출 10 s·이후 1 s와 다르다. 준비는 첫 검출 기회를 소모하지 않는다.
-      감시를 끄면 쓰지 않는다(준비를 동기로 부름).
-    - `cancel_grace_s`(0.2)·`worker_cleanup_limit_s`(0.3)·`stop_check_interval_s`(0.02): 시간 초과·정지 뒤 worker 반환
-      유예, close 때 worker 정리 한도, 검출 대기 중 정지 요청·기한 확인 간격. 문서 근거 없는 **A 임시 개발 기본안**
-      (설계 113 r3 시험 값)이며 사용자 확정 10/1과 구분한다. 유예·정리 한도는 실제 단조 시계로 잰다.
-    - 실시간 소스(`poll_input`이 있는 소스, 계획 2026-11-16 live-link-camera r3 §3.8): `live_transition_limit`(10)·
-      `live_transition_window_s`(1.0) — 세대를 올린 입력 경계가 창 안에서 상한을 넘으면 `input_transition_storm`으로 끝낸다.
-      **A 임시 개발값**(계획 결정 D5 기본안)이며 사용자 확정값이 아니다. 저장 입력에는 쓰지 않는다.
+    검출 상한 둘 다 None이면 감시 끔(동기 호출)이고 한쪽만 None은 오류다. 첫 상한은 run의 첫 작업에만 쓴다.
     """
 
     close_attempts: int = 3
@@ -181,7 +137,7 @@ class RunResult:
     frames: int = 0
     input_errors: int = 0
     b_calls: int = 0
-    b_list_calls: int = 0        # 단계 L(#189): 목록 소비자 호출 수(b_list_consumer=None이면 0)
+    b_list_calls: int = 0        # 단계 L: 목록 소비자 호출 수(b_list_consumer=None이면 0)
     counters: PipelineCounters | None = None
     closed: bool = False
     missing: dict | None = None  # 기록이 확인되지 않은 처리·사건·폐기 수(정상 기록이면 모두 0)
@@ -193,16 +149,14 @@ class RunResult:
     live_inputs: dict = field(default_factory=dict)  # 실시간 소스: 반영한 경계·알림 종류별 수
     input_boundary_aborts: int = 0  # 실시간 소스: 공개 직전 epoch가 현재가 아니라 JOB_ABORTED로 끝낸 작업 수(실패 아님)
     source_stats: dict | None = None  # 실시간 소스 통계(종료 때)
-    handoff: dict | None = None  # A→C 연결부(#142) 종료 보고(handoff_sink=None이면 None)
-    tracking: dict | None = None  # 인스턴스 추적(#151) 종료 보고(part_tracker=None이면 None)
+    handoff: dict | None = None  # A→C 연결부 종료 보고(handoff_sink=None이면 None)
+    tracking: dict | None = None  # 인스턴스 추적 종료 보고(part_tracker=None이면 None)
 
 
 def b_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
-    """B 소비 조건(계획 r4 작업 6). 응답을 받은 그 자리에서만 부른다.
+    """B 소비 조건. 응답을 받은 그 자리에서만 부른다.
 
-    duplicate 아님, COMPLETED·applied, 유효 관측이고, 소비 시점에 현재 관측이 바로 그 관측이며 세대·검출 설정·
-    소스가 같고 현재 프로파일이 그 프레임에 적용되며 관측 식별자가 작업과 같아야 한다. applied만으로는 B 전달
-    허가가 아니다. 보관해 둔 과거 응답은 현재 관측이 바뀌면 통과하지 못한다.
+    유효 관측이 현재 관측 그 자체이고 세대·설정·소스·프로파일이 맞아야 한다. applied만으로는 B 전달 허가가 아니다.
     """
     if not _b_gate_common(pipeline, outcome) or outcome.observation.valid is not True:
         return False
@@ -213,8 +167,7 @@ def b_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
 
 
 def _b_gate_common(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
-    """`b_gate`·`b_list_gate` 공통 조건(유효 여부·프로필 제외): duplicate 아님, COMPLETED·applied, 관측형, 코어 열림,
-    현재 관측이 바로 그 관측, 세대·검출 설정·소스가 같고 관측 식별자가 작업과 같음."""
+    """`b_gate`·`b_list_gate` 공통 조건(유효 여부·프로필 제외): 현재 관측 그 자체이고 식별자가 작업과 같음."""
     obs = outcome.observation
 
     if outcome.duplicate or outcome.status is not JobStatus.COMPLETED or not outcome.applied:
@@ -234,11 +187,7 @@ def _b_gate_common(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
 
 
 def b_list_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
-    """단계 L 목록 소비 조건(#189). `b_gate` 공통 조건을 같은 함수로 쓰고, 유효 여부 대신
-    「AI 결과 + 프로필 적용 + `list_candidate_indices` 비어 있지 않음」을 본다.
-
-    단계 T 관측은 후보가 2개 이상이면 무효(`MULTIPLE_OBJECTS`)라 `b_gate`로는 목록이 가지 못한다. 코어 관측은 그대로 둔다.
-    """
+    """단계 L 목록 소비 조건. 공통 조건에 더해 AI 결과·프로필 적용·목록 후보 있음을 본다."""
     if not _b_gate_common(pipeline, outcome):
         return False
 
@@ -251,11 +200,7 @@ def b_list_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
 
 
 def b_admit(pipeline: VisionPipeline, outcome: JobOutcome, live_source=None) -> bool:
-    """B 지점 호출 조건(#168): `b_gate` 그리고 실시간 소스면 그 프레임 수신 epoch가 현재(`frame_current`)여야 한다.
-
-    `b_gate`의 의미는 바꾸지 않는다. 저장 입력은 `live_source=None`이라 `b_gate`와 같다. 실시간 소스의 B 소비는 여전히
-    D13으로 실행 시작 때 거부되므로(`b_consumer_not_allowed`), 실시간 분기는 D13 해제 전 대비 조건이다(지금은 도달하지 않음).
-    """
+    """B 지점 호출 조건: `b_gate` 그리고 실시간 소스면 그 프레임 수신 epoch가 현재여야 한다."""
     if not b_gate(pipeline, outcome):
         return False
 
@@ -263,7 +208,7 @@ def b_admit(pipeline: VisionPipeline, outcome: JobOutcome, live_source=None) -> 
 
 
 def b_skip_reason(pipeline: VisionPipeline, outcome: JobOutcome, live_source=None) -> str | None:
-    """`b_admit`가 거부한 이유(통과면 None). 실시간 관측 기록 연결(#173)이 계산을 건너뛴 사유를 남길 때 쓴다. 판정은 `b_admit`과 같다."""
+    """`b_admit`가 거부한 이유(통과면 None). 판정은 `b_admit`과 같다."""
     if b_admit(pipeline, outcome, live_source):
         return None
 
@@ -303,11 +248,7 @@ def b_skip_reason(pipeline: VisionPipeline, outcome: JobOutcome, live_source=Non
 
 
 def b_list_skip_reason(pipeline: VisionPipeline, outcome: JobOutcome, live_source=None) -> str | None:
-    """단계 L 기록 전용 연결(#201)의 건너뜀 사유(통과면 None). 통과 = `b_list_gate` 그리고 실시간이면 그 프레임 수신 epoch가 현재.
-
-    `b_skip_reason`과 같은 순서로 분류하되 단계 T 유효 여부는 보지 않는다(`MULTIPLE_OBJECTS`도 목록은 통과). 표시 결과가 AI가 아니면
-    `not_ai_result`, 프로필이 맞는데 목록이 비면 `no_list_candidates`.
-    """
+    """단계 L 목록 경로의 건너뜀 사유(통과면 None). 단계 T 유효 여부는 보지 않는다."""
     if b_list_gate(pipeline, outcome) and (live_source is None or bool(live_source.frame_current(outcome.context.frame))):
         return None
 
@@ -353,12 +294,7 @@ def b_list_skip_reason(pipeline: VisionPipeline, outcome: JobOutcome, live_sourc
 
 
 def display_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
-    """표시 조건(#138 실시간 검출 확인 창). 최초 현재 적용 결과만 그린다.
-
-    duplicate 아님, COMPLETED·applied, 응답 관측이 코어의 현재 관측 그 자체이고 세대·검출 설정·소스·관측 식별자가 작업과
-    같아야 한다. `b_gate`와 달리 **유효 여부·프로필은 보지 않는다**(표시용 invalid 관측도 그림). 표시 허가는 B 전달 허가가
-    아니며 관측을 바꾸지 않는다. 실시간 소스의 수신 epoch 확인은 실행기가 따로 더한다.
-    """
+    """표시 조건. 최초 현재 적용 결과만 그리며 유효 여부·프로필은 보지 않는다(B 전달 허가 아님)."""
     obs = outcome.observation
 
     if outcome.duplicate or outcome.status is not JobStatus.COMPLETED or not outcome.applied:
@@ -378,11 +314,7 @@ def display_gate(pipeline: VisionPipeline, outcome: JobOutcome) -> bool:
 
 
 def apply_seek(pipeline: VisionPipeline, source, frame_index: int) -> bool:
-    """탐색을 시도한다. 성공하면 세대를 올리고(SEEK) True, 실패하면 위치·세대·선택을 그대로 두고 False.
-
-    순서: 소스 seek 성공 → 세대 증가·대기 폐기·선택 비움 → 다음 read가 새 capture_generation을 받는다.
-    첫 CLI에는 탐색 옵션이 없다. 이 함수는 코어와 VideoSource의 결합 시험용이다.
-    """
+    """탐색을 시도한다. 성공하면 세대를 올리고(SEEK) True, 실패하면 상태를 그대로 두고 False."""
     try:
         source.seek(frame_index)
     except (ValueError, RuntimeError, TypeError):
@@ -430,14 +362,10 @@ _NO_RESULT = object()  # 유예 안에 반환을 확인하지 못함
 
 
 class _DetectorWorker:
-    """검출 전용 상주 worker 스레드 1개(설계 113 r3 §6.1). 수신 칸·핸드오프 칸은 각 용량 1.
+    """검출 전용 상주 worker 스레드 1개. 수신 칸·핸드오프 칸은 각 용량 1.
 
-    - IDLE: 수신 칸 대기(살아 있어도 멈춤이 아님). BUSY: detector 호출 중.
-    - `busy`는 제어 흐름이 소유한다. `submit`에서 참이 되고, 그 작업의 결과를 `take`로 **실제로 받아야** 거짓이 된다.
-      그래서 코어가 작업을 ABORTED로 끝냈어도 호출이 반환하기 전에는 다음 작업을 넣을 수 없다(겹침 금지).
-    - worker는 받은 바로 그 `JobContext`를 detector에 넘기고 같은 객체를 돌려준다(복제 없음, 코어 `is` 판별 유지).
-      코어·기록·B 지점은 만지지 않는다. 반환·예외(BaseException 포함)를 `(job, 값, 예외)`로 핸드오프한다.
-    - 데몬 스레드다. 인터프리터 종료를 막지 않을 뿐 멈춘 스레드의 자원 회수는 보장하지 않는다.
+    `busy`는 제어 흐름 소유이며, 결과를 `take`로 받아야 풀려 작업이 겹치지 않는다.
+    받은 `JobContext`를 복제 없이 돌려준다. 데몬 스레드지만 멈춘 스레드의 자원 회수는 보장하지 않는다.
     """
 
     def __init__(self, detector, takes_token: bool) -> None:
@@ -445,7 +373,7 @@ class _DetectorWorker:
         self._detector, self._takes_token = detector, takes_token
         self._inbox: queue.Queue = queue.Queue(maxsize=1)
         self._outbox: queue.Queue = queue.Queue(maxsize=1)
-        self._stopping = threading.Event()  # 종료 의도(수신 칸 Full과 무관하게 보존, r1 F1)
+        self._stopping = threading.Event()  # 종료 의도(수신 칸 Full과 무관하게 보존)
         self.job: JobContext | None = None
         self.call_name: str | None = None   # 작업이 아닌 호출(모델 준비) 이름. JobContext를 위조하지 않는다
         self.token: CancelToken | None = None
@@ -486,10 +414,9 @@ class _DetectorWorker:
         return item
 
     def shutdown(self, limit_s: float, interval_s: float) -> dict:
-        """종료 절차(§6.1 ①~⑤): BUSY면 취소 후 한도 안 반환 대기 → 종료 상태·표지 → 유한 join → 남은 핸드오프 버림.
+        """종료 절차: BUSY면 취소 후 한도 안 반환 대기 → 종료 표지 → 유한 join → 남은 핸드오프 버림.
 
-        반환 대기가 끝난 뒤에야 종료 상태를 세운다(그 전에 세우면 한도 안의 정상 반환을 결과 없이 끝내 버림).
-        실행 중인 detector를 강제로 멈추지 않으며 무한 join하지 않는다.
+        반환 대기 뒤에 종료 상태를 세운다(먼저 세우면 한도 안 정상 반환을 버림). 무한 join하지 않는다.
         """
         end = time.monotonic() + limit_s
         report = {"stalled": False, "stalled_job_seq": None, "thread_stopped": False, "discarded": 0}
@@ -511,8 +438,7 @@ class _DetectorWorker:
             report["stalled_what"] = self.describe()
             report["busy_s"] = round(time.monotonic() - self.submitted_monotonic, 3)
 
-        # 종료 의도는 먼저 상태로 남긴다. 수신 칸이 차 있어(작업을 아직 꺼내지 않음) 표지를 못 넣어도, worker는 작업을
-        # 꺼낸 직후·호출 반환 직후 이 상태를 보고 detector를 부르지 않거나 결과를 버리고 끝난다
+        # 수신 칸이 차 표지를 못 넣어도 worker가 이 상태를 보고 끝나도록 먼저 세운다
         self._stopping.set()
 
         try:
@@ -554,7 +480,7 @@ class _DetectorWorker:
                     value = call()
                 else:
                     value = self._detector(job, token) if self._takes_token else self._detector(job)
-            except BaseException as caught:  # 예외 분류는 제어 흐름이 한다(6a 동기 경로와 같은 규칙)
+            except BaseException as caught:  # 예외 분류는 제어 흐름이 한다
                 exc = caught
 
             if self._stopping.is_set():
@@ -567,10 +493,8 @@ class _DetectorWorker:
 
 
 def _wait_for_detection(take, should_stop, clock, deadline: float, interval_s: float, on_idle=None):
-    """검출 대기 루프(설계 113 r3 §5). 매 회차: 결과 → (입력 반영) → 정지 요청 → 기한 순서로 하나만 판정한다.
+    """검출 대기 루프. 매 회차 결과 → (입력 반영) → 정지 요청 → 기한 순서로 하나만 판정한다.
 
-    `take(timeout)`이 돌려준 값은 그 자리에서 ("result", 값)으로 보존해 돌려준다. 비었을 때(queue.Empty)만 `on_idle`(실시간
-    소스의 입력 반영, 계획 live-link r3 §3.5 지점 B), 정지 요청, 그다음 기한을 확인한다.
     반환: ("result", 값) | ("stop", None) | ("timeout", None).
     """
     while True:
@@ -614,57 +538,11 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         part_tracker: PartTracker | None = None, live_observation_sink=None,
         b_list_consumer: Callable[[JobContext, AiSegResult], None] | None = None,
         live_observation_b_input: str = "single") -> RunResult:
-    """저장 입력 한 번을 끝까지 처리한다. 예외를 밖으로 내지 않고 `RunResult`(종료 코드 포함)를 돌려준다.
+    """입력 한 번을 끝까지 처리한다. 예외를 밖으로 내지 않고 `RunResult`(종료 코드 포함)를 돌려준다.
 
-    `source_factory(issuer, generation_provider)`는 실행기가 만든 단일 발급기와 `pipeline.current_generation`을
-    받아 소스(`read()`·`close()`)를 만든다. 정리(finally)는 코어 close(유한 재시도) → worker 정리(감시 켬) → 남은 기록
-    → 소스 close 순서로 각각 한 번씩 하며, 앞 단계 실패가 뒤 단계를 막지 않는다.
-
-    - `detector_takes_token`: True면 `detector(job, CancelToken)`, False(기본)면 기존 `detector(job)`. 호출 규약은
-      이 명시 인자로만 정한다(시그니처 추측·TypeError 재시도 없음).
-    - `watch_clock`: 검출 기한을 재는 단조 시계(초). 시험이 결정적으로 바꿔 넣는 주입 지점이다. 유예·정리 한도는
-      실제 단조 시계로 잰다(주입 시계가 멈춰도 정리는 유한하게 끝남).
-    - 검출 기한 경계: 제어 흐름이 worker에 작업을 넘기기 직전 `watch_clock()`부터, 핸드오프 칸에서 결과를 꺼내거나
-      칸이 빈 채 기한을 판정할 때까지. 실측(#114)의 `process_opencv`·`predict` 호출 경계에 스레드 전달·깨우기 지연이
-      더해진다. 파일 열기·디코딩·B 지점·기록은 포함하지 않는다.
-    - `prepare`(YOLO 연결 R3): AI 모델 준비 함수. run_meta 뒤 **프레임을 읽기 전에** 한 번 부른다. 감시를 켜면 같은 worker에
-      작업 아닌 호출로 넘기고 `model_load_timeout_s`로 감시한다(첫 검출 기회를 쓰지 않음). 성공하면 반환 dict를
-      `model_ready`로 기록한다. 실패는 프레임 없는 사건(`ModelPrepareError`의 kind, 그 밖은 MODEL_LOAD_FAILED, 시간 초과는
-      MODEL_LOAD_FAILED `prepare_timeout`)으로 적용·기록하고 프레임 없이 종료 1. 정지 요청·KeyboardInterrupt는 사건 없이
-      정리한다(계획 r2 §4.2 표). 가짜 image_seq·job_seq를 만들지 않는다.
-    - `display_sink`(#138, 기본 None=꺼짐): 확인 창 전달 지점. 제어 흐름에서만 부르며 반환을 기다리지 않는 객체여야 한다.
-      ① terminal 응답마다 기록 **뒤**·B 지점 **앞**에 `on_outcome(outcome, current)`(current = `display_gate` 그리고 실시간이면
-      그 프레임 수신 epoch가 현재), ② 실시간 입력 항목마다 기록 뒤·수신기 실패 판정 앞에
-      `on_input(kind, detail, generation, generation_changed)`. 관측·valid·b_consumer·기록 내용은 바꾸지 않는다.
-      전달 지점 예외는 다른 예외처럼 실행 실패(1)로 정리된다.
-    - `handoff_sink`(#142 Task 3, 기본 None=꺼짐): A→C 같은 프로세스 연결부(`vision.handoff.AToCHandoff`). 연결부는 호출자가
-      만들고 닫는다(run은 닫지 않음). run_meta 직후 `start_run`, 코어를 바꾼 뒤 기록 sync 지점마다 `sync_invalidations`, 입력 사건
-      반영 직후 `note_input_status`, terminal 응답의 기록 뒤·B 지점 앞에서 표시 조건(`display_gate` 그리고 실시간이면 수신 epoch
-      현재)을 통과하면 `offer_result`, 코어가 현재 관측을 바꿨는데 통과 못 했으면 `clear("result_withheld")`(계약 r3 §2.4).
-      입력 대기 회차·검출/준비 대기 회차마다 `check()`. 연결부 실패(`HandoffFailed`·`HandoffClosed`)는 `handoff_failed`로
-      원래 정지 사유를 덮지 않고 남기며 기존 유한 정리를 계속한다. 정리에서는 코어 close·기록 뒤 마지막 sync로 미전달 수를
-      확정하고, 연결부가 OPEN일 때만 `RUN_END`를 넣는다. 관측·valid·b_consumer·display_sink·기록 내용은 바꾸지 않는다.
-    - `part_tracker`(#151 S2, 기본 None=추적 끔): A-6 1차 인스턴스 추적 **표시·기록 실험**(`vision.tracking.PartTracker`, 발급기는 진입점이
-      만들어 주입). 갱신은 제어 흐름 `handle()`에서 표시 공개 조건(`display_gate` 그리고 실시간이면 수신 epoch 현재)을 통과한 AI 결과마다
-      1회뿐이다(실패·중단·늦은·duplicate·세대 폐기·withheld는 갱신하지 않음). 실행 시작·끝(`run_start`·`run_end`), 세대 전이 입력 경계
-      (`reconnect`·`sim_time_rewind`·`profile_changed`), FRAME_TIMEOUT이 아닌 입력 사건(`input_status:<상태>`)에서 reset한다(FRAME_TIMEOUT은
-      보류, 이어진 재접속에서 reset). 추적 예외는 `tracking_failed` 기록·stderr·추적 끔으로 격리하며 종료 코드·코어 계수를 바꾸지 않는다
-      (그 기록 쓰기 실패는 기존 log_failure). `PartTracker`가 아닌 값은 소스를 만들기 전에 `tracker_contract`로 종료 1. B·공통 관측으로 전파하지 않는다.
-    - `live_observation_sink`(#173, 기본 None=꺼짐): **실시간 소스 전용 기록 전용 시험 연결**(`vision.live_observation_link`).
-      `part_tracker`도 주면(#215) `offer(..., tracks=TrackFrame | None)`로 같은 작업의 추적 결과를 함께 넘긴다(끄면 인자 없음).
-      D13은 그대로다: 실시간 소스의 `b_consumer`는 여전히 `b_consumer_not_allowed`로 거부한다. 이 연결부는 B를 이 제어 흐름에서
-      부르지 않고, terminal 응답마다 기록·표시 뒤에 `offer(outcome, skip_reason, rx_epoch)`(skip_reason = `b_skip_reason`, 통과면
-      None)로 넘길 뿐이다(전용 디스패처가 대기 1개 최신 우선·검사 ①②③으로 처리). 실시간 입력 항목은 반영·`input_applied` 뒤
-      `on_live_input(item, generation)`으로 넘긴다. 저장 입력과 함께 주거나 `b_consumer`와 함께 주면 `live_observation_contract`로
-      종료 1. 연결부는 호출자가 만들고 닫는다(run은 닫지 않음).
-    - `b_list_consumer`(#189 단계 L, 기본 None=단계 T): terminal 응답마다 기록·표시 뒤 `b_list_gate`를 통과하면
-      `b_list_consumer(context, display_result)`를 그 자리에서 한 번 부르고 `b_list_calls`를 센다. 시작 계약(프레임을 읽기 전 거부,
-      종료 1): `b_consumer`와 동시 → `b_input_contract`, 실시간 소스 → `b_list_consumer_not_allowed`(D13), 검출 설정에
-      `axis_extractor`가 없음 → `b_list_requires_axis`. 단계 T로 바꿔 계속하지 않는다.
-    - `live_observation_b_input`(#201, 기본 "single"): 기록 전용 연결부에 넘길 판정. "list"면 `offer`의 사유를 `b_list_skip_reason`
-      (`b_list_gate` + 수신 epoch 현재)으로 만든다(코어 관측이 `MULTIPLE_OBJECTS`여도 목록 후보가 있으면 통과). 실행기 자신은 여전히
-      B를 부르지 않는다(D13). "list"인데 `live_observation_sink`가 없거나 `axis_extractor`가 없으면 `live_observation_contract`로 종료 1.
-      그 밖의 값은 ValueError.
+    정리는 코어 close → worker 정리 → 남은 기록 → 소스 close 순서로 한 번씩 하며 앞 단계 실패가 뒤를 막지 않는다.
+    선택 연결(`display_sink`·`handoff_sink`·`part_tracker`·`live_observation_sink`·`b_list_consumer`)은
+    None이면 꺼지고, 관측·valid·기록 내용을 바꾸지 않는다. 시작 계약 위반은 프레임을 읽기 전에 종료 1로 끝낸다.
     """
     if live_observation_b_input not in ("single", "list"):
         raise ValueError(f"live_observation_b_input must be 'single' or 'list': {live_observation_b_input!r}")
@@ -672,7 +550,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
     err = stderr if stderr is not None else sys.stderr
     issuer = FrameIdIssuer(run_id or new_run_id())
 
-    # 추적기 계약(D11): 진입점이 발급기를 주입해 만든 PartTracker만 받는다. 소스·코어를 만들기 전에 끝낸다
+    # 추적기 계약: 진입점이 발급기를 주입해 만든 PartTracker만 받는다. 소스·코어를 만들기 전에 끝낸다
     if part_tracker is not None and not isinstance(part_tracker, PartTracker):
         message = f"part_tracker must be PartTracker (issuer injected by the entry point): {type(part_tracker).__name__}"
         err.write(f"run_pipeline: {message}\n")
@@ -688,7 +566,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
     live = False           # 실시간 소스(poll_input 있음)인가. 소스를 만든 뒤 정한다
     transitions: collections.deque[int] = collections.deque()  # 실시간: 세대를 올린 경계의 PC 단조 시각(반복 감시)
     handoff_started = False  # start_run을 시도했는가(연결부 결합 여부)
-    tracking_failed: list[str] = []  # 추적 실패 latch: 첫 사유 1건. 비어 있지 않으면 이번 실행의 추적 호출(update·reset)을 더 하지 않는다
+    tracking_failed: list[str] = []  # 추적 실패 latch: 비어 있지 않으면 이번 실행의 추적 호출을 멈춘다
 
     def fail_run(reason: str, message: str) -> None:
         """실행 수준 실패를 기록한다(종료 1)."""
@@ -697,14 +575,14 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         result.errors.append(message)
 
     def sync_records() -> None:
-        """코어를 바꾼 뒤의 기록 sync 지점: 남은 사건·폐기를 기록하고, 연결부가 있으면 새 사건을 넘긴다(#142)."""
+        """코어를 바꾼 뒤 남은 사건·폐기를 기록하고, 연결부가 있으면 새 사건을 넘긴다."""
         _logged(log.sync, pipeline)
 
         if handoff_sink is not None:
             handoff_sink.sync_invalidations(pipeline)
 
     def check_handoff() -> None:
-        """대기 회차의 연결부 실패 확인(계약 §3). 실패면 HandoffFailed·HandoffClosed가 올라간다."""
+        """대기 회차의 연결부 실패 확인. 실패면 HandoffFailed·HandoffClosed가 올라간다."""
         if handoff_sink is not None:
             handoff_sink.check()
 
@@ -716,8 +594,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             handoff_sink.note_input_status(event)
 
     def tracking_failure(exc: BaseException, outcome: JobOutcome | None) -> None:
-        """추적 예외 격리(D10, S2 r1): **실행기 latch를 먼저 세워** 이번 실행의 추적 호출을 멈추고(내부 disable 성공 여부와 무관),
-        추적기 disable을 시도하고, stderr·`tracking_failed` 기록 1줄을 남긴다. 기록 쓰기 실패는 `_LogFailure`로 그대로 올린다(fail-stop)."""
+        """추적 예외 격리: latch를 먼저 세워 추적을 멈추고, disable 시도·stderr·`tracking_failed` 1줄을 남긴다."""
         if tracking_failed:
             return
 
@@ -739,7 +616,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
                                             **ids, "error": message, **extra})
 
     def reset_tracker(reason: str) -> None:
-        """경계에서 전 트랙 종료(§4.2). 예외는 추적 실패로 격리한다. latch 뒤에는 부르지 않는다."""
+        """경계에서 전 트랙을 종료한다. 예외는 추적 실패로 격리한다. latch 뒤에는 부르지 않는다."""
         if part_tracker is None or tracking_failed:
             return
 
@@ -768,7 +645,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             return None
 
     def handle(outcome: JobOutcome) -> None:
-        """terminal 응답을 기록하고, (추적)·표시·연결부 전달 뒤 소비 조건을 통과하면 그 자리에서 B 지점을 한 번 부른다."""
+        """terminal 응답을 기록·표시·전달하고, 소비 조건을 통과하면 그 자리에서 B 지점을 한 번 부른다."""
         _logged(log.log_outcome, outcome)
         sync_records()
         track_frame = None
@@ -777,7 +654,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             current = display_gate(pipeline, outcome) and (not live or source.frame_current(outcome.context.frame))
             track_frame = track(outcome) if current else None
 
-            # 추적을 켠 실행만: 같은 작업 TrackFrame을 기록(process 뒤 1줄)·표시·연결부에 그대로 싣는다(S3)
+            # 추적을 켠 실행만 같은 작업 TrackFrame을 기록·표시·연결부에 싣는다
             if track_frame is not None:
                 _logged(log.write_ai_tracks, track_frame)
 
@@ -790,34 +667,33 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
                 if current:
                     handoff_sink.offer_result(outcome, **track_kw)
                 elif outcome.status is JobStatus.COMPLETED and outcome.applied and not outcome.duplicate:
-                    # 코어는 현재 관측을 바꿨지만 공개하지 않는다(수신 epoch 경합). 연결부 현재 결과를 비운다(§2.4-2)
+                    # 수신 epoch 경합으로 공개하지 않은 결과라 연결부 현재 결과를 비운다
                     handoff_sink.clear("result_withheld")
 
         if b_consumer is not None and b_admit(pipeline, outcome, source if live else None):
             result.b_calls += 1
             b_consumer(outcome.context.frame, outcome.observation)
 
-        # 단계 L(#189): 저장 입력에서만 시작이 허용된다(실시간은 시작 계약에서 거부)
+        # 단계 L은 저장 입력에서만 허용된다(실시간은 시작 계약에서 거부)
         if b_list_consumer is not None and not live and b_list_gate(pipeline, outcome):
             result.b_list_calls += 1
             b_list_consumer(outcome.context, outcome.display_result)
 
-        # 실시간 관측 기록 연결(#173): 판정 사유와 수신 epoch만 넘기고 B는 전용 디스패처가 부른다(D13: b_consumer 아님)
+        # 실시간 관측 연결에는 판정 사유와 수신 epoch만 넘기고 B는 전용 디스패처가 부른다
         if live_observation_sink is not None and live:
             if live_observation_b_input == "list":
                 reason = b_list_skip_reason(pipeline, outcome, source)
             else:
                 reason = b_skip_reason(pipeline, outcome, source)
 
-            # #215: 추적을 켠 실행만 같은 작업 TrackFrame(없으면 None)을 넘긴다. 끄면 호출이 지금과 같다
+            # 추적을 켠 실행만 같은 작업 TrackFrame(없으면 None)을 넘긴다
             sink_kw = {} if part_tracker is None else {"tracks": track_frame}
             live_observation_sink.offer(outcome, reason, source.frame_epoch(outcome.context.frame), **sink_kw)
 
     def finish_detection(job: JobContext, value, exc: BaseException | None) -> None:
-        """detector 반환·예외를 terminal로 정확히 한 번 보낸다(동기·worker 경로 공통 분류).
+        """detector 반환·예외를 terminal로 정확히 한 번 보낸다(동기·worker 경로 공통).
 
-        JobCancelled → JOB_ABORTED(cancelled), KeyboardInterrupt → JOB_ABORTED(interrupted) 후 다시 올림,
-        Exception → INFERENCE_ERROR, 그 밖의 BaseException → 다시 올림(활성 작업은 close가 정리).
+        KeyboardInterrupt는 JOB_ABORTED 뒤 다시 올리고, Exception이 아닌 BaseException은 그대로 올린다.
         """
         if exc is None:
             try:
@@ -831,7 +707,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         if isinstance(exc, JobCancelled):
             handle(pipeline.fail(job, InvalidationKind.JOB_ABORTED, f"cancelled: {exc}" if str(exc) else "cancelled"))
         elif isinstance(exc, AiJobConfigError):
-            # 작업 중 설정 불일치(ROI·시작 설정·class_map 밖 클래스)는 MODEL_CONFIG_INVALID 작업 값(A §5.4)
+            # 작업 중 설정 불일치(ROI·시작 설정·class_map 밖 클래스)는 MODEL_CONFIG_INVALID
             handle(pipeline.fail(job, InvalidationKind.MODEL_CONFIG_INVALID, exc.cause))
         elif isinstance(exc, KeyboardInterrupt):
             handle(pipeline.fail(job, InvalidationKind.JOB_ABORTED, "interrupted"))
@@ -842,7 +718,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             raise exc
 
     def note_transition(now_ns: int) -> None:
-        """세대를 올린 경계를 세고, 창 안에서 상한을 넘으면 실행을 끝낸다(A 임시 개발값, 계획 결정 D5)."""
+        """세대를 올린 경계를 세고, 창 안에서 상한을 넘으면 실행을 끝낸다."""
         window_ns = int(config.live_transition_window_s * 1e9)
         transitions.append(now_ns)
 
@@ -855,11 +731,9 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             raise _StopRun()
 
     def apply_live_inputs() -> None:
-        """실시간 소스의 경계·알림을 순서대로 코어에 반영한다(계획 live-link r3 §3.5 지점 A·B·C, 제어 흐름 전용).
+        """실시간 소스의 경계·알림을 순서대로 코어에 반영한다(제어 흐름 전용).
 
-        되감기·재접속은 같은 설정으로 세대 전이, 프로필 변경은 새 `SourceProfile`로 전이, 상태가 있는 항목(수신 중단·첫 영상 없음·
-        QoS 비호환·시작 실패)은 `note_input_status`. 수신 중단은 입력 오류로 세지 않는다(계획 결정 D5 기본안, A 임시).
-        반영마다 기록(`live_input`)하고 소스에 반영 세대를 알린다.
+        반영마다 `live_input`을 기록하고 소스에 반영 세대를 알린다. 수신 중단은 입력 오류로 세지 않는다.
         """
         for item in source.poll_input():
             kind = item.kind
@@ -868,7 +742,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             if kind in (BoundaryKind.RECONNECT, BoundaryKind.SIM_TIME_REWIND):
                 event = pipeline.change_settings(pipeline.settings, cause=GenerationCause(kind.value))
             elif kind is BoundaryKind.PROFILE_CHANGED:
-                p = item.profile   # None = 해석할 수 없는 CameraInfo로 프로필 무효(#180 #1) → 보정 없음 설정으로 전이
+                p = item.profile   # None = 해석할 수 없는 CameraInfo → 보정 없음 설정으로 전이
                 profile = None if p is None else SourceProfile(source_id=pipeline.settings.source_id, width=p.width,
                                                                height=p.height, crop=None,
                                                                calibration_id=p.calibration_id)
@@ -905,7 +779,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             if display_sink is not None:
                 display_sink.on_input(kind.value, item.detail, pipeline.current_generation(), event is not None)
 
-            # 수신기 비정상 종료는 자동 회복되지 않으므로 실행 실패로 끝낸다(검토 r1 F1)
+            # 수신기 비정상 종료는 자동 회복되지 않으므로 실행 실패로 끝낸다
             if kind is NoticeKind.RECEIVER_FAILED:
                 fail_run("receiver_failed", f"live receiver failed: {item.detail}")
                 raise _StopRun()
@@ -914,12 +788,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
                 note_transition(item.event_monotonic_ns)
 
     def finish_published(job: JobContext, value, exc: BaseException | None) -> None:
-        """결과 공개 직전 처리(계획 live-link r3 §3.5 지점 C). 저장 입력은 `finish_detection` 그대로.
-
-        실시간이면 ① 입력을 먼저 반영하고 ② 작업 세대가 현재와 같은데 프레임의 수신 epoch가 현재가 아니면(세대를 안 바꾸는
-        수신 중단 경계) `complete` 대신 `JOB_ABORTED input_boundary`로 끝내 관측을 만들지 않는다. 세대가 바뀌었으면 기존
-        `complete`가 세대 폐기한다. 판정(②) 뒤에 생긴 입력은 다음 반영 지점에서 현재 관측을 비운다(계획의 한계).
-        """
+        """결과 공개 직전 처리. 실시간이면 입력을 먼저 반영하고, 수신 epoch가 지난 프레임은 관측 없이 끝낸다."""
         if live:
             apply_live_inputs()
 
@@ -932,7 +801,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         finish_detection(job, value, exc)
 
     def run_job(job: JobContext) -> None:
-        """감시 끔(6a): detector를 제어 흐름에서 동기 호출한다."""
+        """감시 끔: detector를 제어 흐름에서 동기 호출한다."""
         token = CancelToken()
 
         try:
@@ -963,7 +832,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         result.late_results += 1
 
     def run_job_watched(job: JobContext) -> str | None:
-        """감시 켬(6b): worker에 넘기고 기한·정지 요청을 감시한다. 반환: None(계속) | "stop" | "stalled"."""
+        """감시 켬: worker에 넘기고 기한·정지 요청을 감시한다. 반환: None(계속) | "stop" | "stalled"."""
         nonlocal worker, first_pending
 
         limit = config.first_detect_timeout_s if first_pending else config.detect_timeout_s
@@ -977,7 +846,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         worker.submit(job, token)
 
         def on_idle() -> None:
-            """검출 대기 회차(지점 B): 실시간 입력 반영, 연결부 실패 확인."""
+            """검출 대기 회차: 실시간 입력 반영, 연결부 실패 확인."""
             if live:
                 apply_live_inputs()
 
@@ -996,7 +865,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             finish_published(*item)
             return None
 
-        # 정지 요청 또는 기한 초과: 취소 표지 → (실시간이면 입력 먼저 반영) → 즉시 terminal 1회 → 유예 동안 실제 반환 대기
+        # 정지·기한 초과: 취소 → (실시간 입력 반영) → terminal 1회 → 유예 동안 실제 반환 대기
         token._cancel()
 
         if live:
@@ -1021,10 +890,9 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         return "stop" if what == "stop" else None
 
     def prepare_failed(kind: InvalidationKind, cause: str, reason: str | None = None) -> None:
-        """준비 실패: 실행 실패(원래 원인)를 **먼저** 보존한 뒤 프레임 없는 사건 1건을 코어에 적용·기록한다(r1 F1).
+        """준비 실패: 원래 원인을 먼저 실행 실패로 남긴 뒤 프레임 없는 사건 1건을 적용·기록한다.
 
-        사건 기록이 실패해도(_LogFailure) 원래 준비 실패 원인이 RunResult.errors·stderr에 남는다. 대표 정지 사유는
-        원래 준비 실패(먼저 정해짐)이고, 기록 실패는 바깥 처리에서 errors에 추가된다. 프레임은 읽지 않는다.
+        사건 기록이 실패해도 원래 준비 실패 원인이 남는다. 프레임은 읽지 않는다.
         """
         reason = reason or ("model_load_failed" if kind is InvalidationKind.MODEL_LOAD_FAILED
                             else "model_config_invalid")
@@ -1047,7 +915,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         elif isinstance(exc, Exception):
             prepare_failed(InvalidationKind.MODEL_LOAD_FAILED, f"{type(exc).__name__}: {exc}")
         else:
-            raise exc   # KeyboardInterrupt·SystemExit 등은 6a 분류대로 실행 수준으로 올린다
+            raise exc   # KeyboardInterrupt·SystemExit 등은 실행 수준으로 올린다
 
         return False
 
@@ -1094,7 +962,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         if late is _NO_RESULT:
             fail_run("worker_stalled", f"detector worker stalled: prepare did not return within cancel grace "
                                        f"{config.cancel_grace_s} s after {what}; no detection")
-            result.stop_reason = "worker_stalled"   # 시간 초과 사건을 남겼어도 멈춤이 최종 정지 사유(계획 §4.2 표)
+            result.stop_reason = "worker_stalled"   # 시간 초과 사건을 남겼어도 멈춤이 최종 정지 사유
             result.stalled = True
             return False
 
@@ -1118,7 +986,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
 
         consecutive_errors = 0
 
-        # 실시간 표시 단계에서는 B 계산 소비를 허용하지 않는다(계획 결정 D13, reviewer 지시)
+        # 실시간 소스에서는 B 계산 소비를 허용하지 않는다
         if live and b_consumer is not None:
             fail_run("b_consumer_not_allowed", "live source does not allow b_consumer in the display stage")
             proceed = False
@@ -1148,10 +1016,10 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
                 result.stop_reason = "stop_requested"
                 break
 
-            # 입력 대기 회차(지점 A, read()가 None인 회차 포함): 추가 입력 없이도 수신 측 실패를 알아챈다(계약 §3)
+            # 입력 대기 회차(read()가 None인 회차 포함): 추가 입력 없이도 수신 측 실패를 알아챈다
             check_handoff()
 
-            # 지점 A: 읽기 전에 입력 경계·알림을 반영한다
+            # 읽기 전에 입력 경계·알림을 반영한다
             if live:
                 apply_live_inputs()
 
@@ -1229,8 +1097,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
     except BaseException as exc:  # 소비자 실패·예상하지 못한 예외·SystemExit도 정리를 거쳐 1로 끝낸다
         fail_run("error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
     finally:
-        # 추적 종료(S2 r1 F1): 정리 전에 run_end reset을 같은 실패 규칙(latch·stderr·tracking_failed 1줄)으로 한다.
-        # 그 기록이 실패하면 기존 log_failure로 남기고 정리(_finish)는 그대로 계속한다
+        # 정리 전에 run_end reset을 같은 실패 규칙으로 하고, 기록 실패가 나도 정리는 계속한다
         if part_tracker is not None:
             try:
                 reset_tracker("run_end")
@@ -1259,7 +1126,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
 
 def _finish(pipeline, log, tracker, source, config, clock_ns, result, log_ok, err, worker=None, *,
             live: bool = False, handoff=None, handoff_started: bool = False) -> None:
-    """정리: 코어 close(유한 재시도) → worker 정리(감시 켬) → 중단 결과·남은 기록 → 소스 close → 연결부 마지막 sync·RUN_END.
+    """정리: 코어 close(유한 재시도) → worker 정리 → 남은 기록 → 소스 close → 연결부 마지막 sync·RUN_END.
 
     각 단계 실패는 보고하고 다음 단계를 계속한다.
     """
@@ -1288,7 +1155,7 @@ def _finish(pipeline, log, tracker, source, config, clock_ns, result, log_ok, er
             f"remaining state: closed={pipeline.closed} active_job_seq={None if active is None else active.job_seq} "
             f"pending={pipeline.pending_frame is not None}")
 
-    # worker 정리(§6.1): 코어가 닫힌 뒤라 남은 결과는 terminal·기록·B 없이 버리고 수만 보고한다
+    # 코어가 닫힌 뒤라 남은 worker 결과는 terminal·기록·B 없이 버리고 수만 보고한다
     if worker is not None:
         try:
             report = worker.shutdown(config.worker_cleanup_limit_s, config.stop_check_interval_s)
@@ -1370,16 +1237,9 @@ def _finish(pipeline, log, tracker, source, config, clock_ns, result, log_ok, er
 
 
 def _finish_handoff(handoff, started: bool, pipeline, result) -> None:
-    """연결부 정리(계약 §3·§4-3): 코어 close 뒤 마지막 sync로 close 사건을 넘기고 미전달 수를 확정한 뒤, OPEN이면 RUN_END.
+    """연결부 정리: 마지막 sync로 close 사건을 넘기고 미전달 수를 확정한 뒤, OPEN이면 RUN_END를 넣는다.
 
-    - 연결부가 이미 FAILED·CLOSED여도 마지막 sync를 불러 records_seen·미전달 수를 확정한다(넣지는 못함).
-    - 이 단계의 연결부 실패는 `handoff_failed`로 남기되 앞선 정지 사유를 덮지 않는다. RUN_END는 그 시점의 종료 코드를 싣는다.
-    - **최종 상태 검사(r1 T3-F1):** RUN_END 시도 뒤 연결부 상태를 한 번 읽어(이 실행의 실패 관측 경계) 결합된 연결부가 FAILED이거나
-      CLOSED(run은 닫지 않으므로 예상하지 못한 닫힘)면 새 사건·예외 유무와 관계없이 종료 1·`handoff failed: state=… reason=…` 진단을 남긴다.
-      RUN_END를 넣은 뒤 수신 측이 전달 실패를 latch한 경우도 여기서 잡으며 `run_end_sent`는 실제로 넣었는지 그대로 둔다.
-      이 읽기 뒤에 새로 생긴 외부 실패는 반환값에 반영되지 않는다.
-    - start_run 전에 끝난 실행(소스 생성·run_meta 실패)이나 start_run이 거부된 실행은 이 코어와 결합되지 않았으므로 sync하지 않는다.
-    - 연결부를 닫지 않는다(수명은 호출자).
+    결합된 연결부가 끝에 FAILED·CLOSED면 종료 1로 보고하되 앞선 정지 사유는 덮지 않는다. 연결부를 닫지 않는다.
     """
     report = {"run_end_sent": False, "events_unsent": 0}
     bound = False
@@ -1409,7 +1269,7 @@ def _finish_handoff(handoff, started: bool, pipeline, result) -> None:
     stats = handoff.stats()
     status = handoff.state()
 
-    # 실패 관측 경계: 이 상태 읽기. 결합된 연결부가 OPEN이 아니면 실패로 보고한다(앞선 정지 사유·오류는 보존)
+    # 이 상태 읽기가 실패 관측 경계다. 결합된 연결부가 OPEN이 아니면 실패로 보고한다
     if bound and status.state is not HandoffState.OPEN:
         message = f"handoff failed: state={status.state.value} reason={status.reason}"
         result.exit_code = 1

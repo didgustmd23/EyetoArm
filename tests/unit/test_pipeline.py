@@ -1,15 +1,7 @@
-"""A 비전 파이프라인 상태 코어(작업 2~4) 단위시험 — 세대·설정 전이·최신 대기 프레임·작업 스냅샷·재처리.
+"""A 비전 파이프라인 상태 코어 단위시험 — 세대·설정 전이·최신 대기 프레임·작업 스냅샷·재처리.
 
-작업 4 시험(완료·실패·중단·무효화 순서·멱등·보관 정책)은 `test_pipeline_terminal.py`에 있다.
-
-근거: 계획 `docs/superpowers/plans/2026-11-15-a-vision-pipeline.md` r3 작업 2·3·「인터페이스 제안」,
-A 상세설계 §3(최신 프레임 1개·버퍼 비덮어쓰기)·§5.1(image_seq 수명)·§5.4(세대 증가 조건·설정 스냅샷·
-동일 프레임 재처리 조건)·§9(처리 건수·보존식), 공통 자료형 관리 초안 §3.5·§4.
-시계는 가짜 `clock_ns`를 주입한다. ROS·Qt·실제 입력 장치를 쓰지 않는다.
-
-활성 작업은 실제 `complete()`로 끝내고, 현재 관측도 `complete()`가 반영한 값으로 확인한다(작업 4에서
-`_release_active`·`_current_observation` 직접 조작을 대체). 누적 이력 방어선 시험 하나만
-`_clear_selection`을 막는 내부 조작을 남긴다.
+종료 처리 시험은 `test_pipeline_terminal.py`에 있다. 시계는 가짜 `clock_ns`, ROS·Qt·실제 입력 장치 없음.
+활성 작업은 실제 `complete()`로 끝낸다. 누적 이력 방어선 시험만 `_clear_selection`을 막는 내부 조작을 쓴다.
 """
 import dataclasses
 import subprocess
@@ -129,7 +121,7 @@ def observation(job):
         method="opencv", class_name=None, confidence=None, model_id=None)
 
 
-# 원인별로 바꾼 설정을 만드는 함수(A 상세설계 §5.4 세대 증가 조건). 탐색·재접속·시각 되감기는 설정 불변
+# 원인별로 바꾼 설정을 만드는 함수. 탐색·재접속·시각 되감기는 설정 불변
 CHANGES = {
     GenerationCause.SOURCE_CHANGED: lambda s: dataclasses.replace(
         s, source_id="src1", profile=profile(source_id="src1")),
@@ -163,7 +155,7 @@ class PipelineTestBase(unittest.TestCase):
         self.p = VisionPipeline(self.settings, run_id=RUN_ID, clock_ns=self.clock)
 
     def assert_received_balance(self, p=None):
-        """보존식 `received = first_started + queue_dropped + 대기(0/1)`를 확인한다(A 상세설계 §9)."""
+        """보존식 `received = first_started + queue_dropped + 대기(0/1)`를 확인한다."""
         p = p or self.p
         c = p.counters
         pending = 0 if p.pending_frame is None else 1
@@ -189,7 +181,7 @@ class PipelineTestBase(unittest.TestCase):
 
 
 class GenerationTransitionTest(PipelineTestBase):
-    """세대 증가와 설정 전이(계획 작업 2, A 상세설계 §5.4)."""
+    """세대 증가와 설정 전이."""
 
     def test_generation_and_job_seq_start_at_zero(self):
         """세대와 job_seq는 0에서 시작하고 `current_generation()`은 공급자로 쓸 수 있는 호출 가능 객체다."""
@@ -309,7 +301,7 @@ class GenerationTransitionTest(PipelineTestBase):
             config(fixed_threshold=300)
 
     def test_job_seq_is_not_reset_by_generation_change(self):
-        """job_seq는 세대 변경으로 초기화되지 않고 실행 안에서 계속 증가한다(A 상세설계 §5.4)."""
+        """job_seq는 세대 변경으로 초기화되지 않고 실행 안에서 계속 증가한다."""
         first = self.start_and_complete(frame(0))
         self.p.change_settings(self.settings, cause=GenerationCause.RECONNECT)
         second = self.start_and_complete(frame(1, capture_generation=1))
@@ -319,7 +311,7 @@ class GenerationTransitionTest(PipelineTestBase):
 
 
 class ReprocessConditionTest(PipelineTestBase):
-    """선택 프레임 재처리 허용 조건(계획 작업 2, A 상세설계 §5.4 「동일 프레임 재처리의 조건」 1~3)."""
+    """선택 프레임 재처리 허용 조건."""
 
     def test_only_detector_changes_allow_selected_frame_reprocessing(self):
         """선택 프레임 수신 뒤 세대 증가가 모두 검출 설정 변경일 때만 재처리를 허용하고, 소스→검출 설정처럼 중간에 다른 전이가 있으면 거부한다."""
@@ -378,7 +370,7 @@ class ReprocessConditionTest(PipelineTestBase):
                 self.assertIsNone(p.start_reprocess())
 
     def test_combined_change_is_not_treated_as_detector_only(self):
-        """한 호출에서 검출 설정과 다른 설정이 함께 바뀌면 비검출 전이로 보고 선택을 비운다(M3 임시 결정)."""
+        """한 호출에서 검출 설정과 다른 설정이 함께 바뀌면 비검출 전이로 보고 선택을 비운다."""
         self.start_and_complete(frame(0))
         both = dataclasses.replace(self.settings, mode="planar_alt", detector_config=config(fixed_threshold=90))
 
@@ -431,7 +423,7 @@ class ReprocessConditionTest(PipelineTestBase):
 
 
 class PendingQueueTest(PipelineTestBase):
-    """최신 대기 프레임 1개와 수신 계약(계획 작업 3, A 상세설계 §3·§9)."""
+    """최신 대기 프레임 1개와 수신 계약."""
 
     def test_latest_pending_frame_replaces_only_pending(self):
         """A 처리 중 B·C를 받으면 처리 중 A는 보존되고 대기는 C 하나, B는 폐기 1건이며, source 버퍼를 덮어써도 A 처리 버퍼는 그대로다."""
@@ -470,7 +462,7 @@ class PendingQueueTest(PipelineTestBase):
         self.assert_received_balance()
 
     def test_offer_copies_and_owns_frame_buffer(self):
-        """offer 시점에 영상을 독립 복사·읽기 전용으로 소유하고, type·source_ref·source_index·식별자·시각을 보존하며 생산자 덮어쓰기(대기·처리 중)에 영향받지 않는다."""
+        """offer는 영상을 독립 복사·읽기 전용으로 소유하고 식별자·시각을 보존하며 생산자 덮어쓰기에 무관하다."""
         for common_type in (False, True):
             with self.subTest(common_type=common_type):
                 p = VisionPipeline(settings(), run_id=RUN_ID, clock_ns=FakeClock())
@@ -509,7 +501,7 @@ class PendingQueueTest(PipelineTestBase):
         self.assertFalse(np.shares_memory(p.pending_frame.image, ro))
 
     def test_old_capture_is_not_accepted_as_new_frame(self):
-        """현재 source의 오래된 캡처 세대 프레임은 시작하지 않고 폐기 사유·건수를 남기며, 다른 run/source는 계약 오류로 거부하고 수신 수에 넣지 않는다."""
+        """오래된 캡처 세대 프레임은 폐기 사유·건수만 남기고, 다른 run/source는 계약 오류(수신 수 제외)다."""
         self.p.change_settings(self.settings, cause=GenerationCause.SEEK)
         self.assertTrue(self.p.offer_frame(frame(1, capture_generation=1)))
 
@@ -538,7 +530,7 @@ class PendingQueueTest(PipelineTestBase):
         self.assertEqual(self.p.start_next().frame.image_seq, 1)
 
     def test_future_capture_generation_is_contract_error(self):
-        """현재 세대보다 앞선 capture_generation은 계약 오류로 거부한다(M4 임시 결정)."""
+        """현재 세대보다 앞선 capture_generation은 계약 오류로 거부한다."""
         before = self.snapshot()
 
         with self.assertRaises(PipelineContractError):
@@ -611,7 +603,7 @@ class PendingQueueTest(PipelineTestBase):
 
 
 class JobSnapshotTest(PipelineTestBase):
-    """작업 시작·선택 프레임·설정 스냅샷(계획 작업 3, A 상세설계 §5.4 「설정 스냅샷과 폐기」)."""
+    """작업 시작·선택 프레임·설정 스냅샷."""
 
     def test_start_next_is_noop_while_active_or_empty(self):
         """대기 프레임이 없거나 활성 작업이 있으면 `start_next()`는 None이고 job_seq·계수·시계 호출이 변하지 않는다."""
@@ -661,7 +653,7 @@ class JobSnapshotTest(PipelineTestBase):
             job.settings = new
 
     def test_selection_starts_with_job_and_survives_detector_change(self):
-        """선택은 실제 작업 시작 때 소유 복사 프레임으로 정해지고, offer·대기 교체·재처리 시작·검출 설정 변경은 선택을 바꾸지 않으며, 다른 세대 전이는 선택을 비운다."""
+        """선택은 작업 시작 때 정해지고 offer·대기 교체·재처리·검출 설정 변경은 유지, 다른 전이는 비운다."""
         # offer만으로는 선택되지 않음
         self.p.offer_frame(frame(0))
         self.assertIsNone(self.p.selected_frame)
@@ -710,7 +702,7 @@ class JobSnapshotTest(PipelineTestBase):
                 self.assertIsNone(p.start_reprocess())
 
     def test_reprocess_keeps_original_identity_and_time(self):
-        """재처리는 source.read·issuer를 부르지 않고 선택 프레임(같은 객체)을 쓰며, 식별자·원본/수신 시각을 보존하고 새 job_seq·현재 generation만 붙이며 received는 늘지 않는다."""
+        """재처리는 선택 프레임(같은 객체)의 식별자·시각을 보존하고 새 job_seq·현재 generation만 붙인다."""
 
         class CountingSource:
             """read 호출 수를 세는 가짜 입력 소스."""
@@ -771,7 +763,7 @@ class JobSnapshotTest(PipelineTestBase):
 
 
 class SkeletonBoundaryTest(PipelineTestBase):
-    """의존성 경계와 작업 반환 타입(계획 Global Constraints·작업 3)."""
+    """의존성 경계와 작업 반환 타입."""
 
     def test_pipeline_imports_no_ros_qt_tcp_or_other_roles(self):
         """파이프라인 모듈을 import해도 ROS·Qt·ultralytics·TCP·GUI·B/C/D 모듈이 로드되지 않고 스레드를 만들지 않는다."""

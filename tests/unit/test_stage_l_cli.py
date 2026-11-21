@@ -1,12 +1,7 @@
-"""#189 단계 L CLI 시험: `run_pipeline.py --b-input list`(저장 입력 `--capture-meta` 경로 전용).
+"""단계 L CLI 시험: `run_pipeline.py --b-input list`(저장 입력 `--capture-meta` 경로 전용).
 
-근거: 계획 `_workspace/189_builder2_stage_L_plan.md` r0 §5·§6·§7(reviewer 승인 hop 3).
-
-- 모두 CLI `main()`으로 실행한다: 저장 이미지 → `CaptureMetaSource` → 실행기 → `AiSegDetector`(가짜 모델, 실제 convert·M1) →
-  코어 → `b_list_gate` → `CaptureListRecorder` → 목록 봉투 v2 → 시험 전용 가짜 목록 소비자(`list_consumer_factory` 주입).
-- 주입이 없고 B 목록 입구(`process_frame`)가 없으면 단계 L은 시작 때 거부되어야 한다(단계 T로 떨어지지 않음). 실제 B에는
-  `process_frame`이 생겼으므로(d4fab37) 거부 시험은 그 입구가 없는 가짜 B 단계형을 끼워 확인한다.
-- 단계 T 단일 소비(`BStage.consume`)와 C 송신은 불리지 않아야 한다(기존 시험 기반 클래스의 감시 그대로).
+`main()`부터 가짜 모델·가짜 목록 소비자로 돌린다. 목록 입구가 없으면 시작 때 거부(단계 T로 떨어지지 않음),
+단계 T 단일 소비(`BStage.consume`)와 C 송신은 불리지 않아야 한다.
 """
 import io
 import itertools
@@ -167,7 +162,7 @@ class StageLRefusalTest(StageLBase):
                 self.assertEqual(cm.exception.code, 2)
 
     def test_axis_off_config_is_config_error(self):
-        """축 경로를 끈 AI 설정의 단계 L은 기존 --capture-meta 규칙대로 설정 오류 2."""
+        """축 경로를 끈 AI 설정의 단계 L은 --capture-meta 규칙대로 설정 오류 2."""
         c = self.case(1)
         argv = ["--images", *c.images, "--detector", "ai", "--ai-config", c.ai_off, "--log", c.log,
                 "--capture-meta", c.write_meta(c.meta()), "--observation-out", c.out, "--b-input", "list"]

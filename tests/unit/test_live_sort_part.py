@@ -1,8 +1,6 @@
-"""#214 D13 해제: 실시간 A→B→C(`/sort_part`) 목표 송신 시험(U1~U14).
+"""실시간 A→B→C(`/sort_part`) 목표 송신 시험.
 
-근거: 계획 `_workspace/214_builder2_d13_release_plan_r0.md`(reviewer PASS 2026-11-20: Q1 검사 ③ 뒤 송신, Q5 서버 없어도 실행,
-Q7 별도 `sort_part.jsonl`, Q8 클라이언트 stats는 참고만). 실제 ROS·Gazebo·`eyetoarm_interfaces`는 쓰지 않는다: 송신 런타임은 가짜
-(`FakeRuntime`, B 클라이언트 `send` 규칙 흉내), CLI 시험은 기존 실시간 기록 연결 시험의 가짜 수신·가짜 모델·가짜 TF를 그대로 쓴다.
+실제 ROS·Gazebo·`eyetoarm_interfaces` 없이 가짜 송신 런타임(`FakeRuntime`)과 가짜 수신·모델·TF를 쓴다.
 """
 from __future__ import annotations
 
@@ -173,10 +171,10 @@ class ConfigTest(unittest.TestCase):
 
 
 class RecordingClientTest(unittest.TestCase):
-    """U9·U10: A 쪽 상속 클라이언트가 B 비공개 콜백 이름·인자에 맞고, 사건을 기록 함수로 넘긴다."""
+    """A 쪽 상속 클라이언트가 B 비공개 콜백 이름·인자에 맞고, 사건을 기록 함수로 넘긴다."""
 
     def test_b_methods_exist_with_expected_signatures(self):
-        """U9: B `SortPartClient`의 덮어쓴 메서드가 그대로 있다(B가 바꾸면 이 시험이 실패)."""
+        """B `SortPartClient`의 덮어쓴 메서드가 그대로 있다(B가 바꾸면 이 시험이 실패)."""
         expect = {"_on_feedback": ["self", "gid", "fb"], "_on_accepted": ["self", "gid", "goal", "fut"],
                   "_on_result": ["self", "gid", "goal", "fut"], "_finish": ["self", "gid", "goal", "status", "reason"],
                   "send": ["self", "out"]}
@@ -203,7 +201,7 @@ class RecordingClientTest(unittest.TestCase):
         return c, events
 
     def test_events_flow(self):
-        """U10: feedback → accepted → result(도착 시각 포함) 순으로 사건, 결과 뒤 대기 목표 없음."""
+        """feedback → accepted → result(도착 시각 포함) 순으로 사건, 결과 뒤 대기 목표 없음."""
         c, ev = self.client()
         goal = {"spec": "BOLT_B", "part_track_id": None}
         c._on_feedback("g1", SimpleNamespace(feedback=SimpleNamespace(stage="ACCEPTED")))
@@ -216,7 +214,7 @@ class RecordingClientTest(unittest.TestCase):
         self.assertEqual(c.inflight_ids(), [])
 
     def test_rejected_and_error(self):
-        """U10: 거절 → result:REJECTED, 송신 future 예외 → result:ERROR(accepted 없음)."""
+        """거절 → result:REJECTED, 송신 future 예외 → result:ERROR(accepted 없음)."""
         c, ev = self.client()
         c._on_accepted("g1", {}, mock.Mock(result=mock.Mock(return_value=mock.Mock(accepted=False))))
         c.inflight["g2"] = {"kind": "PICK_PLACE"}
@@ -227,10 +225,10 @@ class RecordingClientTest(unittest.TestCase):
 # ---------------------------------------------------------------------- 송신기(가짜 런타임)
 
 class SenderTest(SenderBase):
-    """U2·U4·U6·U7·U8·U10."""
+    """송신기: 수락·건너뜀·닫힘·실패·서버 없음·결과 대기."""
 
     def test_valid_accept_sends_once_with_keys(self):
-        """U2: 유효 수락 1건 → send 1회, `sent` 기록에 프레임 키·accept 순번·goal_id."""
+        """유효 수락 1건 → send 1회, `sent` 기록에 프레임 키·accept 순번·goal_id."""
         s = self.make()
         self.assertEqual(s.offer(out_of(gid="g-1"), frame_of(3), {"job_seq": 7, "generation": 2}, 41), "sent")
         recs = self.done()
@@ -242,7 +240,7 @@ class SenderTest(SenderBase):
                           "accept_event_seq": 41, "job_seq": 7, "generation": 2, "kind": "PICK_PLACE", "spec": "BOLT_B"})
 
     def test_invalid_and_skip_not_sent(self):
-        """U4: 무효·UNRESOLVED·SKIP(B_TIMEOUT·OUT_OF_REACH) → send 0, skip:<사유>."""
+        """무효·UNRESOLVED·SKIP(B_TIMEOUT·OUT_OF_REACH) → send 0, skip:<사유>."""
         s = self.make()
         events = [s.offer(out_of(valid=False, reason="AXIS_AMBIGUOUS"), frame_of(1), {}, 1),
                   s.offer(out_of(valid=False, reason=None), frame_of(2), {}, 2),
@@ -253,7 +251,7 @@ class SenderTest(SenderBase):
         self.assertEqual(self.rt.sent, [])
 
     def test_close_run_then_zero_sends(self):
-        """U6: close_run 뒤 송신 0(gate_closed), 닫힘 사유 기록."""
+        """close_run 뒤 송신 0(gate_closed), 닫힘 사유 기록."""
         s = self.make()
         s.close_run("reset:sim_time_rewind:epoch2")
         self.assertEqual(s.offer(out_of(), frame_of(1), {}, 1), "gate_closed")
@@ -263,7 +261,7 @@ class SenderTest(SenderBase):
                       [{k: r.get(k) for k in ("event", "reason")} for r in recs])
 
     def test_close_waits_for_in_flight_send(self):
-        """U6 경합: send 진행 중 close_run은 그 송신이 끝날 때까지 기다리고, 그 뒤 송신 0. 대기 시간 기록."""
+        """경합: send 진행 중 close_run은 그 송신이 끝날 때까지 기다리고, 그 뒤 송신 0. 대기 시간 기록."""
         gate = threading.Event()
         s = self.make(FakeRuntime(gate=gate))
         t = threading.Thread(target=lambda: s.offer(out_of(gid="g-a"), frame_of(1), {}, 1))
@@ -282,7 +280,7 @@ class SenderTest(SenderBase):
         self.assertGreaterEqual(s.gate_wait_max_ms, 90.0)
 
     def test_state_failed_blocks(self):
-        """U7: 상태 fail-stop이면 송신 0(state_failed)."""
+        """상태 fail-stop이면 송신 0(state_failed)."""
         failed = {"v": False}
         s = self.make(failed=failed)
         failed["v"] = True
@@ -291,7 +289,7 @@ class SenderTest(SenderBase):
         self.assertEqual(self.rt.sent, [])
 
     def test_no_server_and_busy_recorded_then_retry(self):
-        """U8: 서버 없음 → no_server, 결과 대기 중 → busy, 결과 뒤 다음 수락에서 다시 보냄."""
+        """서버 없음 → no_server, 결과 대기 중 → busy, 결과 뒤 다음 수락에서 다시 보냄."""
         rt = FakeRuntime(server=False)
         s = self.make(rt)
         self.assertEqual(s.offer(out_of(gid="g0"), frame_of(0), {}, 0), "no_server")
@@ -305,10 +303,10 @@ class SenderTest(SenderBase):
         recs = self.done()
         self.assertEqual([g["goal_id"] for g in rt.sent], ["g1", "g3"])
         res = [r for r in recs if r["event"] == "result:SUCCEEDED"]
-        self.assertEqual([(r["goal_id"], r["image_seq"]) for r in res], [("g1", 1), ("g3", 3)])   # 결과에 프레임 키
+        self.assertEqual([(r["goal_id"], r["image_seq"]) for r in res], [("g1", 1), ("g3", 3)])
 
     def test_unresolved_at_close(self):
-        """U10: 닫을 때 결과 대기 목표는 result_wait 뒤 unresolved_at_close, 런타임 닫힘 1회."""
+        """닫을 때 결과 대기 목표는 result_wait 뒤 unresolved_at_close, 런타임 닫힘 1회."""
         s = self.make()
         s.offer(out_of(gid="g-x"), frame_of(5), {"job_seq": 9}, 5)
         recs = self.done()
@@ -329,7 +327,7 @@ class SenderTest(SenderBase):
         self.done()
 
 
-# ---------------------------------------------------------------------- CLI(가짜 수신·가짜 모델·가짜 TF·가짜 송신 런타임)
+# ---------------------------------------------------------------------- CLI(가짜 수신·모델·TF·런타임)
 
 class CliBase(LiveBase):
     """기존 실시간 기록 연결 CLI 시험에 송신 런타임 주입을 더한다."""
@@ -383,10 +381,10 @@ class CliBase(LiveBase):
 
 
 class CliOnTest(CliBase):
-    """U2·U3·U5·U6·U11 CLI 경로."""
+    """송신을 켠 CLI 경로."""
 
     def test_each_accept_tried_once_and_goal_matches_b(self):
-        """U2·U3: 수락마다 송신 판단 1회(같은 프레임 두 번 없음), 보낸 목표 = accept 기록의 B 목표(goal_id·spec·kind)."""
+        """수락마다 송신 판단 1회, 보낸 목표 = accept 기록의 B 목표(goal_id·spec·kind)."""
         rt = FakeRuntime()
         code, err, out = self.run_sort(Scenario(4), factory=self.factory(rt))
         self.assertEqual(code, 0, err)
@@ -409,7 +407,7 @@ class CliOnTest(CliBase):
         self.assertEqual(rt.closed, 1)
 
     def test_not_accepted_never_sent(self):
-        """U5: 계산 중 무효화(not_accepted)된 결과는 송신 0. on_output 경로가 없다(B 단계 on_output은 None)."""
+        """계산 중 무효화(not_accepted)된 결과는 송신 0. on_output 경로가 없다(B 단계 on_output은 None)."""
         from eyetoarm.vision.live_observation_dispatch import LiveObservationDispatcher
 
         stages = []
@@ -450,13 +448,13 @@ class CliOnTest(CliBase):
         self.assertEqual(len(rt.sent), len(self.accepts(out)))
 
     def test_reset_then_zero_sends(self):
-        """U6(CLI): 리셋 → 게이트 닫힘(사유 reset), 그 뒤 송신 0, 정리 확인."""
+        """리셋 → 게이트 닫힘(사유 reset), 그 뒤 송신 0, 정리 확인."""
         from test_run_pipeline_live_observation import ResetAndRestartTest
 
         rt = FakeRuntime()
         sc = Scenario(5, during=ResetAndRestartTest.rewind_at(self, 2))
         code, err, out = self.run_sort(sc, factory=self.factory(rt), max_frames=5)
-        self.assertEqual(code, 0, err)
+        self.assertEqual(code, 3, err)   # 되감기 종료는 3
         self.assertIn("reason=reset_detected", err)
         recs = self.sort_records(out)
         closed_at = [i for i, r in enumerate(recs) if r["event"] == "gate_closed_by"]
@@ -467,7 +465,7 @@ class CliOnTest(CliBase):
         self.assertTrue(self.summary(out)["cleanup_confirmed"])
 
     def test_cleanup_order_after_dispatcher(self):
-        """U11: 송신 런타임을 닫는 순간 worker는 멈춰 있다(dispatcher 다음), 정리 확인. 닫기 실패면 확인 거짓·재시도."""
+        """런타임을 닫는 순간 worker는 멈춰 있다(dispatcher 다음). 닫기 실패면 확인 거짓·재시도."""
         holder = {}
         rt = FakeRuntime()
         rt.on_close = lambda: holder["link"].dispatcher._thread.is_alive()
@@ -485,7 +483,7 @@ class CliOnTest(CliBase):
         self.assertEqual(rt.close_notes, [False])
 
     def test_runtime_close_failure_not_confirmed(self):
-        """U11: 런타임 닫기가 실패하면 정리 확인 거짓·종료 1·close_errors에 sort_part."""
+        """런타임 닫기가 실패하면 정리 확인 거짓·종료 1·close_errors에 sort_part."""
         rt = FakeRuntime()
 
         def bad_close(limit_s):
@@ -499,7 +497,7 @@ class CliOnTest(CliBase):
         self.assertTrue(any(e.startswith("sort_part:") for e in s["ended"]["close_errors"]), s["ended"])
 
     def test_no_server_still_runs(self):
-        """Q5: 서버가 없어도 실행하고 server_seen=false 경고, 기록은 no_server, 종료 0."""
+        """서버가 없어도 실행하고 server_seen=false 경고, 기록은 no_server, 종료 0."""
         rt = FakeRuntime(server=False)
         code, err, out = self.run_sort(Scenario(3), factory=self.factory(rt))
         self.assertEqual(code, 0, err)
@@ -509,23 +507,24 @@ class CliOnTest(CliBase):
 
 
 class CliOffAndArgsTest(CliBase):
-    """U1·U12·U14."""
+    """송신 끔·인자·설정 오류."""
 
     def test_off_creates_nothing_and_keeps_summary(self):
-        """U1: 옵션 없으면 런타임 공장 0, sort_part.jsonl 없음, 요약에 sort_part 없음. #233 r1: C 연결부만 출구(record_only 거짓)."""
+        """옵션 없으면 런타임 공장 0·sort_part.jsonl 없음·요약에 없음, C 연결부만 출구."""
         code, err, out = self.run_sort(Scenario(3), extra=(), config=CONFIG)
         self.assertEqual(code, 0, err)
         self.assertEqual(self.factory_calls, [])
         self.assertFalse((Path(out) / "sort_part.jsonl").exists())
         s = self.summary(out)
         self.assertNotIn("sort_part", s)
-        # #233 r1: C 연결부(detect)는 항상 출구다. C 목표·center·D/로봇 출력은 없다
-        self.assertEqual((s["record_only"], s["outputs"]), (False, ["c_handoff_detect(127.0.0.1:47093)"]))
-        self.assertIn("outputs=c_handoff_detect(127.0.0.1:47093); no D/robot output from A, no auto restart", err)
+        # C 연결부(detect)는 항상 출구다. C 목표·center·D/로봇 출력은 없다
+        addr = self.mod._handoff_address()   # 환경 변수 EYETOARM_DISPLAY_INGRESS_*로 정한 주소
+        self.assertEqual((s["record_only"], s["outputs"]), (False, [f"c_handoff_detect({addr})"]))
+        self.assertIn(f"outputs=c_handoff_detect({addr}); no D/robot output from A, no auto restart", err)
         self.assertNotIn("SORT_PART", err)
 
     def test_argument_and_config_errors(self):
-        """U12: 기록 연결 없이·단계 L 추적(W 설정 없음, #244 조합 자체는 허용)·블록 없음·블록만 있음·잘못된 블록은 2, 런타임·TF 0."""
+        """기록 연결 없음·단계 L 추적(W 설정 없음)·블록 없음·블록만·잘못된 블록은 2, 런타임·TF 0."""
         base = ["--detector", "ai", "--ai-config", self.case.ai, "--log", str(Path(self.tmp.name) / "x.jsonl")]
         bad = Path(self.tmp.name) / "bad.json"
         doc = json.loads(SORT_CONFIG.read_text(encoding="utf-8"))
@@ -565,10 +564,7 @@ class CliOffAndArgsTest(CliBase):
         self.assertFalse(Path(out).exists())
 
     def test_runner_d13_guard_unchanged(self):
-        """U14: 실행기는 실시간 b_consumer를 계속 거부하고(옵션과 무관), D13 가드 줄이 그대로 있다.
-
-        #215에서 실행기에 `offer(tracks=)` 인자가 승인되어 파일 전체 diff 0 대신 가드 줄 자체를 확인한다.
-        """
+        """실행기는 실시간 b_consumer를 계속 거부하고(옵션과 무관), D13 가드 줄이 그대로 있다."""
         from test_live_observation_harness import D13RegressionTest
 
         D13RegressionTest("test_run_still_rejects_live_observation_consumer").test_run_still_rejects_live_observation_consumer()
@@ -581,7 +577,7 @@ class CliOffAndArgsTest(CliBase):
             self.assertIn(line, src)
 
     def test_on_output_stage_still_refused_with_sending(self):
-        """U5·U14: 송신을 켜도 on_output이 있는 B 단계는 거부(수락 0·송신 0·종료 1)."""
+        """송신을 켜도 on_output이 있는 B 단계는 거부(수락 0·송신 0·종료 1)."""
         def hook(stage):
             """C 출력 직접 연결 흉내."""
             stage.on_output = lambda out: None

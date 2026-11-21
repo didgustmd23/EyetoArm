@@ -1,10 +1,7 @@
-"""#174 전환 단계 T: 볼트 축 경로의 물체별 후보 자격(R-1~R-15)과 저장·실시간 시험 경로의 B 제출/실제 호출 구분.
+"""볼트 축 경로의 물체별 후보 자격과 저장·실시간 경로의 B 제출/실제 호출 수 구분 시험.
 
-근거: `_workspace/174_builder_a_multi_object_candidate_plan.md` r2 §5(단계 T) · r1 §2·§3·§5 표, reviewer #174 구현 착수 명세.
-
-- 마스크는 numpy로 그린 합성 볼트(`test_ai_axis_path.bolt_mask`)·직사각형이며 정답을 같은 추출기로 역산하지 않는다.
-- 이 시험의 「유효」는 추출기 형식 조건 통과이고 정확도 판정이 아니다. B 결과의 값(규격·길이)은 보지 않고 호출 수만 본다.
-- 실제 ROS·Gazebo·모델을 쓰지 않는다. 저장 경로는 실제 `BStage`(고정 TF `StaticTfLookup`), 실시간 경로는 디스패처 하네스(가짜 TF·B).
+마스크는 합성 볼트·직사각형이고, 「유효」는 추출기 형식 조건 통과일 뿐 정확도 판정이 아니다.
+실제 ROS·Gazebo·모델 없이 저장 경로는 실제 `BStage`(고정 TF), 실시간 경로는 디스패처 하네스를 쓴다.
 """
 import itertools
 import json
@@ -44,7 +41,7 @@ def frag_bolt():
     return m
 
 
-# 시나리오: (마스크, 클래스, 기대 유효 후보 마스크 번호 목록). 번호는 마스크 목록 순서(순열 시험에서 물체 식별에 씀)
+# 시나리오: (마스크, 클래스, 기대 유효 마스크 번호). 번호는 순열 시험에서 물체 식별에 쓴다
 SCENARIOS = {
     "R1_normal_plus_invalid": ([bolt_mask(y=30), rect(85, 95, 40, 90)], None, [0]),
     "R2_clipped_plus_normal": ([bolt_mask(x0=0, y=30), bolt_mask(y=90)], None, [1]),
@@ -76,7 +73,7 @@ def a8_like_small_frame():
 
 
 class CandidateScenarioTest(unittest.TestCase):
-    """R-1~R-5·R-13: 물체별 제외와 프레임 결과."""
+    """물체별 제외와 프레임 결과."""
 
     def check(self, name):
         """시나리오 하나: 유효 후보 index·관측·선택을 확인하고 (result, obs)를 돌려준다."""
@@ -146,7 +143,7 @@ class CandidateScenarioTest(unittest.TestCase):
         self.assertEqual((a.axis_overlap_with, b.axis_overlap_with), ((1,), (0,)))
 
     def test_zero_valid_representative_order(self):
-        """유효 0의 대표 사유는 CONTOUR_CLIPPED > MULTIPLE_CANDIDATES > 추출기 사유 순(기존 어휘 재사용, Q1 (가))."""
+        """유효 0의 대표 사유는 CONTOUR_CLIPPED > MULTIPLE_CANDIDATES > 추출기 사유 순이다."""
         cases = [([bolt_mask(x0=0, y=30), rect(85, 95, 40, 90)], "CONTOUR_CLIPPED"),
                  ([rect(85, 95, 40, 90), bolt_mask(y=30), bolt_mask(x0=42, y=30)], MULTIPLE_CANDIDATES),
                  ([bolt_mask(), bolt_mask(x0=42)], MULTIPLE_CANDIDATES)]
@@ -158,7 +155,7 @@ class CandidateScenarioTest(unittest.TestCase):
 
 
 class IouBoundaryTest(unittest.TestCase):
-    """R-14: 겹침 판정 IoU ≥ 0.5(경계 포함)."""
+    """겹침 판정 IoU ≥ 0.5(경계 포함)."""
 
     def test_predicate(self):
         """술어 단위: 0.5는 겹침, 바로 아래 값은 아님."""
@@ -183,7 +180,7 @@ class IouBoundaryTest(unittest.TestCase):
 
 
 class PermutationTest(unittest.TestCase):
-    """R-6: 인스턴스 순서를 바꿔도 유효 수·valid·B 허용·선택 물체가 같다(대표 사유는 진단용이라 달라도 됨)."""
+    """인스턴스 순서를 바꿔도 유효 수·valid·B 허용·선택 물체가 같다(대표 사유는 달라도 됨)."""
 
     def test_all_permutations(self):
         """모든 시나리오의 모든 순열에서 결과가 순서와 무관하다."""
@@ -212,7 +209,7 @@ class PermutationTest(unittest.TestCase):
 
 
 class DeliveryBlockTest(unittest.TestCase):
-    """R-7: 픽셀 후보 수 ≠ 전달 가능 수(보정 불일치·stale)."""
+    """픽셀 후보 수 ≠ 전달 가능 수(보정 불일치·stale)."""
 
     def test_calibration_mismatch_pixel_one_deliver_zero(self):
         """보정 불일치: 픽셀 후보 1이어도 관측은 CALIBRATION_MISMATCH 무효이고 B로 가지 않는다."""
@@ -259,7 +256,7 @@ class DeliveryBlockTest(unittest.TestCase):
 
 
 class RecordTest(unittest.TestCase):
-    """R-11·R-15: 기록 키 호환과 단일 자격 함수 일치."""
+    """기록 키 호환과 단일 자격 함수 일치."""
 
     def test_axis_off_records_unchanged_keys(self):
         """축 경로를 끈 설정은 관측이 표시용 무효이고, 처리 기록에 axis_valid_count·axis_* 키가 없다."""
@@ -275,7 +272,7 @@ class RecordTest(unittest.TestCase):
                 self.assertTrue(all(set(i) == legacy for i in rec["ai_instances"]))
 
     def test_axis_on_record_keys_and_single_function(self):
-        """축 경로를 켠 기록: axis_valid_count = 픽셀 후보 수, 인스턴스 axis_candidate_reason이 집계·선택과 일치(R-15)."""
+        """축 경로 기록: axis_valid_count = 픽셀 후보 수, 인스턴스 사유가 집계·선택과 일치."""
         for name, (masks, cls, expect) in SCENARIOS.items():
             with self.subTest(name=name):
                 p, result, out = outcome_of(masks)
@@ -292,7 +289,7 @@ class RecordTest(unittest.TestCase):
 
 
 class TypeCheckTest(unittest.TestCase):
-    """R-12: 새 필드 검사."""
+    """새 필드 검사."""
 
     def test_overlap_field_validation(self):
         """빈 목록·음수·중복·역순·자기 자신·축 경로 밖 인스턴스의 axis_overlap_with는 ValueError."""
@@ -328,7 +325,7 @@ class TypeCheckTest(unittest.TestCase):
 
 
 class Replay173Test(unittest.TestCase):
-    """R-9: #173 실기록 유형(볼트 2개 모두 끝점 실패 + 너트 1) — 새 정책에서도 유효 0, B 0."""
+    """실기록 유형(볼트 2개 모두 끝점 실패 + 너트 1)은 유효 0, B 0."""
 
     def test_two_failed_bolts_and_nut(self):
         """candidate_count 3 ≠ axis_valid_count 0, 무효, B 허용 거짓, 후보별 사유 2개(대표 사유는 진단용)."""
@@ -342,7 +339,7 @@ class Replay173Test(unittest.TestCase):
                          ["MASK_FRAGMENTED", "AXIS_HEAD_AMBIGUOUS"])
 
 
-# ---------------------------------------------------------------- 저장 입력 경로: b_gate 제출 수 vs 실제 BStage 호출 수
+# ---------------------------------------------------------------- 저장 경로: b_gate 제출 vs BStage 호출
 BW, BH = CAM.width, CAM.height
 
 
@@ -390,7 +387,7 @@ class ConvertDetector:
 
 
 class StoredPathBStageTest(A8Base):
-    """R-8 저장: 실제 convert → 코어 → b_gate(제출) → 실제 BStage(고정 TF) 호출."""
+    """저장: 실제 convert → 코어 → b_gate(제출) → 실제 BStage(고정 TF) 호출."""
 
     def test_submit_and_bstage_calls(self):
         """유효 1개 프레임만 제출·BStage 호출(2건), 유효 0·2 프레임은 0. 처리 기록의 axis_valid_count는 픽셀 후보 수."""
@@ -422,9 +419,9 @@ class StoredPathBStageTest(A8Base):
         self.assertEqual([r["reason"] for r in procs], [None, MULTIPLE_OBJECTS, "AXIS_HEAD_AMBIGUOUS", None])
 
 
-# ---------------------------------------------------------------- 실시간 시험 경로: A 제출 vs TF 통과 vs B 호출
+# ---------------------------------------------------------------- 실시간 경로: A 제출 vs TF 통과 vs B 호출
 class LivePathCountsTest(unittest.TestCase):
-    """R-8 실시간: 디스패처 하네스(가짜 TF·B, 실행기·D13 무관)에서 세 수를 따로 센다."""
+    """실시간: 디스패처 하네스(가짜 TF·B)에서 세 수를 따로 센다."""
 
     def test_submit_tf_gate_and_b_calls(self):
         """프레임 4개(유효 1·2·0·1) 중 A 제출 2, TF 성공 1(다른 하나는 TF 없음), B 호출 2(TF 없는 것은 SKIP 계산)."""
@@ -476,7 +473,7 @@ class LivePathCountsTest(unittest.TestCase):
 
         self.assertEqual(submitted, 2)                                         # A 제출
         self.assertEqual(sum(1 for _, T in calls if T is not None), 1)        # TF 게이트 통과
-        self.assertEqual([s for s, _ in calls], [0, 3])                        # 실제 B 호출(TF 없는 3은 SKIP 계산)
+        self.assertEqual([s for s, _ in calls], [0, 3])   # 실제 B 호출(TF 없는 3은 SKIP 계산)
 
 
 if __name__ == "__main__":

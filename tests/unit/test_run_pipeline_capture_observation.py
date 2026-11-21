@@ -1,11 +1,7 @@
-"""`run_pipeline.py` 저장 입력 실제 A→B 경로(#168, `--capture-meta`/`--observation-out`, 별칭 `--a-to-b-capture-meta`/`--a-to-b-out`) CLI 시험.
+"""`run_pipeline.py` 저장 입력 실제 A→B 경로(`--capture-meta`/`--observation-out`) CLI 시험.
 
-근거: `_workspace/168_a_to_b_real_path_implementation_spec.md` §2·§3·「검증 및 완료 기준」.
-
-- 모두 CLI `main()`으로 실행한다: 저장 이미지 → `CaptureMetaSource` → 실행기 → `AiSegDetector`(가짜 모델, 실제 convert·M1) →
-  코어 → `b_admit`(`b_gate`) → `BStage.consume` + `render_center`. 관측은 주입하지 않는다(#166 fixture와 다름).
-- 가짜 모델 마스크는 numpy로 그린 합성 볼트이고, 메타(K·TF)는 시험이 정한 값이다. 결과는 배선 확인이며 정확도가 아니다.
-- C 송신 감시: `make_c_handoff`·`SortPartClient` 호출 0.
+`main()`부터 실제 convert·코어·`b_gate`·`BStage`까지 돌고 관측은 주입하지 않는다(가짜 모델).
+결과는 배선 확인이며 정확도가 아니다. C 송신(`make_c_handoff`·`SortPartClient`) 호출은 0이다.
 """
 import hashlib
 import importlib.util
@@ -339,7 +335,7 @@ class DefaultAndArgsTest(Base):
 
 
 class OptionAliasTest(Base):
-    """역할 이름 옵션(`--capture-meta`·`--observation-out`)과 #168 옵션(`--a-to-b-capture-meta`·`--a-to-b-out`)은 같은 옵션이다."""
+    """역할 이름 옵션과 별칭 옵션(`--a-to-b-capture-meta`·`--a-to-b-out`)은 같은 옵션이다."""
 
     def test_new_names_same_result_as_old(self):
         """새 이름으로 실행해도 B 1회·같은 b_output 형식(봉투 버전·valid_meaning 기록 식별자 유지)이다."""
@@ -370,7 +366,7 @@ class OptionAliasTest(Base):
             self.assertEqual(vars(a), vars(b))
 
     def test_new_name_conflicts_still_argument_errors(self):
-        """새 이름도 실시간·추적 결합 금지(D13 포함)가 같은 인자 오류(2)다."""
+        """새 이름도 실시간·추적 결합 금지가 같은 인자 오류(2)다."""
         c = self.case()
         meta = c.write_meta(c.meta())
         for extra in (["--tracking"], ):
@@ -389,7 +385,7 @@ class InvalidObservationTest(Base):
     """추출 무효·복수: B 0, 사유 기록, 주석 영상 없음."""
 
     def test_ambiguous_and_multiple_not_sent(self):
-        """사각형(머리 모호)·볼트 2개는 B 0이고 frames.jsonl에 AXIS_HEAD_AMBIGUOUS·MULTIPLE_OBJECTS가 남으며 주석 영상이 없다."""
+        """사각형·볼트 2개는 B 0, AXIS_HEAD_AMBIGUOUS·MULTIPLE_OBJECTS가 남고 주석 영상이 없다."""
         for reason, masks in (("AXIS_HEAD_AMBIGUOUS", lambda: [rect_mask()]),
                               ("MULTIPLE_OBJECTS", lambda: [bolt_mask(y=60), bolt_mask(y=180)])):
             with self.subTest(reason=reason):
@@ -525,7 +521,7 @@ class EnvelopeRejectionTest(Base):
     """입력 봉투 거부: B를 부르지 않고 기록, 실행은 1로 끝난다."""
 
     def test_rejected_envelope_not_sent(self):
-        """봉투 검사가 실패하면(시험 주입) BStage.consume 0회, b_input_rejected 1줄, 주석 영상 0, summary 문제 기록, 종료 1이다."""
+        """봉투 검사 실패면 consume 0회, b_input_rejected 1줄, 주석 영상 0, 종료 1이다."""
         from eyetoarm.vision import capture_observation_recorder
         from eyetoarm.vision.observation_envelope import ObservationEnvelopeError
 
@@ -544,10 +540,10 @@ class EnvelopeRejectionTest(Base):
 
 
 class ExtensionDeliveryTest(Base):
-    """확장 자료가 봉투로 B 입구 어댑터까지 가고, B 계산은 바뀌지 않는다(F1)."""
+    """확장 자료가 봉투로 B 입구 어댑터까지 가고, B 계산은 바뀌지 않는다."""
 
     def test_extensions_reach_adapter_without_changing_b(self):
-        """지원 확장(tracking)과 미지원 확장(depth_hint)을 실으면 어댑터가 받아 기록하고(계산 미사용), B 결과·목표 종류는 확장 없는 실행과 같다."""
+        """지원·미지원 확장은 어댑터가 기록만 하고 B 결과는 확장 없는 실행과 같다."""
         def plain_run():
             """확장 없는 기준 실행."""
             c = Case(tempfile.mkdtemp(dir=self.tmp.name))
@@ -597,10 +593,10 @@ class ExtensionDeliveryTest(Base):
 
 
 class BadExtensionRunContinuesTest(Base):
-    """잘못된 확장 수치(F3)는 실행을 멈추지 않고 그 프레임만 b_input_rejected로 기록된다."""
+    """잘못된 확장 수치는 실행을 멈추지 않고 그 프레임만 b_input_rejected로 기록된다."""
 
     def test_overflow_confidence_rejected_and_next_frame_processed(self):
-        """1장째 확장 confidence=10**400은 OverflowError로 새지 않고 b_input_rejected, 2장째 정상 프레임은 B로 간다. 종료 1(거부 있음)."""
+        """confidence=10**400은 b_input_rejected, 다음 정상 프레임은 B로 가고 종료 1."""
         c = self.case(2)
         err = io.StringIO()
         model = model_with(lambda: [bolt_mask()])

@@ -1,13 +1,7 @@
-"""작업 6b 검출 감시 시험 — 검출 전용 worker 스레드 1개 + 제어 흐름 감시(A1), 첫 검출/일반 상한, 멈춤 처리.
+"""검출 감시 시험: 검출 전용 worker 스레드 1개 + 제어 흐름 감시, 첫 검출/일반 상한, 멈춤 처리.
 
-근거: `_workspace/113_builder_task6b_design.md` r3 §4~§9, reviewer 6b 구현 지시(사용자 확정 개발값 첫 검출 10 s·이후 1 s).
-- 멈춤·실제 SIGINT 시나리오 시험(자식 프로세스 격리)은 Git 제외 `_workspace/scenarios/pipeline_watchdog/`에서 관리한다
-  (사용자 요청 2026-11-15). 이 파일에는 그 시나리오를 요구하지 않는 시험만 둔다. 격리 하네스 `run_isolated`와 그 자체 시험은
-  여기 남는다: 부모가 Popen 핸들·기한을 소유하고, 기한을 넘기면 프로세스 그룹 kill → 상한 있는 회수 한 번만 한다.
-  시험 전용 격리이며 제품 A2(검출 자식 프로세스) 채택이 아니다.
-- 멈춤이 없는 시험은 실행기를 데몬 스레드에서 돌리고 유한 join 뒤 생존 여부를 단언한다.
-- 10 s·1 s 기본값은 주입 시계(`watch_clock`)로 결정적으로 확인한다. 실제 10 s를 기다리지 않는다.
-실제 C·ROS·YOLO는 쓰지 않는다. GIL을 놓지 않는 네이티브 호출에서의 감시는 이 시험 범위 밖이다.
+멈춤이 없는 시험은 데몬 스레드에서 돌리고 유한 join 뒤 생존을 단언한다. 10 s·1 s 기본값은
+주입 시계(`watch_clock`)로 확인한다. 격리 하네스 `run_isolated`는 시험 전용이다.
 """
 import gc
 import importlib.util
@@ -68,10 +62,9 @@ class WatchClock:
 
 
 class PlanDetector:
-    """작업 순번별 동작을 정한 시험용 detector(`detector(job, token)`). 호출 시각·스레드·동시 실행 수를 적는다.
+    """작업 순번별 동작을 정한 시험용 detector. 호출 시각·스레드·동시 실행 수를 적는다.
 
-    plan[job_seq]는 dict: advance(감시 시계 초) → sleep(실제 초) → wait_token(실제 최대 초, 취소되면 JobCancelled)
-    → raise(예외) → result('valid'|'invalid'). 없으면 즉시 무효 관측.
+    plan[job_seq]: advance → sleep → wait_token → raise → result 순. 없으면 즉시 무효 관측.
     """
 
     def __init__(self, plan=None, clock=None):
@@ -149,13 +142,9 @@ ORPHAN_CODE = ("import subprocess, sys, time\n"
 
 
 def run_isolated(argv, deadline_s=10.0, reap_s=2.0, script=None):
-    """자식 프로세스 `python [script] argv...`를 실행한다. 부모가 Popen 핸들·기한을 소유하고 상한 없는 대기를 두지 않는다.
+    """자식 프로세스 `python [script] argv...`를 실행한다. 부모가 Popen 핸들·기한을 소유한다.
 
-    자식의 PYTHONPATH는 `src`와 `tests/unit`이다. 시나리오 스크립트(`_workspace/scenarios/pipeline_watchdog/`, Git 제외)는
-    그쪽 시험이 `script`로 넘긴다. 이 파일의 하네스 자체 시험은 스크립트 없이 `-c` 코드만 쓴다.
-
-    기한 초과: 부분 출력 보관 → 프로세스 그룹 SIGKILL(실패하면 p.kill) → 상한 있는 communicate 한 번 →
-    그것도 넘기면 poll 한 번·파이프 닫기. 두 번째 communicate는 누적 전체를 돌려주므로 부분 출력과 합치지 않는다.
+    기한 초과면 그룹 SIGKILL → 상한 있는 communicate 한 번 → 그래도 넘기면 poll·파이프 닫기.
     """
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([os.path.join(ROOT, "src"), UNIT])}
     t0 = time.monotonic()
@@ -203,7 +192,7 @@ class IsolationHarnessTest(unittest.TestCase):
     """시험 격리 하네스 자체: 기한 초과·회수 실패 분기에서도 부모가 무한 대기하지 않는다."""
 
     def test_harness_kills_hung_child_within_bound(self):
-        """끝나지 않는 자식(가벼운 -c 코드)은 부모 기한(1 s) 뒤 그룹 kill·회수되고, 부분 출력(started)이 한 번만 남으며 전체가 유한 시간에 끝난다."""
+        """끝나지 않는 자식은 기한(1 s) 뒤 그룹 kill·회수되고 부분 출력이 한 번만 남는다."""
         info = run_isolated(["-c", HANG_CODE], deadline_s=1.0, reap_s=2.0)
 
         self.assertTrue(info["timed_out"])
@@ -213,7 +202,7 @@ class IsolationHarnessTest(unittest.TestCase):
         self.assertLess(info["elapsed_s"], 5.0)
 
     def test_harness_bounded_when_reap_times_out(self):
-        """kill 뒤에도 별도 세션 손자가 파이프를 쥐어 회수 communicate가 다시 기한을 넘기면, poll 한 번·파이프 닫기 후 끝난다(무한 대기 없음)."""
+        """손자가 파이프를 쥐어 회수가 다시 기한을 넘기면 poll·파이프 닫기 후 끝난다."""
         with tempfile.TemporaryDirectory() as d:
             pid_path = os.path.join(d, "orphan.pid")
             info = run_isolated(["-c", ORPHAN_CODE, pid_path], deadline_s=2.0, reap_s=0.5)
@@ -237,14 +226,14 @@ class WatchdogRunTest(unittest.TestCase):
     """감시 켠 실행 경로(같은 프로세스, 유한 join)."""
 
     def assert_balance(self, res):
-        """종료 후 보존식(A §9)."""
+        """종료 후 보존식."""
         c = res.counters
         self.assertEqual(c.received, c.first_started + sum(c.queue_dropped.values()))
         self.assertEqual(c.first_started + c.reprocess_started,
                          c.completed + c.generation_discarded + c.failed + c.aborted)
 
     def test_default_first_10s_then_1s_with_injected_clock(self):
-        """기본값(첫 10 s·이후 1 s)에서 첫 작업은 감시 시계로 5 s 걸려도 완료되고, 두 번째 작업은 5 s에 일반 상한으로 중단되며, 세 번째는 정상 완료된다. worker는 실제로 끝난다."""
+        """첫 작업은 5 s에도 완료, 둘째는 5 s에 일반 상한으로 중단, 셋째는 정상 완료된다."""
         clock = WatchClock()
         det = PlanDetector({0: {"advance": 5.0}, 1: {"advance": 5.0, "wait_token": 2.0}}, clock)
         res, stream, err, _ = run_bounded(frames_factory(3), det, RunnerConfig(), watch_clock=clock)
@@ -271,7 +260,7 @@ class WatchdogRunTest(unittest.TestCase):
         self.assertEqual((res.timeouts, res.exit_code), (2, 1))
 
     def test_normal_and_exception_record_once(self):
-        """감시 켠 경로에서 정상 2건·예외 1건은 completed 2·failed 1, 처리 기록 3줄·사건 1줄로 한 번씩 남고 시간 초과 0, 실패 누적으로 종료 1이다."""
+        """감시 켠 경로에서 정상 2건·예외 1건은 completed 2·failed 1로 한 번씩 남고 종료 1이다."""
         det = PlanDetector({1: {"raise": RuntimeError("boom")}})
         res, stream, err, _ = run_bounded(frames_factory(3), det, watch(0.5, 0.5))
 
@@ -359,7 +348,7 @@ class WatchdogRunTest(unittest.TestCase):
         self.assertEqual(detector_threads(), [])
 
     def test_late_handoff_after_close_is_discarded(self):
-        """제어 흐름이 검출 대기 중 오류로 빠져 close가 작업을 정리한 뒤 돌아온 결과는 worker 정리 단계에서 버려진다(terminal·기록·B 없음, 버린 수 1)."""
+        """close가 작업을 정리한 뒤 돌아온 결과는 worker 정리 단계에서 버려진다(버린 수 1)."""
         state = {"n": 0}
         calls = []
 
@@ -440,10 +429,10 @@ class GatedQueue(queue.Queue):
 
 
 class WorkerShutdownTest(unittest.TestCase):
-    """worker 정리 단계(r1 F1): 종료 의도가 수신 칸 Full과 무관하게 보존되는가."""
+    """worker 정리 단계: 종료 의도가 수신 칸 Full과 무관하게 보존되는가."""
 
     def test_stop_intent_survives_full_inbox_before_worker_takes_job(self):
-        """작업이 수신 칸에 있고 worker가 아직 꺼내지 못한 채 정리 한도가 끝나도, 문을 연 뒤 worker는 detector를 부르지 않고 끝나며 결과를 남기지 않고 영상 참조를 놓는다."""
+        """수신 칸의 작업이 정리 한도 뒤 남아도 worker는 detector를 부르지 않고 끝난다."""
         gate = threading.Event()
         made = []
         real_queue = queue.Queue
@@ -523,7 +512,7 @@ class WorkerRaisedBaseExceptionTest(unittest.TestCase):
     """worker 경로에서 detector가 올린 KeyboardInterrupt·SystemExit의 분류가 6a 동기 경로와 같은가."""
 
     def test_detector_keyboard_interrupt_in_worker(self):
-        """worker의 detector가 KeyboardInterrupt를 내면 그 작업은 JOB_ABORTED(interrupted)로 1회 정리되고 실행은 interrupted·종료 1로 끝나며 worker도 끝난다."""
+        """detector의 KeyboardInterrupt는 JOB_ABORTED(interrupted) 1회, 실행 종료 1, worker도 끝."""
         holder = {}
         det = PlanDetector({1: {"raise": KeyboardInterrupt()}})
         res, stream, err, _ = run_bounded(frames_factory(3, holder), det, watch(0.5, 0.5))
@@ -536,7 +525,7 @@ class WorkerRaisedBaseExceptionTest(unittest.TestCase):
         self.assertEqual(detector_threads(), [])
 
     def test_detector_system_exit_in_worker(self):
-        """worker의 detector가 SystemExit을 내면 활성 작업은 close가 JOB_ABORTED(closed)로 한 번 정리하고 종료 1이며 worker도 끝난다."""
+        """detector의 SystemExit은 close가 JOB_ABORTED(closed)로 정리하고 종료 1, worker도 끝."""
         det = PlanDetector({0: {"raise": SystemExit(3)}})
         res, stream, _, _ = run_bounded(frames_factory(2), det, watch(0.5, 0.5))
 
@@ -552,7 +541,7 @@ class WatchdogConfigTest(unittest.TestCase):
     """감시 설정 검증과 CLI 인자."""
 
     def test_defaults_are_development_values(self):
-        """기본값: 첫 검출 10 s·이후 1 s(사용자 확정 개발값), 유예 0.2 s·정리 한도 0.3 s·확인 간격 0.02 s(A 임시안)."""
+        """기본값: 첫 검출 10 s·이후 1 s, 유예 0.2 s·정리 한도 0.3 s·확인 간격 0.02 s."""
         c = RunnerConfig()
 
         self.assertEqual((c.first_detect_timeout_s, c.detect_timeout_s), (10.0, 1.0))
@@ -561,7 +550,7 @@ class WatchdogConfigTest(unittest.TestCase):
         self.assertFalse(OFF.watchdog)
 
     def test_watchdog_config_validation(self):
-        """상한은 둘 다 None(감시 끔)이거나 둘 다 유한 양수, 유예·정리 한도·확인 간격은 유한 양수다. bool·문자열·0·음수·inf·nan·한쪽만 None은 ValueError."""
+        """상한은 둘 다 None이거나 둘 다 유한 양수이고, 그 밖의 값은 ValueError다."""
         bads = []
         for name in ("first_detect_timeout_s", "detect_timeout_s", "cancel_grace_s", "worker_cleanup_limit_s",
                      "stop_check_interval_s"):
@@ -587,7 +576,7 @@ class WatchdogConfigTest(unittest.TestCase):
         return mod
 
     def test_cli_detect_timeout_arguments(self):
-        """CLI 기본은 10/1이고 --first-detect-timeout·--detect-timeout 값이 그대로 실행 설정에 들어가며, --no-detect-timeout은 감시를 끈다. 잘못된 값·충돌은 종료 2."""
+        """CLI 기본 10/1, 상한 옵션은 그대로 반영, --no-detect-timeout은 감시 끔, 잘못된 값은 종료 2."""
         mod = self.load_cli()
         base = ["--images", "a.png", "--detect-config", "c.json", "--log", "o.jsonl"]
 
@@ -630,7 +619,7 @@ class WatchdogConfigTest(unittest.TestCase):
             err = io.StringIO()
             code = mod.main(["--images", img, "--detect-config", cfg_path, "--log", out], stderr=err)
             err2 = io.StringIO()
-            # #196 A4-1: 기본 경로도 기존 --log를 덮어쓰지 않으므로 두 번째 실행은 새 기록 파일을 쓴다
+            # 기본 경로도 기존 --log를 덮어쓰지 않으므로 두 번째 실행은 새 기록 파일을 쓴다
             out2 = os.path.join(d, "run_no_watch.jsonl")
             code2 = mod.main(["--images", img, "--detect-config", cfg_path, "--log", out2, "--no-detect-timeout"],
                              stderr=err2)

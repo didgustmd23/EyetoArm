@@ -1,18 +1,7 @@
-"""ROI·리사이즈 처리 좌표를 원본 픽셀 좌표로 되돌리는 함수 — A 내부 잠정 규약.
+"""ROI·리사이즈 처리 좌표를 원본 raw 픽셀 좌표로 되돌리는 함수(A 내부 잠정 규약).
 
-근거: A 상세설계 §5.1, 공통 자료형 관리 초안 §3.1 `PixelToSourceTransform`.
-표준 라이브러리와 NumPy만 쓴다. 공개 함수는 잘못된 인자에 `ValueError`를 낸다.
-
-좌표 규약
-- Transform = (scale_x, scale_y, offset_x, offset_y).
-  x_source = scale_x * x + offset_x, y_source = scale_y * y + offset_y.
-- ROI = (x, y, width, height), 해상도 = (width, height). `source_wh`는 ROI를 자르기 전
-  원본 프레임의 해상도다.
-- 점은 raw 픽셀이며 왜곡 보정·작업 좌표(m/mm) 변환은 하지 않는다.
-- 리사이즈 복원은 배율만 곱하는 단순 스케일이다. `cv2.resize`가 쓰는 화소 중심 역사상
-  `(u + 0.5) * scale - 0.5`와 같지 않다(배율 2에서 0.5 px 차이). 이 규약은 A 협업 요청 초안
-  B-01·B-02 확인 전의 A 내부 잠정 규약이며 B 계산용 확정 계약이 아니다.
-- 이 변환을 관측에 붙일지 따로 기록할지는 미결이므로 함수 반환값으로만 다룬다.
+Transform = (scale_x, scale_y, offset_x, offset_y), x_source = scale_x * x + offset_x.
+리사이즈 복원은 배율만 곱하며 `cv2.resize`의 화소 중심 역사상과 다르다. 잘못된 인자는 `ValueError`.
 """
 from __future__ import annotations
 

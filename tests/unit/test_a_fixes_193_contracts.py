@@ -1,7 +1,4 @@
-"""#196 수정 시험(검출·자료 계약): #193 A3-1~A3-4.
-
-근거: `_workspace/196_reviewer_instruction_a_fixes_from_193.md`, `_workspace/193_builder2_full_source_review.md`(fd1a7942).
-"""
+"""검출·자료 계약 수정 시험: 폭 0 박스 추적, v2 봉투 TF 부모 대조, 거대 정수 거부, 끝점 오류 격리."""
 from __future__ import annotations
 
 import unittest
@@ -25,7 +22,7 @@ BASE = dict(index=0, class_index=0, class_name="bolt", confidence=0.9, box_xyxy=
 
 
 class ZeroWidthBoxTrackingTest(unittest.TestCase):
-    """A3-1: AiInstance가 허용하는 폭 0 박스를 추적기도 받는다(한 번으로 추적이 꺼지지 않음)."""
+    """AiInstance가 허용하는 폭 0 박스를 추적기도 받는다(한 번으로 추적이 꺼지지 않음)."""
 
     def test_zero_width_box_accepted_by_tracker(self):
         """x1 == x2 박스가 섞인 결과로 추적을 갱신해도 TrackingInputError가 나지 않고 두 인스턴스 모두 배정된다."""
@@ -45,7 +42,7 @@ class ZeroWidthBoxTrackingTest(unittest.TestCase):
 
 
 class ListEnvelopeWorldFrameTest(unittest.TestCase):
-    """A3-2: v2 봉투도 v1처럼 TF 부모 = world를 생성 때 대조한다."""
+    """v2 봉투도 v1처럼 TF 부모 = world를 생성 때 대조한다."""
 
     def test_parent_must_be_world(self):
         """부모가 map인 목록은 ListEnvelopeError, world는 통과, world_frame 인자로 다른 이름을 줄 수 있다."""
@@ -62,7 +59,7 @@ class ListEnvelopeWorldFrameTest(unittest.TestCase):
 
 
 class HugeIntegerTest(unittest.TestCase):
-    """A3-3: AiInstance 실수 필드의 거대 정수는 OverflowError가 아니라 ValueError."""
+    """AiInstance 실수 필드의 거대 정수는 OverflowError가 아니라 ValueError."""
 
     def test_huge_int_is_value_error(self):
         """confidence·area_px·box·axis_max_iou에 10**400을 넣으면 ValueError."""
@@ -76,7 +73,7 @@ class HugeIntegerTest(unittest.TestCase):
 
 
 class EndpointContractTest(unittest.TestCase):
-    """A3-4: 잘못된 끝점은 물체 하나의 제외 사유가 되고, 같은 프레임의 다른 정상 볼트는 남는다."""
+    """잘못된 끝점은 물체 하나의 제외 사유가 되고, 같은 프레임의 다른 정상 볼트는 남는다."""
 
     def test_instance_rejects_same_point_endpoints(self):
         """AiInstance는 공통형과 같은 규칙으로 두 점이 같은 끝점·bool 배열을 거부한다."""
@@ -108,7 +105,7 @@ class EndpointContractTest(unittest.TestCase):
             return ai_convert.convert(raw(SCENARIOS["R4_two_valid"][0], (W, H)), frame, cfg)
 
     def test_bad_endpoints_become_per_object_reason(self):
-        """두 점 같음·프레임 밖 끝점은 그 볼트만 AXIS_EXTRACTION_ERROR(끝점 없음)이고 다른 볼트는 유효 후보로 남는다."""
+        """두 점 같음·프레임 밖 끝점은 그 볼트만 AXIS_EXTRACTION_ERROR이고 다른 볼트는 유효로 남는다."""
         for bad in ([[5.0, 5.0], [5.0, 5.0]], [[-3.0, 5.0], [40.0, 5.0]], [[5.0, 5.0], [float(W), 5.0]]):
             with self.subTest(bad=bad):
                 res = self.run_with_bad_first(bad)

@@ -1,7 +1,5 @@
-"""코어 읽기 전용 `invalidation_records`(#142 D1 안 A) 시험 — 사건마다 (event, applied) 1건, 기존 사건·판정·계수 의미 무변.
-
-근거: `_workspace/142_builder2_a_c_handoff_contract.md` r3 §1·§4-3·§7 D1·§8, A 상세설계 §5.4 규칙 1~3.
-"""
+"""코어 읽기 전용 `invalidation_records` 시험: 사건마다 (event, applied) 1건,
+기존 사건·판정·계수 의미는 그대로다."""
 import dataclasses
 import unittest
 
@@ -32,7 +30,7 @@ class InvalidationRecordsTest(TerminalTestBase):
         self.assertEqual(ignored, c.invalidation_ignored_by_kind)
 
     def test_empty_at_start_and_read_only_tuple(self):
-        """처음에는 빈 tuple이고, 돌려준 tuple을 바꿔도 코어 기록이 바뀌지 않는다(읽기 전용 조회)."""
+        """처음에는 빈 tuple이고 돌려준 tuple을 바꿔도 코어 기록이 바뀌지 않는다."""
         self.assertEqual(self.p.invalidation_records, ())
         self.assertIsInstance(self.p.invalidation_records, tuple)
 
@@ -57,7 +55,7 @@ class InvalidationRecordsTest(TerminalTestBase):
         self.assert_records_match()
 
     def test_previous_generation_event_ignored(self):
-        """세대 전이 뒤 이전 세대 작업 사건은 applied=False로 남고, 전이 사건은 applied=True다."""
+        """세대 전이 뒤 이전 세대 작업 사건은 applied=False, 전이 사건은 applied=True다."""
         job = self.start(0)
         gen_event = self.p.change_settings(CHANGES[GenerationCause.SEEK](self.settings), cause=GenerationCause.SEEK)
         out = self.p.fail(job, ABORT, "late")
@@ -105,7 +103,7 @@ class InvalidationRecordsTest(TerminalTestBase):
         self.assertIsNone(self.p.invalidation_records[0].event.job_seq)
 
     def test_job0_event_after_job1_current_keeps_core_semantics(self):
-        """job1 현재 상태에서 job0 사건은 applied=True로 기록되지만 코어 현재 관측(job1)은 그대로다(판정 의미 무변)."""
+        """job1 현재 상태의 job0 사건은 applied=True로 기록되지만 코어 현재 관측(job1)은 그대로다."""
         job0, _ = self.run_valid(0)
         job1, _ = self.run_valid(1)
         current = self.p.current_observation

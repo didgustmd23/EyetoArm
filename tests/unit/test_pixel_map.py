@@ -1,7 +1,5 @@
 """vision/pixel_map.py ROI·리사이즈 원본 픽셀 복원 단위시험.
 
-근거: A 상세설계 §5.1(ROI·표시 축소 복원), 공통 자료형 관리 초안 §3.1
-(PixelToSourceTransform = (scale_x, scale_y, offset_x, offset_y)).
 기대값은 손으로 계산한 상수다. 좌표는 raw 픽셀이며 단순 배율 복원은 A 내부 잠정 규약이다.
 """
 import unittest
@@ -27,7 +25,7 @@ def pts(*xy):
 
 
 class ForwardMappingTest(unittest.TestCase):
-    """처리 영상 좌표 → 원본 좌표 정방향 복원을 손 계산 값과 비교한다(A 상세설계 §5.1)."""
+    """처리 영상 좌표 → 원본 좌표 정방향 복원을 손 계산 값과 비교한다."""
 
     def test_pixel_map_roi_offset(self):
         """ROI만 쓰면 배율 1에 ROI 원점만큼 더해 원본 좌표가 된다."""

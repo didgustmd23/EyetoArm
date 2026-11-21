@@ -1,9 +1,7 @@
-"""분류 시험 공급 순서표(독립 정답) — 자료 형식·고정 시드 생성기·검증기·출력(#186 계획 r0 §2).
+"""분류 시험 공급 순서표(독립 정답): 자료 형식·고정 시드 생성기·검증기·출력.
 
-- JSON이 정본이다. CSV·MD는 사람이 읽는 사본이며, CSV는 사람이 쓴 순서표를 받는 입구로도 쓴다(`sequence_from_csv`).
-- 기대 결과는 행에 쓰지 않고 규격에서 유도한다(`expected_bin`): 정답을 두 곳에 두지 않기 위해서다.
-- 공급 간격·시작 자세 범위는 C 공급기 능력과 2주차 파일럿 값이 정해지기 전이라 null(C 기본값)을 허용한다(결정 D3).
-- 생성기는 `random.Random(seed)` 하나만 쓴다. 같은 seed·인자면 같은 `supplies`·`content_sha256`이 나온다(생성 시각 제외).
+JSON이 정본이고 CSV·MD는 사본이다. 기대 결과는 행에 쓰지 않고 규격에서 유도한다(`expected_bin`).
+생성기는 `random.Random(seed)` 하나만 써서 같은 seed·인자면 같은 내용이 나온다.
 """
 from __future__ import annotations
 
@@ -30,7 +28,7 @@ SCENARIOS = ("normal", "consecutive_same", "alternate", "boundary", "nut_distrac
 PATTERNS = ("shuffled", "blocks", "alternate", "mixed")
 SEQUENCE_STATUSES = ("draft", "planned")
 
-# 규격 → 기대 도착 상자. 너트는 집지 않고 벨트 끝 너트 상자로 흘러간다(계획서 §2.6.3 NUT_PASS, 사용자 2026-11-19).
+# 규격 → 기대 도착 상자. 너트는 집지 않고 벨트 끝 너트 상자로 흘러간다(NUT_PASS).
 EXPECTED_BIN = {"BOLT_A": "BOLT_A", "BOLT_B": "BOLT_B", "NUT": "NUT"}
 
 _TOP_REQUIRED = ("format", "format_version", "sequence_id", "status", "meta", "timing", "pose_ranges",
@@ -77,7 +75,7 @@ def _reject_constant(name):
 
 
 def _parse_float(text):
-    """parse_float: `1e400`처럼 float로 넘치는 값을 거부한다(규약 §6 방식)."""
+    """parse_float: `1e400`처럼 float로 넘치는 값을 거부한다."""
     value = float(text)
 
     if not math.isfinite(value):
@@ -204,7 +202,7 @@ def _scenario_for(spec: str, base: str) -> str:
 def generate_sequence(*, seed: int, count: int, pattern: str = "shuffled", ratio: dict | None = None,
                       include_nut: bool = False, block_len: int = 3, sequence_id: str | None = None,
                       interval_s: float | None = None, created_at_utc: str | None = None) -> dict:
-    """고정 시드 순서표를 만든다. 같은 (seed, count, pattern, ratio, include_nut, block_len, interval_s)면 같은 내용."""
+    """고정 시드 순서표를 만든다. 같은 인자면 같은 내용이 나온다."""
     if isinstance(seed, bool) or not isinstance(seed, int) or len(str(abs(seed))) > _MAX_INT_DIGITS:
         raise ValueError(f"seed must be an int of at most {_MAX_INT_DIGITS} digits: {seed!r}")
 
@@ -283,7 +281,7 @@ def generate_sequence(*, seed: int, count: int, pattern: str = "shuffled", ratio
 
 
 def _mixed_rows(pool: dict[str, int], specs: list[str], block_len: int, rng: random.Random) -> list[tuple[str, str]]:
-    """섞기 구간 + 같은 볼트 규격 연속 구간 1개 + 볼트 교대 구간 1개를 보장하고 세 구간 순서를 섞는다."""
+    """섞기 구간 + 같은 볼트 규격 연속 구간 + 볼트 교대 구간을 보장하고 세 구간 순서를 섞는다."""
     bolts = [s for s in BOLT_SPECS if s in specs]
     can_block = [s for s in bolts if pool[s] >= block_len]
 
@@ -475,7 +473,7 @@ def _validate_supplies(rows, include_nut: bool, ranges: dict, errors: list[str])
 
 
 def _validate_start_pose(pose, ranges: dict, where: str, errors: list[str]) -> None:
-    """시작 자세는 null 또는 {lateral_offset_mm, yaw_deg}. 값이 있으면 그 범위가 선언돼 있고 범위 안이어야 한다."""
+    """시작 자세는 null 또는 {lateral_offset_mm, yaw_deg}. 값이 있으면 선언된 범위 안이어야 한다."""
     if pose is None:
         return
 
@@ -597,7 +595,7 @@ def _csv_number(text: str, where: str, errors: list[str]):
 
 def sequence_from_csv(text: str, *, sequence_id: str, include_nut: bool = False,
                       created_at_utc: str | None = None) -> tuple[dict | None, list[str]]:
-    """사람이 쓴 CSV → (순서표, 오류 목록). 범위 선언이 없으니 시작 자세 값이 있으면 검증기가 거부한다."""
+    """사람이 쓴 CSV → (순서표, 오류 목록). 범위 선언이 없어 시작 자세 값이 있으면 검증기가 거부한다."""
     errors: list[str] = []
     reader = csv.DictReader(io.StringIO(text))
 

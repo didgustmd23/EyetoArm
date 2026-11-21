@@ -1,21 +1,7 @@
-"""A→B 저장 입력 **시험 전용** 연결 fixture(#166). 합성 관측을 실제 실행기 `run()` → `b_gate` → `b_consumer`로 흘린다.
+"""A→B 저장 입력 **시험 전용** fixture: 사람이 정한 합성 관측을 실제 실행기 `run()` → `b_gate` → `b_consumer`로 흘린다.
 
-근거: `_workspace/166_a_b_pipeline_connection_spec.md` §2~§5, B 협업 요청 §8.2 A-7·A-8, A 상세설계 §7.1·D13,
-`transforms/b_stage.py`(B 입구 `BStage.consume`, TF 대기 50 ms·계산 20 ms).
-
-이 모듈이 하는 일과 하지 않는 일
-- **synthetic/test-only.** fixture 관측은 사람이 정한 합성 값이다. 실제 RGB 검출·끝점 추출·mm 정확도·실시간 B 허용의
-  증거가 아니다. 제품 AI/OpenCV 생산자(`process_opencv`·`AiSegDetector`)와 `b_gate`·공통형 유효 조건은 바꾸지 않는다.
-- 관측 주입 경계는 실행기의 **detector 자리**(`run(detector=FixtureDetector)`)다. 실행기가 작업을 시작해 넘긴 `JobContext`마다
-  한 번 불리고, 반환한 관측은 코어 `complete()`의 식별자·끝점 범위 검사 → 실행기 `handle()`의 `b_gate` → `b_consumer` 순서를
-  그대로 지난다. B를 직접 부르지 않는다.
-- 저장 입력 프레임에는 보정 번호·광학 프레임·촬영 시각이 없다. `FixtureStampedSource`가 fixture에 명시된 값만 프레임에 붙인다
-  (`calibration_id`·`optical_frame`·`ros_stamp_ns`). 크기·crop·순번·세대는 손대지 않는다(불일치는 `b_gate`가 거른다).
-- TF: 고정 카메라(`camera_motion="fixed"`)만 `StaticTfLookup`. 움직이는 카메라는 프레임별 촬영 시각 TF 표(`per_frame`)를
-  **정확한 시각 일치**로만 읽는다(가장 가까운·최신 TF로 대체하지 않음). 대기 상한 50 ms를 넘긴 조회는 None(B `TF_UNAVAILABLE`).
-- 재처리 작업·이미 쓴 레코드·대응 레코드가 없는 프레임에는 관측을 만들지 않고 `FixtureError`를 올린다(실행기가
-  `INFERENCE_ERROR`로 정리, B 호출 없음).
-- ROS·Qt·모델을 import하지 않는다. 출력 파일은 덮어쓰지 않는다(`open(..., "x")`).
+실제 검출·끝점 정확도의 증거가 아니며 제품 생산자와 `b_gate`를 바꾸지 않는다. TF는 촬영 시각 정확 일치로만 읽고
+최신 TF로 대체하지 않는다. ROS·Qt·모델을 import하지 않고 출력 파일을 덮어쓰지 않는다.
 """
 from __future__ import annotations
 
@@ -37,7 +23,7 @@ from eyetoarm.vision.pipeline_types import JobContext, SourceProfile
 
 FIXTURE_FORMAT = "eyetoarm.b_test_fixture/1"
 TEST_MODE_LABEL = "synthetic/test-only"
-TF_WAIT_LIMIT_S = 0.05   # B 시간 상한: TF 대기 50 ms (B 협업 요청 §8.2 A-7)
+TF_WAIT_LIMIT_S = 0.05   # B 시간 상한: TF 대기 50 ms
 
 _TOP_KEYS = {"fixture_format", "fixture_id", "test_only", "run_id", "inputs_sha256", "source", "camera",
              "camera_motion", "tf", "records"}
@@ -159,7 +145,7 @@ class FixtureRecord:
     image_seq: int
     ros_stamp_ns: int | None
     T_W_C: np.ndarray | None
-    observation: dict   # PlanarObservation 생성 인자(식별자는 fixture 값 그대로, 실행 중 값으로 덮지 않음)
+    observation: dict   # PlanarObservation 생성 인자(식별자를 실행 중 값으로 덮지 않음)
 
 
 @dataclass(frozen=True)
@@ -200,7 +186,7 @@ def _check_point(point, width: int, height: int, where: str, basis: PixelBasis) 
 
 
 def _observation(raw, source: SourceProfile, basis: PixelBasis, where: str) -> dict:
-    """관측 레코드를 검사해 `PlanarObservation` 생성 인자로 바꾼다(method·confidence·model_id 등은 실행 때 붙인다)."""
+    """관측 레코드를 검사해 `PlanarObservation` 생성 인자로 바꾼다(method 등은 실행 때 붙인다)."""
     _keys(raw, _OBS_KEYS, where)
     obs = dict(raw)
 
@@ -232,7 +218,7 @@ def _observation(raw, source: SourceProfile, basis: PixelBasis, where: str) -> d
         tip = _check_point(endpoints["tip"], source.width, source.height, f"{where}.axis_endpoints_px.tip", basis)
         obs["axis_endpoints_px"] = np.array([head, tip], dtype=np.float64)
 
-    # 너트 윤곽: top_face 윗면 바깥 테두리만(전체 실루엣 대용 금지 — 관측면 top_face가 아니면 거부)
+    # 너트 윤곽: 윗면 바깥 테두리만(전체 실루엣 대용 금지, 관측면 top_face가 아니면 거부)
     if contour is not None:
         if face != "top_face":
             raise FixtureError(f"{where}.calc_contour is only for observed_face='top_face': {face!r}")
@@ -357,7 +343,7 @@ def load_fixture(path: str) -> SyntheticObservationFixture:
         T = None
 
         if tf["mode"] == "per_frame":
-            # 촬영 시각은 필수. 그 시각 TF가 저장되지 않았으면 T_W_C null(B는 TF_UNAVAILABLE로 SKIP, 다른 시각 TF로 대체 안 함)
+            # 촬영 시각은 필수. 그 시각 TF가 없으면 T_W_C null(다른 시각 TF로 대체 안 함)
             if stamp is None:
                 raise FixtureError(f"{where}: per_frame TF needs ros_stamp_ns (capture time)")
 
@@ -389,7 +375,7 @@ def file_sha256(path: str) -> str:
 
 
 def check_inputs(fixture: SyntheticObservationFixture, paths: list[str], source_id: str) -> list[str]:
-    """입력 파일 순서·지문과 소스 ID가 fixture와 같은지 확인하고 지문 목록을 돌려준다. 다르면 FixtureError."""
+    """입력 파일 순서·지문과 소스 ID가 fixture와 같은지 확인해 지문 목록을 돌려준다. 다르면 FixtureError."""
     if source_id != fixture.source_profile.source_id:
         raise FixtureError(f"--source-id {source_id!r} != fixture source.source_id "
                            f"{fixture.source_profile.source_id!r}")
@@ -406,8 +392,7 @@ def check_inputs(fixture: SyntheticObservationFixture, paths: list[str], source_
 class FixtureStampedSource:
     """저장 입력 소스를 감싸 fixture에 명시된 보정 번호·광학 프레임·촬영 시각만 프레임에 붙인다.
 
-    `read`·`current`·`close`만 제공한다(실시간 소스 표지 `poll_input`이 없어 실행기는 저장 입력으로 다룬다).
-    대응 레코드가 없는 프레임은 촬영 시각 없이 보정 번호만 붙이고 넘긴다(detector가 누락으로 실패시킨다).
+    대응 레코드가 없는 프레임은 보정 번호만 붙여 넘긴다(detector가 누락으로 실패시킨다).
     """
 
     def __init__(self, inner, fixture: SyntheticObservationFixture) -> None:
@@ -476,8 +461,7 @@ class FixtureDetector:
 class FixtureTfLookup:
     """fixture TF 조회. 고정 카메라는 `StaticTfLookup`, 움직이는 카메라는 촬영 시각 정확 일치 표만.
 
-    `inner`(조회 함수)를 부른 시간이 `timeout_s`(기본 50 ms)를 넘으면 None을 돌려 B가 `TF_UNAVAILABLE`로 SKIP하게 한다.
-    이는 반환 뒤 판정이다(블로킹 조회를 중간에 끊지 않음, 저장 fixture 조회는 즉시 끝남).
+    조회 시간이 `timeout_s`를 넘으면 None을 돌려준다(반환 뒤 판정, 중간에 끊지 않음).
     """
 
     def __init__(self, fixture: SyntheticObservationFixture, *, timeout_s: float = TF_WAIT_LIMIT_S,
@@ -560,7 +544,7 @@ class SyntheticObservationRecorder:
         self._stream.flush()
 
     def wrap(self, consume: Callable[[FramePacket, PlanarObservation], BOutput]):
-        """`b_consumer` 자리 함수: B(`stage.consume`)를 부르고 그 출력을 입력 키와 함께 기록한다. B 예외는 그대로 올린다."""
+        """`b_consumer` 자리 함수: B를 부르고 그 출력을 입력 키와 함께 기록한다. B 예외는 그대로 올린다."""
         def consumer(frame, obs):
             """실행기가 `b_gate` 통과 뒤 부른다."""
             out = consume(frame, obs)

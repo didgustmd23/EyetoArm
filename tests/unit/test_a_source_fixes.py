@@ -1,9 +1,6 @@
-"""#180: #178 §10 검토 결함 중 A 담당분(#1·#5·#6·#7·#8·#11)의 실패 우선 시험.
+"""입력·연결부·학습 결함 수정의 실패 우선 시험(무효 CameraInfo, 경계 훅, 건너뜀 기록, 재개, RSS).
 
-근거: `_workspace/180_reviewer_instruction_a_source_fixes.md`, `_workspace/178_builder_py_source_review.md`(결함 표),
-재현 `_workspace/178_probe/b/p1_caminfo.py`·`p2_hook.py`·`p3_link.py`, 코드 규약 §10(예외 처리·자원·출처 검증)·§4(세대).
-
-- ROS·Gazebo·torch를 쓰지 않는다. 실시간 입력은 가짜 연결·가짜 메시지, 학습은 가짜 자식 프로세스다.
+ROS·Gazebo·torch를 쓰지 않는다. 실시간 입력은 가짜 연결·메시지, 학습은 가짜 자식 프로세스다.
 """
 import gc
 import hashlib
@@ -24,9 +21,9 @@ from test_pipeline_runner_live import Live, processes, stop_after_jobs
 from test_ros_image_adapter import SourceBase, image_msg, info_msg
 
 
-# ---------------------------------------------------------------- #1 무효 CameraInfo
+# ---------------------------------------------------------------- 무효 CameraInfo
 class InvalidCameraInfoTest(SourceBase):
-    """#1(높음): 해석할 수 없는 CameraInfo는 이전 프로필을 무효로 만들고 사유를 남긴다(A 상세설계 §5.4 프로필 변경 = 세대 전이)."""
+    """해석할 수 없는 CameraInfo는 이전 프로필을 무효로 만들고 사유를 남긴다(프로필 변경 = 세대 전이)."""
 
     def test_invalid_after_valid_makes_profile_boundary(self):
         """유효 뒤 무효 CameraInfo → PROFILE_CHANGED(프로필 없음) 경계·사유, 이후 영상 calibration_id None, 통계 1."""
@@ -89,7 +86,7 @@ class InvalidCameraInfoTest(SourceBase):
         self.assertIsNone(processes(recs)[-1]["calibration_id"])
 
 
-# ---------------------------------------------------------------- #5 경계 훅 예외
+# ---------------------------------------------------------------- 경계 훅 예외
 def _accepted_state():
     """수락 하나가 현재인 상태(토큰 준비)."""
     st = LiveObservationState(run_id="r", generation=0, calibration_id="c", config=LiveObservationConfig(8, 8))
@@ -100,7 +97,7 @@ def _accepted_state():
 
 
 class BoundaryHookFailureTest(unittest.TestCase):
-    """#5(중간): 경계 훅 예외는 계수만 하지 않고 치명 입력 알림이 되며, 연결부는 상태를 fail-stop한다."""
+    """경계 훅 예외는 계수만 하지 않고 치명 입력 알림이 되며, 연결부는 상태를 fail-stop한다."""
 
     def test_slot_hook_failure_becomes_fatal_notice(self):
         """훅이 예외를 내면 slot은 BOUNDARY_HOOK_FAILED 알림(입력 상태 SOURCE_UNAVAILABLE)을 대기열에 넣는다."""
@@ -110,7 +107,7 @@ class BoundaryHookFailureTest(unittest.TestCase):
 
         slot = LiveFrameSlot(LiveSlotConfig(), generation=GenerationMirror(0), clock_ns=lambda: 0, boundary_hook=hook)
         slot.on_image(object(), stamp_ns=10, frame_id="f", width=1, height=1)
-        slot.on_image(object(), stamp_ns=5, frame_id="f", width=1, height=1)   # stamp 되감기 → 경계
+        slot.on_image(object(), stamp_ns=5, frame_id="f", width=1, height=1)
         items = slot.poll_inputs()
 
         self.assertEqual([i.kind for i in items], [BoundaryKind.SIM_TIME_REWIND, NoticeKind.BOUNDARY_HOOK_FAILED])
@@ -141,9 +138,9 @@ class BoundaryHookFailureTest(unittest.TestCase):
         self.assertEqual(link.state.failed, "boundary_hook_error")
 
 
-# ---------------------------------------------------------------- #180 r1 L1 연결부 프로필 없음 경계
+# ---------------------------------------------------------------- 연결부 프로필 없음 경계
 class LinkProfileClearedTest(unittest.TestCase):
-    """L1: 연결부는 프로필 없음 경계에서 이전 보정 번호를 현재로 두지 않고, 유효 프로필이 다시 오면 복귀한다."""
+    """연결부는 프로필 없음 경계에서 이전 보정 번호를 현재로 두지 않고, 유효 프로필이 오면 복귀한다."""
 
     def apply(self, link, epoch, profile):
         """경계 훅(수신) → 반영(제어 흐름) 순서로 PROFILE_CHANGED 하나를 넣는다."""
@@ -183,7 +180,7 @@ class LinkProfileClearedTest(unittest.TestCase):
             self.assertEqual(link.offer(outcome, None, 1), "calibration_unavailable")
 
 
-# ---------------------------------------------------------------- #6·#7 연결부 건너뜀 기록
+# ---------------------------------------------------------------- 연결부 건너뜀 기록
 class _Tf:
     """TF 묶음 대역."""
 
@@ -216,7 +213,7 @@ def _link(cap, base=None):
 
 
 class SkipWriterTest(unittest.TestCase):
-    """#6(중간): 건너뜀 기록 스레드의 예기치 않은 예외도 드러내고 파일을 닫는다."""
+    """건너뜀 기록 스레드의 예기치 않은 예외도 드러내고 파일을 닫는다."""
 
     def test_unexpected_error_fails_state_and_closes(self):
         """json 직렬화 TypeError로 기록이 실패하면 skip_write_error·state 실패·파일 닫힘, 정리는 확인되지 않는다."""
@@ -244,7 +241,7 @@ class SkipWriterTest(unittest.TestCase):
 
 
 class ConstructorLeakTest(unittest.TestCase):
-    """#7(중간): 설정 검사 실패가 파일을 열어 둔 채 남기지 않는다."""
+    """설정 검사 실패가 파일을 열어 둔 채 남기지 않는다."""
 
     def test_bad_capacity_opens_no_file(self):
         """skip_queue_capacity 0이면 ValueError이고 출력 폴더에 파일을 만들지 않으며 ResourceWarning이 없다."""
@@ -288,12 +285,12 @@ class ConstructorLeakTest(unittest.TestCase):
         self.assertEqual(len(closed), 1)
 
 
-# ---------------------------------------------------------------- #8 재개 체크포인트 출처 확인
+# ---------------------------------------------------------------- 재개 체크포인트 출처 확인
 from test_training_runner import Fixture, _lines  # noqa: E402
 
 
 class ResumeShaBeforeLoadTest(Fixture):
-    """#8(중간): 재개 last.pt는 기록된 기대 sha와 대조한 뒤에만 읽는다(pickle 기반 형식, 규약 §10 출처 검증)."""
+    """재개 last.pt는 기록된 기대 sha와 대조한 뒤에만 읽는다(pickle 기반 형식이라 출처 검증)."""
 
     def test_mismatch_refused_before_inspect(self):
         """last.pt sha가 직전 시도 기록(end_last_sha256)과 다르면 체크포인트를 열지 않고(inspect 미호출) 거부한다."""
@@ -326,7 +323,7 @@ class ResumeShaBeforeLoadTest(Fixture):
 
 
 class ResumeRefusalWordingTest(unittest.TestCase):
-    """L2(사용자 결정: sha 기록 없는 재개·legacy 재개 불가): 거부 사유가 기대값 없음·불일치·읽기 실패를 구분한다."""
+    """sha 기록 없는 재개는 불가하고, 거부 사유가 기대값 없음·불일치·읽기 실패를 구분한다."""
 
     def test_three_reasons_distinct(self):
         """기대값 없음 / 불일치 / 파일 없음이 서로 다른 문구이고 일치하면 None이다."""
@@ -346,9 +343,9 @@ class ResumeRefusalWordingTest(unittest.TestCase):
         self.assertIsNone(_resume_sha_refusal(path, good))
 
 
-# ---------------------------------------------------------------- #11 그룹 RSS 읽기 실패 기록
+# ---------------------------------------------------------------- 그룹 RSS 읽기 실패 기록
 class GroupRssFailureTest(unittest.TestCase):
-    """#11(낮음): RSS 읽기 실패 pid를 조용히 빼지 않고 수를 남긴다."""
+    """RSS 읽기 실패 pid를 조용히 빼지 않고 수를 남긴다."""
 
     def test_failed_pids_recorded(self):
         """한 pid의 rss 읽기가 실패하면 합에서 빠지고 failed 목록에 그 pid가 남는다."""

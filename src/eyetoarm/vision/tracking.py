@@ -1,27 +1,7 @@
-"""A-6 1차 인스턴스 추적(#151 S1) — 프로세스 수명 번호 발급기, 불변 `TrackFrame`, 검출 기반 픽셀+SIM_TIME 연결 상태기.
+"""A-6 인스턴스 추적: 프로세스 수명 번호 발급기, 불변 `TrackFrame`, 검출 기반 픽셀+촬영 시각 연결 상태기.
 
-근거: `_workspace/150_builder2_part_track_id_plan.md` r2(독립 검토 PASS) §2(TrackFrame 분리)·§3.1~3.6·§4·§6, reviewer 구현 명세 #151(D1~D11).
-
-**보장 범위(반드시 함께 읽을 것).**
-- 1차는 **표시·기록 실험**이다. M2(휴리스틱) 모드는 팔(카메라) 이동을 넘는 신원 연속성, 운영 중복 집기 방지, 벨트 이동과 카메라 이동의 구분을
-  보장하지 않는다. 결과를 B 목표·공통 관측 필드로 넘기지 않는다(A-6 전체 완료 아님).
-- M1(정지 확인)은 인터페이스와 가짜 신호 시험까지다. 실제 정지 신호(C) 연결은 없다. M0(끔)은 추적기를 만들지 않는 것이다.
-- 번호는 「A가 같은 물리 부품이라고 판단한 동안」의 표시용 번호다. 모르면 None이다. 모호하면 None으로 내고 관련 트랙을 끝낸다(표시 실험 정책, 운영 안전 판단 아님).
-
-**규약.**
-- 번호: 양의 정수, `PartTrackIdIssuer` 하나가 프로세스 수명 동안 발급(재사용·재설정 없음). 발급기는 통합 진입점이 만들어 주입한다(추적기는 만들지 않음, D11).
-  (track_namespace, part_track_id)로 유일하다. 프로세스 재시작·발급기 재생성은 새 namespace다.
-- `tracker_epoch`: 추적기 생성 때, 그리고 **트랙(tentative·confirmed·lost)이 하나라도 있던 전체 종료**(reset·disable·M1 정지 아님·M2 카메라 이동 의심·
-  범위 변경)마다 발급기의 별도 순번에서 받는다(번호를 소비하지 않음). 트랙이 없는 반복 종료는 epoch를 올리지 않는다(멱등). 신원 주장은 한 epoch 안에서만 한다.
-- 확정 근거: **잘리지 않은 연속 hit**만 센다. 잘림 hit는 트랙 유지(이미 확정된 번호 유지)에만 쓰고 연속 수를 0으로 끊는다.
-- 시각: 예측·만료는 프레임 촬영 시각 `timestamp_ms`(SIM_TIME 등 프레임 기준)만 쓴다. PC 단조 시각과 섞지 않는다. 같은·이른 시각 입력은 갱신하지 않는다.
-- 갱신: 한 프레임을 한 번만 반영한다(같은·이른 시각 → `stale_frame`, 이전 세대 → `old_generation`). run·source·검출 설정이 바뀌거나 세대가 오르면 전 트랙 종료.
-- 상태: tentative(번호 없음) → confirmed(번호) → lost(번호 유지, 누락 허용 시간 안) → retired(계수만). 트랙은 스칼라만 갖고 영상·마스크·다각형·JobContext를
-  붙잡지 않는다. active+lost 수에 상한이 있다.
-- 단일 소유: A 제어 흐름 한 곳에서만 부른다(잠금 없음). 발급기만 작은 잠금을 둔다.
-
-기본값(`TrackerConfig`)은 **A 개발 임시값**이며 운영 채택값이 아니다(연속 자료 실측 전). 표·한계는 구현 보고서에 적는다.
-ROS·Qt·torch·ultralytics를 import하지 않는다.
+표시·기록 실험이며 운영 중복 집기 방지나 카메라 이동을 넘는 신원 연속성을 보장하지 않는다. 번호는 잘리지 않은 연속 hit로만
+확정하고, 시각은 프레임 촬영 시각만 쓴다. 상태기는 A 제어 흐름 한 곳에서만 부른다(잠금 없음, 발급기만 작은 잠금).
 """
 from __future__ import annotations
 
@@ -45,12 +25,12 @@ class TrackingInputError(ValueError):
 
 
 class TrackMode(str, Enum):
-    """추적 모드(계획 §3.6). OFF는 「추적기를 만들지 않음」을 기록할 때만 쓰며 추적기 모드로 받지 않는다."""
+    """추적 모드. OFF는 「추적기를 만들지 않음」을 기록할 때만 쓰며 추적기 모드로 받지 않는다."""
 
     OFF = "off"                              # M0
     CONFIRMED_STATIC = "confirmed_static"    # M1: 외부 정지 확인 신호가 True인 동안만 연결
     HEURISTIC = "heuristic"                  # M2: 신호 없음, 공통 큰 이동이면 카메라 이동 의심 → 전 종료(보장 없음)
-    WORLD = "world"                          # #217: 작업 좌표(W) 추적 결과 표시용(`vision.world_tracking.WorldTracker`). PartTracker는 받지 않음
+    WORLD = "world"                          # 작업 좌표(W) 추적 표시용. PartTracker는 받지 않음
 
 
 class TrackState(str, Enum):
@@ -80,29 +60,19 @@ def _pos_float(value, name: str, *, allow_zero: bool = False) -> float:
 
 @dataclass(frozen=True)
 class TrackerConfig:
-    """연결 파라미터. 모두 **A 개발 임시값**(연속 자료 실측 전, 운영 채택값 아님). 단위는 이름에 둔다.
+    """연결 파라미터(개발 임시값, 운영 채택값 아님). 단위는 이름에 둔다.
 
-    - `min_hits`(3): 잘리지 않은 **연속** hit 수가 이만큼이면 번호 발급(잘림 hit는 연속을 0으로 끊음).
-    - `max_gap_ms`(500, 촬영 시각 ms): 마지막 hit 뒤 이 시간을 넘으면 트랙 은퇴(재등장해도 새 트랙).
-    - `gate_min_px`(8)·`gate_box_ratio`(1.0): 연결 반경 = max(gate_min_px, ratio × 트랙 박스 대각선). 예측 중심과 검출 중심 거리.
-    - `size_ratio_max`(2.5): 박스 넓이 비가 이 배를 넘으면 연결하지 않음.
-    - `ambiguity_margin`(0.2): 정규화 비용(거리/반경) 1·2위 차가 이보다 작으면 모호(합쳐짐·분리·교차).
-    - `new_track_min_conf`(0.25): 이 점수 미만 검출은 기존 트랙 유지에만 쓰고 새 트랙을 만들지 않는다(운영 conf 0.05와 별개).
-    - `max_tracks`(64): active+lost 상한. 차면 가장 오래된 lost부터 은퇴, 그래도 차면 새 후보는 `track_capacity`.
-    - `velocity_alpha`(0.5): 속도(px/ms) 지수 평균 계수.
-    - M2 카메라 이동 의심: 예측에서 가장 가까운 같은 클래스 검출(`camera_search_px` 300 안)까지의 이동이 `camera_min_tracks`(2)개 이상 트랙에서
-      모두 `camera_jump_px`(40)를 넘고 중앙값에서 `camera_coherence_px`(15) 안으로 모이면 의심. 미탐(게이트 안 작은 공통 이동, 트랙 1개)·
-      오탐(벨트 급가속)이 있다.
+    연결 반경 = max(`gate_min_px`, `gate_box_ratio` × 트랙 박스 대각선). `camera_*`는 M2 카메라 이동 의심 판정용이다.
     """
 
-    min_hits: int = 3
-    max_gap_ms: int = 500
+    min_hits: int = 3                   # 잘리지 않은 연속 hit 수가 이만큼이면 번호 발급
+    max_gap_ms: int = 500               # 마지막 hit 뒤 이 시간(촬영 시각)을 넘으면 은퇴
     gate_min_px: float = 8.0
     gate_box_ratio: float = 1.0
     size_ratio_max: float = 2.5
-    ambiguity_margin: float = 0.2
-    new_track_min_conf: float = 0.25
-    max_tracks: int = 64
+    ambiguity_margin: float = 0.2       # 정규화 비용 1·2위 차가 이보다 작으면 모호
+    new_track_min_conf: float = 0.25    # 미만 검출은 기존 트랙 유지에만 쓴다
+    max_tracks: int = 64                # active+lost 상한
     velocity_alpha: float = 0.5
     camera_min_tracks: int = 2
     camera_jump_px: float = 40.0
@@ -133,11 +103,9 @@ DEFAULT_TRACKER_CONFIG = TrackerConfig()
 
 
 class PartTrackIdIssuer:
-    """프로세스 수명 번호 발급기(계획 §3.5). 통합 진입점이 프로세스당 1개 만들어 추적기에 주입한다.
+    """프로세스 수명 번호 발급기. 통합 진입점이 프로세스당 1개 만들어 추적기에 주입한다.
 
-    - `next_id()`: 1부터 단조 증가, 되돌리기·재설정 없음. `next_tracker_epoch()`: 번호와 별개인 epoch 순번.
-    - `namespace`: 발급기마다 다른 문자열(기본 uuid4 hex). 프로세스 재시작·재생성 구분용.
-    - 작은 잠금으로 보호한다(현재는 A 제어 흐름 한 곳에서만 부름).
+    번호는 1부터 단조 증가(재사용·재설정 없음), epoch는 별개 순번이다. 작은 잠금으로 보호한다.
     """
 
     def __init__(self, namespace: str | None = None) -> None:
@@ -217,8 +185,7 @@ class TrackAssignment:
 class TrackFrame:
     """작업 하나의 추적 결과(불변). `assignments`는 입력 인스턴스 순서·index와 1:1이다.
 
-    `updated=False`면 이 프레임으로 상태를 바꾸지 않았고 모든 인스턴스가 untracked다(이전 번호를 싣지 않음).
-    `event`: 이 프레임에서 일어난 전 트랙 종료 사유(`camera_motion_suspected`·`camera_not_static`·`scope_changed`) 또는 None.
+    `updated=False`면 모든 인스턴스가 untracked다(이전 번호를 싣지 않음). `event`는 전 트랙 종료 사유 또는 None.
     """
 
     run_id: str
@@ -238,7 +205,7 @@ class TrackFrame:
 
 
 def matches_job(tracks: TrackFrame, job) -> bool:
-    """TrackFrame이 그 작업(JobContext 형태: frame·generation·job_seq·detector_config_id)의 것인지 7개 식별자로 대조한다."""
+    """TrackFrame이 그 작업(JobContext 형태)의 것인지 7개 식별자로 대조한다."""
     f = job.frame
 
     return (isinstance(tracks, TrackFrame)
@@ -260,10 +227,9 @@ def track_record(tracks: TrackFrame) -> dict:
 
 
 def inputs_from_ai(result: AiSegResult) -> list[TrackInput]:
-    """AI 표시 결과 → 추적 입력(D8). 원래 검출·거부를 바꾸지 않고 스칼라만 복사한다.
+    """AI 표시 결과 → 추적 입력. 원래 검출·거부를 바꾸지 않고 스칼라만 복사한다.
 
-    후보 = 대상 범위(`in_scope`: 대상 클래스·점수 통과)이고 기하 거부가 없는 인스턴스(잘림은 후보이되 `clipped`).
-    그 밖: 비대상·점수 미달 → `not_in_scope`, `EMPTY_MASK`·`SMALL_MASK` → `geometry_rejected`.
+    후보는 대상 범위이고 기하 거부가 없는 인스턴스다(잘림은 후보이되 `clipped`).
     """
     if not isinstance(result, AiSegResult):
         raise TrackingContractError(f"inputs_from_ai needs AiSegResult: {type(result).__name__}")
@@ -324,10 +290,10 @@ def _center(inp: TrackInput) -> tuple[float, float, float, float]:
 
 
 class PartTracker:
-    """인스턴스 추적 상태기(단일 소유: A 제어 흐름). 계약은 모듈 설명 참조."""
+    """인스턴스 추적 상태기(단일 소유: A 제어 흐름, 잠금 없음). 한 프레임을 한 번만 반영한다."""
 
     def __init__(self, issuer: PartTrackIdIssuer, *, mode: TrackMode, config: TrackerConfig = DEFAULT_TRACKER_CONFIG) -> None:
-        """주입된 발급기·모드(M1/M2)·설정. 발급기가 없거나 모드가 틀리면 계약 오류(D11)."""
+        """주입된 발급기·모드(M1/M2)·설정. 발급기가 없거나 모드가 틀리면 계약 오류."""
         if not isinstance(issuer, PartTrackIdIssuer):
             raise TrackingContractError("PartTracker needs an injected PartTrackIdIssuer (one per process)")
 
@@ -391,7 +357,7 @@ class PartTracker:
         self._stats["resets"][reason] = self._stats["resets"].get(reason, 0) + 1
 
     def disable(self, reason: str) -> None:
-        """추적 끔(추적 예외 격리, D10). 트랙을 모두 끝내고 이후 프레임은 untracked(`tracking_disabled`). 재호출은 무동작(첫 사유 유지)."""
+        """추적 끔(추적 예외 격리). 이후 프레임은 untracked이며 재호출은 무동작(첫 사유 유지)."""
         if self._disabled is not None:
             return
 
@@ -408,7 +374,7 @@ class PartTracker:
         if self._disabled is not None:
             return self._not_updated(key, timestamp_ms, inputs, "tracking_disabled")
 
-        # 범위·세대(§4.1): run·source·설정이 바뀌거나 세대가 오르면 전 종료, 이전 세대는 갱신 안 함
+        # run·source·설정이 바뀌거나 세대가 오르면 전 종료, 이전 세대는 갱신 안 함
         scope = (key.run_id, key.source_id, key.detector_config_id)
         event = None
 
@@ -493,8 +459,7 @@ class PartTracker:
             if (not isinstance(box, tuple) or len(box) != 4
                     or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in box)
                     or not (box[2] >= box[0] and box[3] >= box[1])):
-                # #196 A3-1: AiInstance와 같은 규칙(x1 <= x2, y1 <= y2). 폭·높이 0 박스(1열 마스크)로 추적이 꺼지지 않게 한다.
-                # 정합 계산은 넓이 비 하한(1e-9)·반경 하한(gate_min_px)이 있어 0 크기에서도 나눗셈 오류가 없다
+                # 폭·높이 0 박스(1열 마스크)도 받는다. 넓이 비·반경 하한이 있어 나눗셈 오류가 없다
                 raise TrackingInputError(f"box_xyxy must be 4 finite numbers with x2>=x1, y2>=y1: {box!r}")
 
             if type(i.clipped) is not bool or type(i.candidate) is not bool:
@@ -653,7 +618,7 @@ class PartTracker:
         return out
 
     def _hit(self, t: _Track, c: TrackInput, g, t_ms: int) -> TrackAssignment:
-        """배정된 검출로 트랙을 갱신한다. 잘리지 않은 연속 hit가 min_hits에 닿으면 번호 발급, 잘림 hit는 연속을 0으로 끊는다."""
+        """배정된 검출로 트랙을 갱신한다. 비잘림 연속 hit가 min_hits에 닿으면 번호 발급, 잘림 hit는 연속을 끊는다."""
         cx, cy, w, h = g
         dt = t_ms - t.last_hit_ms
 
@@ -697,7 +662,7 @@ class PartTracker:
             self._stats["tentative_dropped"] += 1
 
     def _terminate_all(self) -> bool:
-        """전체 종료: 트랙이 하나라도 있으면 모두 은퇴시키고 새 epoch를 받는다(True). 트랙이 없으면 무동작(False, epoch 그대로)."""
+        """전체 종료: 트랙이 있으면 모두 은퇴시키고 새 epoch를 받는다(True). 없으면 무동작(False)."""
         if not self._tracks:
             return False
 

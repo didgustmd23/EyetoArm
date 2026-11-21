@@ -1,29 +1,7 @@
-"""실시간 A→B 디스패처·worker(#171 R4): 대기 칸 1개(최신 우선), 검사 ①②③, TF·봉투·B·렌더는 잠금 밖.
+"""실시간 관측 디스패처: 대기 칸 1개(최신 우선)와 worker 1개로 TF·봉투·B 계산·렌더를 잠금 밖에서 한다.
 
-근거: `_workspace/171_builder2_live_a_to_b_plan.md` r3 §1.1·§3.2·§3.4·§3.5. **준비 부품이며 실행기(`run()`)·진입점에 연결하지 않는다**(D13 유지).
-
-흐름
-- 제어 흐름 `submit(frame, obs, rx_epoch=, generation=, calibration_id=)`: `LiveObservationState.admit`로 토큰을 받고 대기 칸에 넣는다(대기 없음).
-  칸에 이전 항목이 있으면 `superseded`로 바꾼다(무효 아님, 계획 §3.4).
-- worker 1개
-  1. 꺼낸 직후 검사 ①(`state.is_current`). 아니면 `stale_before_b`(TF·B 없음).
-  2. TF 조회(주입 `tf_lookup(frame) → TfLookupResult`, 잠금 밖).
-  3. 봉투 생성(주입 `build_envelope(frame, obs, camera, tf_result)`). 봉투 오류는 `b_input_rejected`(B 없음).
-  4. 검사 ② `state.begin_compute(token)` — 토큰 비교와 `COMPUTING` 전이가 한 잠금 구간. 실패면 `stale_after_tf`(B 호출 0).
-  5. B 계산(주입 `compute(stage, envelope)`)·렌더(주입 `render(stage, frame, out) → bytes | None`), 잠금 밖.
-  6. 검사 ③ `state.accept(compute_id, token, payload)`. 거부면 출력 없음.
-- 카메라 교체: 제어 흐름 `set_camera(camera)`는 대기 값만 둔다. worker가 다음 항목 전에 `stage_factory(camera)`로 B 단계를 새로 만든다
-  (B 단계는 worker만 쓴다).
-- 시험 훅 `hooks[name]()`: 지점 이름 `after_take`·`after_tf`·`after_begin`·`in_compute`·`before_accept`에서 부른다(경합 순서 강제용, 기본 없음).
-- 되감기 epoch 보호 경로(#173 되감기 계획 r1, 선택): `tf_lookup_with_epoch=True`면 `tf_lookup(frame, rx_epoch=)`로 제출 때의 수신 epoch를
-  넘긴다. `refuse_tf_statuses`에 든 TF 상태(예: `stale_overlap`·`epoch_mismatch`)는 봉투·검사 ② 전에 끝낸다(계산 권한 0, B 호출 0).
-  기본값(False, 빈 집합)은 기존 동작 그대로다.
-- 건너뜀 통지(#173, 선택): `on_skip(item, reason, detail)`을 worker가 B를 부르지 않고 끝내는 지점마다 부른다(사유: `stale_before_b`·
-  `tf_<상태>`(거부 집합일 때)·`b_input_rejected`·`stale_after_tf`). 수락 거부는 `not_accepted`. 예외는 worker 오류로 센다.
-- 시선 기반 끝점 보정(#207, 선택): `view_bias`를 주면 3과 4 사이에서 봉투를 보정한다(단계 T·L 공통 지점).
-- 수락 훅(#214 C 송신·#215 추적, 선택): 검사 ③이 수락한 뒤에만 `on_accepted(item, payload, event_seq)`를 부른다(worker 안,
-  잠금 밖).
-- ROS·Qt를 import하지 않는다.
+worker는 검사 ①(꺼낸 직후)·②(`begin_compute`)·③(`accept`)를 통과한 결과만 기록한다.
+B 단계는 worker만 쓴다. ROS·Qt를 import하지 않는다.
 """
 from __future__ import annotations
 
@@ -61,7 +39,7 @@ class LiveObservationPayload:
     received_monotonic_ns: int | None
     submitted_monotonic_ns: int
     compute_done_monotonic_ns: int
-    view_bias: tuple | None = None   # #207: 보정 기록 목록(보정 켬일 때만, 끔이면 None)
+    view_bias: tuple | None = None   # 보정 기록 목록(보정 켬일 때만)
 
 
 class LiveObservationDispatcher:
@@ -75,18 +53,9 @@ class LiveObservationDispatcher:
                  envelope_errors: tuple = (ObservationEnvelopeError,),
                  view_bias: Callable | None = None, on_accepted: Callable | None = None,
                  on_not_accepted: Callable | None = None) -> None:
-        """상태·처음 카메라·주입 함수들. `tf_lookup_with_epoch`·`refuse_tf_statuses`는 되감기 epoch 보호 경로용(기본은 기존 동작).
+        """상태·처음 카메라·주입 함수(TF 조회·봉투 생성·계산·기록·훅)를 받는다.
 
-        `envelope_errors`(#201): 봉투 생성에서 `b_input_rejected`로 기록할 예외형(기본은 단일 관측 봉투 오류만). 목록 봉투는
-        `ValueError` 계열(`ListEnvelopeError`·`FrameObservations` 대조 실패)을 넘긴다.
-
-        `view_bias(envelope, camera) → (envelope', records)`(#207, 선택): 봉투 생성 직후·검사 ② 전에 부르는 공통 보정 지점
-        (`vision/view_bias.apply_view_bias`). None이면 부르지 않는다(기존 동작). 기록은 payload `view_bias`로 넘긴다.
-
-        `on_accepted(item, payload, event_seq)`(#214·#215, 선택): 검사 ③ 수락 뒤 항상 부른다. 이 함수의 예외는 worker 오류로 세지 않고 `accept_hook_errors`로 센다(`errors`에 `accept_hook:`로 남김).
-
-        `on_not_accepted(item, payload)`(#215, 선택): B 계산 뒤 검사 ③이 거부했을 때 부른다(B가 남긴 중복 방지 기록을 풀 기회).
-        예외는 `accept_hook_errors`로 같이 센다.
+        `on_accepted`·`on_not_accepted`는 검사 ③ 뒤 훅이며, 그 예외는 worker 오류가 아니라 `accept_hook_errors`로 센다.
         """
         self.state = state
         self._stage_factory = stage_factory
@@ -103,7 +72,7 @@ class LiveObservationDispatcher:
         self._view_bias = view_bias
         self._on_accepted = on_accepted
         self._on_not_accepted = on_not_accepted
-        self.view_bias_applied = 0             # #207 실행 요약용 수(worker가 `_counts_lock` 안에서 씀)
+        self.view_bias_applied = 0             # worker가 `_counts_lock` 안에서 씀
         self.view_bias_skipped: dict[str, int] = {}
         self._cond = threading.Condition()
         self._slot: LiveObservationItem | None = None
@@ -163,7 +132,7 @@ class LiveObservationDispatcher:
         self._thread.start()
 
     def drain(self, limit_s: float) -> bool:
-        """대기 칸이 비고 처리 중 항목이 끝날 때까지 기다린다(정상 종료 전, #173). 새 제출은 막지 않는다. 상한 안에 비면 True."""
+        """대기 칸·처리 중 항목이 빌 때까지 기다린다(새 제출은 막지 않음). 상한 안에 비면 True."""
         deadline = time.monotonic() + max(0.0, limit_s)
 
         with self._cond:
@@ -205,7 +174,7 @@ class LiveObservationDispatcher:
     # ------------------------------------------------------------------ worker
 
     def view_bias_summary(self) -> dict:
-        """#207 보정 수 요약(잠금 안에서 복사)."""
+        """보정 수 요약(잠금 안에서 복사)."""
         with self._counts_lock:
             return {"applied": self.view_bias_applied, "skipped_by_reason": dict(sorted(self.view_bias_skipped.items()))}
 
@@ -291,7 +260,7 @@ class LiveObservationDispatcher:
             self._skip(item, "b_input_rejected", str(exc))
             return
 
-        # #207 공통 보정 지점: 단계 T·L 봉투 모두 여기서 한 번 보정한다(끔이면 부르지 않음)
+        # 단계 T·L 봉투 공통 보정 지점(끔이면 부르지 않음)
         view_bias = None
 
         if self._view_bias is not None:
@@ -336,13 +305,13 @@ class LiveObservationDispatcher:
             if self._on_not_accepted is not None:
                 try:
                     self._on_not_accepted(item, payload)
-                except Exception as exc:   # 기록 해제 실패는 B 결과·기록에 영향 없음(세고 남김, 진입점이 종료 1로 드러냄)
+                except Exception as exc:   # B 결과·기록에 영향 없음(진입점이 종료 1로 드러냄)
                     self._count("accept_hook_errors")
                     self.errors.append(f"accept_hook: {type(exc).__name__}: {exc}")
         elif self._on_accepted is not None:
             try:
                 self._on_accepted(item, payload, seq)
-            except Exception as exc:   # 수락 훅 실패는 B 결과·기록에 영향 없음(세고 남김, 진입점이 종료 1로 드러냄)
+            except Exception as exc:   # B 결과·기록에 영향 없음(진입점이 종료 1로 드러냄)
                 self._count("accept_hook_errors")
                 self.errors.append(f"accept_hook: {type(exc).__name__}: {exc}")
 

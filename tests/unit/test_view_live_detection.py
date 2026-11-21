@@ -1,7 +1,6 @@
-"""실시간 검출 확인 창 진입점(#138 `scripts/view_live_detection.py`) 시험 — 창 루프·종료·실패 정리.
+"""실시간 검출 확인 창 진입점(`scripts/view_live_detection.py`) 시험 — 창 루프·종료·실패 정리.
 
-근거: reviewer 지시 138 §3(메인 스레드 창 이벤트 지속, runner 별도 스레드, 그리기 직전 버전 확인)·§4(ESC/q·창 닫기·Ctrl+C,
-유한 정리, 창 실패·디스플레이 없음 진단, 종료 요청 뒤 새 검출 미표시)·§5. 실제 창·ROS·GPU·모델 없이 가짜 창·가짜 runner·가짜 신호를 넣는다.
+실제 창·ROS·GPU·모델 없이 가짜 창·가짜 runner·가짜 신호를 넣는다.
 """
 import importlib.util
 import io

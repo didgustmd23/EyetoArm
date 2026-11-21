@@ -1,8 +1,6 @@
-"""저장 이미지·명시 순서 목록 입력 — A 내부 잠정안.
+"""저장 이미지·명시 순서 목록 입력 소스(A 내부 잠정안, 공동 API 아님).
 
-공동 API 확정이 아니다. 자료형은 `inputs/base.py`(공통 자료형의 A 확장)를 쓰고,
-항목 단위 실패 정책(실패한 항목을 소비하고 다음 항목으로 진행)은 A 제안이다.
-근거: A 상세설계 §5.1(공통 프레임)·§5.4(입력 상태)·§6(입력 소스별 동작의 「저장 이미지」 행).
+자료형은 `inputs/base.py`(공통 자료형의 A 확장)를 쓰고, 실패한 항목도 소비하고 다음 항목으로 진행한다.
 """
 from __future__ import annotations
 
@@ -22,36 +20,10 @@ from eyetoarm.inputs.base import (
 
 
 class StoredImageSource:
-    """호출자가 정한 순서의 이미지 파일 목록을 하나씩 읽는 입력 소스.
+    """호출자가 정한 순서의 이미지 파일 목록을 하나씩 읽는 입력 소스(단일 흐름 전용).
 
-    읽기 계약
-    - `paths`는 생성 때 문자열 목록으로 복사한다(`os.fspath`). 이후 호출자가 목록을 바꿔도
-      순서가 변하지 않는다. 정렬·폴더 탐색·목록 파일 해석은 하지 않는다. 상대 경로는
-      프로세스 작업 디렉터리 기준이며 `source_ref`에는 전달된 경로를 그대로 남긴다.
-    - `read()`는 목록 항목 하나를 소비한다. 실패한 항목도 소비하고 다음 호출은 다음
-      항목으로 간다. 실패·끝에서는 현재 프레임을 비워 이전 성공 프레임을 다시 내지 않는다.
-    - 일반 파일이 아니거나 읽을 수 없는 경로는 `SOURCE_UNAVAILABLE`, 존재하는 파일에서
-      `cv2.imread(path, cv2.IMREAD_COLOR)`가 None이거나 `cv2.error`를 내면 `DECODE_FAILED`.
-      그 밖의 예외는 입력 사건으로 바꾸지 않고 그대로 올린다.
-    - 성공일 때만 `issuer.next_seq()`를 한 번 부르고 `clock_ns()`를 한 번 읽는다.
-      `timestamp_base = PC_RECEIVE`, `timestamp_ms = received_monotonic_ns // 1_000_000`.
-      이 시각은 파일 디코딩을 마친 PC 시각이며 촬영 시각이 아니다. 촬영 지연·실제 관측
-      시간·로봇 목표 유효성의 근거로 쓰지 않는다.
-    - `source_index`는 원래 목록에서의 0부터 시작하는 위치다(성공 순번이 아님).
-    - `capture_generation`: `generation_provider`가 None이면 생성 때 받은 고정 값(기본 0)을 쓴다.
-      공급자가 있으면 성공한 새 프레임을 만들 때만 순번·시계 다음에 한 번 읽어 쓴다(`video.py`와 같은
-      순서). 실패·EOF·빈 목록·close 뒤 `read()`와 `current()`에서는 읽지 않고, 이미 내보낸 프레임의
-      세대를 바꾸지 않는다. 세대를 올리는 것은 파이프라인이다(A 상세설계 §4·§5.4, 계획 작업 3).
-    - 디코딩한 배열의 소유권은 프레임에 넘긴다. 소스는 그 배열을 다시 쓰지 않고 읽기 전용으로
-      표시한다. 읽기 전용 표시는 다른 별칭을 통한 변경까지 막지 못한다. 소비자가 고치려면 복사한다.
-    - `current()`는 마지막 성공 프레임과 같은 객체다(정지 화면 재처리용). 시계·순번을 읽지 않는다.
-      생성 직후와 실패·끝·close 뒤에는 None.
-    - 입력 사건은 `clock_ns()`를 한 번 읽어 `event_monotonic_ns`에 기록한다. 파일 관련 실패의
-      `source_ref`는 그 경로, 목록 끝·빈 목록·닫힘은 None.
-    - 빈 목록은 매번 `SOURCE_UNAVAILABLE`("empty list"), 다 읽은 목록은 매번 `END_OF_STREAM`.
-      `close()`는 여러 번 불러도 되며, 이후 `read()`는 파일을 열거나 순번을 쓰지 않고 매번
-      `SOURCE_UNAVAILABLE`("closed"). 이미 내보낸 프레임은 건드리지 않는다.
-    - 단일 흐름에서 호출한다는 잠정 계약이다. 다중 스레드 동시 호출은 지원하지 않는다.
+    `read()`는 실패도 항목 하나를 소비한다. 접근 불가는 `SOURCE_UNAVAILABLE`, 디코딩 실패는 `DECODE_FAILED`,
+    끝은 매번 `END_OF_STREAM`. `timestamp_ms`는 PC 수신 시각이라 촬영 시각으로 쓰지 않는다.
     """
 
     def __init__(self, paths: Sequence[str | os.PathLike], *, source_id: str,

@@ -1,25 +1,8 @@
-"""실시간 W 추적 스레드(#217 1단계): 실시간 기록 연결 안에서 W 추적기를 제어 흐름 밖에서 돌리고, worker에 작업별 결과를 넘긴다.
+"""실시간 W 추적 스레드: 제어 흐름 밖에서 W 추적기를 돌리고 worker에 작업별 결과(`TrackFrame` | 사유)를 넘긴다.
 
-근거: 계획 `_workspace/217_builder2_world_tracking_plan_r0.md`(Q1 (c) 별도 추적 스레드) + `_r1.md`(밀림 지표·초기화 규칙),
-reviewer 보충 1~3(정답 격리: C `speed_mps`·컨베이어 토픽 속도 값은 예측에 넣지 않음).
-
-- **넣기(제어 흐름, `offer`)**: 항목(프레임 참조·AI 결과 참조·작업 키·카메라)을 유한 큐에 넣기만 한다(O(1), TF 조회 없음).
-  큐가 가득이면 **새 항목을 버린다**(`dropped_full`, 시간 순서 유지).
-- **추적 스레드**(`eyetoarm-live-world-tracking`): 큐를 순서대로 꺼내 촬영 stamp TF 정확 조회(주입 `tf_lookup(frame)`, 최신 TF·픽셀
-  대체 없음) → `world_inputs`(B와 같은 투영, 볼트 평면, 시야 보정 뒤 끝점) → `WorldTracker.update`. TF가 `ok`가 아니면 갱신하지 않고
-  사유(`tf_<상태>`)를 결과로 둔다. 결과는 작업 키 → `TrackFrame | 사유 문자열` 작은 표(최근 `RESULT_KEEP`개)에 둔다.
-- **넘기기(worker, `wait`)**: 그 작업 키 결과를 최대 `handoff_wait_s` 기다린다. 못 받으면 None(`track_pending`).
-- **밀림 규칙(r1 L2)**: 꺼낸 항목의 `lag_ms`(넣은 시각부터) > `lag_limit_ms`이거나 최근 `window_n`개 넘김의 대기 실패 비율 >
-  `pending_ratio_limit`이면 「밀림」. `lag_persist_n`개 연속이면 큐에 최신 1개만 남기고 전 트랙 종료(`reset("lag")`, 번호 재사용 없음)
-  후 그 항목부터 다시 한다. 초기화 뒤 `lag_cooldown_ms` 동안은 다시 하지 않는다. 추적을 끄지는 않는다.
-- **초기화 요청(`request_reset`)**: 실행 닫힘·세대/보정 변경 때 연결부가 부른다. 다음 항목 전에 추적 스레드가 `reset`한다(단일 소유).
-- **기록**: 출력 폴더 `world_tracks.jsonl`(추적 스레드가 직접 씀, 프레임마다 배정·W 위치·보정 전후·벨트 추정 속도·지연).
-  진단 전용 값(`diagnostics`, C `speed_mps` 조회 등)은 요약에만 넣고 **추적기에는 전달하지 않는다**.
-- **마스크 입력(#226)**: 추적기 설정 `mask_fallback`이면 `world_inputs(..., mask_fallback=True)`로 끝점 없는 볼트의 마스크 W 평균을 넣고,
-  `world_tracks.jsonl` 배정마다 입력 종류(`input`: endpoint | mask | none)를 남긴다.
-- **리셋·종료 기록(#226 D3)**: 초기화 요청을 처리할 때 `{"kind": "reset", "reason"}`을 쓰고, 닫을 때 처리 못 한 초기화 요청이 남아 있으면
-  그 자리에서 처리한 뒤 `{"kind": "closed", "pending_reset_applied", "last_reset"}`을 한 번 쓴다.
-- ROS·Qt를 import하지 않는다.
+`offer`는 유한 큐에 넣기만 하고(가득이면 새 항목을 버림), 추적기·`world_tracks.jsonl`은 추적 스레드가 소유한다.
+밀림이 이어지면 최신 1개만 남기고 전 트랙을 종료한다. C `speed_mps` 등 진단 값은 추적기에 넣지 않는다(정답 격리).
+ROS·Qt를 import하지 않는다.
 """
 from __future__ import annotations
 
@@ -33,7 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 from eyetoarm.vision.tracking import FrameKey, TrackFrame
-from eyetoarm.vision.world_tracking import WorldTracker, world_inputs
+from eyetoarm.vision.world_tracking import BoltPlanes, WorldTracker, world_inputs
 from eyetoarm.vision.world_tracking_display import (DisplayPrevConfig, DisplayPrevConfigError, PrevSnapshot, match_prev,
                                                     parse_display_prev, snapshot)
 
@@ -46,7 +29,11 @@ class LagConfigError(ValueError):
 
 @dataclass(frozen=True)
 class LiveWorldConfig:
-    """추적 스레드 시험값(r0·r1). 모두 필수."""
+    """추적 스레드 설정. 모두 필수.
+
+    `lag_ms` > `lag_limit_ms`이거나 대기 실패 비율 > `pending_ratio_limit`인 밀림이 `lag_persist_n`회 이어지면
+    전 트랙을 종료한다(`lag_cooldown_ms` 동안 다시 하지 않음).
+    """
 
     queue_capacity: int
     handoff_wait_s: float
@@ -55,8 +42,8 @@ class LiveWorldConfig:
     pending_ratio_limit: float
     lag_persist_n: int
     lag_cooldown_ms: float
-    conveyor_probe_timeout_s: float   # #226 D2: C speed_mps 진단 조회 상한(진단 전용, 추적기에 전달 안 함)
-    # #242: detect 영상 직전 결과 표시(화면 전용). 설정 파일에서는 필수, 코드에서 직접 만들 때 None이면 직전 결과를 쓰지 않는다
+    conveyor_probe_timeout_s: float   # C speed_mps 진단 조회 상한(추적기에 전달 안 함)
+    # detect 영상 직전 결과 표시(화면 전용). 설정 파일에서는 필수, None이면 직전 결과를 쓰지 않는다
     display_prev: DisplayPrevConfig | None = None
 
     def to_json(self) -> dict:
@@ -68,7 +55,7 @@ class LiveWorldConfig:
 
 
 def parse_live_world(doc) -> LiveWorldConfig:
-    """`queue_capacity`·`handoff_wait_s` + `lag` 블록(r1). 모르는 키·누락·범위 오류는 `LagConfigError`."""
+    """`queue_capacity`·`handoff_wait_s` + `lag` 블록. 모르는 키·누락·범위 오류는 `LagConfigError`."""
     if not isinstance(doc, dict) or set(doc) != {"queue_capacity", "handoff_wait_s", "lag", "conveyor_probe_timeout_s",
                                                  "display_prev"}:
         raise LagConfigError("live world block must have exactly queue_capacity, handoff_wait_s, lag, conveyor_probe_timeout_s, "
@@ -102,7 +89,7 @@ def parse_live_world(doc) -> LiveWorldConfig:
 
 
 def _display_prev(doc) -> DisplayPrevConfig:
-    """`display_prev` 블록(#242). 오류는 `LagConfigError`로 바꾼다(진입점이 같은 설정 오류로 다룸)."""
+    """`display_prev` 블록. 오류는 `LagConfigError`로 바꾼다(진입점이 같은 설정 오류로 다룸)."""
     try:
         return parse_display_prev(doc)
     except DisplayPrevConfigError as exc:
@@ -112,7 +99,7 @@ def _display_prev(doc) -> DisplayPrevConfig:
 def load_world_tracking_config(path: str):
     """W 추적 시험 설정 파일 → (`WorldTrackerConfig`, `LiveWorldConfig`, sha256).
 
-    키: `status`(반드시 `test_only`)·`note`(선택)·`tracker`·`live`·`conveyor_state`(지금은 null만: 토픽 이름·형식 확정 전 구독 자리).
+    키: `status`(반드시 `test_only`)·`note`(선택)·`tracker`·`live`·`conveyor_state`(지금은 null만).
     """
     import hashlib
 
@@ -175,14 +162,18 @@ def _pct(values, q: float):
 class LiveWorldTracking:
     """실행 하나의 W 추적 스레드. 큐·결과 표·계수는 조건변수 하나가, 추적기와 기록 파일은 추적 스레드가 소유한다."""
 
-    def __init__(self, run_id: str, tracker: WorldTracker, config: LiveWorldConfig, *, tf_lookup: Callable, plane_z_m: float,
+    def __init__(self, run_id: str, tracker: WorldTracker, config: LiveWorldConfig, *, tf_lookup: Callable,
+                 plane_z_m: float | BoltPlanes,
                  out_dir: str, view_bias=None, clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
-        """`tf_lookup(frame) → TfLookupResult`(촬영 stamp 정확 조회). 기록 파일(`world_tracks.jsonl`, 새 파일)을 연다."""
+        """새 기록 파일 `world_tracks.jsonl`을 연다. `tf_lookup(frame)`은 촬영 stamp 정확 조회다.
+
+        `plane_z_m`은 볼트 투영 높이 하나(m) 또는 종류별 높이 `BoltPlanes`다.
+        """
         self.run_id = run_id
         self._tracker = tracker
         self.config = config
         self._tf_lookup = tf_lookup
-        self._plane_z = float(plane_z_m)
+        self._plane_z = plane_z_m if isinstance(plane_z_m, BoltPlanes) else float(plane_z_m)
         self._view_bias = view_bias
         self._clock_ns = clock_ns
         self._fh = open(Path(out_dir) / "world_tracks.jsonl", "x", encoding="utf-8")
@@ -200,13 +191,12 @@ class LiveWorldTracking:
         self.counts = {k: 0 for k in ("offered", "dropped_full", "processed", "updated", "handoff_ok", "handoff_pending",
                                       "stale_skipped", "lag_resets", "reset_requests")}
         self.not_updated: dict[str, int] = {}
-        # #239: detect 영상 그리기 조회(`peek`) 계수. 밀림 규칙 입력(handoff_*·대기 창)과 섞지 않는다
-        # #242: prev = 같은 작업 결과가 없어 직전 결과를 위치로 짝지어 그림, pending = 그것도 못 함(사유는 display_prev_miss)
+        # `peek` 계수. 밀림 규칙 입력(handoff_*·대기 창)과 섞지 않는다
         self.display_counts = {"found": 0, "prev": 0, "pending": 0, "reason": 0}
         self.display_prev_miss: dict[str, int] = {}
-        self._display_prev: PrevSnapshot | None = None   # 직전 갱신 W 결과의 표시용 사본(조건변수 안, 추적 스레드가 바꿈)
+        self._display_prev: PrevSnapshot | None = None   # 조건변수 안, 추적 스레드가 바꿈
         self.lag_reset_log: list[dict] = []
-        self.last_reset: str | None = None      # 마지막으로 처리한 초기화 사유(D3)
+        self.last_reset: str | None = None      # 마지막으로 처리한 초기화 사유
         self._queue_len_samples: collections.deque[int] = collections.deque(maxlen=4096)
         self._lag_ms_samples: collections.deque[float] = collections.deque(maxlen=4096)
         self._tf_wait_samples: collections.deque[float] = collections.deque(maxlen=4096)
@@ -266,11 +256,10 @@ class LiveWorldTracking:
         return value if found else None
 
     def peek(self, context, display=None):
-        """detect 영상 그리기용(#239, C forwarder 스레드): 그 작업 결과를 **기다리지 않고** 읽는다.
+        """detect 영상 그리기용(C forwarder 스레드): 그 작업 결과를 기다리지 않고 읽는다.
 
-        그 작업 키(FrameKey 전체)의 값이 있으면 그것(`TrackFrame` | 사유 문자열). 없고(아직 없음·표에서 밀려남) `display`(그 작업 AI 결과)와
-        설정 `display_prev`가 있으면(#242) 직전 W 결과를 위치로 짝지은 표시 전용 `PrevDisplay`, 그것도 안 되면 None.
-        `handoff_*` 계수·대기 창(밀림 규칙 입력)과 추적 판정은 바꾸지 않고 `display_counts`·`display_prev_miss`만 센다.
+        결과가 없으면 `display_prev` 설정 시 직전 W 결과를 위치로 짝지은 `PrevDisplay`, 그것도 안 되면 None.
+        밀림 규칙 입력과 추적 판정은 바꾸지 않는다.
         """
         key = self._k(frame_key(context))
 
@@ -376,7 +365,7 @@ class LiveWorldTracking:
                     if self._lag_streak >= self.config.lag_persist_n and cooled:
                         # 밀림 지속: 최신 1개만 남기고 다시 시작(꺼낸 항목도 오래된 것으로 버림)
                         newest = self._queue[-1] if self._queue else item
-                        # 버린 수 = 꺼낸 항목(최신이 아니면) + 큐에서 최신을 뺀 나머지 = 큐 길이(큐가 비면 꺼낸 것을 그대로 씀)
+                        # 버린 수 = 꺼낸 항목 + 큐에서 최신을 뺀 나머지 = 큐 길이
                         skipped = len(self._queue)
                         self._queue.clear()
                         self.counts["stale_skipped"] += skipped
@@ -401,19 +390,19 @@ class LiveWorldTracking:
                 self._process(item, lag_ms if lag_reset is None else (now - item.enqueued_ns) / 1e6)
 
     def _clear_display_prev(self) -> None:
-        """추적 스레드: 재설정 전 결과를 표시에 쓰지 않게 직전 사본을 지운다(#242)."""
+        """추적 스레드: 재설정 전 결과를 표시에 쓰지 않게 직전 사본을 지운다."""
         with self._cond:
             self._display_prev = None
 
     def _apply_reset(self, reason: str) -> None:
-        """추적 스레드: 전 트랙 종료 + 기록(D3)."""
+        """추적 스레드: 전 트랙 종료 + 기록."""
         self._clear_display_prev()
         self._tracker.reset(reason)
         self.last_reset = reason
         self._write({"kind": "reset", "reason": reason, "t_mono_ns": self._clock_ns()})
 
     def _finish(self) -> None:
-        """추적 스레드 끝: 처리 못 한 초기화 요청이 있으면 지금 처리하고 종료 사건을 한 번 쓴다(D3)."""
+        """추적 스레드 끝: 남은 초기화 요청을 처리하고 종료 사건을 한 번 쓴다."""
         with self._cond:
             pending, self._reset_reason = self._reset_reason, None
 
@@ -456,9 +445,11 @@ class LiveWorldTracking:
                                     "input": by_index[a.instance_index].kind,
                                     "center_mm": _r(by_index[a.instance_index].center_mm),
                                     "center_raw_mm": _r(by_index[a.instance_index].center_raw_mm),
-                                    "length_mm": _r1(by_index[a.instance_index].length_mm)} for a in track.assignments]})
+                                    "length_mm": _r1(by_index[a.instance_index].length_mm),
+                                    "plane_z_m": by_index[a.instance_index].plane_z_m,   # W로 올린 높이
+                                    "plane_spec": by_index[a.instance_index].plane_spec} for a in track.assignments]})
 
-        # #242: 갱신한 결과면 확정 번호의 표시용 박스 사본을 둔다(화면 전용, 추적 판정·송신에는 쓰지 않음)
+        # 갱신한 결과면 확정 번호의 표시용 박스 사본을 둔다(추적 판정·송신에는 쓰지 않음)
         snap = snapshot(value, item.display) if isinstance(value, TrackFrame) else None
 
         with self._cond:
@@ -510,9 +501,9 @@ class LiveWorldTracking:
                    "handoff_pending_ratio": None if total == 0 else round(counts["handoff_pending"] / total, 4),
                    "dropped_full": counts["dropped_full"], "stale_skipped": counts["stale_skipped"],
                    "lag_resets": counts["lag_resets"], "lag_reset_log": list(self.lag_reset_log)}
-            # #239·#242: detect 영상 W 번호 조회(found·prev(직전 결과 짝)·pending 배너·사유 배너), pending 사유
+            # detect 영상 W 번호 조회 계수(found·prev·pending·reason)와 prev 실패 사유
             display = {**self.display_counts, "prev_miss": dict(sorted(self.display_prev_miss.items()))}
-            counts["queue_left"] = len(self._queue)   # 닫힐 때 처리하지 못하고 남은 수(합: offered = processed + dropped + stale + left)
+            counts["queue_left"] = len(self._queue)   # offered = processed + dropped + stale + left
 
         return {"config": self.config.to_json(), "counts": counts, "not_updated": dict(sorted(self.not_updated.items())),
                 "lag": lag, "tracker": self._tracker.stats(), "diagnostics": dict(self.diagnostics),

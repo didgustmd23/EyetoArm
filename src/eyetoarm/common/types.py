@@ -1,17 +1,7 @@
-"""공통 입력 자료형 — 공통 자료형 관리 초안 기준.
+"""공통 입력·관측 자료형(`FramePacket`·`PlanarObservation`·`FrameObservations` 등)과 공통 검사 함수.
 
-근거: 공통 자료형 관리 초안 §3.1(`TimestampBase`), §3.2(`FramePacket`), §3.6
-(`InputStatusEvent`, 가칭), 사용자 확정(2026-11-11: 공통 자료형은 초안 기준으로 진행).
-
-- 현재 쓰는 최소 자료형만 둔다. A 파이프라인 작업 1(계획 2026-11-15 r3)에서 초안 §3.1의
-  `PixelBasis`·`Contour`, §3.3 `PlanarObservation`, §3.5 `CandidateInvalidationEvent`를 추가했다
-  (계획 제안 단계, 영향 담당 확인 전). `WorkPlanarResult`(B 소유)·`PixelToSourceTransform`
-  (전달 방식 미결)은 아직 두지 않는다. A-8(#157)에서 `PlanarObservation.axis_endpoints_px`(볼트 두 끝점)와
-  축 끝점 경로 유효 조건을 추가했다(B 요청·사용자 구현 지시, 다른 소비자 확인 전).
-  #189 단계 L에서 `CaptureInfo`·`CaptureTf`(봉투 모듈에서 옮김)와 다중 물체 목록 `ObjectObservation`·`FrameObservations`,
-  봉투·목록 공통 검사 함수를 추가했다(B-09 B 회신 2026-11-19 수락 형식).
-- 담당별 확장(예: A 입력의 `source_ref`·`source_index`)은 각 모듈에서 이 클래스를 상속해 둔다.
-- 표준 라이브러리와 NumPy만 쓴다. Qt·ROS·OpenCV를 import하지 않는다.
+담당별 확장(예: A 입력의 `source_ref`·`source_index`)은 각 모듈에서 상속해 둔다.
+표준 라이브러리와 NumPy만 쓰고 Qt·ROS·OpenCV를 import하지 않는다.
 """
 from __future__ import annotations
 
@@ -24,7 +14,7 @@ import numpy as np
 
 
 class TimestampBase(str, Enum):
-    """`timestamp_ms`의 시간 기준(초안 §3.1, TCP 명세서 §4.3). 기준이 다른 시각끼리 빼지 않는다."""
+    """`timestamp_ms`의 시간 기준. 기준이 다른 시각끼리 빼지 않는다."""
 
     PC_RECEIVE = "PC_RECEIVE"
     PHONE_CAPTURE = "PHONE_CAPTURE"
@@ -33,7 +23,7 @@ class TimestampBase(str, Enum):
 
 
 class InputStatus(str, Enum):
-    """프레임이 없는 입력 사건의 상태(초안 §3.6). 검출 판정 사유와 섞지 않는다."""
+    """프레임이 없는 입력 사건의 상태. 검출 판정 사유와 섞지 않는다."""
 
     SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
     FRAME_TIMEOUT = "FRAME_TIMEOUT"
@@ -43,14 +33,10 @@ class InputStatus(str, Enum):
 
 @dataclass(frozen=True)
 class FramePacket:
-    """성공적으로 받은 프레임 하나(초안 §3.2, 14개 필드).
+    """성공적으로 받은 프레임 하나(14개 필드, 기본값 없음).
 
-    - `image`는 BGR `uint8`, shape (H, W, 3) 입력 계약을 따른다. 이 자료형은 값을 검사하지 않는다.
-    - 모든 필드에 기본값이 없다. 호출자가 값이나 None을 명시한다.
-    - 이 자료형은 시계를 읽거나 순번을 발급하지 않는다. 그것은 입력 소스의 일이다.
-    - `frozen=True`는 필드 재할당만 막는다. `image` 배열의 내용이나 다른 별칭을 통한 변경은
-      막지 않는다. 버퍼 소유권 이전·독립 복사·쓰기 제한은 이 생성자가 하지 않으며, 프레임을
-      만드는 입력 소스가 책임진다(초안 §4 불변조건 8).
+    `image`는 BGR `uint8` (H, W, 3) 계약이지만 여기서 검사하지 않고, 시계·순번도 만들지 않는다.
+    `frozen=True`는 필드 재할당만 막는다. 버퍼 독립·쓰기 제한은 프레임을 만드는 입력 소스 책임이다.
     """
 
     image: np.ndarray
@@ -71,10 +57,10 @@ class FramePacket:
 
 @dataclass(frozen=True)
 class InputStatusEvent:
-    """프레임을 받지 못했거나 받기를 끝낸 사건(초안 §3.6, 가칭).
+    """프레임을 받지 못했거나 받기를 끝낸 사건(가칭).
 
-    프레임이 없으므로 `image_seq`·`image`·`timestamp_ms`를 두지 않는다. 시각은 PC 단조
-    시각(`event_monotonic_ns`)이다. 모든 필드에 기본값이 없다.
+    프레임이 없어 `image_seq`·`image`·`timestamp_ms`를 두지 않고, 시각은 PC 단조 시각
+    (`event_monotonic_ns`)이다. 모든 필드에 기본값이 없다.
     """
 
     run_id: str
@@ -85,27 +71,27 @@ class InputStatusEvent:
 
 
 class PixelBasis(str, Enum):
-    """윤곽 점 좌표의 기준(초안 §3.1, B §6.1 `pixel_basis`). 왜곡 보정 전(`raw`)·후(`undistorted`)."""
+    """윤곽 점 좌표의 기준. 왜곡 보정 전(`raw`)·후(`undistorted`)."""
 
     RAW = "raw"
     UNDISTORTED = "undistorted"
 
 
-# 윤곽 점 배열(초안 §3.1): numpy shape (N, 2), float32. ROI·표시 축소를 되돌린 원본 해상도·크롭
-# 기준 픽셀 좌표이며, 왜곡 보정 여부는 함께 담는 `PixelBasis`로 구분한다.
+# 윤곽 점 배열: numpy (N, 2) float32. ROI·표시 축소를 되돌린 원본 해상도·크롭 기준 픽셀이며,
+# 왜곡 보정 여부는 함께 담는 `PixelBasis`로 구분한다.
 Contour: TypeAlias = np.ndarray
 
-# 볼트 축 두 끝점(A-8, B 선택 2026-11-17): numpy shape (2, 2), float64. 행 0 = 머리 끝, 행 1 = 축 끝.
-# FramePacket 영상 전체 기준 픽셀(검출 ROI 오프셋·표시 축소를 복원한 값)이며 왜곡 보정 여부는 `PixelBasis`로 구분한다.
+# 볼트 축 두 끝점: numpy (2, 2) float64, 행 0 = 머리 끝, 행 1 = 축 끝. FramePacket 영상 전체 기준
+# 픽셀(ROI 오프셋·표시 축소 복원)이며 왜곡 보정 여부는 `PixelBasis`로 구분한다.
 AxisEndpoints: TypeAlias = np.ndarray
 
-# 축 끝점 경로의 관측면 예약어(A-8). 이 값은 끝점 경로에서만 쓰고 윤곽 경로에는 쓰지 않는다
+# 축 끝점 경로의 관측면 예약어. 끝점 경로에서만 쓰고 윤곽 경로에는 쓰지 않는다
 OBSERVED_FACE_AXIS = "axis"
 
-# `PlanarObservation.method` 허용 값(초안 §3.3)
+# `PlanarObservation.method` 허용 값
 _OBSERVATION_METHODS = ("opencv", "ai")
 
-# AI 관측에서만 값을 갖는 조건부 필드(초안 §3.3 「조건부(AI)」)
+# AI 관측에서만 값을 갖는 조건부 필드
 _AI_ONLY_FIELDS = ("class_name", "confidence", "model_id")
 
 
@@ -119,7 +105,7 @@ def _owned_contour(points, name: str) -> Contour | None:
     if points is None:
         return None
 
-    # 외부 배열과 메모리를 나누지 않도록 항상 새로 복사한다(초안 §4 불변조건 8)
+    # 외부 배열과 메모리를 나누지 않도록 항상 새로 복사한다
     owned = np.array(points, dtype=np.float32, copy=True, order="C")
 
     if owned.ndim != 2 or owned.shape[1] != 2:
@@ -152,16 +138,15 @@ def _finite_coordinate(value) -> float:
 
 
 def _owned_endpoints(points) -> AxisEndpoints | None:
-    """축 끝점을 소유 복사본(float64 (2, 2), 읽기 전용)으로 만든다. None은 그대로, 형식·값이 다르면 ValueError.
+    """축 끝점을 소유 복사본(float64 (2, 2), 읽기 전용)으로 만든다. None은 그대로, 어긋나면 ValueError.
 
-    NumPy 배열이면 dtype이 정수·실수일 때만 받는다(object·문자열·복소수·bool 배열은 값과 무관하게 거부).
-    Python 목록은 원소 단위로 검사해 bool이 섞인 목록이 숫자로 자동 승격되거나 거대 정수가 OverflowError로 새지 않게 한다.
-    float64로 바꾼 뒤 두 점이 같으면(길이 0) 거부한다. 픽셀 범위는 프레임 크기를 아는 A 코어가 검사한다.
+    NumPy 배열은 정수·실수 dtype만, 목록은 원소마다 검사한다(bool 승격·거대 정수 넘침 방지).
+    두 점이 같으면(길이 0) 거부한다. 픽셀 범위는 프레임 크기를 아는 A 코어가 검사한다.
     """
     if points is None:
         return None
 
-    # NumPy 배열은 변환 전에 dtype부터 본다: 정수·실수만 허용(object·문자열·복소수·bool 등 거부, #157 I1 F1)
+    # NumPy 배열은 변환 전에 dtype부터 본다: 정수·실수만 허용
     if isinstance(points, np.ndarray) and points.dtype.kind not in ("i", "u", "f"):
         raise ValueError(f"axis_endpoints_px array dtype must be integer or float: {points.dtype}")
 
@@ -185,20 +170,18 @@ def _owned_endpoints(points) -> AxisEndpoints | None:
 
 
 def owned_axis_endpoints(points) -> AxisEndpoints | None:
-    """`PlanarObservation`과 같은 규칙으로 축 끝점을 검사해 소유 복사본을 돌려준다(None은 None, 어긋나면 ValueError).
+    """`PlanarObservation`과 같은 규칙으로 축 끝점을 검사해 소유 복사본을 돌려준다(None은 None).
 
-    A 코어가 생성 뒤 변조된 끝점을 다시 확인할 때 공통형 규칙을 따로 만들지 않고 이 함수를 쓴다(#157 I2 r1).
+    A 코어가 생성 뒤 변조된 끝점을 다시 확인할 때 쓴다. 어긋나면 ValueError.
     """
     return _owned_endpoints(points)
 
 
 def check_axis_path(*, observed_face, calc_contour, axis_endpoints_px, class_name, valid) -> AxisEndpoints | None:
-    """축 끝점 경로(A-8) 조합 규칙을 검사하고 끝점 소유 복사본을 돌려준다. 어긋나면 ValueError.
+    """축 끝점 경로 조합 규칙을 검사하고 끝점 소유 복사본을 돌려준다. 어긋나면 ValueError.
 
-    `PlanarObservation` 생성자와 A 코어(생성 뒤 변조 재확인)가 같은 규칙을 쓰도록 한 곳에 둔다(#157 I2 r2).
-    - 끝점 형식·유한성·두 점 구분은 `owned_axis_endpoints`.
-    - 끝점이 있으면 관측면 `axis`, 클래스 None 또는 볼트 이름.
-    - 관측면 `axis`이면 `calc_contour`는 None, 유효(`valid is True`)이면 끝점 필수. 무효 axis의 끝점 None은 허용.
+    끝점이 있으면 관측면 `axis`·클래스 None 또는 볼트. 관측면 `axis`이면 `calc_contour`는 None이고,
+    유효(`valid is True`)이면 끝점 필수(무효 axis의 끝점 None은 허용).
     """
     endpoints = _owned_endpoints(axis_endpoints_px)
     is_axis = isinstance(observed_face, str) and observed_face == OBSERVED_FACE_AXIS
@@ -229,30 +212,10 @@ def _is_bolt_class(class_name) -> bool:
 
 @dataclass(frozen=True)
 class PlanarObservation:
-    """A 평면 관측 하나(초안 §3.3, A 상세설계 §5.2). 기본값은 A-8 `axis_endpoints_px`(마지막, None) 하나뿐이다.
+    """A 평면 관측 하나. 규칙을 어기면 ValueError.
 
-    - 유효 조건(윤곽 경로): `valid=True`이고 관측면이 `axis`가 아니면 `observed_face`·`calc_contour`·
-      `selected_index`가 모두 None이 아니어야 한다. 하나라도 없으면 ValueError. 관측면이 미확정이면
-      `valid=False`·`calc_contour=None`으로 둔다. `observed_face` 기본값을 `top_face`로 두지 않는다.
-      관측면 문자열은 자유 문자열로 받지만, 이는 기존 호출 호환일 뿐 계산용 윤곽이 실제 그 면인지에 대한
-      생산자 책임을 대신하지 않으며 전체 실루엣의 계산용 승격 허가가 아니다.
-    - 유효 조건(축 끝점 경로, A-8): `observed_face="axis"`이면 `calc_contour=None`이고, 유효이면
-      `axis_endpoints_px`·`selected_index`가 있어야 한다. `axis_endpoints_px`가 있으면 관측면은 `axis`,
-      `calc_contour`는 None, `class_name`은 None 또는 볼트 이름이어야 한다(너트·기타는 ValueError).
-      끝점은 float64 (2, 2) 독립·읽기 전용 복사본이며 행 0 = 머리 끝, 행 1 = 축 끝이다. 순서의 정확성과
-      픽셀 범위는 이 생성자가 검사하지 않는다(생산자 책임 / A 코어의 raw 범위 검사).
-    - 관측면이 None이면 `calc_contour`·`axis_endpoints_px`도 None이어야 한다(무효 관측 포함, 초안 §3.3 유효 조건·§7 예시 1-b).
-    - 조건부 필드는 그 조건 밖에서 None이다: 유효 관측의 `reason`은 None, `method="opencv"`이면
-      `class_name`·`confidence`·`model_id`는 None. 어기면 ValueError.
-    - 무효 관측은 값이 없는 필드를 None으로 둔다. 단 `reason`은 무효 시 필수이며 비어 있지 않은
-      문자열이어야 한다(초안 §3.3 reason 행 「조건부(무효 시)」). 사유 이름 목록은 미결이므로
-      값은 검사하지 않는다. 사유를 정하지 못한 생산자는 관측 생성을 보류한다.
-    - `calc_contour`·`display_mask_contour`는 생성 시 소유 복사본(float32 (N, 2), 읽기 전용)으로
-      저장한다. 외부 배열을 나중에 고쳐도 관측은 변하지 않는다. 전체 실루엣(`display_mask_contour`)을
-      계산용 윤곽으로 승격하지 않는다.
-    - 생성자는 클래스·보정·시간 값을 새로 만들어 넣지 않는다. 처리 예외·중단·세대 변경 폐기에는
-      관측을 만들지 않는다(초안 §3.3 끝).
-    - `selected_index`는 A 관측 식별 필드이며 B의 최종 후보 선택을 대신하지 않는다.
+    유효이면 `observed_face`·`selected_index`·기하(`calc_contour` 또는 axis 경로의 `axis_endpoints_px`)가 있고,
+    무효이면 `reason`이 있다. 끝점 행 0 = 머리 끝, 행 1 = 축 끝. 기하는 읽기 전용 소유 복사본이다.
     """
 
     run_id: str
@@ -299,13 +262,13 @@ class PlanarObservation:
         if self.observed_face is None and self.calc_contour is not None:
             raise ValueError("calc_contour requires observed_face")
 
-        # 축 끝점 경로(A-8): 끝점 ⇔ 관측면 axis, 계산용 윤곽과 함께 쓰지 않음, 볼트(또는 미지정)만
+        # 축 끝점 경로: 끝점 ⇔ 관측면 axis, 계산용 윤곽과 함께 쓰지 않음, 볼트(또는 미지정)만
         put("axis_endpoints_px", check_axis_path(
             observed_face=self.observed_face, calc_contour=self.calc_contour,
             axis_endpoints_px=self.axis_endpoints_px, class_name=self.class_name, valid=self.valid))
         is_axis = isinstance(self.observed_face, str) and self.observed_face == OBSERVED_FACE_AXIS
 
-        # 유효 조건(초안 §3.3, 축 경로는 calc_contour 대신 axis_endpoints_px)
+        # 유효 조건(축 경로는 calc_contour 대신 axis_endpoints_px)
         if self.valid:
             geometry = "axis_endpoints_px" if is_axis else "calc_contour"
             missing = [k for k in ("observed_face", geometry, "selected_index")
@@ -330,7 +293,7 @@ class PlanarObservation:
 
 
 class InvalidationKind(str, Enum):
-    """후보 무효화 사건의 종류(초안 §3.5, A 상세설계 §5.4). 이 5개 외의 값을 임의로 추가하지 않는다."""
+    """후보 무효화 사건의 종류. 이 5개 외의 값을 임의로 추가하지 않는다."""
 
     MODEL_LOAD_FAILED = "MODEL_LOAD_FAILED"
     MODEL_CONFIG_INVALID = "MODEL_CONFIG_INVALID"
@@ -339,25 +302,20 @@ class InvalidationKind(str, Enum):
     GENERATION_CHANGED = "GENERATION_CHANGED"
 
 
-# 프레임 없는 사건: job_seq·image_seq가 반드시 None(초안 §3.5·§4-6, A 상세설계 §5.4 표)
+# 프레임 없는 사건: job_seq·image_seq가 반드시 None
 _FRAMELESS_KINDS = (InvalidationKind.GENERATION_CHANGED, InvalidationKind.MODEL_LOAD_FAILED)
 
-# 작업에서 생긴 사건: job_seq·image_seq가 반드시 값(A 상세설계 §5.4 표 「해당 작업의 값」)
+# 작업에서 생긴 사건: job_seq·image_seq가 반드시 값
 _JOB_KINDS = (InvalidationKind.INFERENCE_ERROR, InvalidationKind.JOB_ABORTED)
 
 
 @dataclass(frozen=True)
 class CandidateInvalidationEvent:
-    """이동 후보 무효화 사건(초안 §3.5, 가칭). 모든 필드에 기본값이 없다.
+    """이동 후보 무효화 사건(가칭). 모든 필드에 기본값이 없고, 어긋나면 ValueError.
 
-    - `kind`는 `InvalidationKind` 5개 값만 허용한다(문자열이면 열거로 정규화, 그 밖은 ValueError).
-    - `GENERATION_CHANGED`·`MODEL_LOAD_FAILED`는 프레임 없는 사건이라 `job_seq`·`image_seq`가 None이다.
-      가상 값을 넣으면 ValueError. `GENERATION_CHANGED`의 `generation`은 새 현재 세대다.
-    - `INFERENCE_ERROR`·`JOB_ABORTED`는 해당 작업의 `job_seq`·`image_seq`를 함께 가진다.
-    - `MODEL_CONFIG_INVALID`는 설정 적용 시(둘 다 None) 또는 작업 중(둘 다 값) 중 하나다.
-    - `event_monotonic_ns`는 PC 단조 시각이다. 이 생성자는 시계를 읽지 않는다.
-    - 필수 문자열(`run_id`·`source_id`·`cause`·`detector_config_id`)은 비어 있지 않아야 하고,
-      `event_monotonic_ns`·`generation`·값이 있는 `job_seq`·`image_seq`는 bool 아닌 정수여야 한다.
+    - `GENERATION_CHANGED`·`MODEL_LOAD_FAILED`는 `job_seq`·`image_seq`가 None(`generation`은 새 세대).
+    - `INFERENCE_ERROR`·`JOB_ABORTED`는 둘 다 값, `MODEL_CONFIG_INVALID`는 둘 다 None 또는 둘 다 값.
+    - `event_monotonic_ns`는 PC 단조 시각이며 이 생성자는 시계를 읽지 않는다.
     """
 
     run_id: str
@@ -371,7 +329,7 @@ class CandidateInvalidationEvent:
     image_seq: int | None
 
     def __post_init__(self) -> None:
-        """필드 형식을 검사하고 kind를 정규화한 뒤 kind별 프레임 식별자 규칙을 검사한다. 어긋나면 ValueError."""
+        """필드 형식·kind 정규화·kind별 프레임 식별자 규칙을 검사한다. 어긋나면 ValueError."""
         # 필수 필드 형식
         for name in ("run_id", "source_id", "cause", "detector_config_id"):
             value = getattr(self, name)
@@ -406,17 +364,15 @@ class CandidateInvalidationEvent:
 
 
 # ---------------------------------------------------------------------------
-# 촬영 정보·촬영 시각 TF와 A→B 다중 물체 목록(#189 단계 L, B-09 B 회신 2026-11-19 수락 형식)
+# 촬영 정보·촬영 시각 TF와 A→B 다중 물체 목록
 #
-# `CaptureInfo`·`CaptureTf`는 #168 봉투(`vision/observation_envelope`)에서 옮겨 왔다. 봉투 모듈은 같은 클래스를 다시 내보낸다.
-# 검사 보조 함수는 봉투(`eyetoarm.b_input/1`)와 목록이 같은 규칙을 쓰도록 여기 한 곳에 두고 `ValueError`를 낸다.
-# 봉투는 같은 메시지로 `ObservationEnvelopeError`로 감싼다. 카메라 프로파일은 B 모듈(`calibration.profile`)을 import하지 않고
-# 속성(`calibration_id`·`frame_id`·`width`·`height`)으로 대조한다(reviewer #189 Q1: 공통형은 최소 의존).
+# 검사 보조 함수는 봉투(`eyetoarm.b_input/1`)와 목록이 같은 규칙을 쓰도록 한 곳에 두고 ValueError를 낸다.
+# 카메라 프로파일은 B 모듈을 import하지 않고 속성으로 대조한다(공통형은 최소 의존).
 # ---------------------------------------------------------------------------
 
 FRAME_OBSERVATIONS_VERSION = "eyetoarm.frame_observations/1"
 
-# 목록 후보의 관측면(A §5.2 B-09 협의안). 볼트 축 끝점 또는 너트 윗면 윤곽
+# 목록 후보의 관측면. 볼트 축 끝점 또는 너트 윗면 윤곽
 OBSERVED_FACE_TOP = "top_face"
 _OBJECT_FACES = (OBSERVED_FACE_AXIS, OBSERVED_FACE_TOP)
 
@@ -451,7 +407,7 @@ def nonneg_int(value, where: str) -> int:
 
 
 def real_number(value, where: str) -> float:
-    """유한 실수 하나. bool·문자열·복소수·None·그 밖의 형은 거부, float 변환 넘침(거대 정수)·비유한도 ValueError."""
+    """유한 실수 하나. bool·문자열·복소수·None 등은 거부하고, 거대 정수·비유한 값도 ValueError."""
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.integer, np.floating)):
         raise ValueError(f"{where} must be a real number (not bool/str/complex): {value!r}")
 
@@ -467,7 +423,7 @@ def real_number(value, where: str) -> float:
 
 
 def real_array(value, where: str) -> np.ndarray:
-    """실수 배열(float64 새 복사본). ndarray는 정수·실수 dtype만, 목록·튜플은 원소마다 `real_number`로 검사한다(조용한 형 변환 없음)."""
+    """실수 배열(float64 새 복사본). ndarray는 정수·실수 dtype만, 목록은 원소마다 `real_number`로 검사."""
     if isinstance(value, np.ndarray):
         if value.dtype.kind not in "iuf":
             raise ValueError(f"{where} must have an integer/float dtype: {value.dtype}")
@@ -509,7 +465,7 @@ def nonempty_text(value, where: str) -> str:
 def rigid_transform(T, where: str) -> np.ndarray:
     """4×4 유한 강체변환의 읽기 전용 복사본(원소 형 엄격 검사).
 
-    허용오차(U-6 보고값, #168 봉투 기준 그대로): 마지막 행 [0,0,0,1] atol 1e-9, `R Rᵀ = I` atol 1e-6, det(R) = 1 abs 1e-6.
+    허용오차: 마지막 행 [0,0,0,1] atol 1e-9, `R Rᵀ = I` atol 1e-6, det(R) = 1 abs 1e-6.
     """
     arr = real_array(T, where)
 
@@ -526,7 +482,7 @@ def rigid_transform(T, where: str) -> np.ndarray:
 
 
 def raw_points_in_frame(points: np.ndarray, width: int, height: int) -> bool:
-    """RAW 픽셀 점들이 모두 0 ≤ u ≤ width − 1, 0 ≤ v ≤ height − 1 안인가(#196 A3-4: 목록·검출 변환이 같은 범위 규칙을 쓴다)."""
+    """RAW 픽셀 점이 모두 0 ≤ u ≤ width − 1, 0 ≤ v ≤ height − 1 안인가(목록·검출 변환 공통 규칙)."""
     return not ((points[:, 0] < 0).any() or (points[:, 0] > width - 1).any()
                 or (points[:, 1] < 0).any() or (points[:, 1] > height - 1).any())
 
@@ -542,7 +498,7 @@ def check_frame_image(frame: FramePacket) -> None:
 
 
 def check_frame_capture(frame: FramePacket, capture: CaptureInfo) -> None:
-    """촬영 정보 필드와 프레임 ↔ 촬영 정보(시각·광학 프레임·크기·보정 번호)를 대조한다. 어긋나면 ValueError."""
+    """촬영 정보 필드와 프레임 ↔ 촬영 정보(시각·광학 프레임·크기·보정 번호)를 대조한다."""
     nonneg_int(capture.stamp_ns, "capture.stamp_ns")
     nonempty_text(capture.optical_frame, "capture.optical_frame")
     nonempty_text(capture.calibration_id, "capture.calibration_id")
@@ -564,7 +520,7 @@ _MISSING = object()
 
 
 def check_camera_capture(camera, capture: CaptureInfo) -> None:
-    """카메라 프로파일 ↔ 촬영 정보(보정 번호·광학 프레임·해상도)를 속성으로 대조한다. 어긋나거나 속성이 없으면 ValueError."""
+    """카메라 프로파일 ↔ 촬영 정보(보정 번호·광학 프레임·해상도)를 속성으로 대조한다."""
     got = tuple(getattr(camera, name, _MISSING) for name in ("calibration_id", "frame_id", "width", "height"))
 
     if got != (capture.calibration_id, capture.optical_frame, capture.width, capture.height):
@@ -572,7 +528,10 @@ def check_camera_capture(camera, capture: CaptureInfo) -> None:
 
 
 def check_capture_tf(tf, capture: CaptureInfo, world_frame: str | None) -> CaptureTf | None:
-    """촬영 시각 TF 결합 대조와 정규화(독립 복사·읽기 전용). None은 None. `world_frame`이 None이면 부모는 비지 않음만 본다."""
+    """촬영 시각 TF 결합을 대조하고 읽기 전용 복사본으로 정규화한다(None은 None).
+
+    `world_frame`이 None이면 부모 프레임은 비어 있지 않은지만 본다.
+    """
     if tf is None:
         return None
 
@@ -595,12 +554,11 @@ def check_capture_tf(tf, capture: CaptureInfo, world_frame: str | None) -> Captu
 
 @dataclass(frozen=True)
 class ObjectObservation:
-    """같은 프레임의 물체 후보 하나(A §5.2 B-09 협의안, B 수락). 좌표는 독립 복사·읽기 전용이다.
+    """같은 프레임의 물체 후보 하나. 좌표는 독립 복사·읽기 전용이다.
 
-    - `instance_index`: 그 프레임의 원래 검출 인덱스(`AiSegResult.instances` 순번, 0 이상). 추적 ID가 아니다.
-    - `observed_face`: 볼트 `"axis"`(끝점 필수·윤곽 없음) 또는 너트 등 `"top_face"`(윤곽 필수·끝점 없음). 클래스와 맞아야 한다.
-    - RAW 픽셀 범위는 프레임 크기를 아는 `FrameObservations`가 검사한다.
-    - 자료형은 계약대로 `top_face`를 표현할 수 있다. A 생성 함수는 볼트만 넣는다(사용자 결정: 분류 대상은 볼트만).
+    `instance_index`는 그 프레임의 원래 검출 인덱스(추적 ID 아님). `observed_face`는 볼트 `"axis"`
+    (끝점만) 또는 너트 등 `"top_face"`(윤곽만)로 클래스와 맞아야 한다. A 생성 함수는 볼트만 넣는다.
+    RAW 픽셀 범위는 프레임 크기를 아는 `FrameObservations`가 검사한다.
     """
 
     instance_index: int
@@ -679,15 +637,10 @@ class ObjectObservation:
 
 @dataclass(frozen=True)
 class FrameObservations:
-    """같은 프레임의 유효 물체 후보 목록(A→B 단계 L, A §5.2 B-09 협의안·B 수락). 프레임 공통 정보는 한 번만 둔다.
+    """같은 프레임의 유효 물체 후보 목록(A→B). 생성 때 검사하고 어긋나면 ValueError.
 
-    생성 검사(어긋나면 ValueError, 조용히 고치지 않음):
-    - `version`은 `FRAME_OBSERVATIONS_VERSION`만.
-    - `frame.image`는 uint8 (H, W, 3)이고 쓰기 금지여야 한다(입력 소스가 독립·쓰기 금지로 넘김, 복사하지 않고 검사만).
-    - `capture` ↔ `frame`(시각·광학 프레임·크기·보정 번호), `camera` ↔ `capture`(속성 대조).
-    - `tf`는 None 또는 촬영 시각·광학 프레임이 같은 4×4 강체(프레임 공통 하나, 독립 복사·읽기 전용).
-    - `candidates`는 `ObjectObservation`의 tuple, 길이 1 이상, `instance_index` 엄격 오름차순. 상한은 두지 않는다
-      (B가 앞 8개만 계산, B-09 회신). RAW 좌표는 0 ≤ u ≤ W−1, 0 ≤ v ≤ H−1(W·H = capture).
+    `frame.image`는 쓰기 금지 uint8, `tf`는 None 또는 촬영 시각·광학 프레임이 같은 강체,
+    `candidates`는 1개 이상·`instance_index` 엄격 오름차순·RAW 좌표는 프레임 안.
     """
 
     version: str
@@ -741,7 +694,7 @@ class FrameObservations:
 
             previous = c.instance_index
 
-            # RAW만 범위를 본다(undistorted 범위 규칙은 미결, A 코어와 같음)
+            # RAW만 범위를 본다(undistorted 범위 규칙은 아직 없음)
             if c.pixel_basis is PixelBasis.RAW:
                 if not raw_points_in_frame(c.points, self.capture.width, self.capture.height):
                     raise ValueError(f"candidate {c.instance_index} raw coordinates out of frame "

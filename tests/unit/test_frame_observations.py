@@ -1,7 +1,4 @@
-"""#189 단계 L 자료형(`ObjectObservation`·`FrameObservations`)과 목록 봉투 `eyetoarm.b_input/2` 계약 시험.
-
-근거: 계획 `_workspace/189_builder2_stage_L_plan.md` r0 §2·§4·§8(L-1~L-9), A 상세설계 §5.2 B-09 협의안, reviewer #189 Q1(카메라 속성 대조).
-"""
+"""물체별 관측 자료형(`ObjectObservation`·`FrameObservations`)과 목록 봉투 `eyetoarm.b_input/2` 계약 시험."""
 from __future__ import annotations
 
 import dataclasses
@@ -78,7 +75,7 @@ def frame_obs(**over):
 
 
 class ObjectFieldTest(unittest.TestCase):
-    """L-1·L-2: 후보 필드 형·배타·클래스–관측면."""
+    """후보 필드 형·배타·클래스–관측면."""
 
     def test_valid_bolt(self):
         """정상 볼트 axis 후보는 만들어지고 끝점은 float64 (2,2) 읽기 전용이다."""
@@ -100,7 +97,7 @@ class ObjectFieldTest(unittest.TestCase):
                     bolt(**over)
 
     def test_exclusive_geometry_and_class(self):
-        """axis 후보에 윤곽이 있거나 끝점이 없으면, 볼트 아닌 클래스의 axis 후보는 ValueError(너트 경로는 시험하지 않음, 사용자 지시)."""
+        """윤곽 있는·끝점 없는 axis 후보, 볼트 아닌 클래스의 axis 후보는 ValueError다."""
         contour = np.array([[1.0, 1.0], [5.0, 1.0], [3.0, 4.0]])
         bad = [lambda: bolt(calc_contour=contour), lambda: bolt(axis_endpoints_px=None), lambda: bolt(class_name="nut")]
 
@@ -119,7 +116,7 @@ class ObjectFieldTest(unittest.TestCase):
 
 
 class OwnershipTest(unittest.TestCase):
-    """L-4: 독립 복사·읽기 전용·메모리 비공유."""
+    """독립 복사·읽기 전용·메모리 비공유."""
 
     def test_input_change_does_not_leak(self):
         """입력 배열을 나중에 고쳐도 후보 값은 그대로이고, 후보 배열 쓰기는 ValueError, 입력과 메모리를 나누지 않는다."""
@@ -153,7 +150,7 @@ class OwnershipTest(unittest.TestCase):
 
 
 class CandidateTupleTest(unittest.TestCase):
-    """L-3·L-5: 후보 tuple 규칙과 RAW 범위."""
+    """후보 tuple 규칙과 RAW 범위."""
 
     def test_tuple_rules(self):
         """빈 tuple·list·중복·역순·후보 아닌 원소는 ValueError, 오름차순 여러 개는 허용(상한 없음)."""
@@ -180,7 +177,7 @@ class CandidateTupleTest(unittest.TestCase):
 
 
 class BindingTest(unittest.TestCase):
-    """L-1·L-6: 버전·형·capture–frame–camera 대조."""
+    """버전·형·capture–frame–camera 대조."""
 
     def test_version_and_types(self):
         """다른 버전·FramePacket 아님·CaptureInfo 아님·세대·순번 음수·빈 설정 ID는 ValueError."""
@@ -218,7 +215,7 @@ class BindingTest(unittest.TestCase):
 
 
 class TfTest(unittest.TestCase):
-    """L-7·L-9: 프레임 공통 TF 하나."""
+    """프레임 공통 TF 하나."""
 
     def test_tf_none_allowed(self):
         """TF 없음(None)은 허용한다(B가 프레임 전체 SKIP TF_UNAVAILABLE)."""
@@ -286,7 +283,7 @@ class ListEnvelopeTest(unittest.TestCase):
             make_list_envelope("not a list")
 
     def test_rigid_tolerance_reported_values(self):
-        """U-6: 정규직교 허용오차는 봉투 1 기준 그대로(R Rᵀ atol 1e-6 안은 허용, 밖은 거부)."""
+        """정규직교 허용오차는 봉투 1 기준 그대로(R Rᵀ atol 1e-6 안은 허용, 밖은 거부)."""
         near = T_W_C.copy()
         near[:3, :3] *= 1 + 2e-7
         far = T_W_C.copy()

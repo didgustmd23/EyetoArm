@@ -1,41 +1,7 @@
-"""실시간 입력 수신 상태기(ROS 없음) — 최신 칸 1개, 수신 epoch, 입력 경계 대기열.
+"""실시간 입력 수신 상태기(ROS 없음): 최신 칸 1개, 수신 epoch, 입력 경계 대기열.
 
-근거: 계획 `docs/superpowers/plans/2026-11-16-live-link-camera.md` r3 §3.3(최신 프레임 우선·소유권), §3.4(수신 epoch·
-규칙 R1~R7), §3.5(결과 공개 전 입력 반영), A 상세설계 §5.1(`received_monotonic_ns`는 수신 순간 한 번), §5.4(세대 증가 조건:
-재접속·시뮬레이션 시각 되감기·프로필 변경), §6(Gazebo: stamp·시뮬레이션 시각·PC 수신 중단을 함께 검사).
-
-역할 분담
-- **수신 스레드**(ROS 콜백)는 `on_image`·`on_clock`·`on_camera_info`·`on_publisher_snapshot`·`on_qos_incompatible`·
-  `on_receiver_failed`만 부른다.
-  이 메서드들은 잠금 안에서 상태를 바꾸고 최신 칸을 교체할 뿐, 변환·검출·기록을 하지 않는다.
-- **제어 흐름**(실행기)은 `poll_inputs`·`input_applied`·`take`·`is_current_epoch`·`close`를 부른다. 코어(`VisionPipeline`)는
-  이 모듈이 부르지 않는다.
-
-수신 epoch(계획 §3.4)
-- 입력 쪽 경계(되감기·재접속·프로필 변경·수신 중단)를 감지할 때마다 잠금 안에서 `rx_epoch`를 1 올리고, 같은 잠금 안에서 그
-  경계를 대기열에 넣는다. 영상 수신 기록은 받은 순간의 `rx_epoch`를 갖는다.
-- R1: 제어 흐름이 반영한 마지막 경계 epoch(`applied_epoch`)보다 작은 epoch의 영상은 넘기지 않는다(`stale_epoch`).
-- R2: `capture_generation = max(gen_at_rx, gen_of_epoch[rx_epoch])`. 수신 뒤에 생긴 세대를 붙이지 않는다.
-- R3: 반영되지 않은 경계 뒤의 영상은 넘기지 않고 먼저 입력 반영을 요구한다(`TakeStatus.NEEDS_INPUT`).
-- R4: 프로필(`calibration_id`)은 수신 기록을 만들 때의 현재 프로필에서 정한다.
-- R5: `/clock` 되감기 뒤에는 휴리스틱 필터를 켠다. **이전 실행 영상을 완전히 막는다는 보장이 아니다**(계획 r2 한계 1·2).
-- R6: 영상 stamp가 줄면 그 영상에서 되감기 경계를 만든다. 같은 되감기에서 `/clock` 경계가 또 생기지 않게 기준을 비운다.
-- R7: 같은 stamp는 넘기지 않는다(`duplicate_stamp`).
-- R8(사용자 확정 2026-11-16, #124 대안 0): 영상 중단(`frame_timeout_s`) 뒤 첫 새 영상은 **발행자 변경 여부를 구분하지 않고** 그 콜백에서
-  `RECONNECT` 경계를 만들어 새 epoch로 받는다(일시 정지 재개도 세대 +1, 이전 「재개 세대 유지」 정책을 이 범위에서 대체).
-  제어 흐름이 중단을 아직 판정하지 못했어도 간격이 `frame_timeout_s` 이상이면 같은 콜백에서 `FRAME_TIMEOUT` → `RECONNECT` 순서로 만든다.
-- R8a(#196, #193 A1-1): 그 재개 첫 영상의 stamp가 중단 전 마지막 stamp보다 작으면(중단 중 Gazebo 리셋) 재접속에 합치지 않는다.
-  `FRAME_TIMEOUT` → `SIM_TIME_REWIND` → `RECONNECT` 순서로 만들고 R5와 같은 되감기 필터를 켠다(기준 = 중단 전 마지막 stamp).
-  `/clock`이 영상보다 먼저 오든 늦게 오든 되감기 경계는 정확히 한 번이다(실행 종료는 연결부가 `SIM_TIME_REWIND`로 판단).
-  이전 판의 `rewind_merged_into_resume`(합쳐서 세대만 올림)은 더 세지 않는다(키는 호환용으로 남김, 항상 0).
-- R9: 발행자 그래프는 GID 집합으로 비교한다. 수신 중(끊김 아님) 확정 집합과 다른 비지 않은 집합이 보이면 `RECONNECT`(중단 없는 교체 보완).
-  빈 집합·끊긴 동안의 변화는 경계가 아니다(첫 새 영상이 경계를 만든다). R8 경계 뒤 `graph_absorb_s` 안에 처음 보인 변화 1회는 같은
-  복구로 흡수해 세대를 또 올리지 않는다. 창 뒤의 변화는 새 경계다(같은 복구의 두 번째 전이가 될 수 있음).
-- 한계(보장 아님): 짧은 끊김(`frame_timeout_s` 미만) 미감지, 그래프 지연(타이머 주기 동안 새 발행자 영상이 이전 epoch로 처리될 수
-  있음), 메시지별 출처 미확정.
-
-값(`LiveSlotConfig` 기본값)은 모두 **A 임시 개발값**(계획 결정 D5 기본안)이며 사용자 확정값이 아니다.
-표준 라이브러리만 쓴다. ROS·Qt·OpenCV를 import하지 않는다.
+수신 스레드는 `on_*`만, 제어 흐름은 `poll_inputs`·`input_applied`·`take`·`is_current_epoch`·`close`를 부른다.
+입력 경계마다 잠금 안에서 `rx_epoch`를 올리고, 반영 epoch보다 오래된 영상은 버린다(규칙 R1~R9).
 """
 from __future__ import annotations
 
@@ -51,7 +17,7 @@ from eyetoarm.common.types import InputStatus
 
 
 class BoundaryKind(str, Enum):
-    """수신 epoch를 올리는 입력 경계. 세대 전이 값은 `GenerationCause`의 같은 이름 문자열과 같다."""
+    """수신 epoch를 올리는 입력 경계. 값은 `GenerationCause`의 같은 이름 문자열과 같다."""
 
     FRAME_TIMEOUT = "frame_timeout"
     SIM_TIME_REWIND = "sim_time_rewind"
@@ -67,10 +33,10 @@ class NoticeKind(str, Enum):
     RECEIVER_FAILED = "receiver_failed"
     QOS_INCOMPATIBLE = "qos_incompatible"
     REWIND_FILTER_RELEASED = "rewind_filter_released"
-    BOUNDARY_HOOK_FAILED = "boundary_hook_failed"   # #180 #5: 경계 훅 예외(치명, 연결부가 상태를 fail-stop)
+    BOUNDARY_HOOK_FAILED = "boundary_hook_failed"  # 경계 훅 예외(치명, 연결부가 fail-stop)
 
 
-# 경계·알림 → 코어에 알릴 입력 상태(None이면 상태 사건이 아님: 세대 전이 또는 기록만)
+# 경계·알림 → 코어에 알릴 입력 상태(None이면 세대 전이 또는 기록만)
 _STATUS_OF = {
     BoundaryKind.FRAME_TIMEOUT: InputStatus.FRAME_TIMEOUT,
     NoticeKind.NO_FIRST_FRAME: InputStatus.SOURCE_UNAVAILABLE,
@@ -85,8 +51,7 @@ _STATUS_OF = {
 class CameraProfileInfo:
     """수신한 `CameraInfo`의 식별 정보. `calibration_id`는 B `from_camera_info`가 만든 값이다.
 
-    `camera`(#171 R1, 선택): 같은 CameraInfo에서 만든 B `CameraProfile`(K·왜곡) 원본. 같음 비교·repr에는 넣지 않는다(경계 판정은
-    지금처럼 식별 정보로만 한다. `calibration_id`가 K·왜곡·해상도 해시라 내용이 다르면 식별 정보도 다르다).
+    `camera`(선택)는 같은 CameraInfo의 B `CameraProfile` 원본이며, 같음 비교·repr에는 넣지 않는다.
     """
 
     calibration_id: str
@@ -98,7 +63,7 @@ class CameraProfileInfo:
 
 @dataclass(frozen=True)
 class LiveInput:
-    """입력 대기열 항목. 경계면 `epoch`가 새 epoch, 알림이면 None. `status`는 코어에 알릴 입력 상태(없으면 None)."""
+    """입력 대기열 항목. 경계면 `epoch`가 새 epoch, 알림이면 None. `status`는 코어에 알릴 입력 상태."""
 
     kind: BoundaryKind | NoticeKind
     epoch: int | None
@@ -147,7 +112,7 @@ class Take:
 
 
 class LiveInputOverflow(RuntimeError):
-    """입력 대기열 상한을 넘었다(경계·알림을 잃지 않으려고 실행을 실패로 끝내게 한다)."""
+    """입력 대기열 상한을 넘었다(경계·알림을 잃지 않으려고 실행을 실패로 끝낸다)."""
 
 
 def _positive_finite(value) -> bool:
@@ -158,15 +123,11 @@ def _positive_finite(value) -> bool:
 
 @dataclass(frozen=True)
 class LiveSlotConfig:
-    """상태기 설정. 기본값은 모두 A 임시 개발값(계획 결정 D5 기본안)이다.
+    """상태기 설정. 기본값은 모두 A 임시 개발값이다.
 
-    - `frame_timeout_s`(1.0): 영상이 이만큼 안 오면 `FRAME_TIMEOUT` 경계(PC 단조 시각).
-    - `startup_timeout_s`(10.0): 시작 뒤 첫 영상이 이만큼 안 오면 `NO_FIRST_FRAME` 알림 1회.
-    - `future_tolerance_ns`(0.5 s): 되감기 필터에서 영상 stamp가 최신 `/clock`보다 앞서도 받는 허용 폭(시뮬레이션 시간).
-    - `stale_after_rewind_limit`(30): 되감기 필터가 연속으로 버린 영상이 이 수를 넘으면 필터를 풀고 알림.
-    - `max_pending_inputs`(64): 입력 대기열 상한. 넘으면 `LiveInputOverflow`.
-    - `graph_absorb_s`(5.0): R8 경계 뒤 그래프 변화 1회를 같은 복구로 흡수하는 창(PC 단조, A 임시 개발값).
-    - `expected_frame_id`: 영상 헤더 기대값. 다르면 그 영상에 `calibration_id`를 싣지 않는다(결정 D7 기본안). None이면 검사 안 함.
+    `frame_timeout_s` 중단 판정, `startup_timeout_s` 첫 영상 제한, `future_tolerance_ns` 되감기 필터 허용 폭,
+    `stale_after_rewind_limit` 필터 해제 수, `max_pending_inputs` 대기열 상한, `graph_absorb_s` R9 흡수 창,
+    `expected_frame_id` 영상 헤더 기대값(다르면 `calibration_id`를 싣지 않음, None이면 검사 안 함).
     """
 
     frame_timeout_s: float = 1.0
@@ -196,7 +157,7 @@ class LiveSlotConfig:
 
 
 class GenerationMirror:
-    """코어 세대의 잠금 보호 사본(계획 결정 D10 기본안). 제어 흐름이 쓰고 수신 콜백은 읽기만 한다."""
+    """코어 세대의 잠금 보호 사본. 제어 흐름이 쓰고 수신 콜백은 읽기만 한다."""
 
     def __init__(self, value: int) -> None:
         """초기 세대를 받는다."""
@@ -221,21 +182,18 @@ _STATS_KEYS = ("received", "accepted", "overwritten", "duplicate_stamp", "stale_
 
 
 class LiveFrameSlot:
-    """수신 스레드와 제어 흐름 사이의 최신 칸 1개·입력 대기열(계획 §3.3·§3.4).
+    """수신 스레드와 제어 흐름 사이의 최신 칸 1개·입력 대기열.
 
-    - 최신 칸에는 아직 넘기지 않은 마지막 영상 기록 하나만 둔다. 새 영상이 오면 덮어쓰고 `overwritten`을 센다.
-    - 경계·알림 대기열은 순서를 보존하고 버리지 않는다. 상한을 넘으면 다음 `poll_inputs`가 `LiveInputOverflow`를 올린다.
-    - 시계(`clock_ns`)는 영상 콜백마다 한 번 읽는다(수신 시각). 그 밖에는 경계 시각·제한시간 판정에만 읽는다.
+    최신 칸은 새 영상으로 덮어쓰고(`overwritten` 셈), 경계·알림 대기열은 순서를 보존하고 버리지 않는다.
     """
 
     def __init__(self, config: LiveSlotConfig, *, generation: GenerationMirror,
                  clock_ns: Callable[[], int] = time.monotonic_ns,
                  boundary_hook: Callable[[int, BoundaryKind], None] | None = None) -> None:
-        """설정·세대 사본·PC 단조 시계를 받는다. 시작 시각을 한 번 읽는다(첫 영상 제한시간 기준).
+        """설정·세대 사본·PC 단조 시계를 받고, 시작 시각을 한 번 읽는다.
 
-        `boundary_hook(epoch, kind)`(#171 R1, 선택, 기본 None): 경계마다 **이 잠금 안에서** epoch를 올린 직후 부른다(잠금 순서
-        slot → 훅 쪽 잠금). 훅은 이 slot의 잠금을 다시 잡거나 오래 막으면 안 된다. 예외는 잡아서 `boundary_hook_errors`로 세고,
-        그 경계 뒤에 치명 알림 `BOUNDARY_HOOK_FAILED`(입력 상태 SOURCE_UNAVAILABLE)를 넣는다(#180 #5).
+        `boundary_hook(epoch, kind)`는 경계마다 이 잠금 안에서 부른다(잠금 순서 slot → 훅). 훅은 이 잠금을
+        다시 잡으면 안 되며, 예외는 세고 치명 알림 `BOUNDARY_HOOK_FAILED`를 넣는다.
         """
         self._config = config
         self._generation = generation
@@ -310,17 +268,16 @@ class LiveFrameSlot:
                 self._stats["duplicate_stamp"] += 1
                 return "duplicate"
 
-            # R8: 중단 뒤 첫 새 영상은 발행자 확인 없이 RECONNECT 경계(사용자 확정 대안 0)
+            # R8: 중단 뒤 첫 새 영상은 발행자 확인 없이 RECONNECT 경계
             if self._in_gap(now):
                 if self._state == "streaming":
                     self._state = "timed_out"
                     self._boundary(BoundaryKind.FRAME_TIMEOUT,
                                    f"no frame for {(now - self._last_rx_ns) / 1e9:.3f} s (detected at image)", now)
 
-                # R8a(#196 A1-1): 재개 첫 영상의 stamp가 중단 전보다 작으면 중단 중 리셋이다. 재접속에 합치지 않고 /clock 되감기(R5)와
-                # 같은 결과를 만든다: SIM_TIME_REWIND 경계 + 되감기 필터(기준 = 중단 전 마지막 stamp). /clock이 먼저 왔든 늦게 오든 같다.
-                # 늦게 오는 낮은 /clock은 기준(_last_clock_ns)을 비웠으므로 경계를 또 만들지 않는다. 필터는 그 뒤 /clock이 올 때까지
-                # 영상을 넘기지 않는다(clock 없음 = 판단 불가, R5와 같은 보수적 처리, 휴리스틱)
+                # R8a: 재개 첫 영상 stamp가 중단 전보다 작으면 중단 중 리셋이다. /clock 되감기(R5)와 같게
+                # SIM_TIME_REWIND 경계 + 되감기 필터(기준 = 중단 전 마지막 stamp)를 만든다. 늦은 낮은 /clock은
+                # 기준을 비웠으므로 경계를 또 만들지 않는다. 필터는 다음 /clock 전까지 영상을 넘기지 않는다.
                 if self._last_stamp_ns is not None and stamp_ns < self._last_stamp_ns:
                     pre_max = self._last_stamp_ns
                     self._boundary(BoundaryKind.SIM_TIME_REWIND,
@@ -341,7 +298,7 @@ class LiveFrameSlot:
 
             self._last_stamp_ns = stamp_ns
 
-            # R4·D7: 수신 시점 프로필. 헤더가 기대값과 다르거나 해상도가 다르면 싣지 않는다
+            # R4: 수신 시점 프로필. 헤더가 기대값과 다르거나 해상도가 다르면 싣지 않는다
             expected = self._config.expected_frame_id
             mismatch = expected is not None and frame_id != expected
 
@@ -395,7 +352,7 @@ class LiveFrameSlot:
                 self._filter_drops = 0
 
     def on_invalid_input(self, kind: str) -> None:
-        """해석할 수 없는 영상 헤더(`invalid_header`)·`/clock`(`invalid_clock`)을 센다(#196 A1-4). 상태·epoch는 바꾸지 않는다."""
+        """해석할 수 없는 영상 헤더·`/clock`을 센다. 상태·epoch는 바꾸지 않는다."""
         if kind not in ("invalid_header", "invalid_clock"):
             raise ValueError(f"unknown invalid input kind: {kind!r}")
 
@@ -413,11 +370,9 @@ class LiveFrameSlot:
                            profile=info)
 
     def on_camera_info_invalid(self, detail: str) -> None:
-        """해석할 수 없는 `CameraInfo`(잘못된 K 등)를 받았다(#180 #1, #178 결함 1).
+        """해석할 수 없는 `CameraInfo`를 받았다.
 
-        이전 프로필로 계속 `calibration_id`를 달지 않도록, 프로필이 있으면 지우고 프로필 없음 `PROFILE_CHANGED` 경계를 만든다
-        (A 상세설계 §5.4: 보정 변경은 세대 전이, 이후 프레임은 보정 없음). 이미 프로필이 없으면 경계 없이 계수만 올린다
-        (연속 무효가 경계를 쏟아내지 않게). 다시 유효한 CameraInfo가 오면 `on_camera_info`가 새 경계를 만든다.
+        프로필이 있으면 지우고 프로필 없음 `PROFILE_CHANGED` 경계를 만든다. 이미 없으면 계수만 올린다.
         """
         with self._cond:
             if self._closed:
@@ -433,7 +388,7 @@ class LiveFrameSlot:
                            self._clock_ns(), profile=None)
 
     def on_publisher_snapshot(self, gids: frozenset) -> None:
-        """영상 발행자 GID 집합을 받는다(R9). 수신 중 확정 집합과 다른 비지 않은 집합이면 RECONNECT(흡수 창 안이면 흡수)."""
+        """영상 발행자 GID 집합을 받는다(R9). 수신 중 확정 집합과 다르면 RECONNECT(흡수 창 안이면 흡수)."""
         with self._cond:
             if self._closed:
                 return
@@ -466,7 +421,7 @@ class LiveFrameSlot:
             self._boundary(BoundaryKind.RECONNECT, f"publisher set changed ({len(gids)} publisher(s))", now)
 
     def on_receiver_failed(self, detail: str) -> None:
-        """수신기(executor)가 비정상으로 멈췄다. 자동 회복되지 않으므로 치명 알림 1회(실행기가 실패로 끝낸다)."""
+        """수신기(executor)가 비정상으로 멈췄다. 자동 회복되지 않으므로 치명 알림 1회."""
         with self._cond:
             if self._closed or self._receiver_failed:
                 return
@@ -518,7 +473,7 @@ class LiveFrameSlot:
     def input_applied(self, item: LiveInput, generation: int) -> None:
         """제어 흐름이 항목을 코어에 반영했다고 알린다. 경계면 `applied_epoch`·`gen_of_epoch`를 갱신한다.
 
-        경계는 꺼낸 순서대로 반영해야 한다. 순서가 어긋나면 ValueError(상태 무변). 세대 사본도 갱신한다.
+        경계는 꺼낸 순서대로 반영해야 하며, 어긋나면 ValueError(상태 무변).
         """
         with self._cond:
             if item.epoch is not None:
@@ -533,10 +488,9 @@ class LiveFrameSlot:
             self._cond.notify_all()
 
     def take(self, wait_s: float) -> Take:
-        """새 영상을 꺼낸다. 없으면 최대 `wait_s`초 기다린다(실제 단조 시계).
+        """새 영상을 꺼낸다. 없으면 최대 `wait_s`초 기다린다.
 
-        - 이전 epoch 영상은 버리고(R1) 계속 기다린다.
-        - 반영 안 된 경계 뒤 영상이 있거나 대기열에 항목이 있으면 `NEEDS_INPUT`(R3).
+        이전 epoch 영상은 버리고(R1), 미반영 경계 뒤 영상이나 대기열 항목이 있으면 `NEEDS_INPUT`(R3).
         """
         deadline = time.monotonic() + max(0.0, wait_s)
 
@@ -570,7 +524,7 @@ class LiveFrameSlot:
                 self._cond.wait(remaining)
 
     def is_current_epoch(self, rx_epoch: int) -> bool:
-        """그 epoch가 반영된 최신 epoch이고 반영 안 된 경계가 없는지(결과 공개 판정, 계획 §3.5 C)."""
+        """그 epoch가 반영된 최신 epoch이고 미반영 경계가 없는지(결과 공개 판정)."""
         with self._cond:
             pending = any(item.epoch is not None for item in self._inputs)
 
@@ -604,7 +558,7 @@ class LiveFrameSlot:
     # ------------------------------------------------------------------ 내부(잠금 안에서만)
 
     def _in_gap(self, now: int) -> bool:
-        """영상이 끊긴 상태인가: 중단으로 판정됐거나, 수신 중인데 마지막 수신 뒤 `frame_timeout_s` 이상 지남."""
+        """영상이 끊긴 상태인가(중단 판정됐거나, 마지막 수신 뒤 `frame_timeout_s` 이상 지남)."""
         if self._state == "timed_out":
             return True
 
@@ -630,13 +584,13 @@ class LiveFrameSlot:
         if self._boundary_hook is not None:
             try:
                 self._boundary_hook(self._rx_epoch, kind)
-            except Exception as exc:  # 훅 결함이 수신을 멈추지 않게 한다. 수를 세고 아래에서 치명 알림으로 올린다(#180 #5)
+            except Exception as exc:  # 훅 결함이 수신을 멈추지 않게 한다. 수를 세고 아래에서 치명 알림으로 올린다
                 self._stats["boundary_hook_errors"] += 1
                 hook_error = f"{type(exc).__name__}: {exc}"
 
         self._push(LiveInput(kind=kind, epoch=self._rx_epoch, detail=detail, event_monotonic_ns=now, profile=profile))
 
-        # 훅이 상태(현재성) 갱신에 실패했으면 이전 수락이 현재로 남을 수 있다. 실행기·연결부가 알도록 경계 뒤에 알린다
+        # 훅이 현재성 갱신에 실패했을 수 있으므로 경계 뒤에 치명 알림을 넣는다
         if hook_error is not None:
             self._notice(NoticeKind.BOUNDARY_HOOK_FAILED,
                          f"boundary hook failed at epoch {self._rx_epoch} ({kind.value}): {hook_error}", now)
@@ -647,7 +601,7 @@ class LiveFrameSlot:
         self._push(LiveInput(kind=kind, epoch=None, detail=detail, event_monotonic_ns=now, profile=None))
 
     def _release_filter(self, now: int, detail: str) -> None:
-        """되감기 필터를 풀고 알린다(정상 영상을 오판 중일 수 있음, 계획 r2 한계 2)."""
+        """되감기 필터를 풀고 알린다(정상 영상을 오판 중일 수 있음)."""
         self._filter_until_ns = None
         self._filter_drops = 0
         self._stats["rewind_filter_released"] += 1

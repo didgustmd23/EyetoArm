@@ -1,13 +1,7 @@
-"""통신 시험 실행기(#183 계획 r0 §3·§6). D `TcpClient`를 그대로 재사용해 S1~S4를 실행한다.
+"""통신 시험 실행기. D `TcpClient`를 그대로 재사용해 S1~S4를 실행한다.
 
-- 실행기가 asyncio 루프를 소유하고 루프 안에서 `TcpClient.connect()`, 끝에 `await disconnect()`(D-06 D 답신).
-- 시나리오 케이스마다 새 `TcpClient`·`EventLog`(파일 `events_<케이스>.jsonl`)를 쓴다. 미확인 명령이 다음 케이스의 송신을 막지 않게
-  하려는 것이다(D 클라이언트는 결과 미확인 명령이 있으면 새 MOVE를 막는다).
-- notify·listener는 예외를 내지 않는다(D-07). 콜백 오류는 계수·첫 사유만 남긴다.
-- 모든 대기에 상한이 있다. 케이스가 시간 안에 끝나지 않으면 불일치 행(`note=timeout`)으로 남기고 정리한다.
-- 정리(`finally`): 세션 disconnect, 주입기·중계기 닫기. 정리 실패는 `cleanup_errors`에 남고 실행 실패가 된다(reviewer 보완 4).
-- 로컬 모의 상대 조절(`peer.set_executor`·`peer.executions`)은 스레드 안전한 메서드만 쓴다. 상대 루프에 직접 손대지 않는다.
-- 블로킹 파일 쓰기는 하지 않는다(결과 파일은 호출자가 루프 밖에서 쓴다). D `EventLog`의 줄 단위 동기 쓰기는 D 코드다.
+실행기가 asyncio 루프를 소유하고, 케이스마다 새 `TcpClient`·`EventLog`를 쓴다(미확인 명령이 다음
+케이스를 막지 않게). 모든 대기에 상한이 있고, 정리 실패는 `cleanup_errors`에 남아 실행 실패가 된다.
 """
 from __future__ import annotations
 
@@ -25,7 +19,7 @@ from eyetoarm.tcp.client import ClientConfig, TcpClient, now_ms
 from eyetoarm.tcp.event_log import EventLog
 from eyetoarm.tcp.protocol import MoveTarget, build_get_status, build_move, new_command_id
 
-# 시험용 단축 시간(TCP §9 초기값과 다름. 실행 메타에 그대로 기록한다)
+# 시험용 단축 시간(TCP §9 초기값과 다름, 실행 메타에 기록)
 TEST_CLIENT_TIMING = dict(ack_timeout_ms=300, max_resend=2, readiness_poll_ms=200, readiness_timeout_ms=800,
                           status_watchdog_ms=600, connect_timeout_ms=1000, reconnect_ms=150, target_validity_ms=10000)
 
@@ -82,14 +76,14 @@ class _Session:
         self.client = TcpClient(test_client_config(host, port), self.log, notify=self._notify)
 
     def _notify(self) -> None:
-        """D notify. 아무것도 하지 않지만 예외를 내지 않음을 보장한다(D-07)."""
+        """D notify. 아무것도 하지 않지만 예외를 내지 않음을 보장한다."""
         try:
             return None
         except Exception as exc:  # noqa: BLE001 - 콜백 최상단(D-07)
             self.out.callback_errors.append(f"{self.tag} notify: {type(exc).__name__}: {exc}")
 
     def _listener(self, row) -> None:
-        """D EventLog listener. 추적기 오류도 밖으로 내지 않는다(D-07)."""
+        """D EventLog listener. 추적기 오류도 밖으로 내지 않는다."""
         try:
             self.tracker.on_row(row)
         except Exception as exc:  # noqa: BLE001 - 콜백 최상단(D-07)
@@ -225,7 +219,7 @@ class Runner:
                                       delta=self.peer.executions - before))
 
     async def s2(self) -> None:
-        """S2 같은 ID 재송신: dedupe 사례별 same → 저장 상태·실행 없음, conflict → ID_CONFLICT·실행 없음."""
+        """S2 같은 ID 재송신: same → 저장 상태·실행 없음, conflict → ID_CONFLICT·실행 없음."""
         self._set(ExecutorSettings(mode="reach", moving_s=0.02))
         s = await self._session("S2")
         inj = await self._injector()
@@ -387,7 +381,7 @@ class Runner:
         await self._inj_row(inj, _CASE["S4b"], build_move(new_id, _target(self._next_seq())), new_id,
                             "BUSY", lambda r, d: r.get("code") == "BUSY" and d == 0, "busy_other_id")
 
-        # 같은 조건에서 두 번째 D 클라이언트는 준비 조회에서 막혀 보내지 않는다(클라이언트 정상 동작)
+        # 두 번째 D 클라이언트는 준비 조회에서 막혀 보내지 않는다(클라이언트 정상 동작)
         b = await self._session_unready("S4b_clientB")
         await b.client.execute(_target(self._next_seq()))
         unsent = b.tracker.unsent

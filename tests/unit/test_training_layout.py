@@ -1,8 +1,6 @@
-"""학습기 I1 — 산출물 배치·원자 기록·소유권 lock·완료 판정·재개 판정(`eyetoarm.training.layout`) 시험.
+"""학습 산출물 배치·원자 기록·소유권 lock·완료 판정·재개 판정(`eyetoarm.training.layout`) 시험.
 
-근거: 학습기 설계 r2 §4(run_set 이름·smoke 분리, 실험 폴더 원자 생성·덮어쓰기 거부, `OWNER.lock` O_EXCL, 원자 교체 기록,
-완료 조건 1~5: strip 완료본 인정·epoch 1..E·progress·필수 기록, legacy 대체 근거, 재개 체크포인트 신원 (a)~(d)),
-reviewer 재검토 r2 PASS의 구현 확인점 3(legacy에 없는 콜백 기록을 꾸미지 않음).
+legacy 실행에 없는 콜백 기록은 꾸미지 않는다.
 """
 import json
 import multiprocessing
@@ -149,10 +147,10 @@ class LockTest(unittest.TestCase):
 
 
 class CompletionTest(unittest.TestCase):
-    """완료 판정(설계 r2 §4 조건 1~5)."""
+    """완료 판정(조건 1~5)."""
 
     def test_new_run_completed_with_strip_format(self):
-        """strip 완료본(epoch −1·optimizer None) + epoch 1..E + progress + rc 0 + 정리 확인 + 기록 성공 → completed."""
+        """strip 완료본·epoch 1..E·progress·rc 0·정리 확인·기록 성공이 모두 있으면 completed."""
         ok, reasons = check_completion(evidence())
 
         self.assertEqual((ok, reasons), (True, []))
@@ -167,7 +165,7 @@ class CompletionTest(unittest.TestCase):
         self.assertTrue(ok)
 
     def test_incomplete_cases(self):
-        """rc≠0·정리 미확인·epoch 빠짐/중복/순서 어긋남/49행·strip 안 된 last만·best 없음·load 불가·train_args.epochs 다름·공통 키 다름·progress 없음/미완료·필수 기록 실패 → incomplete."""
+        """완료 조건 하나라도 어긋나면(rc·정리·epoch·last·best·설정·progress·기록) incomplete."""
         cases = {
             "rc": {"rc": 1},
             "cleanup": {"cleanup_confirmed": False},
@@ -191,7 +189,7 @@ class CompletionTest(unittest.TestCase):
                 self.assertTrue(reasons)
 
     def test_legacy_uses_substitute_evidence_without_progress(self):
-        """legacy: progress 없이 로그 완료 문구 epoch(=E)·run_all rc 0·잔존 0이면 completed이며 reasons에 대체 근거 사용을 남기지 않는다(성공). 대체 근거가 빠지면 incomplete."""
+        """legacy: progress 없이 로그 완료 문구·rc 0·잔존 0이면 completed, 대체 근거가 빠지면 incomplete."""
         legacy = {"log_completed_epochs": E, "summary_rc": 0, "summary_remaining": 0}
         ok, reasons = check_completion(evidence(progress=None, legacy=legacy, records_ok=True))
         self.assertEqual((ok, reasons), (True, []))
@@ -214,7 +212,7 @@ class CompletionTest(unittest.TestCase):
 
 
 class ResumeTest(unittest.TestCase):
-    """재개 판정(설계 r2 §4 체크포인트 신원 (a)~(d))."""
+    """재개 판정(체크포인트 신원 (a)~(d))."""
 
     def args(self, **over):
         """정상 재개 입력."""
@@ -243,7 +241,7 @@ class ResumeTest(unittest.TestCase):
         self.assertEqual(check_resume(**a), [])
 
     def test_resume_rejected(self):
-        """strip 완료본·epoch+1≥E·다른 project/name·공통 설정 다름·사슬 sha 불일치·다른 후보·running/cleanup_unconfirmed → 거부."""
+        """strip 완료본·끝난 epoch·다른 위치·설정 다름·sha 불일치·다른 후보·실행 중 → 재개 거부."""
         mid = self.args()["last"]
         cases = {
             "stripped": {"last": {**mid, "epoch": -1, "optimizer_none": True}},
@@ -267,7 +265,7 @@ if __name__ == "__main__":
 
 
 class HsvVIdentityTest(unittest.TestCase):
-    """선택 공통 키 hsv_v(#141)의 완료·재개 대조: 설정에 있을 때만 체크포인트 train_args와 비교한다."""
+    """선택 공통 키 hsv_v의 완료·재개 대조: 설정에 있을 때만 체크포인트 train_args와 비교한다."""
 
     def resume_args(self, ckpt_hsv, common):
         """재개 입력(체크포인트 hsv_v·기대 공통 값 지정)."""

@@ -1,7 +1,5 @@
-"""`transforms/live_tf_buffer`(#171 R6, B 검토 대상 제안) 단위시험: 가짜 rclpy·tf2로 생성·정리 순서, 정확 stamp 조회, 되감기 준비 판정.
-
-근거: `_workspace/171_builder2_live_a_to_b_plan.md` r3 §2·§4.1·§8.2(T-g). 실제 ROS는 쓰지 않는다(ROS/Gazebo 실행 범위 밖).
-"""
+"""`transforms/live_tf_buffer` 단위시험: 생성·정리 순서, 정확 stamp 조회, 되감기 준비 판정.
+가짜 rclpy·tf2를 쓰고 실제 ROS는 쓰지 않는다."""
 import threading
 import types
 import unittest
@@ -88,7 +86,7 @@ def fake_modules(log, *, executor_error=None):
 
 class RuntimeTest(unittest.TestCase):
     def test_start_order_and_close_order(self):
-        """노드(use_sim_time) → Buffer(node) → Listener(spin_thread=False) → executor, 정리는 executor → 스레드 → 노드."""
+        """노드 → Buffer → Listener → executor 순으로 만들고 executor → 스레드 → 노드 순으로 정리한다."""
         log = Log()
         rt = LiveTfRuntime(object(), modules=fake_modules(log), cache_s=10.0)
         rt.start()
@@ -122,7 +120,7 @@ class RuntimeTest(unittest.TestCase):
         rt.close(1.0)
 
     def test_no_ros_import_at_module_level(self):
-        """새 모듈 import만으로 rclpy·tf2_ros를 불러오지 않는다(코드 규약 §8, 새 프로세스에서 확인)."""
+        """새 모듈 import만으로 rclpy·tf2_ros를 불러오지 않는다(새 프로세스에서 확인)."""
         import subprocess
         import sys
         code = ("import sys, eyetoarm.transforms.live_tf_buffer, eyetoarm.vision.live_observation_dispatch, "
@@ -132,7 +130,7 @@ class RuntimeTest(unittest.TestCase):
 
 
 class RewindReadinessTest(unittest.TestCase):
-    """되감기 준비(시도 단위, #172 r1 F1 포함)."""
+    """되감기 준비(시도 단위)."""
     STATIC = (("upper_arm_link", "link_cam_link"), ("link_cam_link", "link_cam_optical_frame"))
 
     def setup(self, static_ok=True, stamp=None):
@@ -162,7 +160,7 @@ class RewindReadinessTest(unittest.TestCase):
         return types.SimpleNamespace(ros_stamp_ns=stamp, optical_frame="link_cam_optical_frame")
 
     def test_g_static_missing_keeps_closed(self):
-        """T-g: 정적 사슬이 없으면 준비 실패, 닫힘 유지, B 호출 기회 없음."""
+        """정적 사슬이 없으면 준비 실패, 닫힘 유지, B 호출 기회 없음."""
         st, rd = self.setup(static_ok=False, stamp=2_000)
         rd.begin(1)
         self.assertTrue(rd.try_ready(1, self.frame()).startswith("static_missing"))
@@ -170,7 +168,7 @@ class RewindReadinessTest(unittest.TestCase):
         self.assertEqual(self.cleared, 1)
 
     def test_g_dynamic_missing_or_mismatch_keeps_closed(self):
-        """T-g: 경계 뒤 정확 stamp TF가 없거나 다른 stamp면 닫힘 유지."""
+        """경계 뒤 정확 stamp TF가 없거나 다른 stamp면 닫힘 유지."""
         st, rd = self.setup(stamp=None)
         rd.begin(1)
         self.assertTrue(rd.try_ready(1, self.frame()).startswith("dynamic_unavailable"))
@@ -180,7 +178,7 @@ class RewindReadinessTest(unittest.TestCase):
         self.assertFalse(st.token.ready or st2.token.ready)
 
     def test_g_ready_opens_only_same_boundary(self):
-        """T-g: 조건 충족 시 그 경계만 연다. 이전 경계 번호의 준비는 ready_ignored."""
+        """조건 충족 시 그 경계만 연다. 이전 경계 번호의 준비는 ready_ignored."""
         st, rd = self.setup(stamp=2_000)
         self.assertEqual(rd.try_ready(1, self.frame()), "not_begun")     # 시도 없이 열 수 없다
         self.assertEqual(rd.begin(0), "not_begun")                       # 이전 경계 시도 불가
@@ -191,7 +189,7 @@ class RewindReadinessTest(unittest.TestCase):
         self.assertTrue(st.token.ready)
 
     def test_g_future_tf_after_ready_recloses(self):
-        """T-g: 준비 뒤 미래 stamp TF(이전 실행 잔여 의심)는 닫고, 허용치 안이면 그대로."""
+        """준비 뒤 미래 stamp TF(이전 실행 잔여 의심)는 닫고, 허용치 안이면 그대로."""
         st, rd = self.setup(stamp=2_000)
         rd.begin(1)
         rd.try_ready(1, self.frame())
@@ -201,8 +199,7 @@ class RewindReadinessTest(unittest.TestCase):
         self.assertFalse(st.token.ready)
 
     def test_f1_anomaly_during_lookup_does_not_reopen(self):
-        """#172 r1 F1 재현: 같은 경계 시도의 조회 도중 미래 stamp 이상 → 조회가 정확 stamp를 돌려줘도 열지 않는다.
-        다시 열려면 begin(새 시도 = 버퍼 정리)과 정적·동적 재확인이 필요하다."""
+        """조회 도중 미래 stamp 이상이 생기면 정확 stamp가 와도 열지 않고 begin부터 다시 해야 한다."""
         st, rd = self.setup(stamp=2_000)
         hold = {"anomaly": True}
 
@@ -224,7 +221,7 @@ class RewindReadinessTest(unittest.TestCase):
         self.assertTrue(st.token.ready)
 
     def test_f1_concurrent_anomaly_threads(self):
-        """#172 r1 F1 장벽: 다른 스레드의 이상이 조회 중 끼어도 그 시도로는 열리지 않는다."""
+        """다른 스레드의 이상이 조회 중 끼어도 그 시도로는 열리지 않는다."""
         st, rd = self.setup(stamp=2_000)
         in_lookup, go = threading.Event(), threading.Event()
 

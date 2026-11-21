@@ -1,7 +1,6 @@
-"""학습기 I3 — 기존 S1 결과 등록(`register_legacy`) 시험. 임시 저장소에 가짜 legacy 산출물을 만든다(실제 outputs 미사용).
+"""기존 S1 결과 등록(`register_legacy`) 시험. 임시 저장소에 가짜 legacy 산출물을 만든다(실제 outputs 미사용).
 
-근거: 학습기 설계 r2 §8 3(검증 항목·한계·불완전 후보도 그대로 등록), §11 확인점 3(legacy는 applied·progress를 만들지 않고 대체 근거만
-등록 기록에, 기존 산출물 무변·등록 뒤 sha256 확인), 구현 지시(설정이 다른 결과를 같은 비교 조건으로 표시하지 않음).
+legacy는 applied·progress를 만들지 않고 산출물을 바꾸지 않으며, 설정이 다른 결과를 같은 비교 조건으로 두지 않는다.
 """
 import hashlib
 import json
@@ -90,8 +89,8 @@ class RegisterLegacyTest(LegacyFixture):
     """등록."""
 
     def test_completed_registration_keeps_sources_and_fabricates_nothing(self):
-        """정상: 세 후보 completed·comparable, runner legacy_untracked·한계 4개·optimizer는 로그 문자열 출처, 원본 파일 sha256 무변,
-        applied·progress·job_state를 어디에도 만들지 않음, lock 해제·SHA256SUMS, rc 0."""
+        """정상: 세 후보 completed·comparable, 한계 4개, 원본 sha256 무변, applied·progress·job_state 없음,
+        lock 해제·SHA256SUMS, rc 0."""
         src = self.make_legacy()
         before = all_files(src)
         res = self.register()
@@ -127,7 +126,7 @@ class RegisterLegacyTest(LegacyFixture):
         self.assertFalse(r["initial_weights"]["matches_official"])
 
     def test_incomplete_failed_missing_registered_as_is(self):
-        """에포크 부족 → 전원 incomplete, S1-02 rc 1·공백 있는 stop_reason → incomplete, S1-03 폴더 없음 → missing. rc 1."""
+        """에포크 부족·S1-02 rc 1·공백 stop_reason → incomplete, S1-03 폴더 없음 → missing. rc 1."""
         self.make_legacy(epochs=E - 1, summary_rc=1, missing=("S1-03",), stop_reason="mem_avail_below_2GiB avail=1")
         res = self.register()
 
@@ -150,7 +149,7 @@ class RegisterLegacyTest(LegacyFixture):
         self.assertTrue(any("stripped" in x for x in r["reasons"]))
 
     def test_second_registration_does_not_overwrite(self):
-        """같은 run_set에 다시 등록하면 already_registered이고 기존 registration.json 바이트는 그대로, rc 1."""
+        """같은 run_set에 다시 등록하면 already_registered이고 registration.json 바이트는 그대로, rc 1."""
         self.make_legacy()
         res = self.register()
         path = os.path.join(res.run_set_dir, "S1-01_yolov8n-seg", "registration.json")

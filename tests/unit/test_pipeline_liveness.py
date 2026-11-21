@@ -1,16 +1,7 @@
-"""A 비전 파이프라인 진행 보장(순환 정지 조건) 단위시험 — 활성 작업이 terminal 처리 뒤 반드시 풀리는지.
+"""A 비전 파이프라인 진행 보장 단위시험: 활성 작업이 terminal 처리 뒤 반드시 풀리는지.
 
-근거: 계획 r3 작업 4(관측 식별자·타입 불일치는 해당 작업만 adapter_contract_violation 실패 정리,
-close 뒤 새 시작 금지, 최초 terminal 유지, 출처 검증), A 상세설계 §5.4·§9, reviewer 순환 정지 조건 점검 지시
-(`_workspace/codex-reviews/2026-11-15-pipeline-liveness-probe.py` 입력).
-
-분류:
-- 코어 결함(수정함): 비스칼라·변조 관측이 비교 예외로 새어 활성 작업이 남던 경로, 반쯤 닫힌 close.
-- 잘못된 호출의 정상 거부: 잘못된 fail 인자·위조 작업·변조 사건은 계약 오류이며 상태를 바꾸지 않는다.
-- 후속 실행기 책임(작업 6): terminal 통지 자체가 없으면 코어는 스스로 풀지 않는다. 실행기가 worker 예외·
-  시간 초과·종료 때 fail/close를 반드시 부른다. 자동 시간제한·강제 취소는 이 코어에 넣지 않는다.
-
-관측은 시험이 만든 가짜 detector 결과다. 실제 worker·스레드·B/C/D 통신을 쓰지 않는다.
+잘못된 호출(fail 인자·위조 작업·변조 사건)은 상태를 바꾸지 않는다. terminal 통지가 없으면 코어는
+스스로 풀지 않으므로 실행기가 fail/close를 반드시 부른다. 관측은 가짜 detector 결과다.
 """
 import dataclasses
 import gc
@@ -30,7 +21,7 @@ from test_pipeline_terminal import TerminalTestBase, frameless_event, job_event,
 INF = InvalidationKind.INFERENCE_ERROR
 ABORT = InvalidationKind.JOB_ABORTED
 
-# 관측 식별자 8필드(계획 r3 작업 4 + 보완 M7 calibration_id)
+# 관측 식별자 8필드
 ID_FIELDS = ("run_id", "source_id", "image_seq", "capture_generation", "generation", "job_seq",
              "detector_config_id", "calibration_id")
 
@@ -60,7 +51,7 @@ class LivenessTestBase(TerminalTestBase):
         self.assertIs(p.current_observation, out.observation)
 
     def assert_running_balance(self, p):
-        """실행 중 보존식(활성 작업 0/1 포함)과 수신 보존식(대기 0/1 포함)을 확인한다(A §9)."""
+        """실행 중 보존식(활성 작업 0/1)과 수신 보존식(대기 0/1)을 확인한다."""
         c = p.counters
         active = 0 if p._active is None else 1
         pending = 0 if p.pending_frame is None else 1
@@ -190,7 +181,7 @@ class CallContractLivenessTest(LivenessTestBase):
                 self.assertIs(self.p._active, job)
 
     def test_lost_terminal_notification_is_not_recovered_by_core(self):
-        """terminal 통지가 없으면 세대 전이·무효화·새 프레임 100건으로도 풀리지 않고(현 계약), 명시적 JOB_ABORTED 뒤 최신 대기 프레임으로 진행한다."""
+        """terminal 통지가 없으면 풀리지 않고, 명시적 JOB_ABORTED 뒤 최신 대기 프레임으로 진행한다."""
         original = self.start(0)
         self.p.change_settings(self.p.settings, cause=GenerationCause.RECONNECT)
         self.p.apply_invalidation(frameless_event(self.p))
@@ -202,7 +193,7 @@ class CallContractLivenessTest(LivenessTestBase):
         self.assertEqual(self.p.counters.first_started, 1)
         self.assert_running_balance(self.p)
 
-        # 실행기(작업 6)가 시간 초과·worker 예외 때 해야 하는 명시적 정리
+        # 실행기가 시간 초과·worker 예외 때 해야 하는 명시적 정리
         out = self.p.fail(original, ABORT, "terminal notification timeout")
         self.assertIs(out.status, JobStatus.ABORTED)
         resumed = self.p.start_next()
@@ -231,7 +222,7 @@ class CallContractLivenessTest(LivenessTestBase):
 
 
 class CloseClockLivenessTest(LivenessTestBase):
-    """close 도중 시계 예외의 예외 안전성과 중단 결과 인계(reviewer r1 L1)."""
+    """close 도중 시계 예외의 예외 안전성과 중단 결과 인계."""
 
     def make(self, clock):
         """활성 작업 1개와 대기 프레임 1개를 둔 파이프라인을 만든다."""
@@ -391,7 +382,7 @@ class SeededCycleLivenessTest(LivenessTestBase):
         return jobs
 
     def test_seeded_mixed_cycles_keep_progress(self):
-        """시드 0~19 × 250작업(총 5,000+)에서 모든 경로 뒤 활성 슬롯이 비고, 종료 후 보존식·사건 멱등이 성립하며 과거 영상이 회수되고 시간 상한 안에 끝난다."""
+        """시드 20개 × 250작업 뒤 활성 슬롯이 비고 보존식·사건 멱등·영상 회수·시간 상한이 성립한다."""
         configs = [config(), config(fixed_threshold=90)]
         started_at = time.monotonic()
         total = 0

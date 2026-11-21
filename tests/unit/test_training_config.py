@@ -1,8 +1,5 @@
-"""학습기 I1 — 공통·후보 설정 검증(`eyetoarm.training.config`) 시험.
-
-근거: 학습기 설계 r2 §2(공통 설정은 후보가 덮어쓸 수 없음, 후보는 3계열·공식 출처·sha256, 엄격 JSON, config_id),
-구현 지시(저장소 상대 경로, torch·ultralytics import 없음). 실제 저장소 설정 파일(`config/training/`)도 읽어 확인한다.
-"""
+"""학습기 공통·후보 설정 검증(`eyetoarm.training.config`) 시험.
+저장소 설정 파일(`config/training/`)도 읽어 확인한다."""
 import copy
 import json
 import os
@@ -48,7 +45,7 @@ class CommonConfigTest(unittest.TestCase):
     """공통 설정."""
 
     def test_repo_common_config_loads(self):
-        """저장소 s1_common.json은 비교용(kind comparison) 640·50·seed 0·deterministic·batch 16·workers 2이며 상대 경로다."""
+        """저장소 s1_common.json은 비교용 640·50·seed 0·deterministic·batch 16·workers 2·상대 경로다."""
         c = load_common(COMMON)
 
         self.assertEqual((c.kind, c.train["imgsz"], c.train["epochs"], c.train["seed"], c.train["deterministic"],
@@ -60,7 +57,7 @@ class CommonConfigTest(unittest.TestCase):
         self.assertEqual(c.required_env, {"YOLO_AUTOINSTALL": "false", "YOLO_OFFLINE": "1"})
 
     def test_rejects_bad_common(self):
-        """알 수 없는 최상위·학습 키, 빠진 키, 형·범위 위반, 절대 경로, 상위 폴더 경로, 잘못된 kind는 ConfigError."""
+        """알 수 없는 키·빠진 키·형·범위 위반·절대·상위 경로·잘못된 kind는 ConfigError."""
         base = common_doc()
         bads = []
 
@@ -96,7 +93,7 @@ class CommonConfigTest(unittest.TestCase):
                     common_from_dict(bad)
 
     def test_smoke_kind_allows_fraction(self):
-        """smoke 설정은 kind smoke이고 fraction(0<f≤1)을 허용한다. 비교 설정에는 fraction이 없어야 한다."""
+        """smoke 설정은 fraction(0<f≤1)을 허용하고 비교 설정에는 fraction이 없어야 한다."""
         d = common_doc(kind="smoke")
         d["train"] = {**d["train"], "epochs": 1, "fraction": 0.05}
 
@@ -112,7 +109,7 @@ class CandidatesConfigTest(unittest.TestCase):
     """후보 설정."""
 
     def test_repo_candidates_load(self):
-        """저장소 후보는 S1-01 yolov8n-seg·S1-02 yolo11n-seg·S1-03 yolo26n-seg이고 공식 ultralytics/assets v8.4.0 출처와 64자리 sha256을 가진다."""
+        """저장소 후보는 S1-01~03 세 계열이고 공식 ultralytics/assets v8.4.0 출처와 sha256을 가진다."""
         cs = load_candidates(CANDS)
 
         self.assertEqual([(c.exp_id, c.family, c.weights_file) for c in cs],
@@ -122,7 +119,7 @@ class CandidatesConfigTest(unittest.TestCase):
         self.assertEqual(cs[1].sha256, "55ed65c56c91713d23e8402371c6c49a6fd84f257f7dce452e8d70e41dcbe152")
 
     def test_rejects_training_args_and_bad_candidates(self):
-        """후보별 학습 인자(imgsz·epochs·batch 등)·알 수 없는 키·중복 exp_id·계열 누락/중복·다른 모델·경로 포함 파일명·끝 개행 sha256은 ConfigError."""
+        """후보별 학습 인자·미지 키·중복·계열 누락/중복·다른 모델·경로 파일명·끝 개행 해시는 ConfigError."""
         base = cands_doc()
         bads = []
 
@@ -197,10 +194,10 @@ class LoaderTest(unittest.TestCase):
 
 
 class FamilyFileTest(unittest.TestCase):
-    """계열과 공식 가중치 파일 대응(r1 F2)."""
+    """계열과 공식 가중치 파일 대응."""
 
     def test_family_must_match_weights_file(self):
-        """S1-02를 yolo11n-seg로 둔 채 S1-01의 yolov8n-seg.pt 파일·url·해시·크기를 복사하면 거부, 같은 계열의 다른 크기 공식 파일(yolo11s-seg.pt)도 거부."""
+        """다른 계열의 가중치 정보를 복사하거나 같은 계열의 다른 크기 공식 파일을 쓰면 거부한다."""
         base = cands_doc()
         swapped = copy.deepcopy(base)
         c1, c2 = swapped["candidates"][0], swapped["candidates"][1]
@@ -227,10 +224,10 @@ class FamilyFileTest(unittest.TestCase):
 
 
 class SnapshotTest(unittest.TestCase):
-    """검증된 설정 스냅샷 고정(I2 확인점 4)."""
+    """검증된 설정 스냅샷 고정."""
 
     def test_config_fields_are_frozen(self):
-        """검증 뒤 train·data·watch·source를 바꿀 수 없고(TypeError), 실행 인자는 config_id와 같은 스냅샷에서 나온다."""
+        """검증 뒤 train·data·watch·source를 바꿀 수 없고 실행 인자는 config_id와 같은 스냅샷에서 나온다."""
         cfg = load_training_config(COMMON, CANDS)
 
         for target in (cfg.common.train, cfg.common.data, cfg.common.watch, cfg.candidates[0].source,
@@ -256,7 +253,7 @@ CLEAN_CANDS = os.path.join(ROOT, "config", "training", "s1_clean_train_r1_candid
 
 
 def single_doc(n=1):
-    """selection_mode single 후보 문서: 저장소 후보에서 앞 n개를 쓴다(n=1이면 S1-01 yolov8n-seg)."""
+    """selection_mode single 후보 문서: 저장소 후보에서 앞 n개를 쓴다(n=1이면 S1-01)."""
     d = cands_doc()
     d["selection_mode"] = "single"
     d["candidates"] = d["candidates"][:n]
@@ -264,7 +261,7 @@ def single_doc(n=1):
 
 
 class SelectionModeTest(unittest.TestCase):
-    """후보 선택 모드(#139, reviewer 결정 B): 생략하면 기존 3계열 규칙, single이면 정확히 1개."""
+    """후보 선택 모드: 생략하면 3계열 규칙, single이면 정확히 1개."""
 
     def test_single_mode_accepts_exactly_one(self):
         """selection_mode single + yolov8n-seg 1개는 통과하고 후보는 그 하나뿐이다."""
@@ -273,7 +270,7 @@ class SelectionModeTest(unittest.TestCase):
         self.assertEqual([(c.exp_id, c.family) for c in cs], [("S1-01", "yolov8n-seg")])
 
     def test_single_mode_rejects_wrong_counts_and_bad_candidate(self):
-        """single에서 빈 목록·2개·3개, 계열↔파일 불일치, 비공식 url, 잘못된 sha256, 후보별 학습 인자는 ConfigError."""
+        """single에서 개수·계열↔파일·비공식 url·잘못된 sha256·후보별 학습 인자 오류는 ConfigError."""
         bads = {"empty": single_doc(0), "two": single_doc(2), "three": single_doc(3)}
 
         d = single_doc()
@@ -307,7 +304,7 @@ class SelectionModeTest(unittest.TestCase):
                     candidates_from_dict(d)
 
     def test_omitted_mode_keeps_three_family_rule(self):
-        """모드를 생략하면 기존 규칙 그대로: 3계열 문서는 통과, 1개·2개 문서는 ConfigError."""
+        """모드를 생략하면 3계열 문서는 통과하고 1개·2개 문서는 ConfigError."""
         self.assertEqual(len(candidates_from_dict(cands_doc())), 3)
 
         for n in (1, 2):
@@ -318,7 +315,7 @@ class SelectionModeTest(unittest.TestCase):
                     candidates_from_dict(d)
 
     def test_mode_is_part_of_config_id(self):
-        """single 모드는 정규 스냅샷(config_id 계산 대상)에 들어가고, 스냅샷 재검증(verify)도 통과한다."""
+        """single 모드는 config_id 계산 대상 스냅샷에 들어가고 스냅샷 재검증도 통과한다."""
         d = tempfile.mkdtemp()
         path = os.path.join(d, "k.json")
         _write(path, json.dumps(single_doc()))
@@ -330,7 +327,7 @@ class SelectionModeTest(unittest.TestCase):
         self.assertNotEqual(cfg.config_id, load_training_config(COMMON, CANDS).config_id)
 
     def test_repo_clean_train_r1_config(self):
-        """저장소 clean_train_r1 설정: 후보는 single·S1-07 yolov8n-seg 공식 v8.4.0 하나, 공통 학습 값·감시는 s1_common과 같다."""
+        """저장소 clean_train_r1 설정: 후보는 single S1-07 하나, 공통 학습 값·감시는 s1_common과 같다."""
         cfg = load_training_config(CLEAN_COMMON, CLEAN_CANDS)
         base = load_common(COMMON)
 
@@ -355,10 +352,10 @@ def hsv_common(value):
 
 
 class HsvVTest(unittest.TestCase):
-    """선택 학습 키 hsv_v(#141): 명시할 때만 전달, [0, 1] 유한 실수, 생략 시 기존 동작·config_id 그대로."""
+    """선택 학습 키 hsv_v: 명시할 때만 전달, [0, 1] 유한 실수, 생략 시 config_id 그대로."""
 
     def test_omitted_keeps_existing_snapshot(self):
-        """hsv_v 없는 저장소 설정은 train_args에 hsv_v가 없고 config_id가 변경 전 값과 같다(#139·기존 s1 기록값)."""
+        """hsv_v 없는 저장소 설정은 train_args에 hsv_v가 없고 config_id가 기록값과 같다."""
         base = load_training_config(COMMON, CANDS)
         clean = load_training_config(CLEAN_COMMON, CLEAN_CANDS)
 
@@ -376,7 +373,7 @@ class HsvVTest(unittest.TestCase):
                 self.assertEqual(cfg.common.train["hsv_v"], float(v))
 
     def test_rejects_bad_values(self):
-        """bool·문자열·null·NaN·±inf·음수·1 초과·리스트·범위 밖 정수(±10**400 거대 정수 포함, r1 F1)는 ConfigError."""
+        """bool·문자열·null·비유한·음수·1 초과·리스트·거대 정수는 ConfigError."""
         for v in (True, False, "0.6", None, float("nan"), float("inf"), -0.1, 1.01, [0.6], 2, -1,
                   10 ** 400, -(10 ** 400), float("-inf")):
             with self.subTest(v=v):
@@ -384,7 +381,7 @@ class HsvVTest(unittest.TestCase):
                     common_from_dict(hsv_common(v))
 
     def test_only_hsv_v_is_added(self):
-        """다른 증강 키(hsv_s·hsv_h·mosaic·fliplr)는 여전히 공통 train에서 거부된다(임의 키 허용 확대 없음)."""
+        """다른 증강 키(hsv_s·hsv_h·mosaic·fliplr)는 여전히 공통 train에서 거부된다."""
         for k in ("hsv_s", "hsv_h", "mosaic", "fliplr"):
             d = common_doc()
             d["train"] = {**d["train"], k: 0.5}
@@ -393,7 +390,7 @@ class HsvVTest(unittest.TestCase):
                     common_from_dict(d)
 
     def test_candidate_cannot_carry_hsv_v(self):
-        """후보별 hsv_v는 학습 인자로 거부된다(후보별 train 인자 금지 유지)."""
+        """후보별 hsv_v는 학습 인자로 거부된다."""
         d = cands_doc()
         d["candidates"][0]["hsv_v"] = 0.6
 
@@ -410,7 +407,7 @@ class HsvVTest(unittest.TestCase):
         self.assertEqual(len({a, b, c}), 3)
 
     def test_repo_hsvv06_config(self):
-        """저장소 hsv_v 설정: single S1-08 yolov8n-seg, train = clean_train_r1 + hsv_v 0.6, 데이터·fingerprint·감시는 clean과 같다."""
+        """저장소 hsv_v 설정: single S1-08, train = clean_train_r1 + hsv_v 0.6, 나머지는 clean과 같다."""
         cfg = load_training_config(HSVV_COMMON, HSVV_CANDS)
         clean = load_training_config(CLEAN_COMMON, CLEAN_CANDS)
 

@@ -1,9 +1,7 @@
-"""볼트 축 끝점 순수 추출기(`vision/axis_endpoints.py`, #163 단계 (i)) 시험.
+"""볼트 축 끝점 순수 추출기(`vision/axis_endpoints.py`) 시험.
 
-정답은 추출기와 독립인 합성 기하로 만든다: 직교 투영한 원기둥(머리 지름 10·높이 6 mm, 축 지름 6 mm,
-축 끝 면취 반지름 2.5 mm)의 실루엣을 끝면 타원 볼록 껍질로 그리고, 축선 위 기준점(머리 끝면 중심·축 끝면 중심)을
-같은 투영식으로 계산한다(A-8 점 의미, #149·#159 G1과 같은 정의). 추출기 코드로 정답을 역산하지 않는다.
-`dim_scale`을 주면 모든 치수를 그 배수로 줄인다(0.5 = 월드 BOLT_A `bolt_m3x20`, #245 E1).
+정답은 직교 투영한 원기둥 실루엣과 축선 위 기준점을 같은 투영식으로 계산한 합성 기하다.
+`dim_scale`은 모든 치수를 그 배수로 줄인다(0.5 = 월드 BOLT_A `bolt_m3x20`).
 """
 from __future__ import annotations
 
@@ -98,7 +96,7 @@ def test_m1_corrects_rim_protrusion_when_tilted(shank, tilt):
 
 
 def test_m1_tilt_diag_without_size_estimates():
-    """진단값: 추정 기울기가 합성 조건(30°)과 맞고, 크기(mm) 진단(축척·총길이·종류)은 남기지 않는다(#245 E1)."""
+    """진단값: 추정 기울기가 합성 조건(30°)과 맞고 크기(mm) 진단은 남기지 않는다."""
     mask, _ = render_bolt(shank_mm=40.0, tilt_deg=30.0)
     est = ax.extract_m1(mask)
     assert abs(est.diag["tilt_deg"] - 30.0) <= 6.0
@@ -108,9 +106,9 @@ def test_m1_tilt_diag_without_size_estimates():
 @pytest.mark.parametrize("method", [ax.extract_m1, ax.extract_m2])
 @pytest.mark.parametrize("tilt,theta", [(0.0, 20.0), (25.0, 20.0), (40.0, 133.0), (30.0, 251.0)])
 def test_m3x20_endpoints_follow_axis_reference(method, tilt, theta):
-    """월드 BOLT_A M3×20(M6×40의 0.5배 축소, 축 20 mm)도 같은 비 상수로 축선 기준점 2 px 안이다(#245 E1, k 8 px/mm)."""
+    """월드 BOLT_A M3×20(0.5배 축소)도 같은 비 상수로 축선 기준점 2 px 안이다(k 8 px/mm)."""
     mask, truth = render_bolt(shank_mm=20.0, dim_scale=0.5, tilt_deg=tilt, theta_deg=theta, k_px_mm=8.0,
-                              size=(320, 320), center=(160.0, 160.0))     # 길이 약 184 px: 어느 방향이든 화면 안
+                              size=(320, 320), center=(160.0, 160.0))  # 약 184 px: 어느 방향이든 화면 안
     est = method(mask)
     assert est.valid, est.reason
     head_err, tip_err = _err(est, truth)
@@ -120,10 +118,7 @@ def test_m3x20_endpoints_follow_axis_reference(method, tilt, theta):
 @pytest.mark.parametrize("method", [ax.extract_m1, ax.extract_m2])
 @pytest.mark.parametrize("tilt", [0.0, 30.0, 45.0])
 def test_scaled_bolt_gives_same_endpoints_as_full_size_at_double_scale(method, tilt):
-    """M3×20을 k 8 px/mm로 그린 마스크와 M6×40을 k 4 px/mm로 그린 마스크는 같은 모양이라 끝점도 같다(크기 무관, #245 E1).
-
-    두 그림은 축 길이(20·0.5배 머리 대 40·원래 머리)만 다르고 화면 크기가 같다. 래스터가 같으면 추출기 결과가 같아야 한다.
-    """
+    """M3×20(k 8)과 M6×40(k 4) 마스크는 같은 모양이라 끝점도 같다(크기 무관)."""
     small, _ = render_bolt(shank_mm=20.0, dim_scale=0.5, tilt_deg=tilt, k_px_mm=8.0)
     full, _ = render_bolt(shank_mm=40.0, tilt_deg=tilt, k_px_mm=4.0)
     assert np.array_equal(small, full)
@@ -216,9 +211,9 @@ def test_m0_matches_rule_k_definition():
 
 
 def test_model_constants_are_model_derived():
-    """고정값은 모델 치수의 비에서 나온 값이며 #159 결과로 바꾸지 않는다(문서화된 값과 같음). 크기(mm) 상수는 없다(#245 E1)."""
+    """고정값은 모델 치수의 비에서 나온 값이고 크기(mm) 상수는 없다."""
     m = ax.MODEL_DERIVED
-    assert m.tip_to_head_radius == 2.5 / 5.0 == 1.25 / 2.5          # M6×40 축 끝 돌출 r 2.5 / 머리 r 5 = M3×20 1.25 / 2.5
+    assert m.tip_to_head_radius == 2.5 / 5.0 == 1.25 / 2.5   # M6×40 r 2.5 / 5 = M3×20 r 1.25 / 2.5
     assert (m.band_frac, m.ambiguity_ratio, m.min_pixels) == (0.12, 1.2, 20)
     assert (m.max_tilt_deg, m.max_head_step_frac) == (60.0, 0.7)
     assert (m.vote_band_frac, m.vote_min_ratio) == (0.25, 1.1)

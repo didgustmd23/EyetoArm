@@ -1,7 +1,6 @@
-"""A-6 추적 1차 출력(#151 S3) 시험 — JSONL `ai_tracks`, 확인 창 표시, A→C handoff `tracks` 전파와 같은 작업 짝 유지.
+"""추적 1차 출력 시험 — JSONL `ai_tracks`, 확인 창 표시, A→C handoff `tracks` 전파와 같은 작업 짝 유지.
 
-근거: reviewer 구현 명세 #151 §4·§5(R3), 계획 `_workspace/150_builder2_part_track_id_plan.md` r2 §2.2·§3.6. 가짜 소스·가짜 검출만 쓴다.
-번호는 표시 실험 값이며 신원 정확도는 확인하지 않는다.
+가짜 소스·가짜 검출만 쓴다. 번호는 표시 실험 값이며 신원 정확도는 확인하지 않는다.
 """
 import io
 import unittest
@@ -74,7 +73,7 @@ class LabelTest(unittest.TestCase):
         self.assertEqual(track_label(TrackAssignment(0, None, TrackState.UNTRACKED, 0, "not_in_scope")), "")
 
     def test_draw_with_tracks_changes_overlay_only(self):
-        """번호가 있으면 오버레이에 라벨이 더해진다. 원본 불변, 초록 우세 색 없음(기존 색표 유지)."""
+        """번호가 있으면 오버레이에 라벨이 더해진다. 원본 불변, 초록 우세 색 없음(색표 그대로)."""
         c = Core()
         out, tracks = c.result(0)
         src = out.context.frame.image
@@ -130,7 +129,7 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(bridge.version, version)
 
     def test_no_tracks_default_unchanged(self):
-        """tracks 없이 부르면 기존과 같다(tracks None, 정보 줄에 추적 표기 없음)."""
+        """tracks 없이 부르면 추적 없는 출력 그대로(tracks None, 정보 줄에 추적 표기 없음)."""
         c, bridge = Core(), DisplayBridge()
         out, _ = c.result(0)
         bridge.on_outcome(out, True)
@@ -144,7 +143,7 @@ class HandoffTracksTest(unittest.TestCase):
     """handoff RESULT·영상 칸에 같은 TrackFrame."""
 
     def test_result_and_view_share_tracks(self):
-        """offer_result(tracks=)는 RESULT·영상 칸에 같은 TrackFrame을 싣고 annotate가 라벨을 그린다. is_current 규칙 그대로."""
+        """offer_result(tracks=)는 RESULT·영상 칸에 같은 TrackFrame을 싣고 annotate가 라벨을 그린다."""
         c = Core()
         h = AToCHandoff()
         h.start_run(c.p)
@@ -185,7 +184,7 @@ class HandoffTracksTest(unittest.TestCase):
 
 
 class AnnotateMarkingTest(unittest.TestCase):
-    """S3 r1 F1: 번호가 실린 전달 영상(annotate)에도 실험 표기·모드·신원 보장 없음을 그린다. 추적 끔 영상은 기존과 같다."""
+    """번호가 실린 annotate 영상에도 실험 표기·모드·신원 보장 없음을 그린다. 추적 끔 영상은 그대로."""
 
     def texts(self, fn):
         """fn() 동안 cv2.putText로 그린 문자열 목록."""
@@ -216,7 +215,7 @@ class AnnotateMarkingTest(unittest.TestCase):
         return h.take_view()[0]
 
     def test_annotate_with_tracks_marks_experimental(self):
-        """tracks가 있는 annotate 영상: 번호 라벨과 함께 EXPERIMENTAL·모드(heuristic)·no identity guarantee 문구. 원본 불변."""
+        """tracks가 있는 annotate: 번호 라벨과 EXPERIMENTAL·모드·no identity guarantee 문구, 원본 불변."""
         view = self.view(True)
         before = view.frame.image.copy()
         _, seen = self.texts(lambda: annotate(view))
@@ -229,7 +228,7 @@ class AnnotateMarkingTest(unittest.TestCase):
         np.testing.assert_array_equal(view.frame.image, before)
 
     def test_annotate_without_tracks_unchanged(self):
-        """tracks 없는 annotate는 기존 draw_detections 결과와 같고 실험 문구가 없다."""
+        """tracks 없는 annotate는 draw_detections 결과와 같고 실험 문구가 없다."""
         view = self.view(False)
         out, seen = self.texts(lambda: annotate(view))
 
@@ -301,7 +300,7 @@ class RunnerOutputTest(unittest.TestCase):
         self.assertEqual(bridge.kw_seen, [set(), set()])
 
     def test_recorder_failure_on_ai_tracks_is_log_failure(self):
-        """ai_tracks 기록 실패는 추적 예외로 삼키지 않고 기존 log_failure(종료 1)."""
+        """ai_tracks 기록 실패는 추적 예외로 삼키지 않고 log_failure(종료 1)."""
         class BrokenLog(PipelineLog):
             """ai_tracks 쓰기 실패."""
 

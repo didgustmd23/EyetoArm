@@ -1,8 +1,6 @@
-"""A→C 같은 프로세스 내부 연결부(`AToCHandoff`, #142 Task 2) 시험 — 합성 프레임·실제 코어·가짜 수신 측.
+"""A→C 같은 프로세스 내부 연결부(`AToCHandoff`) 시험 — 합성 프레임·실제 코어·가짜 수신 측.
 
-근거: `_workspace/142_builder2_a_c_handoff_contract.md` r3 §2(메시지·무효 범위·영상 칸·소비자 API·notify)·§3(fail-stop)·§4(보존식)·
-§8(Task 2 시험 1~10), 검토 `_workspace/codex-reviews/2026-11-17-a-c-handoff-contract-review-r3.md`.
-모델·ROS·창·C 코드 없이 합성 영상과 시험용 AI 표시 결과로 실제 `VisionPipeline`을 돌린다. 실제 C 수신·D 송신은 확인하지 않는다.
+모델·ROS·창·C 코드 없이 합성 영상과 시험용 AI 표시 결과로 실제 `VisionPipeline`을 돌린다.
 """
 import dataclasses
 import gc
@@ -83,7 +81,7 @@ class HandoffTestBase(unittest.TestCase):
         return msgs
 
     def assert_balances(self):
-        """§4 보존식 1·2·3·4를 확인한다."""
+        """보존식 네 개를 확인한다."""
         s = self.h.stats()
         self.assertEqual(s.published, s.taken + s.pending)
         self.assertEqual(s.views_put, s.views_taken + s.views_replaced + s.views_cleared + s.view_pending)
@@ -92,7 +90,7 @@ class HandoffTestBase(unittest.TestCase):
 
 
 class ResultPairingTest(HandoffTestBase):
-    """시험 1: RESULT와 영상 칸이 같은 응답에서 나오고 무검출이 이전 윤곽을 대체한다."""
+    """RESULT와 영상 칸이 같은 응답에서 나오고 무검출이 이전 윤곽을 대체한다."""
 
     def test_result_and_view_same_frame_and_display(self):
         """RESULT의 관측·표시 결과와 영상 칸의 프레임·표시 결과가 같은 응답의 객체이고 식별자가 프레임·작업 값 그대로다."""
@@ -145,8 +143,9 @@ class ResultPairingTest(HandoffTestBase):
         np.testing.assert_array_equal(view.frame.image, before)
         self.assertIsNot(drawn, view.frame.image)
         self.assertFalse(view.frame.image.flags.writeable)
-        self.assertEqual(tuple(int(v) for v in drawn[125, 140]), CLASS_COLORS_BGR[0])   # 박스 오른쪽 변(원본 좌표)
-        self.assertEqual(tuple(int(v) for v in drawn[190, 200]), (40, 40, 40))           # ROI만큼 밀린 곳은 원본 그대로
+        # 박스 오른쪽 변(원본 좌표)
+        self.assertEqual(tuple(int(v) for v in drawn[125, 140]), CLASS_COLORS_BGR[0])
+        self.assertEqual(tuple(int(v) for v in drawn[190, 200]), (40, 40, 40))  # ROI만큼 밀린 곳은 원본 그대로
         self.assertEqual(POLY[0], [100, 100])
 
     def test_offer_result_contract(self):
@@ -162,7 +161,7 @@ class ResultPairingTest(HandoffTestBase):
                 with self.assertRaises(HandoffContractError):
                     self.h.offer_result(bad)
 
-        # out 자체는 이제 코어 현재 관측이 아니다(job1 실패가 지움)
+        # out은 코어 현재 관측이 아니다(job1 실패가 지움)
         with self.assertRaises(HandoffContractError):
             self.h.offer_result(out)
 
@@ -170,7 +169,7 @@ class ResultPairingTest(HandoffTestBase):
 
 
 class InvalidationScopeTest(HandoffTestBase):
-    """시험 2(F1): 무효화는 코어 규칙과 같은 범위만 현재 결과를 지운다."""
+    """무효화는 코어 규칙과 같은 범위만 현재 결과를 지운다."""
 
     def sync(self):
         """새 코어 사건을 연결부로 넘긴다."""
@@ -227,7 +226,7 @@ class InvalidationScopeTest(HandoffTestBase):
         self.assertIsNone(self.h.current_result)
 
     def test_ignored_event_keeps_result_and_preserves_fields(self):
-        """이전 세대 사건(applied=False)은 현재 결과를 바꾸지 않고, 원래 세대는 event 안에, 코어 세대는 바깥 필드에 둔다."""
+        """이전 세대 사건(applied=False)은 현재 결과를 그대로 두고, 원래 세대는 event 안·코어 세대는 바깥에."""
         out0, _ = self.run_job(0)
         self.p.change_settings(self.p.settings, cause=GenerationCause.SEEK)
         _, seq1 = self.run_job(1)
@@ -283,7 +282,7 @@ class InvalidationScopeTest(HandoffTestBase):
 
 
 class TakenResultRaceTest(HandoffTestBase):
-    """시험 3: 이미 꺼낸 RESULT·영상도 뒤 경계로 현재가 아니게 된다(결정적 재현)."""
+    """이미 꺼낸 RESULT·영상도 뒤 경계로 현재가 아니게 된다(결정적 재현)."""
 
     def test_taken_result_becomes_stale(self):
         """RESULT·영상을 꺼낸 뒤 경계가 먼저 처리되면 is_current False, annotate 뒤 재확인도 False."""
@@ -315,10 +314,10 @@ class TakenResultRaceTest(HandoffTestBase):
 
 
 class FramelessMessageTest(HandoffTestBase):
-    """시험 4: 프레임·작업 없는 메시지는 식별자 None(가짜 0 없음)."""
+    """프레임·작업 없는 메시지는 식별자 None(가짜 0 없음)."""
 
     def test_frameless_ids_none(self):
-        """RUN_START·프레임 없는 INVALIDATION·INPUT_STATUS·CLEAR·RUN_END는 image_seq·job_seq·capture_generation이 None."""
+        """RUN_START·프레임 없는 INVALIDATION·INPUT_STATUS·CLEAR·RUN_END는 프레임·작업 식별자가 None."""
         self.p.apply_invalidation(frameless_event(self.p))
         self.h.sync_invalidations(self.p)
         ev = InputStatusEvent(run_id=RUN_ID, source_id="src0", status=InputStatus.FRAME_TIMEOUT,
@@ -363,7 +362,7 @@ class FramelessMessageTest(HandoffTestBase):
 
 
 class RetentionTest(HandoffTestBase):
-    """시험 5: 소비 정지 중 영상 1장, 이전 프레임 회수, 제어 메시지에 영상·작업 참조 없음."""
+    """소비 정지 중 영상 1장, 이전 프레임 회수, 제어 메시지에 영상·작업 참조 없음."""
 
     def test_slow_consumer_keeps_one_view_and_releases_frames(self):
         """꺼내지 않아도 영상 칸은 1장이고 대체된 프레임·응답은 회수된다."""
@@ -395,7 +394,7 @@ class RetentionTest(HandoffTestBase):
 
 
 class CapacityTest(HandoffTestBase):
-    """시험 6: 용량 입력 검사와 넘침 fail-stop."""
+    """용량 입력 검사와 넘침 fail-stop."""
 
     def test_capacity_validation(self):
         """bool·0·음수·실수·문자열 용량은 계약 오류, 기본값은 64."""
@@ -458,7 +457,7 @@ class CapacityTest(HandoffTestBase):
 
 
 class NotifyTest(unittest.TestCase):
-    """시험 7: 알림 병합·부분 take·영상만 남은 경우·교차·예외·잠금 밖 호출."""
+    """알림 병합·부분 take·영상만 남은 경우·교차·예외·잠금 밖 호출."""
 
     def setUp(self):
         """알림을 세는 연결부와 코어."""
@@ -666,12 +665,13 @@ class ConcurrencyTest(unittest.TestCase):
 
 
 class MultiRunEventScopeTest(HandoffTestBase):
-    """T2-F1(r1): 같은 연결부를 다음 실행에 다시 쓸 때 사건 계수는 실행별, 제어 계수·msg_seq는 수명 전체로 섞이지 않는다."""
+    """연결부를 다음 실행에 다시 쓰면 사건 계수는 실행별, 제어 계수·msg_seq는 수명 전체다."""
 
     def run1_with_events(self):
         """실행1: 결과·applied 사건·ignored 사건을 만들고 동기화한 뒤 RUN_END. (결과 seq, 실행1 사건 수)."""
         out0, _ = self.run_job(0)
-        self.p.change_settings(self.p.settings, cause=GenerationCause.SEEK)        # applied GENERATION_CHANGED
+        # applied GENERATION_CHANGED
+        self.p.change_settings(self.p.settings, cause=GenerationCause.SEEK)
         _, seq1 = self.run_job(1)
         self.assertFalse(self.p.apply_invalidation(job_event(out0.context)))       # ignored(이전 세대)
         self.h.sync_invalidations(self.p)
@@ -748,7 +748,7 @@ class MultiRunEventScopeTest(HandoffTestBase):
 
 
 class LifecycleTest(HandoffTestBase):
-    """시험 8·9·10: 수신 측 실패·close 멱등·생산자 스레드 고정·check."""
+    """수신 측 실패·close 멱등·생산자 스레드 고정·check."""
 
     def test_consumer_failure_latches(self):
         """report_consumer_failure → FAILED(consumer: …), 꺼낸 결과도 현재가 아님, 이후 생산자 거부."""

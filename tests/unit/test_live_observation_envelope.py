@@ -1,7 +1,6 @@
-"""`vision/live_observation_envelope`(#171 R3) 단위시험: 정확 stamp TF 조회·반환 뒤 상한 판정·봉투 결합 검사·CameraInfo 짝 진단.
+"""`vision/live_observation_envelope` 단위시험: 정확 stamp TF 조회·반환 뒤 상한 판정·봉투 결합 검사.
 
-근거: `_workspace/171_builder2_live_a_to_b_plan.md` r3 §1.2·§1.3·§3.5·§8.2(T-h, T-l). 50 ms는 B A-7 값이며 판정 방식은 L-3 전 시험 후보.
-카메라·자세는 합성 값(from_fov, look_at)이며 정확도와 무관하다.
+CameraInfo 짝 진단도 본다. 카메라·자세는 합성 값이며 정확도와 무관하다.
 """
 import unittest
 
@@ -46,7 +45,7 @@ class TfLookupTest(unittest.TestCase):
         np.testing.assert_allclose(res.tf.T_W_C, T)
 
     def test_h_49ms_ok_51ms_late(self):
-        """T-h: 반환 49 ms는 사용, 51 ms는 성공이어도 late(tf None)."""
+        """반환 49 ms는 사용, 51 ms는 성공이어도 late(tf None)."""
         for wait, status in ((0.049, "ok"), (0.051, "late")):
             clock = FakeClock()
             res = LiveCaptureTfLookup(lookup_returning(clock, wait), world_frame="world", wait_limit_s=0.05,
@@ -56,7 +55,7 @@ class TfLookupTest(unittest.TestCase):
             self.assertEqual(res.tf is None, status == "late")
 
     def test_h_window_excludes_prior_wait(self):
-        """T-h: 구간은 호출 직전부터다(조회 전에 흐른 시간은 포함하지 않음)."""
+        """구간은 호출 직전부터다(조회 전에 흐른 시간은 포함하지 않음)."""
         clock = FakeClock()
         lk = LiveCaptureTfLookup(lookup_returning(clock, 0.02), world_frame="world", wait_limit_s=0.05, clock=clock)
         clock.t += 5.0   # 대기열 대기 흉내
@@ -102,7 +101,7 @@ class EnvelopeTest(unittest.TestCase):
         self.assertIsNone(make_live_envelope(f, make_obs(f), camera=CAM, tf_result=late, world_frame="world").tf)
 
     def test_l_binding_errors(self):
-        """T-l: 관측↔프레임 보정 번호·식별자, 카메라↔프레임 보정 번호·해상도·frame 불일치는 봉투 오류."""
+        """관측·카메라와 프레임의 보정 번호·식별자·해상도·frame이 어긋나면 봉투 오류."""
         from eyetoarm.calibration.profile import from_fov
         f = make_frame()
         tf = self.ok_tf()

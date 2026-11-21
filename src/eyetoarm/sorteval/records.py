@@ -1,12 +1,7 @@
-"""분류 시험 실행 기록 — 어댑터 경계와 가짜 입력(#186 계획 r0 §4).
+"""분류 시험 실행 기록: 정규화 사건 자료형, 원본 → 정규화 어댑터, 가짜 입력 생성.
 
-C 공급기·도착 확인·사이클 결과와 B 판정 기록의 형식은 아직 정해지지 않았다. 그래서 취합(`aggregate`)은 이 모듈의
-**정규화 사건 자료형만** 받고, 원본 형식 → 정규화는 사건 종류별 어댑터 하나가 맡는다. 지금 어댑터는 이 계획의
-**초안 JSONL 형식**(한 줄 = `{"event": 종류, ...}`)을 읽는다. C·B 형식이 정해지면 어댑터만 바꾼다.
-
-- 시각은 모두 SIM_TIME ns(`timestamp_base == "SIM_TIME"`)만 받는다. 기준 혼합·비유한·음수·bool 시각은 거부한다(보완 4).
-- 정의되지 않은 필드·누락 필드는 거부한다. 거부 사유는 모두 모아 돌려준다.
-- `fake_events`는 시험·시연용 가짜 원본 줄을 만든다. 가짜 입력 실행 메타는 `fake_input=true`여야 한다.
+C·B 원본 형식이 정해지지 않아 어댑터는 초안 JSONL(한 줄 = `{"event": 종류, ...}`)을 읽고, 형식이 정해지면
+어댑터만 바꾼다. 시각은 SIM_TIME ns만 받고, 정의되지 않은·누락 필드는 거부하며 사유를 모두 모은다.
 """
 from __future__ import annotations
 
@@ -39,7 +34,7 @@ class SupplyEvent:
 
 @dataclass(frozen=True)
 class ArrivalEvent:
-    """C 도착 확인 사건(런타임 피드백). 수량 집계의 유일한 근거(계획서 §2.6.4)."""
+    """C 도착 확인 사건(런타임 피드백). 수량 집계의 유일한 근거."""
 
     pool_part_id: str
     bin: str
@@ -49,7 +44,7 @@ class ArrivalEvent:
 
 @dataclass(frozen=True)
 class CycleEvent:
-    """C 사이클 결과(`SortPart` result 등). `part_track_id`↔`pool_part_id` 연결을 C가 남긴다(협업 요청 C-2)."""
+    """C 사이클 결과(`SortPart` result 등). `part_track_id`↔`pool_part_id` 연결을 C가 남긴다."""
 
     part_track_id: str
     pool_part_id: str | None
@@ -64,7 +59,7 @@ class CycleEvent:
 
 @dataclass(frozen=True)
 class BDecision:
-    """B 판정 기록: 규격 판정과 goal 송신/건너뜀(협업 요청 B-1)."""
+    """B 판정 기록: 규격 판정과 goal 송신/건너뜀."""
 
     part_track_id: str
     part_class: str
@@ -84,8 +79,8 @@ class ATrack:
 
 @dataclass(frozen=True)
 class TrackLink:
-    """A 트랙 ↔ 풀 부품 연결. B가 건너뛴 부품은 C 사이클 기록이 없으므로 평가 측 대응기(`eval_matcher`, 정답
-    자세 사용 가능 — 평가 경로 전용)나 C 기록(`c_cycle`)이 남긴다. 출처는 미확정(보고서 결정 항목)."""
+    """A 트랙 ↔ 풀 부품 연결. B가 건너뛴 부품은 C 사이클 기록이 없어 평가 측 대응기
+    (`eval_matcher`, 평가 경로 전용)나 C 기록(`c_cycle`)이 남긴다."""
 
     part_track_id: str
     pool_part_id: str
@@ -103,7 +98,7 @@ class RunEvent:
 
 @dataclass(frozen=True)
 class RunMeta:
-    """실행 메타: 평가 실행 식별·상태·검출 방식·동일 조건 비교 항목·확인 기록(§10.3 마지막 문단)."""
+    """실행 메타: 평가 실행 식별·상태·검출 방식·동일 조건 비교 항목·확인 기록."""
 
     eval_run_id: str
     status: str
@@ -194,7 +189,7 @@ def _stamp(raw: dict, key: str, *, optional: bool = False) -> int | None:
 
 
 def _base(raw: dict) -> None:
-    """시각 기준은 SIM_TIME만(보완 4)."""
+    """시각 기준은 SIM_TIME만."""
     if raw.get("timestamp_base") != TIMESTAMP_BASE:
         raise _Reject(f"timestamp_base: only {TIMESTAMP_BASE} is accepted (got {raw.get('timestamp_base')!r})")
 

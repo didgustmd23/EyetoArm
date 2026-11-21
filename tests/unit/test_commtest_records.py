@@ -1,7 +1,4 @@
-"""#183 통신 시험 기록 순수 로직: EventLog 행 → 명령별 시간 추적, 기록 행, 실행 폴더·파일 쓰기.
-
-근거: `_workspace/183_builder_comm_test_tool_plan.md` r0 §4, TCP 명세서 §8.4(수락 4분류는 D 값을 그대로 옮김), 규약 §4(단조 시계)·§10(경로).
-"""
+"""통신 시험 기록 순수 로직: EventLog 행 → 명령별 시간 추적, 기록 행, 실행 폴더·파일 쓰기."""
 import json
 import tempfile
 import unittest
@@ -27,7 +24,7 @@ def status_row(cid, state=None, code=None, mono=0):
 
 
 class TrackerTest(unittest.TestCase):
-    """CommandTracker: 시간·상태 수집과 예외 금지(D-07)."""
+    """CommandTracker: 시간·상태 수집과 예외 금지."""
 
     def test_send_first_status_final(self):
         """첫 TX(sent)·첫 RX·최종 RX 시각을 남기고 재전송 TX는 횟수만 올린다."""

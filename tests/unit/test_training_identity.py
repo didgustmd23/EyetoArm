@@ -1,10 +1,5 @@
-"""학습기 I1 — 작업 신원·자기 작업 판별·새 작업 허용·stale lock 해제 판정(`eyetoarm.training.identity`) 시험.
-
-근거: 학습기 설계 r2 §4(job_token 환경 변수, job_state 신원, `own_processes`는 environ 토큰으로만 판별·PID 재사용 방지,
-판별 불가 거부, 정리 미확인이면 lock 유지, lock 유무와 무관한 새 작업 차단, `--break-stale-lock` 3조건),
-reviewer 재검토 r2 PASS 구현 확인점 2(조사는 자기 uid 프로세스로 한정, 타 uid의 읽기 불가 environ은 제외 근거 기록).
-가짜 `/proc` 폴더를 주입한다. 실제 신호는 보내지 않는다.
-"""
+"""학습기 작업 신원·자기 작업 판별·새 작업 허용·stale lock 해제 판정(`eyetoarm.training.identity`) 시험.
+가짜 `/proc` 폴더를 주입하고 실제 신호는 보내지 않는다."""
 import os
 import tempfile
 import unittest
@@ -43,7 +38,8 @@ class FakeProc:
         """프로세스 하나. env는 dict, readable False면 environ 권한 0."""
         d = os.path.join(self.root, str(pid))
         os.makedirs(d)
-        fields = ["S", "1", str(pgid or pid)] + ["0"] * 16 + [str(start)] + ["0"] * 10   # 실제 stat: ")" 뒤 3번째(pgrp)·20번째(starttime)
+        # 실제 stat에서 ")" 뒤 3번째가 pgrp, 20번째가 starttime이다
+        fields = ["S", "1", str(pgid or pid)] + ["0"] * 16 + [str(start)] + ["0"] * 10
         _write(os.path.join(d, "stat"), f"{pid} (python x) " + " ".join(fields) + "\n", "w")
         _write(os.path.join(d, "status"), f"Name:\tpython\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n", "w")
         envp = os.path.join(d, "environ")
@@ -78,7 +74,7 @@ class IdentityTest(unittest.TestCase):
         self.assertEqual(self.proc.boot_id(), BOOT)
 
     def test_own_processes_by_token_only(self):
-        """토큰이 있는 자기 uid 프로세스(손자 포함)만 자기 작업이다. 같은 pgid라도 토큰 없으면 아님(PID 재사용)."""
+        """토큰이 있는 자기 uid 프로세스(손자 포함)만 자기 작업이다(같은 pgid라도 토큰 없으면 아님)."""
         self.fake.add(10, pgid=10, env={"EYETOARM_TRAIN_JOB": TOKEN})
         self.fake.add(11, pgid=10, env={"EYETOARM_TRAIN_JOB": TOKEN})        # 데이터로더 worker
         self.fake.add(12, pgid=10, env={"EYETOARM_TRAIN_JOB": "other"})
@@ -88,7 +84,7 @@ class IdentityTest(unittest.TestCase):
         self.assertEqual((own, unknown), ([10, 11], []))
 
     def test_other_uid_unreadable_excluded_same_uid_unreadable_unknown(self):
-        """타 uid의 읽기 불가 environ은 조사에서 제외(자기 자식은 같은 uid), 자기 uid인데 읽기 불가면 판별 불가."""
+        """타 uid의 읽기 불가 environ은 조사에서 빼고, 자기 uid인데 읽기 불가면 판별 불가다."""
         self.fake.add(20, uid=0, env={"EYETOARM_TRAIN_JOB": TOKEN}, readable=False)
         self.fake.add(21, uid=MY_UID, env={"EYETOARM_TRAIN_JOB": TOKEN}, readable=False)
 
@@ -103,7 +99,7 @@ class IdentityTest(unittest.TestCase):
         self.assertEqual(own_processes(TOKEN, self.proc, MY_UID), ([], []))
 
     def test_blocking_states(self):
-        """running·starting·cleanup_unconfirmed 실험이 하나라도 있으면 새 작업 차단 목록에 나온다(lock과 무관)."""
+        """running·starting·cleanup_unconfirmed 실험이 있으면 새 작업 차단 목록에 나온다(lock과 무관)."""
         states = {"S1-01": {"state": "exited_cleaned"}, "S1-02": {"state": "cleanup_unconfirmed"},
                   "S1-03": {"state": "not_started"}, "S1-04": {"state": "starting"}}
 
@@ -161,7 +157,7 @@ class IdentityTest(unittest.TestCase):
 
 
 class FailClosedTest(unittest.TestCase):
-    """살아 있으나 파싱에 실패한 /proc 항목은 소멸과 구분해 판별 불가(I2 확인점 4)."""
+    """살아 있으나 파싱에 실패한 /proc 항목은 소멸과 구분해 판별 불가로 본다."""
 
     def test_unparsable_status_is_unknown_missing_is_skipped(self):
         """status에 Uid 줄이 없는 항목은 unknown, 디렉터리 자체가 없어진 항목은 건너뜀."""
@@ -177,14 +173,14 @@ class FailClosedTest(unittest.TestCase):
 
 
 class StartFloorTest(unittest.TestCase):
-    """작업 시작 전 프로세스 제외(같은 uid·읽기 불가인 systemd --user 같은 프로세스가 복구를 영구히 막지 않게)."""
+    """작업 시작 전 프로세스 제외(읽기 불가 systemd --user 같은 프로세스가 복구를 막지 않게)."""
 
     def test_unreadable_older_than_job_excluded(self):
-        """min_start_ticks보다 먼저 시작한 같은 uid 읽기 불가 프로세스는 제외, 이후 시작한 것은 판별 불가, 토큰 자식은 자기 작업."""
+        """작업 전 시작한 읽기 불가 프로세스는 제외, 이후 시작한 것은 판별 불가, 토큰 자식은 자기 작업."""
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         fake = FakeProc(tmp.name)
-        fake.add(80, start=10, env={}, readable=False)                       # 작업 전(systemd --user 모사)
+        fake.add(80, start=10, env={}, readable=False)  # 작업 전(systemd --user 모사)
         fake.add(81, start=500, env={"EYETOARM_TRAIN_JOB": TOKEN})           # 작업 자식
         fake.add(82, start=600, env={}, readable=False)                      # 작업 뒤 읽기 불가
         self.addCleanup(lambda: [os.chmod(os.path.join(tmp.name, str(n), "environ"), 0o600) for n in (80, 82)])
@@ -211,12 +207,9 @@ class ZombieTest(unittest.TestCase):
 
 
 class ScriptProc:
-    """회차별 가짜 /proc(실파일 없음). `pids()`를 부를 때마다 다음 회차로 넘어간다(조사 1회 = pids 1회).
-
-    rounds: [{pid: spec}], spec = {"start": int, "state": "S", "env": dict | "EACCES", "then": "gone" | "Z",
-    "hidden": bool}. hidden이면 그 회차 목록(pids)에는 없지만 /proc/<pid>는 있다(목록 경합).
-    `then`은 그 회차에 environ이 실패한 직후 보이는 상태(P1 재확인 대상)다. 없는 pid는 사라진 것이다.
-    """
+    """회차별 가짜 /proc. `pids()`를 부를 때마다 다음 회차로 넘어간다(조사 1회 = pids 1회).
+    spec 키: start·state·env(dict | "EACCES")·then("gone" | "Z", environ 실패 직후 상태)·hidden.
+    hidden이면 그 회차 목록에는 없지만 /proc/<pid>는 있다. 없는 pid는 사라진 것이다."""
 
     def __init__(self, rounds, uid=MY_UID):
         """회차 목록."""
@@ -237,7 +230,8 @@ class ScriptProc:
         """다음 회차의 pid."""
         self.i += 1
         self.failed = set()
-        return sorted(pid for pid, sp in self.cur().items() if not sp.get("hidden"))   # hidden: 목록 경합으로 빠진 pid
+        # hidden: 목록 경합으로 빠진 pid
+        return sorted(pid for pid, sp in self.cur().items() if not sp.get("hidden"))
 
     def uid(self, pid):
         """uid."""
@@ -277,7 +271,7 @@ def _bad(start=100, then=None):
 
 
 class SettleTest(unittest.TestCase):
-    """U1: 일시 전이와 지속 판별 불가의 구분(P1 예외 뒤 재확인, P2 상한 있는 재조사, 최종 시점 기준)."""
+    """일시 전이와 지속 판별 불가의 구분(실패 뒤 재확인, 상한 있는 재조사, 최종 시점 기준)."""
 
     def settle(self, rounds, **kw):
         """settled_processes를 주입 대기로 부르고 (own, unknown, info, 대기 기록)."""
@@ -287,7 +281,7 @@ class SettleTest(unittest.TestCase):
         return own, unknown, info, waits
 
     def test_p1_vanish_or_zombie_right_after_failure_is_resolved(self):
-        """environ 실패 직후 사라지거나 Z가 된 pid는 unknown이 아니다(한 번의 조사 안에서 확인된 해소)."""
+        """environ 실패 직후 사라지거나 Z가 된 pid는 unknown이 아니다."""
         for then in ("gone", "Z"):
             with self.subTest(then=then):
                 own, unknown = own_processes(TOKEN, ScriptProc([{7: _bad(then=then)}]), MY_UID, 50)
@@ -316,8 +310,7 @@ class SettleTest(unittest.TestCase):
         self.assertEqual(unknown, [9])
 
     def test_alternation_and_pid_reuse_keep_unresolved_identity(self):
-        """읽힘/불가 교대(다른 unknown 8이 재조사를 이어 가는 동안 7이 불가→읽힘→불가)면 7은 unknown. 같은 pid가 새 시작 시각으로
-        재사용돼 계속 불가면 unknown(이전 해소와 섞지 않음), 재사용된 새 프로세스가 읽히면 이전 신원은 reused로 해소."""
+        """읽힘/불가가 교대하거나 pid가 재사용돼 계속 불가면 unknown, 재사용 프로세스가 읽히면 reused로 해소."""
         _, unknown, info, _ = self.settle([{7: _bad(), 8: _bad()}, {7: _ok(), 8: _bad()}, {7: _bad(), 8: _ok()}])
         self.assertEqual((unknown, info["scans"], info["resolved"]), ([7], 3, {"8@100": "not_own"}))
         _, unknown, _, _ = self.settle([{7: _bad(start=100)}, {7: _bad(start=200)}, {7: _bad(start=200)}])
@@ -326,14 +319,14 @@ class SettleTest(unittest.TestCase):
         self.assertEqual((unknown, info["resolved"]), ([], {"7@100": "reused"}))
 
     def test_listing_race_needs_explicit_resolution(self):
-        """마지막 조사 목록에서 빠졌지만 살아 있는 이전 unknown은 명시적 판독으로만 해소: 여전히 불가면 unknown, 토큰이면 own."""
+        """목록에서 빠졌지만 살아 있는 이전 unknown은 명시적 판독으로만 해소한다(불가면 unknown, 토큰이면 own)."""
         _, unknown, _, _ = self.settle([{7: _bad()}, {7: {**_bad(), "hidden": True}}])
         self.assertEqual(unknown, [7])
         own, unknown, info, _ = self.settle([{7: _bad()}, {7: {**_ok({TOKEN_ENV: TOKEN}), "hidden": True}}])
         self.assertEqual((own, unknown, info["resolved"]), ([7], [], {"7@100": "own"}))
 
     def test_deadline_budget_limits_waits(self):
-        """상위 잔여 기한이 대기 1회분만 남으면 조사 2회, 기한이 없으면 조사 1회·대기 0(unknown 유지)."""
+        """잔여 기한이 대기 1회분이면 조사 2회, 기한이 없으면 조사 1회·대기 0(unknown 유지)."""
         t = [0.0]
 
         def clock():

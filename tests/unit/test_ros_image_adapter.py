@@ -1,10 +1,5 @@
-"""링크 카메라 실시간 소스(`LiveLinkSource`)의 ROS 비의존 부분 시험(L2)과 추적 AI 설정 시험(L0).
-
-근거: 계획 `docs/superpowers/plans/2026-11-16-live-link-camera.md` r3 §3.2(필드 대응)·§3.6(QoS 진단)·§3.7(프로필)·§3.9(S1-01 설정)·
-§4.1 L0·L2, 사용자 확정 2026-11-16(S1-01 YOLOv8n-seg batch16, imgsz 1280, conf 0.084).
-가짜 메시지·가짜 변환기·가짜 수신 연결을 쓴다. rclpy·cv_bridge를 import하지 않는다(실제 통신은 L5 로컬 시나리오).
-가중치 파일(Git 제외)은 읽지 않는다.
-"""
+"""링크 카메라 실시간 소스(`LiveLinkSource`)의 ROS 비의존 부분과 추적 AI 설정 시험.
+가짜 메시지·변환기·수신 연결을 쓰고 rclpy·cv_bridge를 import하지 않으며 가중치 파일을 읽지 않는다."""
 import os
 import subprocess
 import sys
@@ -49,7 +44,7 @@ def info_msg(fx=100.0, width=W, height=H, frame_id=FRAME_ID):
 
 
 def view_convert(message):
-    """가짜 변환기: 메시지 버퍼를 공유하는 view를 돌려준다(bgr8처럼 복사 필요한 경우)."""
+    """가짜 변환기: 메시지 버퍼를 공유하는 view를 돌려준다(복사가 필요한 경우 흉내)."""
     return message.data[:, :, ::-1]
 
 
@@ -130,7 +125,7 @@ class PureHelpersTest(unittest.TestCase):
                 stamp_to_ns(bad)
 
     def test_owned_bgr_copies_shared_and_marks_readonly(self):
-        """다른 버퍼의 view는 복사해 독립·연속·읽기 전용으로 만든다. 원본을 바꿔도 결과는 그대로다."""
+        """다른 버퍼의 view는 독립·연속·읽기 전용 사본으로 만들어 원본을 바꿔도 그대로다."""
         base = np.zeros((2, 3, 3), dtype=np.uint8)
         out = owned_bgr(base[:, :, ::-1])
         base[:] = 9
@@ -153,7 +148,7 @@ class PureHelpersTest(unittest.TestCase):
         self.assertIsNone(qos_incompatibility("reliable", []))
 
     def test_profile_info_uses_b_calibration_id(self):
-        """D3: calibration_id는 B 함수가 만든 값(해상도·K·dist 해시)과 같고, frame_id는 헤더 값."""
+        """calibration_id는 B 함수가 만든 값(해상도·K·dist 해시)과 같고 frame_id는 헤더 값이다."""
         p = profile_info(info_msg(fx=100.0))
         K = np.array([[100.0, 0, W / 2], [0, 100.0, H / 2], [0, 0, 1]])
 
@@ -161,7 +156,7 @@ class PureHelpersTest(unittest.TestCase):
         self.assertEqual((p.width, p.height, p.frame_id), (W, H, FRAME_ID))
 
     def test_module_import_has_no_ros(self):
-        """ros_image import만으로는 rclpy·cv_bridge·sensor_msgs를 불러오지 않는다(지연 import, 코드 규약 §8)."""
+        """ros_image import만으로는 rclpy·cv_bridge·sensor_msgs를 불러오지 않는다(지연 import)."""
         code = ("import sys, eyetoarm.inputs.ros_image; "
                 "print(sorted(m for m in ('rclpy', 'cv_bridge', 'sensor_msgs') if m in sys.modules))")
         out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60,
@@ -172,10 +167,10 @@ class PureHelpersTest(unittest.TestCase):
 
 
 class ReadTest(SourceBase):
-    """영상 → FramePacket 조립(§3.2)."""
+    """영상 → FramePacket 조립."""
 
     def test_frame_fields(self):
-        """SIM_TIME·내림 ms·원본 ns·수신 시각·광학 프레임·source_ref/index·읽기 전용 독립 영상·발급기 1회."""
+        """시각·프레임·source_ref/index 필드와 읽기 전용 독립 영상, 발급기 1회 호출을 확인한다."""
         self.make()
         self.clock_now[0] = 123_456
         self.source.handle_image(image_msg(1, 999_999_999))
@@ -244,7 +239,7 @@ class ReadTest(SourceBase):
         self.assertIsNone(self.source.read())
 
     def test_frame_current_follows_epoch(self):
-        """frame_current: 조립한 프레임의 epoch가 현재면 True, 경계 뒤 False, 모르는 프레임 False."""
+        """frame_current: 조립한 프레임의 epoch가 현재면 True, 경계 뒤·모르는 프레임은 False."""
         self.make()
         self.source.handle_publishers([b"A"], ["reliable"])
         self.source.handle_image(image_msg(1))
@@ -262,7 +257,7 @@ class QosAndLifecycleTest(SourceBase):
     """QoS 진단·시작 실패·닫기."""
 
     def test_publisher_qos_mismatch_diagnosed(self):
-        """reliable 요청인데 발행자가 best-effort면 SOURCE_UNAVAILABLE qos_incompatible 알림(조용한 무수신 아님)."""
+        """reliable 요청에 best-effort 발행자면 SOURCE_UNAVAILABLE qos_incompatible 알림을 낸다."""
         self.make()
         self.source.handle_publishers([b"A"], ["best_effort"])
         items = self.source.poll_input()
@@ -282,7 +277,7 @@ class QosAndLifecycleTest(SourceBase):
         self.assertEqual(self.source.stats()["offered_reliability"], ["best_effort"])
 
     def test_start_failure_reported_once(self):
-        """연결 시작 실패는 예외가 아니라 START_FAILED 알림 1회, 이후 read는 SOURCE_UNAVAILABLE closed. close는 연결을 닫지 않음."""
+        """연결 시작 실패는 START_FAILED 알림 1회, 이후 read는 closed이고 close는 연결을 닫지 않는다."""
         transport = FakeTransport(start_error=ModuleNotFoundError("No module named 'rclpy'"))
         self.make(transport=transport)
         items = self.source.poll_input()
@@ -331,7 +326,7 @@ class FakeExecutor:
     """가짜 executor: spin 동작(raise·return·block)과 shutdown 실패를 정한다."""
 
     def __init__(self, mode="block", shutdown_error=None, release=None):
-        """mode: raise(즉시 예외)·return(즉시 반환)·block(shutdown까지 대기)·raise_on(release 이벤트 뒤 예외)."""
+        """mode: raise(즉시 예외)·return(즉시 반환)·block(shutdown까지 대기)·raise_on(release 뒤 예외)."""
         self.mode, self.shutdown_error = mode, shutdown_error
         self.release = release or threading.Event()
         self.stop = threading.Event()
@@ -386,7 +381,7 @@ class FakePart:
 
 
 class SpinTransport(RclpyTransport):
-    """rclpy 없이 실제 `_spin`·`close` 경로를 쓰는 전송: start가 가짜 executor·노드·컨텍스트와 실제 스레드를 만든다."""
+    """rclpy 없이 실제 `_spin`·`close` 경로를 쓰는 전송(가짜 부품과 실제 스레드)."""
 
     def __init__(self, executor, node=None, context=None, owns=True):
         """가짜 부품을 받는다."""
@@ -415,10 +410,10 @@ def wait_until(pred, limit_s=2.0):
 
 
 class ReceiverFailureTest(SourceBase):
-    """검토 r1 F1: 수신기 비정상 종료를 치명 입력 사건으로 넘긴다."""
+    """수신기 비정상 종료를 치명 입력 사건으로 넘긴다."""
 
     def test_spin_exception_before_first_frame(self):
-        """첫 영상 전 spin 예외 → RECEIVER_FAILED(SOURCE_UNAVAILABLE) 1회, 원인 기록, stats에 receiver_error."""
+        """첫 영상 전 spin 예외는 RECEIVER_FAILED 1회, 원인 기록, stats에 receiver_error."""
         self.make(transport=SpinTransport(FakeExecutor("raise")))
         self.assertTrue(wait_until(lambda: self.source.stats()["receiver_failed"]))
         items = self.source.poll_input()
@@ -450,7 +445,7 @@ class ReceiverFailureTest(SourceBase):
 
 
 class TransportCloseTest(unittest.TestCase):
-    """검토 r1 F2: 단계별 실패를 모으고 뒤 단계를 계속, 주입 컨텍스트 보존, 재시도, 유한 대기."""
+    """단계별 실패를 모으고 뒤 단계를 계속, 주입 컨텍스트 보존, 재시도, 유한 대기."""
 
     def started(self, executor=None, node=None, context=None, owns=True):
         """시작한 가짜 전송."""
@@ -459,7 +454,7 @@ class TransportCloseTest(unittest.TestCase):
         return t
 
     def test_node_failure_still_shuts_context_and_retries(self):
-        """노드 해제 실패에도 소유 컨텍스트 종료는 한다. 다음 close는 노드만 다시 시도하고 컨텍스트는 다시 안 함."""
+        """노드 해제 실패에도 컨텍스트는 닫고, 다음 close는 노드만 다시 시도한다."""
         node, ctx = FakePart(fail_times=1), FakePart()
         t = self.started(node=node, context=ctx)
 
@@ -471,7 +466,7 @@ class TransportCloseTest(unittest.TestCase):
         self.assertEqual((node.calls, ctx.calls), (2, 1))
 
     def test_shutdown_failure_continues_and_reports_all(self):
-        """executor shutdown 실패 + 그래서 멈추지 않은 스레드 + 컨텍스트 실패를 모두 보고하고, 노드 해제는 한다. 유한 시간."""
+        """shutdown 실패·멈추지 않은 스레드·컨텍스트 실패를 모두 보고하고 노드 해제는 유한 시간에 한다."""
         ex = FakeExecutor("block", shutdown_error=RuntimeError("shutdown boom"))
         node, ctx = FakePart(), FakePart(fail_times=1)
         t = self.started(executor=ex, node=node, context=ctx)
@@ -506,7 +501,7 @@ class TransportCloseTest(unittest.TestCase):
         self.assertEqual((ex.shutdown_calls, node.calls, ctx.calls), (1, 1, 1))
 
     def test_source_close_not_silent_after_failure(self):
-        """소스 close: 연결 정리 실패면 예외, 다시 부르면 연결 close를 다시 시도(조용한 성공 없음), 성공 뒤에는 no-op."""
+        """소스 close: 정리 실패면 예외, 다시 부르면 재시도(조용한 성공 없음), 성공 뒤에는 no-op."""
         transport = FakeTransport(close_error=RuntimeError("thread stuck"))
         source = LiveLinkSource(source_id="gz_link", issuer=FrameIdIssuer("r"), generation_provider=lambda: 0,
                                 transport_factory=lambda s: transport)
@@ -523,10 +518,10 @@ class TransportCloseTest(unittest.TestCase):
 
 
 class LiveAiConfigTest(unittest.TestCase):
-    """L0: 추적 AI 설정 `config/vision/ai_s1_01_live.json`(사용자 확정 값)."""
+    """추적 AI 설정 `config/vision/ai_s1_01_live.json`."""
 
     def test_confirmed_values(self):
-        """S1-01 YOLOv8n-seg·계획 기록 sha·imgsz 1280·conf 0.084·bolt/nut, 재로드해도 같은 설정 ID."""
+        """S1-01 YOLOv8n-seg·sha·imgsz 1280·conf 0.084·bolt/nut 값이고 재로드해도 같은 설정 ID다."""
         path = os.path.join(ROOT, "config", "vision", "ai_s1_01_live.json")
         cfg = load_ai_config(path)
 

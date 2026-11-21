@@ -1,15 +1,7 @@
-"""학습기 I3 — 기존 S1 결과 등록(`register-legacy`, 학습기 설계 r2 §8, 확인점 3). torch·ultralytics를 import하지 않는다.
+"""기존 S1 결과를 검증해 등록 기록을 만든다(`register-legacy`). torch·ultralytics를 import하지 않는다.
 
-이미 실행한 S1-01~03은 **실제 실험**이다. Git 밖 임시 실행기(`outputs/s1_candidates/train_candidate.py`·`run_all.sh`)로 학습했다는
-사실은 한계로 남기고, 번호·결과·실패/중단 이력을 그대로 보존한다.
-
-- 기존 산출물은 **읽기만** 한다(이동·수정·생성 없음). 등록 기록은 새 run_set(`outputs/training/<run_set>/<exp>/registration.json`)에만
-  쓰고, 등록 전후 원본 파일 sha256이 같은지 확인한다.
-- 새 실행기의 콜백 기록(`applied.json`·`progress.json`)은 legacy에 **없다. 만들어 넣지 않는다.** 대체 근거(로그 완료 문구·args.yaml·
-  run_all 종료 기록·results.csv)를 등록 기록에만 적는다. optimizer·lr은 로그 문자열에서 읽은 값이며 콜백 기록이 아님을 표시한다.
-- 공통 설정과 다른 인자(args.yaml·체크포인트 train_args)는 차이를 남기고 `comparable: false`로 표시한다(같은 비교 조건이라고
-  표시하지 않음). 데이터 fingerprint 불일치·초기 가중치 해시 불일치도 같다.
-- 불완전·실패·없는 후보도 그 상태 그대로 등록한다(완료로 등록하지 않음).
+기존 산출물은 읽기만 하고, 없는 콜백 기록을 만들어 넣지 않는다. 공통 설정과 다른 인자·fingerprint
+불일치는 `comparable: false`로 표시하고, 불완전·실패 후보도 그 상태 그대로 등록한다.
 """
 from __future__ import annotations
 
@@ -93,7 +85,7 @@ def parse_log(text: str) -> dict:
 
 
 def _norm_meta(repo_root: str, meta: dict | None) -> dict | None:
-    """체크포인트 메타의 train_args.data를 저장소 상대 경로로 맞춘다(같은 파일의 절대/상대 표기 차이 제거)."""
+    """체크포인트 메타의 train_args.data를 저장소 상대 경로로 맞춘다(절대/상대 표기 차이 제거)."""
     if not meta:
         return meta
     m = dict(meta)

@@ -1,6 +1,6 @@
-"""#242 detect 영상 W 번호 표시 보완 시험: 같은 작업 결과가 없을 때 직전 W 결과를 위치(IoU 1:1)로 짝지어 화면에만 그린다.
+"""detect 영상 W 번호 표시 보완 시험: 같은 작업 결과가 없으면 직전 W 결과를 위치(IoU 1:1)로 짝지어 화면에만 그린다.
 
-근거: 지시 `_workspace/242_reviewer_instruction_w_display_prev.md`(A 결정 「권장으로 수정」, #240 F1). ROS·Gazebo는 쓰지 않는다.
+ROS·Gazebo는 쓰지 않는다.
 """
 from __future__ import annotations
 
@@ -174,7 +174,7 @@ class MatchPrevTest(LiveBase):
 # ---------------------------------------------------------------------- 추적 스레드 peek
 
 class PeekPrevTest(LiveBase):
-    """`LiveWorldTracking.peek(context, display)`: 같은 작업 우선, 없으면 직전 짝, 재설정 뒤 무효. 송신 쪽 `wait`는 그대로."""
+    """`LiveWorldTracking.peek(context, display)`: 같은 작업 우선, 없으면 직전 짝, 재설정 뒤 무효."""
 
     def confirm(self, lw, n=3):
         """볼트 하나를 n장 넣고 마지막 결과를 기다린다(확정)."""
@@ -305,10 +305,7 @@ class SendIsolationTest(WorldCli):
             return wtd.PrevDisplay(tracks=tracks, prev_image_seq=0, age_ms=1.0, matched=len(disp.instances)), "prev"
 
         class DrawingProbe:
-            """C 소비자 대역: 알림마다 제어 메시지를 비우고 영상 칸을 꺼내 annotate한다(별도 스레드 없이 알림 자리에서).
-
-            제어 메시지를 비워야 연결부가 다음 알림을 다시 부른다(알림 대기 latch).
-            """
+            """C 소비자 대역: 알림마다 제어 메시지를 비우고 영상 칸을 꺼내 annotate한다(알림 대기 latch 해제)."""
 
             def __init__(self):
                 """연결부는 start에서 받는다."""

@@ -1,18 +1,7 @@
-"""AI 분할 모델 출력·표시 결과 자료형(YOLO 연결 T2). A 내부형이며 공통 `PlanarObservation`을 바꾸지 않는다.
+"""AI 분할 모델 원시 출력·인스턴스·표시 결과 자료형과 모델 오류 예외(A 내부형).
 
-근거: 계획 `docs/superpowers/plans/2026-11-15-yolo-pipeline.md` r2 §4.3.1(필드·소유권·파생 수·polygon 규칙)·§4.4
-(candidate_count = in_scope 수), A 상세설계 §5.2(표시용 전체 마스크와 계산용 윤곽 구분), §5.4(모델 오류 종류).
-
-- `RawSegOutput`: 어댑터가 모델 결과에서 뽑아 형식 계약을 확인한 원시 배열(crop 좌표). 변환 뒤 버린다.
-- `AiInstance`: 모델이 낸 인스턴스 하나의 표시 정보. polygon 유무는 **기하 기준**이며 대표 거부 사유와 따로 정한다
-  (r2 P4). 가짜 다각형을 만들지 않는다. `index`는 모델 출력 순서이고 B의 최종 후보 선택을 뜻하지 않는다.
-- `AiSegResult`: 작업 하나의 표시 결과. 다각형과 숫자만 들고 영상·마스크 원본·모델 Results를 붙잡지 않는다.
-- `ModelPrepareError`: 모델 준비 실패의 분류(MODEL_LOAD_FAILED·MODEL_CONFIG_INVALID만).
-- `AiJobConfigError`: 작업 중 발견한 설정 불일치(MODEL_CONFIG_INVALID, 작업 값).
-- 거부 이름(`NON_TARGET_CLASS` 등)은 표시 결과 안의 A 내부 값이며 A §5.4 판정 사유 표에 넣지 않는다.
-- 축 후보 자격(#174 전환 단계 T, `_workspace/174_builder_a_multi_object_candidate_plan.md` r2 §5·r1 §2.1): 물체별 판정은
-  `axis_candidate_reason` 하나로만 한다. 집계(`AiSegResult.axis_valid_count`), 선택(`ai_convert.axis_selection`), 기록이 모두
-  이 함수를 쓴다. `axis_valid_count`는 **검출 단계의 픽셀 후보 수**이며 보정·세대·현재성 검사 뒤 B에 전달되는 수가 아니다.
+표시 결과는 다각형과 숫자만 들고 영상·마스크 원본을 붙잡지 않는다. 축 후보 자격은
+`axis_candidate_reason` 하나로만 판정하며 집계·선택·기록이 모두 이 함수를 쓴다.
 """
 from __future__ import annotations
 
@@ -25,25 +14,25 @@ import numpy as np
 
 from eyetoarm.common.types import Contour, InvalidationKind, _owned_contour, owned_axis_endpoints
 
-# 대표 거부 사유(판정 순서대로, 계획 §4.3 5단계)
+# 대표 거부 사유(판정 순서대로)
 NON_TARGET_CLASS = "NON_TARGET_CLASS"
 LOW_CONFIDENCE = "LOW_CONFIDENCE"
 EMPTY_MASK = "EMPTY_MASK"
 SMALL_MASK = "SMALL_MASK"
 REJECTIONS = (NON_TARGET_CLASS, LOW_CONFIDENCE, EMPTY_MASK, SMALL_MASK)
 
-# polygon 허용 조합(계획 §4.3.1 표): 필수 / 금지 / 둘 다 허용
+# polygon 허용 조합: 필수 / 금지 / 둘 다 허용
 _POLYGON_REQUIRED = (None, SMALL_MASK)
 _POLYGON_FORBIDDEN = (EMPTY_MASK,)
 
 _OUT_OF_SCOPE = (NON_TARGET_CLASS, LOW_CONFIDENCE)
 
-# 축 후보 제외 사유(#163 §4 표 이름, #174 물체별 적용). ai_convert가 같은 이름을 다시 내보낸다
+# 축 후보 제외 사유. ai_convert가 같은 이름을 다시 내보낸다
 CONTOUR_CLIPPED = "CONTOUR_CLIPPED"
 MULTIPLE_CANDIDATES = "MULTIPLE_CANDIDATES"
 AXIS_EXTRACTION_ERROR = "AXIS_EXTRACTION_ERROR"
 _PREPARE_KINDS = (InvalidationKind.MODEL_LOAD_FAILED, InvalidationKind.MODEL_CONFIG_INVALID)
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")  # fullmatch로만 쓴다(끝 개행 거부, r1 F2)
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")  # fullmatch로만 쓴다(끝 개행 거부)
 
 
 def _is_int(v) -> bool:
@@ -64,7 +53,7 @@ def _finite(v, name: str, *, lo: float | None = 0.0, hi: float | None = None) ->
     if not isinstance(v, Real) or isinstance(v, bool):
         raise ValueError(f"{name} must be a finite number: {v!r}")
 
-    # #196 A3-3: 거대 정수(10**400)는 float 변환이 넘친다 → OverflowError가 아니라 ValueError
+    # 거대 정수(10**400)의 float 변환 넘침을 OverflowError가 아니라 ValueError로
     try:
         f = float(v)
     except (OverflowError, ValueError) as exc:
@@ -105,11 +94,9 @@ def _shoelace_area(points: np.ndarray) -> float:
 
 @dataclass(frozen=True)
 class RawSegOutput:
-    """모델 출력 원시 배열(crop 좌표). 어댑터가 결과 객체에서 뽑은 뒤 형식 계약을 여기서 확인한다.
+    """모델 출력 원시 배열(crop 좌표). 생성 때 형식 계약을 확인하고 어긋나면 ValueError.
 
-    - K개 인스턴스: `boxes_xyxy` (K,4) float32, `confidence` (K,) float32, `class_index` (K,) int64 ≥ 0,
-      `masks` (K,h,w) bool. retina 계약상 (h,w)는 crop (높이, 폭)과 같아야 한다(`crop_wh`=(폭, 높이)).
-    - 값은 모두 유한해야 한다. K=0(무검출)은 정상이다. 어긋나면 ValueError(실행기가 INFERENCE_ERROR로 정리).
+    `masks` (K,h,w)의 (h,w)는 crop (높이, 폭)과 같아야 하고 값은 모두 유한해야 한다. K=0은 정상이다.
     """
 
     boxes_xyxy: np.ndarray
@@ -149,14 +136,14 @@ class RawSegOutput:
         if not np.issubdtype(cls.dtype, np.integer) or (k and int(cls.min()) < 0):
             raise ValueError(f"class_index must be integers >= 0: {cls.dtype}")
 
-        # int64 저장에서 값이 바뀌지 않아야 한다(uint64 2**63 등, r1 F3)
+        # int64 저장에서 값이 바뀌지 않아야 한다(uint64 2**63 등)
         if k and int(cls.max()) > np.iinfo(np.int64).max:
             raise ValueError("class_index exceeds int64 range")
 
         if not (np.all(np.isfinite(boxes)) and np.all(np.isfinite(conf))):
             raise ValueError("boxes_xyxy/confidence must be finite")
 
-        # float32로 바꾸기 전에 범위를 본다(넘는 값은 변환 시 inf가 됨, r1 F3)
+        # float32로 바꾸기 전에 범위를 본다(넘는 값은 변환 시 inf가 됨)
         f32_max = float(np.finfo(np.float32).max)
 
         for name, arr in (("boxes_xyxy", boxes), ("confidence", conf)):
@@ -166,7 +153,7 @@ class RawSegOutput:
         stored_boxes = _owned(boxes, np.float32, "boxes_xyxy")
         stored_conf = _owned(conf, np.float32, "confidence")
 
-        # float32 저장에서도 유한해야 한다(1e39 → inf 방지, r1 F3). 검사는 저장한 값으로 한다
+        # 검사는 저장한 float32 값으로 한다
         if not (np.all(np.isfinite(stored_boxes)) and np.all(np.isfinite(stored_conf))):
             raise ValueError("boxes_xyxy/confidence must be finite in float32")
 
@@ -183,21 +170,10 @@ class RawSegOutput:
 
 @dataclass(frozen=True)
 class AiInstance:
-    """모델 인스턴스 하나의 표시 정보(원본 픽셀 좌표, 계획 §4.3.1).
+    """모델 인스턴스 하나의 표시 정보(원본 픽셀 좌표).
 
-    polygon 규칙(r2 P4, 대표 거부 사유와 독립):
-    - 기하 있음(바깥 윤곽 점 3개 이상·면적 > 0)일 때만 polygon이 있고, 없으면 None·`clipped=False`다.
-    - `rejected` None·`SMALL_MASK` → polygon 필수, `EMPTY_MASK` → None 필수, `NON_TARGET_CLASS`·`LOW_CONFIDENCE`
-      → 둘 다 허용(기하 판정보다 앞서 걸림). 비대상·점수 미달도 클래스·점수·사유를 보존한다.
-
-    축 끝점 추출 결과(#168, 설정 `axis_extractor`를 켠 작업의 볼트 인스턴스만, 기본값은 모두 「평가 안 함」):
-    - `axis_endpoints_px`: 추출기가 형식 조건을 통과한 끝점(float64 (2, 2) 읽기 전용, 행 0 머리 끝·행 1 축 끝, 원본 프레임 픽셀).
-      이 값은 추출기 출력이며 정확도 승인이 아니다.
-    - `axis_reason`: 추출하지 않았거나 추출기가 무효를 낸 사유. 끝점과 동시에 있을 수 없다.
-    - `axis_max_iou`: 같은 작업의 다른 비거부 볼트 마스크와의 최대 IoU(겹침 판정용, 다른 볼트가 없으면 0.0).
-    - `axis_diag`: 추출기 진단값(수·문자열만, 기록용).
-    - `axis_overlap_with`(#174): 이 볼트와 마스크 IoU ≥ `AXIS_OVERLAP_IOU`인 다른 축 경로 볼트 index(오름차순·유일·자기 제외,
-      없으면 None). 축 경로가 다룬 인스턴스만 가진다. 겹침 당사자 판정(`axis_candidate_reason`)의 근거다.
+    polygon은 기하(점 3개 이상·면적 > 0)가 있을 때만 있다. `axis_*` 필드는 축 경로가 다룬 볼트만 가지며,
+    `axis_endpoints_px`(행 0 머리 끝·행 1 축 끝)와 `axis_reason`은 동시에 있을 수 없다.
     """
 
     index: int
@@ -223,12 +199,11 @@ class AiInstance:
         return self.axis_endpoints_px is not None or self.axis_reason is not None
 
     def _check_axis(self, put) -> None:
-        """축 끝점 필드(#168)를 검사·소유 복사한다."""
+        """축 끝점 필드를 검사·소유 복사한다."""
         endpoints = self.axis_endpoints_px
 
         if endpoints is not None:
-            # #196 A3-4: 공통형(`PlanarObservation`·`ObjectObservation`)과 같은 규칙 함수(형·dtype·bool·유한·두 점 구분, 소유 복사).
-            # 프레임 범위는 프레임 크기를 아는 `ai_convert.convert`가 같은 공통 함수로 거른다
+            # 공통형과 같은 규칙 함수를 쓴다. 프레임 범위는 프레임 크기를 아는 `ai_convert.convert`가 거른다
             put("axis_endpoints_px", owned_axis_endpoints(endpoints))
 
         if self.axis_reason is not None and (not isinstance(self.axis_reason, str) or not self.axis_reason):
@@ -297,13 +272,13 @@ class AiInstance:
         if self.rejected is not None and self.rejected not in REJECTIONS:
             raise ValueError(f"rejected must be None or one of {REJECTIONS}: {self.rejected!r}")
 
-        # 다각형: 소유 복사(float32 (N,2), 읽기 전용) + 점 3개 이상 + 유한
+        # 다각형: 소유 복사 + 점 3개 이상 + 유한
         polygon = _owned_contour(self.polygon, "polygon")
 
         if polygon is not None and (polygon.shape[0] < 3 or not np.all(np.isfinite(polygon))):
             raise ValueError(f"polygon must have >= 3 finite points: {polygon.shape}")
 
-        # 면적 0(일직선·같은 점 반복)은 기하 없음이다(계획 §4.3.1 「점 3개 이상·면적 > 0」, r1 F4). 임의 epsilon 없음
+        # 면적 0(일직선·같은 점 반복)은 기하 없음이다. 임의 epsilon 없음
         if polygon is not None and _shoelace_area(polygon) == 0.0:
             raise ValueError("polygon must have a non-zero area (degenerate geometry is polygon=None)")
 
@@ -333,10 +308,9 @@ class AiInstance:
 
 @dataclass(frozen=True)
 class AiSegResult:
-    """작업 하나의 AI 표시 결과(계획 §4.3.1). `instances`는 모델이 낸 전부(비대상 포함)이며 index 순이다.
+    """작업 하나의 AI 표시 결과. `instances`는 모델이 낸 전부(비대상 포함)이며 index 순이다.
 
-    `config_sha256`은 계산에 쓴 설정(= 작업 시작 설정 `job.detector_config_id`)이다. 코어가 대조한다.
-    시간: `infer_ms`는 predict 호출만, `post_ms`는 변환, `process_ms`는 어댑터 전체(ms).
+    `infer_ms`는 predict 호출만, `post_ms`는 변환, `process_ms`는 어댑터 전체(ms).
     """
 
     instances: tuple[AiInstance, ...]
@@ -362,7 +336,7 @@ class AiSegResult:
 
         put("instances", instances)
 
-        # 겹침 상대는 같은 결과의 축 경로 인스턴스여야 하고 관계는 대칭이다(#174)
+        # 겹침 상대는 같은 결과의 축 경로 인스턴스여야 하고 관계는 대칭이다
         for inst in instances:
             for other in inst.axis_overlap_with or ():
                 if other >= len(instances) or inst.index not in (instances[other].axis_overlap_with or ()):
@@ -410,10 +384,9 @@ class AiSegResult:
 
 
 def axis_candidate_reason(inst: AiInstance) -> str | None:
-    """축 경로 인스턴스 하나의 후보 자격(#174 단일 판정 함수). None이면 유효 후보, 아니면 제외 사유.
+    """축 경로 인스턴스 하나의 후보 자격. None이면 유효 후보, 아니면 제외 사유.
 
-    순서(#163 §4 표 순서를 물체별로): 잘림 CONTOUR_CLIPPED > 겹침 당사자 MULTIPLE_CANDIDATES > 위상·추출기 사유(`axis_reason`) >
-    끝점 없음 AXIS_EXTRACTION_ERROR. 검출 거부·볼트 아님은 축 경로에 들어오지 않으므로(`axis_evaluated` 거짓) ValueError.
+    순서: 잘림 > 겹침 당사자 > 추출기 사유 > 끝점 없음. 축 경로가 다루지 않은 인스턴스는 ValueError.
     """
     if not inst.axis_evaluated:
         raise ValueError(f"instance {inst.index} is not an axis candidate (not evaluated by the axis path)")
@@ -452,10 +425,9 @@ class ModelPrepareError(Exception):
 
 
 class AiJobConfigError(Exception):
-    """작업 중 발견한 검출 설정 불일치(A §5.4 `MODEL_CONFIG_INVALID`, 「해당 작업의 값」).
+    """작업 중 발견한 검출 설정 불일치(`MODEL_CONFIG_INVALID`). 일반 추론 예외와 구분한다.
 
-    예: 설정 ROI가 작업 프레임 밖, 작업 시작 설정 해시가 어댑터 설정과 다름, 모델이 class_map 밖 클래스를 냄.
-    실행기는 이 예외를 `fail(job, MODEL_CONFIG_INVALID, cause)`로 정리한다(R3). 일반 예외(INFERENCE_ERROR)와 구분한다.
+    예: ROI가 프레임 밖, 작업 시작 설정 해시가 어댑터 설정과 다름, 모델이 class_map 밖 클래스를 냄.
     """
 
     def __init__(self, cause: str) -> None:

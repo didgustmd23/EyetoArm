@@ -1,8 +1,6 @@
-"""#183 통신 시험 도구 통합 시험: 수정하지 않은 C TcpServer(로컬 모의 상대, 포트 0) + D TcpClient 재사용으로 S1~S4.
+"""통신 시험 도구 통합 시험: 로컬 모의 C TcpServer(포트 0)와 D TcpClient로 S1~S4를 돌린다.
 
-근거: `_workspace/183_builder_comm_test_tool_plan.md` r0 §3·§7, TCP 명세서 §7.2~7.3·§8.3~8.7·§13.1, 협업 요청 D-07.
-- 로컬 모의 상대 결과다(실제 C 서버·로봇 아님). 실서버·47090·ROS·Gazebo를 쓰지 않는다.
-- 각 시나리오는 Runner의 케이스 상한(20 s) 안에서 끝나고, 정리 실패는 실패로 본다.
+실서버·ROS·Gazebo는 쓰지 않으며, 각 시나리오는 케이스 상한(20 s) 안에 끝나고 정리 실패는 실패다.
 """
 import asyncio
 import tempfile
@@ -62,7 +60,7 @@ class ScenarioTest(LocalPeerBase):
                             for r in out.rows))
 
     def test_s2_dedupe(self):
-        """S2: 같은 내용(001·002·004)은 저장 상태·실행 없음, 다른 내용(003·005~008)은 ID_CONFLICT·실행 없음."""
+        """S2: 같은 내용은 저장 상태·실행 없음, 다른 내용은 ID_CONFLICT·실행 없음."""
         out = self.run_scenarios(["S2"])
 
         self.assert_all_match(out, ["S2a", "S2c_pos", "S2b_pos", "S2c_theta_wrap", "S2b_theta", "S2b_image_seq",
@@ -70,7 +68,7 @@ class ScenarioTest(LocalPeerBase):
         self.assertEqual(self.peer.executions, 2)          # 원본 2건만 실행
 
     def test_s3_reconnect_resend_unconfirmed(self):
-        """S3: accepted_by_status·accepted_after_resend·unconfirmed가 실제로 나오고 재접속 후 같은 MOVE는 실행되지 않는다."""
+        """S3: 상태·재전송 확인·미확인이 나오고 재접속 후 같은 MOVE는 실행되지 않는다."""
         out = self.run_scenarios(["S3"])
 
         self.assert_all_match(out, ["S3a", "S3b", "S3c", "S3d"])
@@ -80,7 +78,7 @@ class ScenarioTest(LocalPeerBase):
         self.assertTrue(all(e["fault_injected"] for e in out.injector_log))
 
     def test_s4_cancel_busy(self):
-        """S4: 이동 중 CANCEL → FAILED CANCELLED, 다른 ID → BUSY(두 번째 D 클라이언트는 미전송), 자기 재전송 → MOVING."""
+        """S4: 이동 중 CANCEL → FAILED CANCELLED, 다른 ID → BUSY, 자기 재전송 → MOVING."""
         out = self.run_scenarios(["S4"])
 
         self.assert_all_match(out, ["S4a", "S4b", "S4c"])
@@ -98,7 +96,7 @@ class ScenarioTest(LocalPeerBase):
 
 
 class SafetyTest(unittest.TestCase):
-    """주입기·중계기 안전장치와 콜백 예외 격리(D-07)."""
+    """주입기·중계기 안전장치와 콜백 예외 격리."""
 
     def test_injectors_require_test_mode(self):
         """test_mode가 True가 아니면 주입기·중계기 생성이 ValueError."""

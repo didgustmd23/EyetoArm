@@ -1,8 +1,4 @@
-"""학습기 I2 — CLI(`scripts/train_candidates.py`) 시험. 실제 학습·torch 없이 하위 명령·자식 argv·무import를 확인한다.
-
-근거: 학습기 설계 r2 §1(진입점·하위 명령, 부모는 torch·ultralytics import 없음), 구현 지시(check/status/--help는 GPU·설치·가중치
-자동 다운로드를 강제하지 않음), §3(prepare-weights는 명시할 때만 내려받기).
-"""
+"""학습기 CLI(`scripts/train_candidates.py`) 시험: 실제 학습·torch 없이 하위 명령·자식 argv·무import를 본다."""
 import importlib.util
 import io
 import json
@@ -91,7 +87,7 @@ class CliTest(Fixture):
         self.assertFalse(os.path.exists(os.path.join(self.root, "outputs", "weights", "yolo11n-seg.pt.part")))
 
     def test_child_argv_and_recover_cli(self):
-        """학습 자식 argv는 같은 스크립트의 _child-train과 실험 폴더(재개 시 --resume-from)를 담고, 빈 run_set의 recover는 lock 해제 보고."""
+        """학습 자식 argv는 _child-train과 실험 폴더(재개 시 --resume-from)를 담고, 빈 recover는 lock 해제."""
         cli = load_cli()
         args = cli.build_parser().parse_args(self.base + ["train", "s1_x"])
         cand = self.config().candidates[0]
@@ -108,7 +104,7 @@ class CliTest(Fixture):
 
 
 class CliErrorTest(Fixture):
-    """설정·사전 입력 오류에서 traceback 대신 JSON 오류와 종료 2(F2)."""
+    """설정·사전 입력 오류에서 traceback 대신 JSON 오류와 종료 2."""
 
     def setUp(self):
         """임시 저장소(설정 파일은 일부러 공통 설정을 빼고 후보만)."""
@@ -132,7 +128,7 @@ class CliErrorTest(Fixture):
 
 
 class CliEvalTest(Fixture):
-    """I3 하위 명령(eval·register-legacy)과 평가 자식 argv(CliTest를 상속하지 않아 기존 시험이 중복 실행되지 않음)."""
+    """평가 하위 명령(eval·register-legacy)과 평가 자식 argv(CliTest 비상속이라 중복 실행 없음)."""
 
     def setUp(self):
         """임시 저장소에 설정 파일을 쓴다."""
@@ -140,7 +136,7 @@ class CliEvalTest(Fixture):
         self.base = write_configs(self)
 
     def test_eval_commands_and_child_argv(self):
-        """--help에 eval·register-legacy, 시간 자식은 크기 하나(--imgsz), 정확도 자식은 --val-dir(시도 폴더 아래)를 받는다."""
+        """--help에 eval·register-legacy, 시간 자식은 --imgsz 하나, 정확도 자식은 --val-dir를 받는다."""
         h = subprocess.run([sys.executable, SCRIPT, "--help"], capture_output=True, text=True, timeout=30)
         self.assertIn("register-legacy", h.stdout)
         self.assertIn("eval", h.stdout)
@@ -179,7 +175,7 @@ if __name__ == "__main__":
 
 
 class SingleModeCliTest(Fixture):
-    """selection_mode single 설정의 check(#139)."""
+    """selection_mode single 설정의 check."""
 
     def test_check_single_mode_ok(self):
         """single 후보(S1-01 하나) 설정으로 check는 종료 0이고 weights에 S1-01만 나온다."""
@@ -218,7 +214,7 @@ class FakeYOLO:
 
 
 class HsvVChildTest(Fixture):
-    """학습 자식이 hsv_v를 model.train에 넘기는지(#141), 가짜 torch·ultralytics로 확인한다."""
+    """학습 자식이 hsv_v를 model.train에 넘기는지 가짜 torch·ultralytics로 확인한다."""
 
     def run_child(self, hsv):
         """가짜 모듈로 _child-train을 부르고 train 인자를 돌려준다."""
@@ -243,7 +239,7 @@ class HsvVChildTest(Fixture):
         return FakeYOLO.calls[0]
 
     def test_hsv_v_passed_only_when_configured(self):
-        """hsv_v 0.6 설정이면 model.train(hsv_v=0.6, 나머지 공통 값 그대로), 설정에 없으면 hsv_v 인자 없음."""
+        """hsv_v 0.6 설정이면 model.train(hsv_v=0.6, 나머지 그대로), 설정에 없으면 hsv_v 인자 없음."""
         with_hsv = self.run_child(0.6)
         without = self.run_child(None)
 
@@ -265,7 +261,7 @@ class HsvVChildTest(Fixture):
 
 
 class HsvVBadConfigCliTest(Fixture):
-    """잘못된 hsv_v 설정의 CLI check(#141 r1 F1): traceback 대신 오류 JSON과 종료 2."""
+    """잘못된 hsv_v 설정의 CLI check: traceback 대신 오류 JSON과 종료 2."""
 
     def test_huge_int_hsv_v_exit_2_json(self):
         """hsv_v가 ±10**400(정상 JSON 정수)이면 check는 종료 2와 ConfigError 오류 JSON을 낸다."""

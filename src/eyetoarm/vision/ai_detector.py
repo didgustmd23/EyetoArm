@@ -1,20 +1,7 @@
-"""ultralytics 분할 모델 어댑터 `AiSegDetector`(YOLO 연결 T5). 1단계 표시용 무효 관측을 낸다.
+"""ultralytics 분할 모델 어댑터 `AiSegDetector`. 가중치 확인·모델 준비·추론을 맡는다.
 
-근거: 계획 `docs/superpowers/plans/2026-11-15-yolo-pipeline.md` r2 §2·§4.2·§4.3·§4.5, A 상세설계 §5.4(모델 오류 종류),
-§7.1(AI 의존성 선택적 구성, 실행 환경 주의 ① `YOLO_AUTOINSTALL=false`, BGR 계약, 가중치 해시·라이브러리 버전 기록).
-
-수명(계획 §4.2)
-- 생성자: 설정 형만 확인한다. **파일 I/O·import·모델 생성을 하지 않는다.**
-- `prepare()`: 가중치 경로 존재 → 정규 파일 → 읽기·sha256 대조 → 환경 변수(`YOLO_AUTOINSTALL=false`, `YOLO_OFFLINE=1`,
-  없으면 설정, 다른 값이면 거부) → (기본 factory면) `import ultralytics` → 모델 생성 → `task=="segment"` → `names==class_map`
-  → CUDA 장치 확인. 실패는 `ModelPrepareError`(MODEL_LOAD_FAILED·MODEL_CONFIG_INVALID). 실행기가 감시하는 준비 단계에서
-  부른다(R3). 준비한 스레드를 기록한다.
-- `__call__(job)`: 준비한 **같은 스레드**에서만 predict한다(모델 사용 주체 하나). 작업 시작 설정 해시가 어댑터 설정과 다르면
-  predict 없이 `AiJobConfigError`. 출력 계약 위반은 ValueError(INFERENCE_ERROR로 정리)다.
-- 결과 객체·마스크·영상은 변환 뒤 버린다. 표시 결과는 다각형·숫자만 든다.
-
-의존성: torch·ultralytics는 `prepare()` 안에서만 import한다. 시험은 `model_factory`·`import_module`·`cuda_device_count`·
-`environ`을 주입해 실제 라이브러리 없이 돌린다. silent fallback(OpenCV 대체 실행)·가짜 ID·이전 결과 재사용은 하지 않는다.
+생성자는 I/O·import를 하지 않고, torch·ultralytics는 `prepare()` 안에서만 import한다. predict는 준비한
+같은 스레드에서만 하며, OpenCV 대체 실행·가짜 ID·이전 결과 재사용은 하지 않는다.
 """
 from __future__ import annotations
 
@@ -33,7 +20,7 @@ from eyetoarm.vision.ai_convert import convert, crop_frame, observation_from_ai
 from eyetoarm.vision.ai_result import AiJobConfigError, AiSegResult, ModelPrepareError, RawSegOutput
 from eyetoarm.vision.pipeline_types import JobContext
 
-# import 전에 설정해야 하는 환경 변수(A §7.1 ①, 기존 학습 스크립트와 같은 값)
+# import 전에 설정해야 하는 환경 변수(자동 설치·온라인 접근 방지)
 REQUIRED_ENV = (("YOLO_AUTOINSTALL", "false"), ("YOLO_OFFLINE", "1"))
 _READ_CHUNK = 1 << 20
 _FLOAT_EXACT_INT = 2 ** 53          # float64가 모든 정수를 정확히 담는 범위(넘으면 클래스 값을 믿을 수 없음)
@@ -53,9 +40,9 @@ def _numpy(value) -> np.ndarray:
 
 
 def raw_from_results(results, crop_shape: tuple[int, ...], infer_ms: float) -> RawSegOutput:
-    """predict 결과 목록에서 원시 배열을 뽑고 출력 계약을 확인한다(계획 §4.3 4단계). 위반은 ValueError.
+    """predict 결과 목록에서 원시 배열을 뽑고 출력 계약을 확인한다. 위반은 ValueError.
 
-    결과는 정확히 1개, K>0이면 masks가 있어야 하고, 클래스 값은 정수여야 하며, 마스크는 retina(crop 해상도)여야 한다.
+    결과는 정확히 1개, K>0이면 masks가 있고, 클래스 값은 정수, 마스크는 crop 해상도여야 한다.
     """
     if not isinstance(results, (list, tuple)) or len(results) != 1:
         raise ValueError(f"predict must return exactly one result: {type(results).__name__}"
@@ -88,9 +75,9 @@ def raw_from_results(results, crop_shape: tuple[int, ...], infer_ms: float) -> R
 
 
 def _class_values(value) -> np.ndarray:
-    """클래스 값을 int64로 바꾼다. 정수 배열은 float을 거치지 않고 보존하고, 실수는 유한·정수·2**53 이하일 때만 받는다(r1 L1).
+    """클래스 값을 int64로 바꾼다. 실수는 유한·정수·2**53 이하일 때만 받고, 위반은 ValueError.
 
-    int64 범위 밖·음수 판정은 여기서 하지 않고 범위만 본다(음수는 RawSegOutput이 거부). 위반은 ValueError.
+    음수는 여기서 거부하지 않는다(RawSegOutput이 거부).
     """
     a = _numpy(value)
 
@@ -115,10 +102,7 @@ def _class_values(value) -> np.ndarray:
 
 
 def _binary_masks(value) -> np.ndarray:
-    """마스크 데이터를 bool로 바꾼다. bool은 그대로, 숫자는 유한해야 하며 > 0.5를 전경으로 본다(r1 F1).
-
-    NaN·inf를 이진화로 숨기지 않고 ValueError(출력 계약 오류)로 올린다.
-    """
+    """마스크 데이터를 bool로 바꾼다. 숫자는 > 0.5를 전경으로 보고, NaN·inf는 ValueError."""
     data = _numpy(value)
 
     if data.dtype == np.bool_:
@@ -208,14 +192,14 @@ class AiSegDetector:
         return {key: self._environ[key] for key, _ in REQUIRED_ENV}
 
     def prepare(self) -> dict:
-        """모델 준비(계획 §4.2 ③-a). 성공하면 model_ready 기록 정보를, 실패하면 ModelPrepareError를 낸다."""
+        """모델을 준비해 model_ready 기록 정보를 돌려준다. 실패하면 ModelPrepareError."""
         t0 = time.perf_counter_ns()
         cfg = self._config
         self._check_weights()
         env = self._guard_env()
         versions: dict[str, str] = {}
         factory = self._model_factory
-        source = "injected_factory"   # 주입 factory: 실제 라이브러리 버전을 알 수 없으므로 꾸며 넣지 않는다(r1 F2)
+        source = "injected_factory"   # 주입 factory는 라이브러리 버전을 알 수 없어 꾸며 넣지 않는다
 
         if factory is None:
             source = "ultralytics"
@@ -226,7 +210,7 @@ class AiSegDetector:
             except Exception as exc:  # 설치 안 됨·import 실패를 로딩 실패로 분류
                 raise ModelPrepareError(LOAD, f"import ultralytics failed: {type(exc).__name__}: {exc}") from exc
 
-            # 기본 경로는 장치와 관계없이(CPU 포함) torch 버전도 기록한다(A §9 라이브러리 버전, r1 F2)
+            # 기본 경로는 장치와 관계없이 torch 버전도 기록한다
             try:
                 self._torch = self._import_module("torch")
             except Exception as exc:
@@ -315,8 +299,7 @@ class AiSegDetector:
         t0 = time.perf_counter_ns()
         crop, _ = crop_frame(job.frame, cfg)
 
-        # 정밀도: 설정 `half`는 그대로 두고 predict에는 폐기된 `half` 대신 `quantize`로 넘긴다(사용자 지시 2026-11-16).
-        # 설치 Ultralytics `cfg._handle_deprecation`의 변환과 같다: half False → None(FP32), True → 16(FP16)
+        # predict에는 폐기된 `half` 대신 `quantize`로 넘긴다(False → None(FP32), True → 16(FP16))
         quantize = 16 if cfg.half else None
 
         t1 = time.perf_counter_ns()

@@ -1,9 +1,7 @@
-"""학습기 I2 — 순차 실행·격리 자식·감시·정리·재개·복구(`eyetoarm.training.runner`) 시험. 실제 모델·GPU 없이 가짜 자식을 쓴다.
+"""학습기 순차 실행·격리 자식·감시·정리·재개·복구(`eyetoarm.training.runner`) 시험.
 
-근거: 학습기 설계 r2 §4(job_state·lock·재개)·§5(자식 실행·감시·그룹 정리·다음 후보 조건·부모 중단·기록 실패·종료 코드),
-검토 r2 확인점 1(Popen 전 job_token·starting 기록), I1 재검토 r2의 I2 지시 1~5.
-가짜 자식은 `python -c`로 results.csv·weights·progress·args.yaml을 쓰거나, 잠자거나, TERM을 무시하거나, 별도 세션 손자를 만든다.
-체크포인트 메타(torch.load)는 `inspect_fn`을 주입한다. 모든 시험은 유한 시간에 끝나며 남은 프로세스를 정리한다.
+실제 모델·GPU 없이 `python -c` 가짜 자식을 쓰고, 체크포인트 메타는 `inspect_fn`으로 주입한다.
+모든 시험은 유한 시간에 끝나며 남은 프로세스를 정리한다.
 """
 import hashlib
 import json
@@ -175,7 +173,7 @@ class SuccessPathTest(Fixture):
     """정상 순차 실행."""
 
     def test_all_three_complete_sequentially(self):
-        """세 후보 모두 completed, 순차(시작 시각 겹침 없음), job_state exited_cleaned, attempts 시작·끝, lock 해제, run_set 요약, SHA256SUMS, rc 0."""
+        """세 후보 모두 completed·순차, job_state exited_cleaned, 기록·lock 해제·요약·SHA256SUMS, rc 0."""
         res = self.run_batch({"S1-01": ("ok", 0.2), "S1-02": ("ok", 0.2), "S1-03": ("ok", 0.2)})
 
         self.assertEqual(res.rc, 0, res.errors)
@@ -230,7 +228,7 @@ class StopAndCleanupTest(Fixture):
     """정지·정리·중단."""
 
     def test_parent_stop_cleans_child_and_grandchild_and_stops_batch(self):
-        """첫 후보 실행 중 정지 플래그(SIGTERM 모사) → 자식과 별도 세션 손자(토큰 상속)까지 정리 확인, 나머지 not_started, lock 해제, rc 1, 사유 parent_signal."""
+        """실행 중 정지 플래그 → 자식·별도 세션 손자까지 정리, 나머지 not_started, rc 1, parent_signal."""
         stop = StopFlag(install=False)
         t = __import__("threading").Timer(0.6, stop.set)
         t.start()
@@ -247,7 +245,7 @@ class StopAndCleanupTest(Fixture):
         self.assertEqual([s[0] for s in self.spawned], ["S1-01"])
 
     def test_term_ignored_child_is_killed(self):
-        """TERM을 무시하는 자식은 유예 뒤 KILL로 정리되고(정리 확인), 그 후보는 deadline 실패로 기록된 뒤 다음 후보가 계속된다."""
+        """TERM을 무시하는 자식은 유예 뒤 KILL로 정리되고 deadline 실패로 기록된 뒤 다음 후보가 계속된다."""
         res = self.run_batch({"S1-01": "ignore"}, cfg=self.config(train_deadline_s=0.5))
 
         self.assertEqual([c["status"] for c in res.candidates][:1], ["failed"])
@@ -273,7 +271,7 @@ class StopAndCleanupTest(Fixture):
         self.assertEqual([c["status"] for c in res.candidates], ["failed", "completed", "completed"])
 
     def test_cleanup_unconfirmed_aborts_keeps_lock_and_blocks_next(self):
-        """신호를 보내지 못해(권한 실패 모사) 정리가 확인되지 않으면 묶음 중단·job_state cleanup_unconfirmed·lock 유지·rc 1, 다음 train은 lock을 지워도 거부(rc 2)."""
+        """신호 실패로 정리 미확인이면 묶음 중단·lock 유지·rc 1, 다음 train은 lock을 지워도 rc 2."""
         def no_kill(pid, sig):
             """신호 실패."""
             raise PermissionError("not permitted")
@@ -296,7 +294,7 @@ class StopAndCleanupTest(Fixture):
         self.assertTrue(any("cleanup_unconfirmed" in e for e in again.errors))
 
     def test_record_failure_preserves_original_error(self):
-        """실행 중 필수 기록(status) 쓰기 실패 → 자식 정리·묶음 중단·rc 1, 원래 기록 오류와 정리 결과가 errors에 모두 남는다."""
+        """실행 중 status 쓰기 실패 → 자식 정리·묶음 중단·rc 1, 기록 오류와 정리 결과가 errors에 남는다."""
         from eyetoarm.training import runner as runner_mod
         real = runner_mod.write_json_atomic
 
@@ -319,7 +317,7 @@ class StopAndCleanupTest(Fixture):
         self.assertEqual([c["status"] for c in res.candidates][1:], ["not_started", "not_started"])
 
     def test_slow_monitor_command_does_not_stall_deadline(self):
-        """GPU 감시 명령이 느려도(가짜 nvidia-smi 5 s, 제한 0.3 s) 표본은 null·오류로 남고 기한(1 s) 판정은 제한시간 이상 늦지 않는다."""
+        """GPU 감시 명령이 느려도 표본은 null·오류로 남고 기한 판정은 제한시간 이상 늦지 않는다."""
         t0 = time.monotonic()
         res = self.run_batch({"S1-01": "sleep"}, cfg=self.config(train_deadline_s=1.0),
                        gpu_cmd=[sys.executable, "-c", "import time; time.sleep(5)"])
@@ -365,7 +363,7 @@ class ResumeRecoverTest(Fixture):
     """재개·상태·복구."""
 
     def test_resume_uses_experiment_last_pt(self):
-        """중단된 실험(미완료 last.pt)을 resume하면 그 실험의 weights/last.pt 경로로 자식을 만들고 attempts에 재개를 덧붙인다."""
+        """중단된 실험을 resume하면 그 weights/last.pt로 자식을 만들고 attempts에 재개를 덧붙인다."""
         res = self.run_batch({"S1-01": "sleep"}, cfg=self.config(train_deadline_s=0.3))
         d = self.exp(res, "S1-01", "yolov8n-seg")
         os.makedirs(os.path.join(d, "weights"), exist_ok=True)
@@ -394,7 +392,7 @@ class ResumeRecoverTest(Fixture):
         self.assertEqual([a["event"] for a in _lines(os.path.join(d, "attempts.jsonl"))][-2:], ["start", "end"])
 
     def test_status_and_recover_kill_own(self):
-        """부모 사망 + 자식 생존을 모사(lock·job_state running·토큰 프로세스): status는 stale·자기 작업을 보고하고, recover --kill-own은 토큰 프로세스만 정리한 뒤 lock을 푼다."""
+        """부모 사망 + 자식 생존: status는 stale을 보고하고 recover --kill-own은 토큰 프로세스만 정리한다."""
         d = os.path.join(self.root, "outputs", "training", "s1_t9")
         exp = os.path.join(d, "S1-01_yolov8n-seg")
         os.makedirs(exp)
@@ -408,11 +406,12 @@ class ResumeRecoverTest(Fixture):
         _write(os.path.join(d, "OWNER.lock"), json.dumps({"pid": 999999, "start_ticks": 1, "host": os.uname().nodename,
                                                           "boot_id": proc.boot_id()}))
         self.addCleanup(lambda: (child.kill(), child.wait(5)))
+        # 실제 running 기록 형태
         _write(os.path.join(exp, "job_state.json"), json.dumps({"state": "running", "job_token": token,
                                                                  "pid": child.pid,
                                                                  "start_ticks": proc.start_ticks(child.pid),
                                                                  "host": os.uname().nodename,
-                                                                 "boot_id": proc.boot_id()}))   # 실제 running 기록 형태
+                                                                 "boot_id": proc.boot_id()}))
         time.sleep(0.2)
 
         st = status(d)
@@ -428,7 +427,7 @@ class ResumeRecoverTest(Fixture):
 
 
 class I2FixTest(Fixture):
-    """I2 r0 검토 F1~F4 경계."""
+    """복구·fingerprint·정리 확인·감시 표본 경계."""
 
     def recover_setup(self, lock_over=None, js_over=None):
         """토큰 자식 하나와 lock·job_state(running)를 만든다."""
@@ -453,7 +452,7 @@ class I2FixTest(Fixture):
         return d, exp, child
 
     def test_recover_refuses_before_any_signal(self):
-        """F1: 살아 있는 lock 소유자·다른 호스트·다른 부팅·job_state의 다른 호스트에서는 신호 0, lock·job_state 무변, 자식 생존."""
+        """살아 있는 소유자·다른 호스트·다른 부팅에서는 신호 0, lock·job_state 무변, 자식 생존."""
         proc = ProcFS()
         me = {"pid": os.getpid(), "start_ticks": proc.start_ticks(os.getpid())}
         for name, lock_over, js_over in (("live owner", me, None), ("other host", {"host": "elsewhere"}, None),
@@ -479,7 +478,7 @@ class I2FixTest(Fixture):
                 __import__("shutil").rmtree(d)
 
     def test_recover_refuses_on_unknown_without_signal(self):
-        """F1: 작업 뒤 시작한 같은 uid 판별 불가 프로세스가 있으면(가짜 /proc) 신호 0·무변으로 거부한다."""
+        """작업 뒤 시작한 같은 uid 판별 불가 프로세스가 있으면 신호 0·무변으로 거부한다."""
         from test_training_identity import MY_UID, FakeProc
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -505,7 +504,7 @@ class I2FixTest(Fixture):
         self.assertIn("unreadable environ", rec["reasons"][0])
 
     def test_preflight_data_error_releases_own_lock_rc2(self):
-        """F2: 데이터 파일이 사라지면(fingerprint 계산 오류) 자식 0·원래 오류 보고·자기 lock 해제·rc 2."""
+        """데이터 파일이 사라지면 자식 0·원래 오류 보고·자기 lock 해제·rc 2."""
         cfg = self.config()
         os.remove(os.path.join(self.root, "data", "splits", "train.txt"))
         res = self.run_batch(cfg=cfg)
@@ -515,7 +514,7 @@ class I2FixTest(Fixture):
         self.assertIsNone(read_lock(res.run_set_dir))
 
     def test_unconfirmed_plus_state_write_failure_keeps_lock(self):
-        """F3: 정리 미확인 뒤 job_state 쓰기까지 실패해도 lock 유지·핸들 보존·다음 후보 금지·원래 오류와 정리 결과 보고."""
+        """정리 미확인 뒤 job_state 쓰기까지 실패해도 lock 유지·핸들 보존·다음 후보 금지·오류 보고."""
         from eyetoarm.training import runner as runner_mod
         real = runner_mod.write_json_atomic
 
@@ -547,7 +546,7 @@ class I2FixTest(Fixture):
         self.assertEqual([c["status"] for c in res.candidates][1:], ["not_started", "not_started"])
 
     def test_cleanup_function_raising_is_unconfirmed(self):
-        """F3: 정리 함수가 예외를 올리면(killpg가 RuntimeError) 확인된 것으로 보지 않는다: lock 유지·핸들 보존·rc 1·오류 보고."""
+        """정리 함수가 예외를 올리면 확인된 것으로 보지 않는다: lock 유지·핸들 보존·rc 1·오류 보고."""
         def boom(pid, sig):
             """예상하지 못한 예외."""
             raise RuntimeError("signal subsystem broken")
@@ -562,7 +561,7 @@ class I2FixTest(Fixture):
         self.assertIn("signal subsystem broken", "\n".join(res.errors))
 
     def test_watch_samples_rss_other_sessions_and_max_summary(self):
-        """F4: 표본에 그룹 RSS 합(공유 중복 가능 표시)·다른 세션 수가 있고, manifest에 표본 기준 최대 RSS·최소 MemAvailable·최대 GPU가 있다. 다른 세션 수는 중단 판정에 쓰지 않는다."""
+        """표본에 그룹 RSS 합·다른 세션 수, manifest에 최대 RSS·최소 MemAvailable·최대 GPU가 있다."""
         res = self.run_batch({"S1-01": "sleep"}, cfg=self.config(train_deadline_s=0.8),
                              other_counter=lambda: 2, gpu_cmd=[sys.executable, "-c", "print('100, 7')"])
         d = self.exp(res, "S1-01", "yolov8n-seg")
@@ -579,7 +578,7 @@ class I2FixTest(Fixture):
 
 
 class RecoverIdentityTest(unittest.TestCase):
-    """I2 r1 F1-R: lock 없음 + parent에만 신원이 있는 기록(starting·비상 정리)의 호스트·부팅 확인."""
+    """lock 없음 + parent에만 신원이 있는 기록(starting·비상 정리)의 호스트·부팅 확인."""
 
     def setUp(self):
         """가짜 /proc(같은 uid 토큰 프로세스 선택)과 lock 없는 run_set."""
@@ -616,7 +615,7 @@ class RecoverIdentityTest(unittest.TestCase):
         return rep, sent
 
     def test_parent_only_foreign_or_missing_identity_refused(self):
-        """parent의 다른 host·다른 boot·신원 누락·top-level과 모순 → 토큰 프로세스 유무와 무관하게 신호 0·파일 무변·lock 미해제."""
+        """parent의 host·boot가 다르거나 신원 누락·모순이면 신호 0·파일 무변·lock 미해제."""
         dead = {"pid": 4242, "start_ticks": 1}
         cases = {"other host": ({**dead, "host": "elsewhere", "boot_id": self.boot}, {}),
                  "other boot": ({**dead, "host": self.host, "boot_id": "boot-old"}, {}),
@@ -637,7 +636,7 @@ class RecoverIdentityTest(unittest.TestCase):
                         self.assertTrue(any("contradicts" in r for r in rep["reasons"]), rep["reasons"])
 
     def test_parent_only_same_host_dead_parent_recovers(self):
-        """같은 host·boot·죽은 parent의 starting과 비상 정리(cleanup_unconfirmed) 기록은 프로세스가 없으면 복구된다."""
+        """같은 host·boot·죽은 parent의 starting·비상 정리 기록은 프로세스가 없으면 복구된다."""
         for state in ("starting", "cleanup_unconfirmed"):
             with self.subTest(state=state):
                 self.write_state({"pid": 4242, "start_ticks": 1, "host": self.host, "boot_id": self.boot}, state=state)
@@ -648,7 +647,7 @@ class RecoverIdentityTest(unittest.TestCase):
 
 
 class SettleDecisionTest(unittest.TestCase):
-    """U1: 결정 지점(terminate 최종 확인·recover 사전 검사·status)이 상한 있는 재조사를 쓴다(가짜 /proc)."""
+    """결정 지점(terminate 최종 확인·recover 사전 검사·status)이 상한 있는 재조사를 쓴다."""
 
     def setUp(self):
         """끝난 실제 자식(Popen 핸들)과 lock 없는 run_set."""
@@ -671,7 +670,7 @@ class SettleDecisionTest(unittest.TestCase):
                                killpg_fn=lambda *a: None, kill_fn=lambda *a: None, min_start_ticks=50)
 
     def test_terminate_final_confirmation(self):
-        """일시 unknown → confirmed, 지속 → 미확인(unknown 보고), unknown→토큰 판독 → remaining·미확인, 잔여 기한 없음 → 재조사 없이 미확인."""
+        """일시 unknown → confirmed, 지속 → 미확인, 토큰 판독 → remaining, 잔여 기한 없음 → 미확인."""
         self.assertTrue(self.term([{7: self.bad()}, {}])["confirmed"])
         r = self.term([{7: self.bad()}] * 5)
         self.assertEqual((r["confirmed"], r["unknown"]), (False, [7]))
@@ -699,10 +698,10 @@ if __name__ == "__main__":
 
 
 class SingleModeRunTest(Fixture):
-    """selection_mode single(#139): 가짜 자식으로 선택한 후보 하나만 실행된다."""
+    """selection_mode single: 가짜 자식으로 선택한 후보 하나만 실행된다."""
 
     def test_single_mode_runs_only_selected_candidate(self):
-        """single 설정(S1-01 하나)으로 run_train하면 자식은 S1-01만 뜨고, run_set 후보 1개 completed, 다른 계열 폴더는 없다, rc 0."""
+        """single 설정으로 run_train하면 S1-01만 떠서 completed 1개, 다른 계열 폴더 없음, rc 0."""
         common, _ = self.config_docs()
         cfg = training_config_from_dicts(common, {"format_version": 1, "selection_mode": "single",
                                                   "candidates": [self.cands[0]]})
@@ -718,7 +717,7 @@ class SingleModeRunTest(Fixture):
 
 
 class HsvVRunnerTest(Fixture):
-    """hsv_v(#141): 실행기의 기대 공통 값·기록에 연결된다."""
+    """hsv_v가 실행기의 기대 공통 값·기록에 연결된다."""
 
     def test_expected_common_includes_hsv_v_only_when_configured(self):
         """_expected_common은 설정에 hsv_v가 있을 때만 넣는다."""

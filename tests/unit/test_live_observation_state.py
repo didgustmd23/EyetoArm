@@ -1,8 +1,4 @@
-"""`vision/live_observation_state.LiveObservationState`(#171 R2) 단위시험.
-
-근거: `_workspace/171_builder2_live_a_to_b_plan.md` r3 §3.1~3.3·§4.1·§8.2(T-k, T-o1~o5, T-p, T-q, T-r).
-용량 값(W·R)은 결정 L-8 전 시험 후보다.
-"""
+"""`vision/live_observation_state.LiveObservationState` 단위시험."""
 import unittest
 
 from eyetoarm.vision.live_observation_state import LiveObservationConfig, LiveObservationState
@@ -42,7 +38,7 @@ class AdmitTest(unittest.TestCase):
         self.assertIsNone(st.admit(rx_epoch=None, generation=0, calibration_id="cal-a"))
 
     def test_rx_boundary_closes_immediately(self):
-        """T-k: 수신 경계는 제어 흐름 반영 전에도 즉시 닫는다(제출·①·② 모두 실패)."""
+        """수신 경계는 제어 흐름 반영 전에도 즉시 닫는다(제출·①·② 모두 실패)."""
         st = make_state()
         tok = st.token
         st.on_rx_boundary(1, RECONNECT)
@@ -54,7 +50,7 @@ class AdmitTest(unittest.TestCase):
 
 class BoundaryReadinessTest(unittest.TestCase):
     def test_o1_tf_first_then_applied(self):
-        """T-o1: TF 준비가 먼저 와도 제어 반영 전에는 닫혀 있고, 반영에서 열린다."""
+        """TF 준비가 먼저 와도 제어 반영 전에는 닫혀 있고, 반영에서 열린다."""
         st = make_state()
         st.on_rx_boundary(1, REWIND)
         self.assertTrue(st.on_tf_ready(1, st.begin_tf_attempt(1)))
@@ -64,7 +60,7 @@ class BoundaryReadinessTest(unittest.TestCase):
         self.assertEqual((st.token.rx_epoch, st.token.generation), (1, 1))
 
     def test_o2_applied_first_then_tf(self):
-        """T-o2: 제어 반영이 먼저 와도 같은 결과(순서 무관)."""
+        """제어 반영이 먼저 와도 같은 결과(순서 무관)."""
         st = make_state()
         st.on_rx_boundary(1, REWIND)
         st.on_applied(1, 1, "cal-a")
@@ -74,7 +70,7 @@ class BoundaryReadinessTest(unittest.TestCase):
         self.assertEqual((st.token.rx_epoch, st.token.generation), (1, 1))
 
     def test_o3_late_applied_of_previous_boundary_changes_nothing(self):
-        """T-o3: B1 → B2 → on_applied(B1)은 어떤 상태 필드도 바꾸지 않는다."""
+        """B1 → B2 → on_applied(B1)은 어떤 상태 필드도 바꾸지 않는다."""
         st = make_state()
         st.on_rx_boundary(1, RECONNECT)
         st.on_rx_boundary(2, RECONNECT)
@@ -85,7 +81,7 @@ class BoundaryReadinessTest(unittest.TestCase):
         self.assertFalse(st.token.ready)
 
     def test_o4_late_tf_ready_of_previous_boundary_changes_nothing(self):
-        """T-o4: B1(되감기) → B2(되감기) → on_tf_ready(B1) 불변, B2는 TF 준비 뒤에만 열림."""
+        """B1(되감기) → B2(되감기) → on_tf_ready(B1) 불변, B2는 TF 준비 뒤에만 열림."""
         st = make_state()
         st.on_rx_boundary(1, REWIND)
         a1 = st.begin_tf_attempt(1)
@@ -101,7 +97,7 @@ class BoundaryReadinessTest(unittest.TestCase):
         self.assertTrue(st.token.ready)
 
     def test_o5_non_rewind_opens_on_applied(self):
-        """T-o5: 되감기가 아닌 경계는 TF 준비 없이 제어 반영만으로 열린다."""
+        """되감기가 아닌 경계는 TF 준비 없이 제어 반영만으로 열린다."""
         st = make_state()
         st.on_rx_boundary(1, RECONNECT)
         self.assertTrue(st.boundary.tf_ready)
@@ -109,7 +105,7 @@ class BoundaryReadinessTest(unittest.TestCase):
         self.assertTrue(st.token.ready)
 
     def test_p_half_applied_does_not_open(self):
-        """T-p: B1 → B2 → B1만 반영 → 열리지 않음."""
+        """B1 → B2 → B1만 반영 → 열리지 않음."""
         st = make_state()
         st.on_rx_boundary(1, PROFILE)
         st.on_rx_boundary(2, RECONNECT)
@@ -137,7 +133,7 @@ class BoundaryReadinessTest(unittest.TestCase):
         self.assertEqual(snapshot(st), before)
 
     def test_tf_anomaly_reverts_tf_ready(self):
-        """준비 뒤 TF 이상(§4.1-5)은 그 경계 TF 준비를 되돌려 닫고, 다시 준비돼야 열린다."""
+        """준비 뒤 TF 이상은 그 경계 TF 준비를 되돌려 닫고, 다시 준비돼야 열린다."""
         st = make_state()
         st.on_rx_boundary(1, REWIND)
         st.on_applied(1, 1, "cal-a")
@@ -152,7 +148,7 @@ class BoundaryReadinessTest(unittest.TestCase):
         self.assertTrue(st.token.ready)
 
     def test_f1_anomaly_during_attempt_blocks_that_attempt(self):
-        """#172 r1 F1: 시도 중 이상 → 그 시도의 준비 완료는 무시, 새 시도로만 열림. 이전 시도 번호·0은 거부."""
+        """시도 중 이상 → 그 시도의 준비 완료는 무시, 새 시도로만 열림. 이전 시도 번호·0은 거부."""
         st = make_state()
         st.on_rx_boundary(1, REWIND)
         st.on_applied(1, 1, "cal-a")
@@ -176,7 +172,7 @@ class BoundaryReadinessTest(unittest.TestCase):
         self.assertEqual(snapshot(st), before)
 
     def test_fail_blocks_everything(self):
-        """#172 r1 F2: fail()은 닫고 제출·계산·수락을 막으며 기록을 더 넣지 않는다."""
+        """fail()은 닫고 제출·계산·수락을 막으며 기록을 더 넣지 않는다."""
         st = make_state()
         tok = st.token
         cid = st.begin_compute(tok)
@@ -219,7 +215,7 @@ class ComputeAcceptTest(unittest.TestCase):
         self.assertIsNone(st.accept(cid, tok, "out"))
 
     def test_accept_then_invalidate_revokes(self):
-        """T-r·T-b: 수락 → 경계 → 철회가 event_seq 순서로 남고 is_current가 거짓이 된다."""
+        """수락 → 경계 → 철회가 event_seq 순서로 남고 is_current가 거짓이 된다."""
         st = make_state()
         tok = st.token
         seq = st.accept(st.begin_compute(tok), tok, "out")
@@ -259,7 +255,7 @@ class ComputeAcceptTest(unittest.TestCase):
 
 class WriterCapacityTest(unittest.TestCase):
     def test_q_backpressure_refuses_accept(self):
-        """T-q: 쓰기 담당이 멈춘 상태에서 W+1번째 수락은 writer_backpressure(출력 0), 수락 후 버림 없음."""
+        """쓰기 담당이 멈춘 상태에서 W+1번째 수락은 writer_backpressure(출력 0), 버림 없음."""
         st = make_state(w=2, r=8)
         tok = st.token
         seqs = [st.accept(st.begin_compute(tok), tok, i) for i in range(3)]
@@ -271,7 +267,7 @@ class WriterCapacityTest(unittest.TestCase):
         self.assertEqual([e.payload for e in events], [0, 1])
 
     def test_q_reserved_overflow_fail_stop(self):
-        """T-q: 예약 칸이 차면 fail-stop(b_writer_overflow), 이후 제출·계산 불가, 마지막 기록 failed."""
+        """예약 칸이 차면 fail-stop(b_writer_overflow), 이후 제출·계산 불가, 마지막 기록 failed."""
         st = make_state(w=2, r=2)
         st.on_rx_boundary(1, RECONNECT)     # invalidation 1
         st.on_applied(1, 0, "cal-a")       # ready 1 → 예약 칸 2개 참

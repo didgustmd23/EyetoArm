@@ -1,16 +1,7 @@
-"""후보 순차 학습 실행기 부모 로직(학습기 설계 r2 §4·§5, 검토 r2 확인점 1, I2 지시 1~4). torch·ultralytics를 import하지 않는다.
+"""후보 순차 학습 실행기 부모 로직. torch·ultralytics를 import하지 않는다.
 
-- 부모 하나가 후보를 **하나씩** 실행한다. 자식은 `start_new_session=True`로 띄워 pgid = 자식 pid를 얻는다.
-- **Popen 전에** `job_state.json`에 `job_token`·`starting`·부모 신원을 쓰고(확인점 1), 띄운 뒤 pid·pgid·시작 시각을 갱신한다.
-  자식 환경에는 `EYETOARM_TRAIN_JOB=<token>`과 자동 설치 방지 변수를 넣는다(손자도 상속).
-- 감시: `poll_s`마다 정지 플래그·기한·MemAvailable을 보고, `watch_interval_s`마다 표본(GPU는 제한시간 있는 외부 명령)을 쓴다.
-  중단 판정은 `/proc/meminfo`와 부모 단조 시계만 쓴다.
-- 정리(`terminate_group`): 그룹 TERM → 유예 → 그룹 KILL → leader 회수 → **토큰으로 자기 작업 잔존 확인**(별도 세션 손자 포함)
-  → 남으면 pid별 KILL(신호 직전 토큰 재확인) → 다시 확인. 남은 것·판별 불가가 없을 때만 정리 확인이다.
-- 다음 후보 조건: 이전 후보의 정리가 확인됐을 때만. 미확인이면 묶음 중단·lock 유지(`cleanup_unconfirmed`).
-- 부모 중단(정지 플래그)·예외·기록 실패: 실행 중 자식을 정리 → 다음 후보 시작 금지 → 원래 오류와 정리 결과를 함께 기록
-  → 정리가 확인됐을 때만 lock 해제. 종료 코드: 모두 완료 0, 실패·중단·정리 미확인 1, 설정·가중치 묶음·fingerprint·lock·차단 상태 2.
-- 기록은 한 번만 시도하고 실패하면 다시 시도하지 않는다(필수 기록 실패 → 묶음 중단).
+후보를 하나씩 새 세션 자식으로 띄우고, 정리(TERM → KILL → 잔존 확인)가 확인될 때만 다음으로 간다.
+종료 코드: 모두 완료 0, 실패·중단·정리 미확인 1, 설정·가중치·fingerprint·lock·차단 상태 2.
 """
 from __future__ import annotations
 
@@ -107,10 +98,9 @@ def gpu_sample(cmd: list, timeout_s: float) -> tuple[dict | None, str | None]:
 
 
 def group_rss_kib(token: str, proc: ProcFS, uid: int, floor: int | None, *, failed: list | None = None) -> int:
-    """토큰 자기 작업 프로세스 RSS 합(kB). 공유 메모리(데이터로더 fork 등)를 중복 계산할 수 있는 참고값이다.
+    """토큰 자기 작업 프로세스 RSS 합(kB). 공유 메모리를 중복 계산할 수 있는 참고값이다.
 
-    읽기에 실패한 pid(조사와 읽기 사이에 끝난 프로세스 등)는 합에서 빠진다. 이 합은 중단 판정에 쓰지 않는 참고값이라 실패를
-    전파하지 않지만, 과소 집계가 드러나도록 `failed` 목록이 주어지면 그 pid를 넣는다(#180 #11).
+    읽기에 실패한 pid는 합에서 빠지며, `failed` 목록이 주어지면 그 pid를 넣는다(과소 집계 표시).
     """
     total = 0
     for pid in own_processes(token, proc, uid, floor)[0]:
@@ -136,7 +126,10 @@ def count_other_sessions(proc: ProcFS) -> int:
 
 
 def decide(mem_kib: int | None, elapsed_s: float, watch, deadline_s: float | None = None) -> str | None:
-    """중단 판정(순수): MemAvailable 기준 미만 → mem_available, 경과 > 기한(기본 학습 기한, 평가는 eval_deadline_s) → deadline."""
+    """중단 판정(순수): MemAvailable 기준 미만 → mem_available, 경과 > 기한 → deadline.
+
+    평가는 `eval_deadline_s`를 기한으로 쓴다.
+    """
     if mem_kib is not None and mem_kib < watch["mem_available_stop_kib"]:
         return "mem_available"
     if elapsed_s > (watch["train_deadline_s"] if deadline_s is None else deadline_s):
@@ -200,7 +193,7 @@ def terminate_group(p, token: str, *, grace_s: float, reap_s: float, proc: ProcF
         time.sleep(poll_s)
         own, unknown = _scan(token, proc, uid, min_start_ticks)
 
-    # 최종 확인: 판별 불가가 남았으면 정리 기한(end) 안에서 상한 있는 재조사(U1 P2). 재조사 중 토큰이 판독되면 remaining
+    # 최종 확인: 판별 불가가 남았으면 정리 기한(end) 안에서 상한 있는 재조사를 한다
     if unknown:
         own, unknown, info["settle"] = settled_processes(token, proc, uid, min_start_ticks, deadline=end,
                                                          initial=(own, unknown))
@@ -305,7 +298,7 @@ class _Batch:
         except LayoutError as exc:
             return self.refuse(str(exc), touched=False)
 
-        # lock을 잡은 뒤의 검사 실패·예외는 자기 lock만 풀고 rc 2(F2)
+        # lock을 잡은 뒤의 검사 실패·예외는 자기 lock만 풀고 rc 2
         try:
             if not self.cfg.verify():
                 return self.refuse("config snapshot does not match config_id")
@@ -334,15 +327,15 @@ class _Batch:
     # ------------------------------------------------------------------ 후보 하나
     def child_run(self, *, exp_dir: str, label: str, argv_fn, log_path: str, deadline_s: float, attempt: int,
                   js_extra: dict, before_spawn=None, on_running=None, watch_path: str | None = None) -> dict:
-        """자식 하나의 공통 수명(학습·평가 공용): Popen 전 starting·토큰 기록 → 실행 → 감시 → 유한 정리 → 최종 job_state.
+        """자식 하나의 공통 수명(학습·평가): starting·토큰 기록 → Popen → 감시 → 유한 정리 → job_state.
 
-        정리 결과·미회수 핸들은 외부 기록보다 먼저 메모리에 반영한다(F3). 돌려주는 dict: rc·stop_reason·cleanup·wall·summary·
-        watch_fail·token·pid·start_ticks.
+        정리 결과·미회수 핸들은 외부 기록보다 먼저 메모리에 반영한다. 돌려주는 dict: rc·stop_reason·
+        cleanup·wall·summary·watch_fail·token·pid·start_ticks.
         """
         token = new_job_token()
         js_path = os.path.join(exp_dir, "job_state.json")
 
-        # 확인점 1: Popen 전에 token·starting을 남긴다
+        # Popen 전에 token·starting을 남긴다
         write_json_atomic(js_path, {"state": "starting", "job_token": token, "parent": self.identity,
                                     "attempt": attempt, **js_extra})
         if before_spawn is not None:
@@ -375,7 +368,7 @@ class _Batch:
             p, token, t0, floor, watch_path or os.path.join(exp_dir, "watch.jsonl"), deadline_s)
 
         cleanup = self.safe_cleanup(p, token, floor)
-        # 정리 결과·미회수 핸들을 외부 기록보다 먼저 메모리에 보존한다(F3)
+        # 정리 결과·미회수 핸들을 외부 기록보다 먼저 메모리에 보존한다
         if not cleanup["confirmed"]:
             self.all_confirmed = False
             if p.poll() is None and p not in self.result.unreaped:
@@ -516,7 +509,7 @@ class _Batch:
 
     # ------------------------------------------------------------------ 예외 정리
     def safe_cleanup(self, p, token: str, floor) -> dict:
-        """terminate_group을 부르되, 그 자체가 예외를 올리면 미확인으로 본다(확인된 것으로 처리하지 않음, F3)."""
+        """terminate_group을 부르되, 그 자체가 예외를 올리면 미확인으로 본다."""
         try:
             return terminate_group(p, token, grace_s=self.watch["kill_grace_s"], reap_s=self.watch["reap_timeout_s"],
                                    proc=self.proc, uid=self.uid, killpg_fn=self.killpg_fn, kill_fn=self.kill_fn,
@@ -660,7 +653,7 @@ def run_resume(cfg: TrainingConfig, *, repo_root: str, run_set: str, exp_id: str
                git: dict | None = None, mem_reader=None, gpu_cmd=None, proc: ProcFS | None = None,
                uid: int | None = None, killpg_fn=os.killpg, kill_fn=os.kill, clock=time.monotonic,
                other_counter=None) -> RunResult:
-    """한 실험을 그 실험의 weights/last.pt에서 이어 학습한다(설계 r2 §4 재개 (a)~(d))."""
+    """한 실험을 그 실험의 weights/last.pt에서 이어 학습한다."""
     batch = _Batch(cfg, repo_root, run_set, argv, child_factory, inspect_fn, stop, poll_s, versions or {}, git or {},
                    mem_reader, gpu_cmd, proc, uid, killpg_fn, kill_fn, clock, other_counter)
     cand = next((c for c in cfg.candidates if c.exp_id == exp_id), None)
@@ -673,7 +666,7 @@ def run_resume(cfg: TrainingConfig, *, repo_root: str, run_set: str, exp_id: str
     last_path = os.path.join(exp_dir, "weights", "last.pt")
     attempts = _read_jsonl(os.path.join(exp_dir, "attempts.jsonl"))
 
-    # pickle 기반 체크포인트는 기록된 기대 sha와 대조한 뒤에만 연다(#180 #8, 규약 §10 출처 검증). inspect_fn이 torch.load를 한다
+    # pickle 기반 체크포인트는 기록된 기대 sha와 대조한 뒤에만 연다(inspect_fn이 torch.load를 한다)
     refused = _resume_sha_refusal(last_path, attempts[-1].get("end_last_sha256") if attempts else None)
     if refused:
         batch.result.rc = 2
@@ -718,7 +711,7 @@ def status(run_set_dir: str, *, proc: ProcFS | None = None, uid: int | None = No
 
 
 def _job_identity_problems(js: dict, host: str, boot: str) -> list[str]:
-    """job_state의 유효 호스트·부팅 신원 문제(F1-R). top-level과 parent 양쪽에서 읽어, 서로 모순되거나 어느 쪽에도 없거나
+    """job_state의 유효 호스트·부팅 신원 문제 목록. top-level과 parent가 모순되거나 둘 다 없거나
     현재 호스트·부팅과 다르면 문제다. 현재 값으로 빈 신원을 채우지 않는다.
     """
     parent = js.get("parent") if isinstance(js.get("parent"), dict) else {}
@@ -735,8 +728,8 @@ def _job_identity_problems(js: dict, host: str, boot: str) -> list[str]:
 
 
 def _recover_preconditions(lock: dict | None, states: dict, proc: ProcFS, host: str, uid: int) -> list[str]:
-    """신호 전 복구 적격성(F1). 같은 호스트·부팅, lock 소유자 사망, 실험 신원(토큰·호스트·부팅) 확인, 판별 불가 0.
-    남은 자기 작업 프로세스는 거부 사유가 아니다(정리 대상). 사유가 하나라도 있으면 신호·파일 변경을 하지 않는다.
+    """신호 전 복구 적격성. 같은 호스트·부팅, lock 소유자 사망, 실험 신원 확인, 판별 불가 0.
+    남은 자기 작업 프로세스는 거부 사유가 아니다(정리 대상). 사유가 있으면 신호·파일 변경을 하지 않는다.
     """
     r = []
     boot = proc.boot_id()
@@ -766,9 +759,9 @@ def _recover_preconditions(lock: dict | None, states: dict, proc: ProcFS, host: 
 
 def recover(run_set_dir: str, *, kill_own: bool = False, grace_s: float = 5.0, proc: ProcFS | None = None,
             uid: int | None = None, kill_fn=os.kill) -> dict:
-    """명시적 복구(설계 r2 §4).
+    """명시적 복구.
 
-    1) 신호 전 적격성(`_recover_preconditions`): 다른 호스트·다른 부팅·살아 있는 소유자·판별 불가면 신호 0·파일 무변으로 거부.
+    1) 신호 전 적격성(`_recover_preconditions`)이 없으면 신호 0·파일 무변으로 거부한다.
     2) kill_own이면 토큰으로 확인한 자기 작업에만 TERM→KILL(신호 직전 pid별 재확인).
     3) 파일 갱신·lock 제거 직전에 lock을 다시 읽어 처음과 같은지 확인하고 stale 조건 전체를 재검사한다.
     """

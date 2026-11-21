@@ -1,10 +1,5 @@
-"""A 파이프라인 작업 1 자료형 단위시험(공통형 추가분과 A 내부 파이프라인 타입).
-
-근거: 공통 자료형 관리 초안 §3.1(`PixelBasis`·`Contour`)·§3.3(`PlanarObservation`)·
-§3.5(`CandidateInvalidationEvent`)·§4 불변조건 6·8, A 상세설계 §5.2·§5.4·§9,
-계획 `docs/superpowers/plans/2026-11-15-a-vision-pipeline.md` 작업 1·「인터페이스 제안」.
-디스크 이미지·ROS·Qt·실제 시계에 의존하지 않는다.
-"""
+"""A 파이프라인 자료형 단위시험(공통형 추가분과 A 내부 파이프라인 타입).
+디스크 이미지·ROS·Qt·실제 시계에 의존하지 않는다."""
 import dataclasses
 import unittest
 
@@ -84,10 +79,8 @@ def _common_frame_kwargs(**over):
 
 
 def _observation_kwargs(**over):
-    """무효 관측(사유 `NO_OBJECT`, 값이 없는 필드는 None) 생성 인자. 키워드로 필드를 바꿀 수 있다.
-
-    `valid=True`로 바꾸면서 `reason`을 주지 않으면 사유를 None으로 둔다(유효 관측은 사유 없음).
-    """
+    """무효 관측(사유 `NO_OBJECT`, 값 없는 필드 None) 생성 인자. 키워드로 필드를 바꿀 수 있다.
+    `valid=True`로 바꾸면서 `reason`을 주지 않으면 사유를 None으로 둔다."""
     fields = {
         "run_id": "run-t",
         "source_id": "src0",
@@ -134,10 +127,10 @@ def _settings(**over):
 
 
 class ExistingTypesTest(unittest.TestCase):
-    """새 공통형 추가 뒤에도 기존 최소형·A 상속형이 그대로인지 확인한다(계획 작업 1)."""
+    """새 공통형 추가 뒤에도 기존 최소형·A 상속형이 그대로인지 확인한다."""
 
     def test_existing_input_types_still_construct(self):
-        """공통 `FramePacket`(14필드)·`InputStatusEvent`(5필드)와 A 상속형(+`source_ref`·`source_index`)의 생성 인자·필드 순서·동작이 바뀌지 않는다."""
+        """공통 `FramePacket`·`InputStatusEvent`와 A 상속형의 생성 인자·필드 순서·동작이 그대로다."""
         common_fields = [f.name for f in dataclasses.fields(common.FramePacket)]
         self.assertEqual(common_fields, [
             "image", "run_id", "source_id", "image_seq", "timestamp_ms", "timestamp_base",
@@ -179,7 +172,7 @@ class ExistingTypesTest(unittest.TestCase):
             a_frame.image_seq = 9
 
     def test_new_common_types_have_no_qt_ros_or_opencv_import(self):
-        """`common.types`는 표준 라이브러리·NumPy만 import한다(초안 §3, 계획 파일 배치)."""
+        """`common.types`는 표준 라이브러리·NumPy만 import한다."""
         import subprocess
         import sys
 
@@ -194,7 +187,7 @@ class ExistingTypesTest(unittest.TestCase):
 
 
 class PixelBasisTest(unittest.TestCase):
-    """`PixelBasis` 값 집합(초안 §3.1)."""
+    """`PixelBasis` 값 집합."""
 
     def test_pixel_basis_values(self):
         """`PixelBasis`는 `raw`·`undistorted` 두 값의 문자열 열거다."""
@@ -203,10 +196,10 @@ class PixelBasisTest(unittest.TestCase):
 
 
 class PlanarObservationTest(unittest.TestCase):
-    """`PlanarObservation` 필드·유효 조건·윤곽 소유(초안 §3.3, 계획 작업 1)."""
+    """`PlanarObservation` 필드·유효 조건·윤곽 소유."""
 
     def test_observation_fields_follow_draft(self):
-        """관측 필드가 초안 §3.3 전 필드이며 기본값이 없다(`observed_face="top_face"` 기본값 금지). 예외는 A-8 끝점 필드 하나(마지막, 기본 None)."""
+        """관측 필드가 초안 전 필드이고 기본값이 없다(마지막 A-8 끝점 필드만 기본 None)."""
         names = [f.name for f in dataclasses.fields(PlanarObservation)]
 
         self.assertEqual(names, [
@@ -223,7 +216,7 @@ class PlanarObservationTest(unittest.TestCase):
                 self.assertIs(f.default, dataclasses.MISSING, f.name)
 
     def test_valid_observation_requires_calc_face_and_selection(self):
-        """`valid=True`인데 관측면·계산용 윤곽·선택 번호 중 하나가 None이면 거부하고, 무효 관측은 값이 없는 필드를 None으로 유지한다."""
+        """`valid=True`인데 관측면·계산용 윤곽·선택 번호 중 하나가 None이면 거부한다."""
         full = {"valid": True, "observed_face": "face_x", "calc_contour": _square(),
                 "selected_index": 0, "candidate_count": 1}
 
@@ -264,7 +257,7 @@ class PlanarObservationTest(unittest.TestCase):
         self.assertIs(obs.pixel_basis, PixelBasis.UNDISTORTED)
 
     def test_contours_are_owned_readonly_copies(self):
-        """외부 배열을 나중에 고쳐도 관측 윤곽이 변하지 않고, 윤곽은 읽기 전용 float32 (N,2)이며 클래스·보정·시간 값을 새로 만들어 넣지 않는다."""
+        """관측 윤곽은 외부 배열과 독립된 읽기 전용 float32 (N,2)이고 값을 새로 만들어 넣지 않는다."""
         calc = _square()
         display = np.array([[1, 1], [20, 1], [20, 20]], dtype=np.float64)
         obs = PlanarObservation(**_observation_kwargs(
@@ -301,7 +294,7 @@ class PlanarObservationTest(unittest.TestCase):
         self.assertIsNone(disp_only.calc_contour)
 
     def test_calc_contour_requires_observed_face(self):
-        """관측면이 None이면 계산용 윤곽도 None이어야 하며, 무효 관측이라도 면 없는 계산용 윤곽은 거부한다(R2a, 초안 §3.3 유효 조건·§7 예시 1-b)."""
+        """관측면이 None이면 계산용 윤곽도 None이어야 하며 무효 관측이라도 거부한다."""
         with self.assertRaises(ValueError):
             PlanarObservation(**_observation_kwargs(calc_contour=_square()))
 
@@ -310,7 +303,7 @@ class PlanarObservationTest(unittest.TestCase):
         self.assertEqual(obs.calc_contour.shape, (4, 2))
 
     def test_invalid_observation_requires_reason(self):
-        """무효 관측은 비어 있지 않은 문자열 사유가 있어야 하고 None·빈 문자열·비문자열은 거부한다(초안 §3.3 reason 행)."""
+        """무효 관측은 비어 있지 않은 문자열 사유가 필요하고 None·빈 문자열·비문자열은 거부한다."""
         for bad in (None, "", 3):
             with self.subTest(reason=bad):
                 with self.assertRaises(ValueError):
@@ -323,7 +316,7 @@ class PlanarObservationTest(unittest.TestCase):
         self.assertEqual(unresolved.reason, "TOP_FACE_UNRESOLVED")
 
     def test_conditional_fields_are_none_outside_their_condition(self):
-        """유효 관측의 reason은 None이어야 하고, opencv 관측은 class_name·confidence·model_id가 None이어야 하며 ai 관측은 값을 가질 수 있다(R2b, 초안 §3.3)."""
+        """유효 관측 reason은 None, opencv 관측의 class_name·confidence·model_id는 None이어야 한다."""
         valid = {"valid": True, "observed_face": "face_x", "calc_contour": _square(),
                  "selected_index": 0, "candidate_count": 1}
 
@@ -366,10 +359,10 @@ def _axis_kwargs(**over):
 
 
 class AxisEndpointObservationTest(unittest.TestCase):
-    """A-8 볼트 두 끝점 관측(#155 r1 §1~3, #157 T1). 기존 윤곽 경로는 그대로다."""
+    """A-8 볼트 두 끝점 관측. 기존 윤곽 경로는 그대로다."""
 
     def test_axis_observation_is_valid_owned_readonly_float64(self):
-        """축 경로 유효 관측이 생성되고 끝점은 head→tip 순서의 float64 (2,2) 독립·읽기 전용 복사본이다(사례 #3)."""
+        """축 경로 유효 관측의 끝점은 head→tip 순서의 float64 (2,2) 독립·읽기 전용 복사본이다."""
         source = np.array(_endpoints(), dtype=np.int64)
         obs = PlanarObservation(**_axis_kwargs(axis_endpoints_px=source))
 
@@ -390,7 +383,7 @@ class AxisEndpointObservationTest(unittest.TestCase):
             obs.axis_endpoints_px[0, 0] = 1.0
 
     def test_axis_accepts_bolt_names_or_none(self):
-        """축 경로 클래스는 볼트 이름(대소문자·BOLT_A/B) 또는 None(OpenCV)만 받는다(사례 #3)."""
+        """축 경로 클래스는 볼트 이름(대소문자·BOLT_A/B) 또는 None(OpenCV)만 받는다."""
         for name in ("bolt", "Bolt", "BOLT_A", "BOLT_B"):
             with self.subTest(class_name=name):
                 self.assertTrue(PlanarObservation(**_axis_kwargs(class_name=name)).valid)
@@ -404,14 +397,14 @@ class AxisEndpointObservationTest(unittest.TestCase):
             PlanarObservation(**_axis_kwargs(method="opencv", class_name="bolt", confidence=None, model_id=None))
 
     def test_axis_rejects_nut_or_other_class(self):
-        """너트·기타 클래스에 끝점을 주면 거부한다(사례 #5)."""
+        """너트·기타 클래스에 끝점을 주면 거부한다."""
         for name in ("nut", "NUT", "washer", ""):
             with self.subTest(class_name=name):
                 with self.assertRaises(ValueError):
                     PlanarObservation(**_axis_kwargs(class_name=name))
 
     def test_axis_rejects_mixed_paths_and_missing_face(self):
-        """끝점+계산 윤곽, 관측면 없는 끝점, axis인데 끝점 없음(유효), axis+윤곽, 다른 관측면+끝점을 거부한다(사례 #6·#7·#7b·#7c)."""
+        """끝점과 윤곽·관측면 조합이 어긋난 축 관측을 거부한다."""
         cases = {
             "endpoints_and_contour": _axis_kwargs(calc_contour=_square()),
             "endpoints_without_face": _axis_kwargs(observed_face=None),
@@ -427,12 +420,12 @@ class AxisEndpointObservationTest(unittest.TestCase):
                     PlanarObservation(**kwargs)
 
     def test_axis_requires_selected_index(self):
-        """축 경로 유효 관측도 선택 번호가 필수다(사례 #8)."""
+        """축 경로 유효 관측도 선택 번호가 필수다."""
         with self.assertRaises(ValueError):
             PlanarObservation(**_axis_kwargs(selected_index=None))
 
     def test_bad_endpoint_values_are_value_errors(self):
-        """형식·값이 잘못된 끝점은 OverflowError·경고 없이 ValueError로 거부한다(사례 #9a)."""
+        """형식·값이 잘못된 끝점은 OverflowError·경고 없이 ValueError로 거부한다."""
         bad = {
             "three_points": [[0, 0], [1, 1], [2, 2]],
             "three_coords": [[0, 0, 0], [1, 1, 1]],
@@ -467,7 +460,7 @@ class AxisEndpointObservationTest(unittest.TestCase):
                         PlanarObservation(**_axis_kwargs(axis_endpoints_px=value))
 
     def test_invalid_axis_observation_may_carry_endpoints(self):
-        """무효 관측도 axis 관측면과 끝점을 진단용으로 가질 수 있고 사유 규칙은 그대로다(사례 #10)."""
+        """무효 관측도 axis 관측면과 끝점을 진단용으로 가질 수 있고 사유 규칙은 그대로다."""
         obs = PlanarObservation(**_axis_kwargs(valid=False, reason="ENDPOINT_CLIPPED"))
 
         self.assertFalse(obs.valid)
@@ -477,7 +470,7 @@ class AxisEndpointObservationTest(unittest.TestCase):
             PlanarObservation(**_axis_kwargs(valid=False, reason=None))
 
     def test_existing_contour_path_unchanged(self):
-        """기존 무효 표시 관측·윤곽 유효 관측(자유 관측면 문자열)은 끝점 없이 그대로 생성된다(사례 #1·#2·#4, 실루엣 승격 허가 아님)."""
+        """기존 무효 표시 관측·윤곽 유효 관측은 끝점 없이 그대로 생성된다."""
         invalid = PlanarObservation(**_observation_kwargs())
         self.assertIsNone(invalid.axis_endpoints_px)
 
@@ -513,7 +506,7 @@ class AxisEndpointObservationTest(unittest.TestCase):
 
 
 class InvalidationEventTest(unittest.TestCase):
-    """`CandidateInvalidationEvent` 필드·kind·프레임 없는 사건 규칙(초안 §3.5·§4-6, A 상세설계 §5.4)."""
+    """`CandidateInvalidationEvent` 필드·kind·프레임 없는 사건 규칙."""
 
     def _kw(self, **over):
         """프레임 없는 세대 변경 사건 생성 인자."""
@@ -525,7 +518,7 @@ class InvalidationEventTest(unittest.TestCase):
         return fields
 
     def test_event_fields_follow_draft(self):
-        """사건 필드가 초안 §3.5의 9개이며 기본값이 없다."""
+        """사건 필드가 초안의 9개이며 기본값이 없다."""
         self.assertEqual([f.name for f in dataclasses.fields(CandidateInvalidationEvent)], [
             "run_id", "source_id", "kind", "cause", "event_monotonic_ns", "generation",
             "detector_config_id", "job_seq", "image_seq",
@@ -548,7 +541,7 @@ class InvalidationEventTest(unittest.TestCase):
             CandidateInvalidationEvent(**self._kw(kind="POSE_AMBIGUOUS"))
 
     def test_frameless_events_have_no_frame_ids(self):
-        """세대 변경·모델 로딩 실패는 job_seq·image_seq가 None이어야 하며 가상 값을 넣으면 거부한다."""
+        """세대 변경·모델 로딩 실패는 job_seq·image_seq가 None이어야 하며 값을 넣으면 거부한다."""
         for kind in (InvalidationKind.GENERATION_CHANGED, InvalidationKind.MODEL_LOAD_FAILED):
             ev = CandidateInvalidationEvent(**self._kw(kind=kind))
             self.assertIsNone(ev.job_seq)
@@ -560,7 +553,7 @@ class InvalidationEventTest(unittest.TestCase):
                         CandidateInvalidationEvent(**self._kw(kind=kind, **ids))
 
     def test_required_fields_have_valid_types(self):
-        """필수 문자열은 비어 있지 않고, 시각·세대·식별자는 bool 아닌 정수여야 한다(결함 4, 초안 §3.5 필수 필드)."""
+        """필수 문자열은 비어 있지 않고 시각·세대·식별자는 bool 아닌 정수여야 한다."""
         bad = [{"run_id": ""}, {"source_id": None}, {"cause": ""}, {"detector_config_id": ""},
                {"generation": "x"}, {"generation": True}, {"event_monotonic_ns": 1.5},
                {"kind": InvalidationKind.INFERENCE_ERROR, "job_seq": "1", "image_seq": 2},
@@ -572,7 +565,7 @@ class InvalidationEventTest(unittest.TestCase):
                     CandidateInvalidationEvent(**self._kw(**over))
 
     def test_job_events_need_job_and_frame_ids(self):
-        """작업 오류·중단은 job_seq·image_seq를 함께 가지고, 설정 오류는 둘 다 None이거나 둘 다 값이다(A 상세설계 §5.4 표)."""
+        """작업 오류·중단은 job_seq·image_seq를 함께 갖고, 설정 오류는 둘 다 None이거나 둘 다 값이다."""
         for kind in (InvalidationKind.INFERENCE_ERROR, InvalidationKind.JOB_ABORTED):
             ev = CandidateInvalidationEvent(**self._kw(kind=kind, job_seq=4, image_seq=7))
             self.assertEqual((ev.job_seq, ev.image_seq), (4, 7))
@@ -589,10 +582,10 @@ class InvalidationEventTest(unittest.TestCase):
 
 
 class PipelineTypesTest(unittest.TestCase):
-    """A 내부 파이프라인 타입(계획 「인터페이스 제안」)의 불변성·유도 값·필드 경계."""
+    """A 내부 파이프라인 타입의 불변성·유도 값·필드 경계."""
 
     def test_settings_reuse_planar_config_and_are_frozen(self):
-        """`PipelineSettings`는 기존 `PlanarConfig`를 그대로 담고 frozen이며, 잘못된 값은 거부한다."""
+        """`PipelineSettings`는 `PlanarConfig`를 그대로 담고 frozen이며 잘못된 값은 거부한다."""
         cfg = _config()
         s = _settings(detector_config=cfg)
 
@@ -618,7 +611,7 @@ class PipelineTypesTest(unittest.TestCase):
                          ["source_id", "mode", "detector_config", "profile"])
 
     def test_source_profile_applies_to_matching_frame_only(self):
-        """프로파일은 source_id·해상도·크롭·calibration_id가 모두 같고 calibration_id가 있을 때만 그 프레임에 적용된다."""
+        """프로파일은 source_id·해상도·크롭·calibration_id가 모두 같을 때만 그 프레임에 적용된다."""
         frame = common.FramePacket(**_common_frame_kwargs(calibration_id="cal-1", crop=(0, 0, 6, 4)))
         prof = SourceProfile(source_id="src0", width=6, height=4, crop=(0, 0, 6, 4), calibration_id="cal-1")
 
@@ -646,12 +639,12 @@ class PipelineTypesTest(unittest.TestCase):
             job.generation = 3
 
     def test_job_status_has_four_values(self):
-        """`JobStatus`는 COMPLETED·DISCARDED_GENERATION·FAILED·ABORTED 네 값이며 대기열 폐기 상태가 없다."""
+        """`JobStatus`는 COMPLETED·DISCARDED_GENERATION·FAILED·ABORTED 네 값이다."""
         self.assertEqual({s.name for s in JobStatus},
                          {"COMPLETED", "DISCARDED_GENERATION", "FAILED", "ABORTED"})
 
     def test_queue_drop_record_has_no_job_seq(self):
-        """`QueueDropRecord`는 작업을 시작하지 않은 프레임의 기록이므로 job_seq·generation 필드가 없다."""
+        """`QueueDropRecord`는 시작하지 않은 프레임의 기록이므로 job_seq·generation 필드가 없다."""
         names = {f.name for f in dataclasses.fields(QueueDropRecord)}
 
         self.assertNotIn("job_seq", names)
@@ -668,7 +661,7 @@ class PipelineTypesTest(unittest.TestCase):
             rec.reason = QueueDropReason.CLOSED
 
     def test_record_types_are_frozen_and_have_no_command_id_value(self):
-        """`JobOutcome`·`ProcessRecord`·`InputStateRecord`는 frozen이고, 처리 기록의 명령 ID는 None만 허용한다."""
+        """`JobOutcome`·`ProcessRecord`·`InputStateRecord`는 frozen이고 명령 ID는 None만 허용한다."""
         frame = common.FramePacket(**_common_frame_kwargs())
         job = JobContext(frame=frame, generation=2, job_seq=0, settings=_settings(),
                          started_monotonic_ns=100, reprocess=False)
@@ -699,7 +692,7 @@ class PipelineTypesTest(unittest.TestCase):
             state.duration_ns = 3
 
     def test_counters_have_twelve_fields_starting_at_zero(self):
-        """`PipelineCounters`는 계획의 12개 계수를 가지며 모두 0(사유·종류별 계수는 빈 사전)에서 시작한다."""
+        """`PipelineCounters`는 12개 계수를 가지며 모두 0(사유·종류별은 빈 사전)에서 시작한다."""
         c = PipelineCounters()
 
         self.assertEqual([f.name for f in dataclasses.fields(PipelineCounters)], [

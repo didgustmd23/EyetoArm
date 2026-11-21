@@ -1,7 +1,5 @@
 """inputs/stored_images.py 저장 이미지·명시 순서 목록 입력 단위시험.
 
-근거: A 상세설계 §5.1(image_seq 수명, 시각 관계), §5.4(입력 상태, 재처리),
-공통 자료형 관리 초안 §3.2·§4 불변조건 8, A 상세설계 §6(저장 이미지 행).
 합성 PNG·깨진 파일은 임시 폴더에 만들고, 시계는 가짜 단조 시계를 주입한다.
 """
 import os
@@ -95,10 +93,10 @@ class StoredInputTestBase(unittest.TestCase):
 
 
 class OrderAndSequenceTest(StoredInputTestBase):
-    """명시 순서대로 읽기와 `image_seq` 발급 규칙을 확인한다(A 상세설계 §5.1)."""
+    """명시 순서대로 읽기와 `image_seq` 발급 규칙을 확인한다."""
 
     def test_reads_in_explicit_order(self):
-        """정렬되지 않은 목록도 준 순서대로 읽고, `source_index`는 실패 항목을 포함한 목록 위치, `image_seq`는 성공한 것만 0부터 센다."""
+        """준 순서대로 읽고, `source_index`는 실패 포함 목록 위치, `image_seq`는 성공만 0부터 센다."""
         paths = [self.img_c, self.missing, self.img_a, self.img_b]  # 정렬되지 않은 명시 순서
         src = self._source(paths)
         results = [src.read() for _ in range(4)]
@@ -155,7 +153,7 @@ class OrderAndSequenceTest(StoredInputTestBase):
 
 
 class StatusEventTest(StoredInputTestBase):
-    """실패·끝·닫힘을 입력 사건으로 알리고 이전 프레임을 다시 내지 않는지 확인한다(A 상세설계 §5.4)."""
+    """실패·끝·닫힘을 입력 사건으로 알리고 이전 프레임을 다시 내지 않는지 확인한다."""
 
     def test_status_events_have_no_image_seq(self):
         """실패·끝 사건에는 `image_seq`·영상이 없고, 발급기 순번도 쓰지 않는다."""
@@ -172,7 +170,7 @@ class StatusEventTest(StoredInputTestBase):
         self.assertEqual(self.issuer.next_seq(), 0)
 
     def test_missing_vs_decode_failed_vs_end(self):
-        """없는 파일·폴더는 SOURCE_UNAVAILABLE, 깨진 파일은 DECODE_FAILED, 목록 끝은 END_OF_STREAM이고 설명이 서로 다르다."""
+        """없는 파일·폴더는 SOURCE_UNAVAILABLE, 깨진 파일은 DECODE_FAILED, 끝은 END_OF_STREAM이다."""
         src = self._source([self.missing, self.dir, self.broken])
         missing, directory, broken, end = (src.read() for _ in range(4))
 
@@ -264,7 +262,7 @@ class StatusEventTest(StoredInputTestBase):
         self.assertEqual(self.issuer.next_seq(), 0)
 
     def test_close_then_read_and_current(self):
-        """`close()`는 두 번 불러도 되고, 닫은 뒤 `read()`는 파일을 열지 않고 "closed" 사건을 낸다. 이미 내보낸 프레임은 바뀌지 않는다."""
+        """`close()`는 두 번 불러도 되고, 닫은 뒤 `read()`는 파일을 열지 않고 "closed" 사건을 낸다."""
         src = self._source([self.img_a, self.img_b])
         frame = src.read()
         before = frame.image.copy()
@@ -291,10 +289,10 @@ class StatusEventTest(StoredInputTestBase):
 
 
 class TimeAndBufferTest(StoredInputTestBase):
-    """수신 시각·재처리·영상 버퍼 규칙을 확인한다(A 상세설계 §5.1, 공통 초안 §4 불변조건 8)."""
+    """수신 시각·재처리·영상 버퍼 규칙을 확인한다."""
 
     def test_reprocess_keeps_ids_and_times(self):
-        """`current()`로 다시 처리하면 같은 프레임 객체를 돌려주고, 시계·발급기를 부르지 않아 순번·시각·세대가 그대로다."""
+        """`current()` 재처리는 같은 프레임 객체를 주고 시계·발급기를 부르지 않는다."""
         src = self._source([self.img_a], capture_generation=3)
         frame = src.read()
         calls = self.clock.calls
@@ -312,7 +310,7 @@ class TimeAndBufferTest(StoredInputTestBase):
         self.assertEqual(self.issuer.next_seq(), 1)
 
     def test_pc_receive_single_clock_read(self):
-        """성공 프레임과 실패 사건은 시계를 한 번씩 읽고, `timestamp_ms`는 수신 ns를 1 ms로 내림한 PC_RECEIVE 시각이다."""
+        """성공·실패는 시계를 한 번씩 읽고, `timestamp_ms`는 수신 ns를 1 ms로 내림한 시각이다."""
         src = self._source([self.img_a, self.missing])
         frame = src.read()
 
@@ -327,7 +325,7 @@ class TimeAndBufferTest(StoredInputTestBase):
         self.assertEqual(ev.event_monotonic_ns, 6_000_000_912)
 
     def test_image_buffer_independent(self):
-        """같은 파일을 두 번 읽어도 버퍼가 따로이고 읽기 전용이다. 소비자가 복사본을 고쳐도 원래 프레임은 그대로다."""
+        """같은 파일을 두 번 읽어도 버퍼가 따로이고 읽기 전용이라 복사본 수정이 원본을 바꾸지 않는다."""
         src = self._source([self.img_a, self.img_a])
         f1, f2 = src.read(), src.read()
 
@@ -345,7 +343,7 @@ class TimeAndBufferTest(StoredInputTestBase):
         self.assertEqual(int(f2.image[0, 0, 0]), 10)
 
     def test_bgr_uint8_shape(self):
-        """프레임은 파일 크기 그대로의 BGR uint8 영상이고, 실행·소스·세대 값이 들어가며 보정 관련 필드는 None이다."""
+        """프레임은 파일 크기 그대로의 BGR uint8이고 실행·소스·세대 값이 있으며 보정 필드는 None이다."""
         src = self._source([self.img_a, self.img_b], source_id="stored9", capture_generation=2)
 
         for expected_hw, bgr in (((4, 6), (10, 20, 30)), ((5, 3), (200, 100, 50))):
@@ -365,7 +363,7 @@ class TimeAndBufferTest(StoredInputTestBase):
 
 
 class GenerationProviderTest(StoredInputTestBase):
-    """선택적 세대 공급자(계획 「기존 코드와 파일 배치」 끝 단락·작업 3, A 상세설계 §4·§5.4)."""
+    """선택적 세대 공급자."""
 
     class CountingProvider:
         """호출 수를 세고, 호출할 때의 발급기·시계 호출 수를 남기는 세대 공급자."""
@@ -408,7 +406,7 @@ class GenerationProviderTest(StoredInputTestBase):
                 self.assertEqual([src.read().capture_generation for _ in range(2)], [expected, expected])
 
     def test_provider_called_once_per_new_frame(self):
-        """공급자는 성공한 새 프레임마다 한 번(순번·시계 다음) 불리고, 실패·EOF·current·close 뒤에는 불리지 않으며 기존 프레임 세대를 바꾸지 않는다."""
+        """공급자는 성공한 새 프레임마다 한 번(순번·시계 다음)만 불리고 기존 프레임 세대를 바꾸지 않는다."""
         provider = self.CountingProvider(self, [5, 7])
         src = self._source([self.img_a, self.missing, self.broken, self.img_b],
                            capture_generation=3, generation_provider=provider)
@@ -442,7 +440,7 @@ class GenerationProviderTest(StoredInputTestBase):
         self.assertEqual(empty_provider.calls, 0)
 
     def test_pipeline_generation_feeds_next_image(self):
-        """파이프라인 세대를 공급자로 주입하면 검출 설정 변경 뒤 읽은 다음 새 이미지가 새 capture_generation을 받아 새 수신으로 대기한다."""
+        """주입한 파이프라인 세대로 설정 변경 뒤 읽은 새 이미지가 새 capture_generation을 받는다."""
         import dataclasses
 
         from eyetoarm.vision.pipeline import GenerationCause, VisionPipeline
@@ -477,7 +475,7 @@ class PublicSampleTest(unittest.TestCase):
     """실제 공개 데이터 표본으로 읽기를 확인한다."""
 
     def test_public_samples_decode(self):
-        """공개 데이터 train 표본 3장이 640×640 BGR uint8로 디코딩되고, 다 읽으면 END_OF_STREAM이다(파일이 없으면 UNVERIFIED로 건너뜀)."""
+        """공개 데이터 train 표본 3장이 640×640 BGR uint8로 디코딩되고 끝은 END_OF_STREAM이다."""
         paths = [os.path.join(REPO_ROOT, p) for p in PUBLIC_SAMPLES]
         missing = [p for p in paths if not os.path.isfile(p)]
 

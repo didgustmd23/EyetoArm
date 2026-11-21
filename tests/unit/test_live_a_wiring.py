@@ -1,11 +1,7 @@
-"""#233 실시간 A→B 실행 하나로 detect(C 연결부)·B center 발행·목록 경로 목표 송신을 함께 잇는 시험.
+"""실시간 A→B 실행 하나로 detect(C 연결부)·B center 발행·목록 경로 목표 송신을 함께 잇는 시험.
 
-근거: 지시 `_workspace/233_reviewer_instruction_a_wiring.md`, 계획 `_workspace/233_builder2_a_wiring_plan_r0.md`(reviewer r0 PASS:
-Q1 handoff 항상 켬, Q2 B 함수 그대로, Q3 정리 미확인이면 발행기 열어 둔 채 종료 1, Q4 발행 오류는 요약·마지막 줄만, Q5 고른 것 없으면
-계수만, 「chosen 찾기는 실제 BStage로 시험」).
-
-- 진입점 `main()`부터 돈다: 가짜 수신 → 실행기 → `AiSegDetector`(가짜 모델) → 연결부 → 가짜 TF → **실제 B `process_frame`**.
-- C 연결부는 실제 `AToCHandoff` + 가짜 probe(네트워크 없음), center 발행기와 C 송신 런타임은 가짜다. ROS·Gazebo는 쓰지 않는다.
+`main()`부터 가짜 수신 → 실행기 → `AiSegDetector`(가짜 모델) → 연결부 → 가짜 TF → 실제 B로 돈다.
+C 연결부는 실제 `AToCHandoff` + 가짜 probe, center 발행기·C 송신 런타임은 가짜다. ROS·Gazebo 없음.
 """
 from __future__ import annotations
 
@@ -220,7 +216,8 @@ class AllOnTest(WiringBase):
         self.assertEqual((len(self.handoffs), len(self.pubs), len(self.factory_calls)), (1, 1, 1))
         self.assertIs(self.probes[0].started, self.handoffs[0])
         self.assertIn("consumer=center_overlay(BStage.process_frame)", err)
-        self.assertIn("outputs=c_handoff_detect(127.0.0.1:47093),b_center_overlay(/b/center_overlay/image),"
+        addr = self.mod._handoff_address()   # 설정된 주소
+        self.assertIn(f"outputs=c_handoff_detect({addr}),b_center_overlay(/b/center_overlay/image),"
                       "sort_part(C goals via /sort_part, accepted results only);", err)
         self.assertIn("B CENTER OVERLAY ON topic=/b/center_overlay/image overlay=/b/center_overlay", err)
 
@@ -228,7 +225,7 @@ class AllOnTest(WiringBase):
         s = self.summary(out)
         self.assertEqual(len(acc), 3)
         self.assertEqual((s["record_only"], s["outputs"]),
-                         (False, ["c_handoff_detect(127.0.0.1:47093)", "b_center_overlay(/b/center_overlay/image)",
+                         (False, [f"c_handoff_detect({addr})", "b_center_overlay(/b/center_overlay/image)",
                                   "sort_part(C goals via /sort_part, accepted results only)"]))
 
         # 실행기 → C 연결부: 결과 제공·실행 종료 보고
@@ -362,7 +359,7 @@ class OffSameTest(WiringBase):
         self.assertEqual(code, 0, err)
         self.assertEqual((self.pubs, self.factory_calls), ([], []))
         self.assertIn("consumer=BStage.process_frame", err)
-        self.assertIn("outputs=c_handoff_detect(127.0.0.1:47093);", err)
+        self.assertIn(f"outputs=c_handoff_detect({self.mod._handoff_address()});", err)   # 설정된 주소
         self.assertNotIn("CENTER OVERLAY ON", err)
         self.assertNotIn("center_published", err)
         s = self.summary(out)

@@ -1,11 +1,8 @@
-"""통신 시험 기록(#183 계획 r0 §4): 명령별 시간 추적, 명령 기록 행, 실행 폴더·파일 쓰기. 순수(표준 라이브러리).
+"""통신 시험 기록: 명령별 시간 추적, 명령 기록 행, 실행 폴더·파일 쓰기. 순수(표준 라이브러리).
 
-- 시간은 단조 시계만 쓴다(규약 §4). D `EventLog` 행의 `mono_ms`(1 ms)와 도구 listener가 받은 순간의 `time.monotonic_ns()`를
-  함께 남긴다(reviewer Q5). 지연 계산은 `monotonic_ns`로 하고 그 사실을 취합에 적는다.
-- 수락 4분류(`first_ack`·`accepted_after_resend`·`accepted_by_status`·`unconfirmed`)는 D 클라이언트가 판정한 값을 그대로
-  옮긴다(TCP §8.4). 도구가 다시 판정하지 않는다.
-- `CommandTracker.on_row`는 D `EventLog` listener로 등록된다. D-07(listener 예외가 재접속 작업을 끝냄) 때문에 이 함수는
-  어떤 행에서도 예외를 내지 않고, 해석 실패는 `errors`에 남긴다.
+시간은 단조 시계만 쓴다(D `EventLog`의 `mono_ms`와 listener 수신 `monotonic_ns`, 지연은 ns로 계산).
+수락 4분류는 D 클라이언트 판정을 그대로 옮긴다. `CommandTracker.on_row`는 listener 예외가 재접속
+작업을 끝내므로 어떤 행에서도 예외를 내지 않고 해석 실패는 `errors`에 남긴다.
 """
 from __future__ import annotations
 
@@ -49,7 +46,7 @@ class CommandTracker:
         self.errors: list[str] = []
 
     def on_row(self, row) -> None:
-        """EventLog 행 하나. 예외를 내지 않는다(D-07)."""
+        """EventLog 행 하나. 예외를 내지 않는다."""
         try:
             self._apply(row)
         except Exception as exc:  # noqa: BLE001 - listener 최상단: 기록만 하고 D 클라이언트를 멈추지 않는다
@@ -66,7 +63,7 @@ class CommandTracker:
 
         with self._lock:
             if row.get("dir") == "TX" and row.get("kind") == "MOVE" and row.get("send_state") == "unsent":
-                self.unsent.append((command_id, row.get("note") or ""))   # 보내지 않은 MOVE는 시간 항목을 만들지 않는다
+                self.unsent.append((command_id, row.get("note") or ""))   # 보내지 않은 MOVE는 시간 항목 없음
                 return
 
             t = self.timings.setdefault(command_id, CommandTiming(command_id))
@@ -141,7 +138,7 @@ def injector_command_row(*, case, command_id: str, sent_ns: int, reply: dict | N
 
 
 def make_run_dir(base: str | os.PathLike, run_id: str) -> Path:
-    """새 실행 폴더(있으면 FileExistsError). run_id에 경로 구분자·`..`이 있으면 ValueError(규약 §10 경로)."""
+    """새 실행 폴더(있으면 FileExistsError). run_id에 경로 구분자·`..`이 있으면 ValueError."""
     if not run_id or "/" in run_id or "\\" in run_id or run_id in (".", "..") or run_id.startswith("."):
         raise ValueError(f"invalid run_id {run_id!r}")
 

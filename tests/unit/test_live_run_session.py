@@ -1,8 +1,7 @@
-"""실행 세션(#173 사용자 정정: 리셋 = 현재 실행 종료, 새 실행은 명시적으로 처음부터) 단위시험.
+"""실행 세션 단위시험: 리셋 = 현재 실행 종료, 새 실행은 명시적으로 처음부터.
 
-근거: reviewer 전달 사용자 정정(2026-11-18), `vision/live_run_session.py`. 실제 ROS·Gazebo는 쓰지 않는다. 입력 칸은 실제 `LiveFrameSlot`,
-상태·디스패처는 실제 부품, TF·B 계산은 대역이다. TF 표본의 병진 x에 출처 실행을 싣는다(실행 A = 100대, 실행 B = 200대, 이전 실행
-잔여 = −1000).
+입력 칸·상태·디스패처는 실제 부품, TF·B는 대역이다. TF 병진 x에 출처 실행을 싣는다
+(실행 A = 100대, 실행 B = 200대, 이전 실행 잔여 = −1000).
 """
 import threading
 import time
@@ -252,7 +251,7 @@ class ResetTest(unittest.TestCase):
         self.assertIsNone(ctl.service())
 
     def test_image_stamp_regression_also_resets(self):
-        """영상 stamp 역행(R6)도 리셋으로 보고 실행을 끝낸다."""
+        """영상 stamp 역행도 리셋으로 보고 실행을 끝낸다."""
         world = World()
         ctl = LiveRunController(world.make_session, close_limit_s=2.0)
         run, _ = self.open_run(ctl, world, "A", 5 * S, 100.0)
@@ -348,7 +347,7 @@ class ResetTest(unittest.TestCase):
 
 
 class CleanupBarrierTest(unittest.TestCase):
-    """정리 완료가 확인되기 전에는 다음 실행을 거부한다(#173 r1 reviewer 재현 결함). 기존 계산 차단은 유지."""
+    """정리 완료가 확인되기 전에는 다음 실행을 거부한다. 기존 계산 차단은 유지."""
 
     def open_run(self, ctl, world, run_id, stamp_ns, x):
         """실행을 시작해 연다."""

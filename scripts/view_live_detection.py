@@ -1,25 +1,9 @@
 #!/usr/bin/env python3
-"""A 실시간 검출 확인 창(#138). 링크 카메라 실시간 입력 → 기존 runner(AI 검출) → 같은 프레임의 원본·오버레이를 창에 표시.
+"""링크 카메라 실시간 입력을 AI 검출로 돌려 원본·오버레이를 창에 보여 주는 확인 도구.
 
-A 개발 확인 도구다. D 운영 GUI·C 서버·A→C 전송·B 계산·로봇 명령과 무관하며, AI 관측은 표시용(valid=False) 그대로다.
-
-사용 예(저장소 루트, Gazebo 시뮬레이션이 `/link_cam/image`·`/link_cam/camera_info`·`/clock`을 발행 중일 때):
-    source /opt/ros/jazzy/setup.bash
-    (`source` 뒤에는 PYTHONPATH를 덮어쓰지 말고 앞에 src를 붙인다. `PYTHONPATH=src`만 주면 ROS의 rclpy 경로가 빠져 종료 2.)
-    PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}" .venv/bin/python scripts/view_live_detection.py \\
-        --ai-config config/vision/ai_s1_01_live.json --log outputs/live_view/run.jsonl
-
-구조(스레드·종료 소유권)
-- **메인 스레드**: 창 만들기·그리기·키 처리(`waitKey` 주기 `--key-interval-ms`)와 신호 처리기. 프레임이 오지 않아도 창 이벤트를 계속 처리한다.
-- **`eyetoarm-runner` 스레드**(daemon): 기존 `pipeline_runner.run()` 전체(제어 흐름). ROS 수신 스레드·검출 worker는 지금처럼 run이
-  만들고 정리한다. 표시는 `DisplayBridge`(최신 1칸, 대기 없음)로만 넘어온다.
-- 종료: ESC·q·창 닫기·첫 SIGINT/SIGTERM → 정지 요청(`should_stop`) + 새 검출 표시 중단 → runner 반환을 최대 `--join-timeout`
-  초(기본 5 s, **A 임시 개발값**) 기다림. 두 번째 신호는 즉시 중단(1). runner가 스스로 끝나면 마지막 상태를 보여 주고 사용자가 창을
-  닫을 때까지 기다린다(`--exit-on-end`면 바로 끝냄).
-- 창을 쓸 수 없으면(DISPLAY/WAYLAND_DISPLAY 없음, 창 생성 실패) runner를 **시작하기 전에** 진단하고 2로 끝낸다(ROS 연결 없음).
-  실행 중 그리기 실패는 정지 요청 → runner 정리 → 1.
-
-종료 코드: runner 종료 코드(사용자 정지만이면 0). 창 실패·두 번째 신호·runner 미종료·runner 예외는 1. 인자·설정·창 사용 불가는 2.
+사용: PYTHONPATH=src .venv/bin/python scripts/view_live_detection.py \\
+      --ai-config config/vision/ai_s1_01_live.json
+종료 코드: runner 종료 코드(사용자 정지만이면 0), 창 실패·runner 미종료 1, 인자·창 사용 불가 2.
 """
 from __future__ import annotations
 
@@ -53,7 +37,7 @@ class GuiFailure(Exception):
 
 
 class CvWindow:
-    """OpenCV highgui 창 어댑터. 메인 스레드에서만 부른다. 시험은 같은 메서드를 가진 가짜로 바꾼다."""
+    """OpenCV highgui 창 어댑터. 메인 스레드에서만 부른다."""
 
     def __init__(self, name: str = WINDOW_NAME) -> None:
         """창 이름만 정한다(아직 만들지 않음)."""
@@ -86,7 +70,7 @@ class CvWindow:
 
 
 def display_available() -> str | None:
-    """창을 띄울 수 있는지. 안 되면 사유 문자열(Qt 백엔드는 디스플레이 없이 창을 만들면 프로세스를 끝낼 수 있음)."""
+    """창을 띄울 수 있는지. 안 되면 사유 문자열(디스플레이 없이 창을 만들면 프로세스가 끝날 수 있음)."""
     if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
         return "no display: DISPLAY/WAYLAND_DISPLAY is not set (run in a desktop/WSLg session)"
 
@@ -121,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _runner_config(args) -> RunnerConfig:
-    """해석한 인자로 실행 설정. 주지 않은 값은 RunnerConfig 기본(10/1 s, 준비 10 s)."""
+    """해석한 인자로 실행 설정을 만든다. 주지 않은 값은 RunnerConfig 기본."""
     over = {}
 
     for arg, key in (("first_detect_timeout", "first_detect_timeout_s"), ("detect_timeout", "detect_timeout_s"),
@@ -136,8 +120,7 @@ def gui_loop(window, bridge: DisplayBridge, stop_requested, runner_alive, *, int
              max_width: int, hold_on_end: bool, render=render_view) -> str:
     """창 메인 루프. 반환: "user"(ESC·q·닫기) | "signal"(첫 신호) | "ended"(runner 종료 뒤 끝냄).
 
-    매 회차: 상태가 바뀌었으면 그리고 **그리기 직전 버전을 다시 확인**(바뀌었으면 버리고 다음 회차에 새로 그림) → 이벤트 처리 →
-    종료 판정. 그리기·이벤트 실패는 `GuiFailure`. runner를 기다리지 않는다.
+    그리기 직전 버전을 다시 확인한다. 그리기·이벤트 실패는 `GuiFailure`. runner를 기다리지 않는다.
     """
     drawn = None
 
@@ -183,7 +166,7 @@ def _drain(window, deadline: float, alive, interval_ms: int, window_ok: bool) ->
 
 def main(argv=None, *, stderr=None, window=None, display_check=display_available, ros_available=None,
          live_source_factory=None, model_factory=None, import_module=None, run_fn=run, signals=None) -> int:
-    """진입점. 종료 코드를 돌려준다. 키워드 인자는 시험 주입 지점(창·디스플레이 확인·rclpy 확인·소스·모델·runner·신호)."""
+    """진입점. 종료 코드를 돌려준다. 키워드 인자는 시험 주입 지점이다."""
     err = stderr if stderr is not None else sys.stderr
     args = build_parser().parse_args(argv)
 
@@ -239,7 +222,7 @@ def main(argv=None, *, stderr=None, window=None, display_check=display_available
     stop = threading.Event()
     box: dict = {}
 
-    # 추적 opt-in(#151): 진입점이 프로세스당 발급기 1개를 만들어 주입한다(run·추적기는 만들지 않음)
+    # 추적 opt-in: 진입점이 프로세스당 발급기 1개를 만들어 주입한다
     track_kw = {}
 
     if args.tracking:

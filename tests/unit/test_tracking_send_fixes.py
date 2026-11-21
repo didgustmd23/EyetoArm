@@ -1,8 +1,5 @@
-"""#239 추적 기반 송신 보완 시험: 확정 번호 대기 송신(D4)·실시간 기본 W 추적·W 번호 detect 표시.
-
-근거: 계획 `_workspace/239_builder2_tracking_send_fixes_plan_r0.md`(reviewer PASS: Q1 거부 2, Q2 PICK_PLACE만, Q3 실시간 기본 W +
-W 설정 명시, Q4 start_run 전 setter, Q5 기다리지 않음·pending 계수, Q6 기록만). ROS·Gazebo는 쓰지 않는다(가짜 TF·런타임·모델).
-"""
+"""추적 기반 송신 보완 시험: 확정 번호 대기 송신·실시간 기본 W 추적·W 번호 detect 표시.
+ROS·Gazebo는 쓰지 않는다(가짜 TF·런타임·모델)."""
 from __future__ import annotations
 
 import contextlib
@@ -50,7 +47,7 @@ def put_texts(fn):
 # ---------------------------------------------------------------------- 1. 설정 해석
 
 class RequireConfigTest(TrackCli):
-    """`sort_part.require_track_id` 해석과 진입점 짝 검사(Q1)."""
+    """`sort_part.require_track_id` 해석과 진입점 짝 검사."""
 
     def test_parse_bool_only(self):
         """bool만 받는다: true·false는 그대로, 키 없음은 None, 1·0·문자열은 설정 오류."""
@@ -64,14 +61,14 @@ class RequireConfigTest(TrackCli):
                 spc.parse_sort_part({**base, "require_track_id": bad})
 
     def test_to_json_only_when_set(self):
-        """요약 config에는 설정했을 때만 키가 들어간다(없으면 기존 형식 그대로)."""
+        """요약 config에는 설정했을 때만 키가 들어간다."""
         base = json.loads(TRACK_SORT_CONFIG.read_text(encoding="utf-8"))["sort_part"]
         unset = spc.parse_sort_part({k: v for k, v in base.items() if k != "require_track_id"})
         self.assertNotIn("require_track_id", unset.to_json())
         self.assertIs(spc.parse_sort_part(base).to_json()["require_track_id"], True)
 
     def test_tracking_without_key_is_2(self):
-        """추적 켬 + 송신 + 키 없음(기존 송신 설정)은 설정 오류 2."""
+        """추적 켬 + 송신 + 키 없음은 설정 오류 2."""
         from test_live_sort_part import SORT_CONFIG
 
         code, err, out, rt = self.run_track(Scenario(3), config=str(SORT_CONFIG))
@@ -80,15 +77,16 @@ class RequireConfigTest(TrackCli):
         self.assertEqual(rt.sent, [])
 
     def test_true_without_tracking_or_stage_l_is_2(self):
-        """번호가 없는 실행(추적 끔, 단계 T·L)의 true는 거부 2(볼트 송신 0 설정을 조용히 받지 않음)."""
+        """번호가 없는 실행(추적 끔)의 true는 거부 2(볼트 송신 0 설정을 조용히 받지 않음)."""
         for i, extra in enumerate((("--live-sort-part",), ("--live-sort-part", "--b-input", "list"))):
             with self.subTest(extra=extra):
                 code, err, out = self.run_sort(Scenario(3), config=TRACK_SORT_CONFIG, extra=extra, out=self.out(f"t{i}"))
                 self.assertEqual(code, 2, err)
-                self.assertIn("require_track_id=true needs --tracking", err)   # #244: 단계 L + 추적은 허용(추적 없을 때만 2)
+                # 단계 L + 추적은 허용(추적 없을 때만 2)
+                self.assertIn("require_track_id=true needs --tracking", err)
 
     def test_false_or_unset_without_tracking_runs(self):
-        """추적 끔 + false·키 없음은 지금처럼 실행(0)."""
+        """추적 끔 + false·키 없음은 실행된다(0)."""
         from test_live_sort_part import SORT_CONFIG
 
         for i, cfg in enumerate((sort_config(self.tmp.name, require=False), str(SORT_CONFIG))):
@@ -100,7 +98,7 @@ class RequireConfigTest(TrackCli):
 # ---------------------------------------------------------------------- 1. 송신
 
 class SendOnlyConfirmedTest(TrackCli):
-    """확정 번호 대기 송신(D4): 번호 None PICK_PLACE는 보내지 않고 기록한다. B 기록은 남지 않는다."""
+    """확정 번호 대기 송신: 번호 None PICK_PLACE는 보내지 않고 기록하며 B 기록은 남지 않는다."""
 
     def setUp(self):
         """B 단계 수집."""
@@ -117,7 +115,7 @@ class SendOnlyConfirmedTest(TrackCli):
         return code, err, out, rt
 
     def test_none_track_pick_place_not_sent(self):
-        """true: 확정 전 프레임은 send 0·skip:no_track_id(track_state 함께), 확정 뒤 번호 있는 목표만 보낸다. B `_pending`에 None 없음."""
+        """true: 확정 전은 send 0·skip:no_track_id, 확정 뒤 번호 있는 목표만 보내고 B에 None이 없다."""
         code, err, out, rt = self.run_req(Scenario(9), True)
         self.assertEqual(code, 0, err)
 
@@ -129,7 +127,7 @@ class SendOnlyConfirmedTest(TrackCli):
         self.assertTrue(all(r["part_track_id"] is None and r["kind"] == "PICK_PLACE" and r["track_state"] for r in skips))
         self.assertTrue(sent and all(r["part_track_id"] is not None for r in sent))
         self.assertTrue(all(g.get("part_track_id") is not None for g in rt.sent if g.get("kind") == "PICK_PLACE"))
-        self.assertLess(recs.index(skips[0]), recs.index(sent[0]))   # 번호 None 먼저, 확정 뒤 송신(D4의 반대)
+        self.assertLess(recs.index(skips[0]), recs.index(sent[0]))   # 번호 None 먼저, 확정 뒤 송신
         self.assertFalse(any(r["event"].startswith("release:") and r["part_track_id"] is None for r in recs))
         self.assertTrue(all(None not in st._pending for st in self.stages))
         self.assertTrue(all("track_state" not in r for r in recs if r["event"] != "skip:no_track_id"))
@@ -141,7 +139,7 @@ class SendOnlyConfirmedTest(TrackCli):
         self.assertIn("require_track_id=true: PICK_PLACE without a confirmed part_track_id is not sent", err)
 
     def test_false_keeps_none_track_sends(self):
-        """false(기존 동작): 번호 None PICK_PLACE도 보내고 skip:no_track_id는 없다. 요약에 no_track_id_states 빈 사전."""
+        """false: 번호 None PICK_PLACE도 보내고 skip이 없으며 요약 no_track_id_states는 빈 사전."""
         code, err, out, rt = self.run_req(Scenario(9), False)
         self.assertEqual(code, 0, err)
 
@@ -151,7 +149,7 @@ class SendOnlyConfirmedTest(TrackCli):
         self.assertEqual(self.summary(out)["sort_part"]["no_track_id_states"], {})
 
     def test_pass_through_not_blocked(self):
-        """PASS_THROUGH(너트)는 번호 None이어도 그대로 보낸다(Q2: PICK_PLACE만)."""
+        """PASS_THROUGH(너트)는 번호 None이어도 보낸다(PICK_PLACE만 대기)."""
         cfg = spc.parse_sort_part(json.loads(TRACK_SORT_CONFIG.read_text(encoding="utf-8"))["sort_part"])
         rt = FakeRuntime()
         sender = spc.LiveSortPartSender("r", cfg, rt, self.tmp.name, tracking=True)
@@ -172,10 +170,10 @@ class SendOnlyConfirmedTest(TrackCli):
 # ---------------------------------------------------------------------- 2. 기본 공간
 
 class DefaultSpaceTest(WorldCli):
-    """실시간 --tracking 기본 공간은 W, W 설정은 명시 필수(Q3). 저장 입력 기본은 픽셀 그대로."""
+    """실시간 --tracking 기본 공간은 W이고 W 설정은 명시 필수, 저장 입력 기본은 픽셀."""
 
     def test_live_default_world_with_config(self):
-        """공간 생략 + W 설정: W 추적(world_tracks 있음), 시작 줄·요약에 기본 출처, 번호 None PICK_PLACE 송신 0."""
+        """공간 생략 + W 설정이면 W 추적, 기본 출처 기록, 번호 None PICK_PLACE 송신 0."""
         extra = ("--tracking", "--world-tracker-config", str(WORLD_CONFIG), "--live-sort-part")
         code, err, out, rt = self.run_world(Scenario(8), extra=extra, config=str(TRACK_SORT_CONFIG))
 
@@ -188,7 +186,7 @@ class DefaultSpaceTest(WorldCli):
         self.assertTrue(all(g.get("part_track_id") is not None for g in rt.sent if g.get("kind") == "PICK_PLACE"))
 
     def test_live_default_without_config_is_2_with_hint(self):
-        """공간 생략 + W 설정 없음: 인자 오류 2, '--world-tracker-config 필요 또는 --tracking-space pixel' 안내."""
+        """공간 생략 + W 설정 없음은 인자 오류 2와 W 설정 또는 pixel 지정 안내."""
         with contextlib.redirect_stderr(io.StringIO()) as argerr:   # argparse 오류는 sys.stderr로 간다
             code, err, out, rt = self.run_world(Scenario(3), extra=("--tracking", "--live-sort-part"))
 
@@ -209,7 +207,7 @@ class DefaultSpaceTest(WorldCli):
                 self.assertEqual(self.summary(out)["tracking_space"], {"space": space, "source": "explicit"})
 
     def test_stage_l_tracking_needs_world_config(self):
-        """#244: 단계 L + --tracking은 허용이고, 실시간 기본 W라 W 설정이 없으면 #239 안내로 2(단계 T 전용 거부는 없어짐)."""
+        """단계 L + --tracking은 허용이고 W 설정이 없으면 같은 안내로 2다."""
         with contextlib.redirect_stderr(io.StringIO()) as argerr:
             code, err, out, rt = self.run_world(Scenario(2), extra=("--tracking", "--b-input", "list"), config=str(CONFIG))
 
@@ -233,7 +231,7 @@ class PeekTest(LiveBase):
     """`LiveWorldTracking.peek`: 기다리지 않음, 그 작업 결과만, 밀림 규칙 계수 무변."""
 
     def test_peek_does_not_touch_handoff_counts(self):
-        """peek은 handoff_ok·pending·대기 창을 바꾸지 않고 display_counts만 센다. 없는 작업은 None(pending)."""
+        """peek은 handoff_ok·pending·대기 창을 바꾸지 않고 display_counts만 센다(없는 작업은 None)."""
         lw = self.make()
         self.offer(0)
         self.assertIsNotNone(lw.wait(ctx_of(0), timeout_s=2.0))
@@ -245,7 +243,7 @@ class PeekTest(LiveBase):
         self.assertIsNotNone(found)
         self.assertIsNone(missing)
         self.assertEqual((lw.counts["handoff_ok"], lw.counts["handoff_pending"], list(lw._handoff_window)), before)
-        # #242: prev 계수·pending 사유가 더해졌다(이 시험 설정은 display_prev 없음 → 사유 off)
+        # prev·pending 사유도 센다(이 시험 설정은 display_prev 없음 → 사유 off)
         self.assertEqual(lw.display_counts, {"found": 1, "prev": 0, "pending": 1, "reason": 0})
         self.assertEqual(lw.summary()["display_lookup"], {"found": 1, "prev": 0, "pending": 1, "reason": 0,
                                                           "prev_miss": {"off": 1}})
@@ -288,7 +286,7 @@ class WorldAnnotateTest(TrackCli):
                 self.assertNotIn("#1", joined)
 
     def test_other_job_tracks_not_used(self):
-        """다른 작업의 TrackFrame은 쓰지 않는다(현재 프레임 결과만): job_mismatch 배너, 번호 없음."""
+        """다른 작업의 TrackFrame은 쓰지 않는다: job_mismatch 배너, 번호 없음."""
         c = Core()
         _, other = c.result(5)
         other = dataclasses.replace(other, mode=TrackMode.WORLD)
@@ -300,7 +298,7 @@ class WorldAnnotateTest(TrackCli):
         self.assertNotIn("#1", joined)
 
     def test_no_source_unchanged_and_pixel_tracks_win(self):
-        """조회 함수가 없으면 그림이 기존과 같다. 실행기 tracks(픽셀)가 있으면 조회를 부르지 않는다."""
+        """조회 함수가 없으면 그림이 그대로이고, 실행기 픽셀 tracks가 있으면 조회를 부르지 않는다."""
         c = Core()
         h = AToCHandoff()
         h.start_run(c.p)
@@ -336,7 +334,7 @@ class WorldHandoffWiringTest(WorldCli):
     """실시간 W 실행이 C 연결부에 W 조회를 연결한다(시작 전)."""
 
     def test_world_run_sets_peek(self):
-        """W 기본 실행: 연결부의 조회 함수가 그 실행의 `peek`이고 요약에 조회 계수가 있다. 픽셀 실행은 연결하지 않는다."""
+        """W 기본 실행은 연결부 조회 함수가 `peek`이고 요약에 조회 계수가 있으며 픽셀 실행은 연결 안 함."""
         made = []
 
         class Probe:

@@ -1,8 +1,6 @@
-"""통신 시험 시나리오 정의·기대 결과·근거 절(#183 계획 r0 §3). 실행 로직 없음(순수).
+"""통신 시험 시나리오 정의·기대 결과·근거 절. 실행 로직 없음(순수).
 
-- `CASES`: 1차 실행 대상(로컬 모의 상대에서 끝까지 도는 것).
-- `C_COOPERATION`: 서버 측 장애 주입이라 C 협력이 필요한 TCP §13.1 항목. **정의만** 하고 실행하지 않는다.
-- S2의 같은 내용 판정 사례는 `docs/protocol/test_vectors.json`의 `dedupe` 사례 ID와 대응한다(서버가 판정, 도구는 응답만 기록).
+`CASES`는 로컬 모의 상대에서 실행할 케이스, `C_COOPERATION`은 C 협력이 필요해 정의만 하는 항목이다.
 """
 from __future__ import annotations
 
@@ -22,12 +20,12 @@ class Case:
     dedupe_id: str | None = None
 
 
-# S2 변형: (케이스 ID, dedupe 사례, 바꿀 필드, 값 또는 위치 차이, 기대 same/conflict). 허용치는 TCP §7.3(위치 ≤ 0.01 mm, θ ≤ 0.01°)
+# S2 변형: (케이스 ID, dedupe 사례, 바꿀 필드, 값 또는 위치 차이, 기대 same/conflict)
 S2_VARIANTS = (
     ("S2a", "dedupe-001", None, None, "same"),
     ("S2c_pos", "dedupe-002", "position_dx_mm", 0.005, "same"),
     ("S2b_pos", "dedupe-003", "position_dx_mm", 0.02, "conflict"),
-    ("S2c_theta_wrap", "dedupe-004", "theta_deg", 0.001, "same"),        # 원본 θ 179.998 → 0.001(180° 주기 0.003°)
+    ("S2c_theta_wrap", "dedupe-004", "theta_deg", 0.001, "same"),  # θ 179.998 → 0.001(180° 주기)
     ("S2b_theta", "dedupe-005", "theta_dd", 0.05, "conflict"),
     ("S2b_image_seq", "dedupe-006", "image_seq_d", 1, "conflict"),
     ("S2b_calibration", "dedupe-007", "calibration_id", "commtest_cal_v2", "conflict"),

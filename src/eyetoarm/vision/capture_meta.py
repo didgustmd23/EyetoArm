@@ -1,19 +1,7 @@
-"""저장 입력 녹화 메타(#168): 원본 CameraInfo·프레임별 촬영 시각·그 시각의 `world → optical_frame` TF.
+"""저장 입력 녹화 메타: 원본 CameraInfo·프레임별 촬영 시각·그 시각의 `world → optical_frame` TF.
 
-근거: `_workspace/168_a_to_b_real_path_implementation_spec.md` §2, #167 계획 r2 W2, B 협업 요청 §8.2 A-7(TF 50 ms·최신 TF 대체 금지),
-`transforms/b_stage.py`(`RosTfLookup` 시각 의미), `calibration/profile.from_camera_info`(실시간과 같은 보정 번호 계산).
-
-이 모듈의 역할과 한계
-- **관측은 다루지 않는다.** 관측은 실제 AI 검출과 끝점 추출에서 나온다(#166 합성 fixture와 다른 점). 메타는 저장 영상에 없는 촬영
-  기하(카메라 내부값·촬영 시각·카메라 자세)만 준다.
-- `CaptureMetaSource`는 저장 입력 프레임에 메타와 **모두 일치할 때만** `calibration_id`·`optical_frame`·`ros_stamp_ns`를 붙인다.
-  메타 없음·해상도·frame id·TF 시각/자식 프레임 불일치 프레임은 붙이지 않고 그대로 넘긴다. 이런 프레임은 코어·`b_gate`가 B로 보내지
-  않으며(`calibration_id` 없음 → 프로파일 미적용), 불일치 사유는 `mismatches`에 남는다. 임의 보정·임의 고정 TF를 붙이지 않는다.
-- `CaptureMetaTfLookup`은 프레임의 메타 레코드 TF를 **촬영 시각·자식 프레임이 정확히 같을 때만** 돌려준다. 그 시각 TF가 녹화되지
-  않았으면(`tf: null`) None이다(B는 `SKIP/TF_UNAVAILABLE`). 다른 프레임·최신 TF로 대체하지 않는다. 조회가 50 ms를 넘기면 None이다
-  (반환 뒤 판정).
-- 실시간 링크 카메라 TF(`RosTfLookup`·Buffer 소유)는 이 모듈 범위가 아니다(#167 K-T 미결).
-- ROS·Qt를 import하지 않는다.
+`CaptureMetaSource`는 메타와 모두 일치하는 프레임에만 촬영 메타를 붙이고, `CaptureMetaTfLookup`은 촬영 시각·자식
+프레임이 정확히 같은 TF만 50 ms 안에 돌려준다. 임의 보정·고정 TF·최신 TF로 대체하지 않는다. ROS·Qt를 import하지 않는다.
 """
 from __future__ import annotations
 
@@ -34,7 +22,7 @@ from eyetoarm.transforms.planar_transform import make_T, quat_to_rot
 from eyetoarm.vision.pipeline_types import SourceProfile
 
 CAPTURE_META_FORMAT = "eyetoarm.capture_meta/1"
-TF_WAIT_LIMIT_S = 0.05   # B 시간 상한: TF 대기 50 ms (B 협업 요청 §8.2 A-7)
+TF_WAIT_LIMIT_S = 0.05   # B 시간 상한: TF 대기 50 ms
 
 _TOP_KEYS = {"capture_meta_format", "capture_id", "source_id", "world_frame", "inputs_sha256", "camera_info", "frames",
              "provenance"}
@@ -277,7 +265,7 @@ class CaptureMetaSource:
         self.mismatches: list[dict] = []   # 메타를 붙이지 않은 프레임과 사유
 
     def read(self):
-        """다음 항목. 일치하는 프레임이면 `calibration_id`·`optical_frame`·`ros_stamp_ns`를 붙인 새 프레임(크기·순번·세대 그대로)."""
+        """다음 항목. 일치하는 프레임이면 `calibration_id`·`optical_frame`·`ros_stamp_ns`를 붙인 새 프레임."""
         item = self._inner.read()
 
         if not isinstance(item, FramePacket):

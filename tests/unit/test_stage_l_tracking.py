@@ -1,8 +1,7 @@
-"""#244 단계 L(목록) 추적 시험: 단계 L + 추적 허용, 후보별 확정 번호(A 하위 형), 송신 실효 번호·불일치·release 규칙, B 한 줄 반영 모사.
+"""단계 L(목록) 추적 시험: 후보별 확정 번호, 송신 실효 번호·불일치·release 규칙, B 한 줄 반영 모사.
 
-근거: 계획 `_workspace/244_builder2_stage_l_tracking_plan_r0.md`(reviewer PASS, Q1~Q7 권장대로). ROS·Gazebo는 쓰지 않는다
-(가짜 TF·런타임·모델, 실제 B `BStage.process_frame`). 「B 수정 뒤」는 `BStage._candidate_view`를 B 요청 한 줄
-(`part_track_id=getattr(c, "part_track_id", None)`)로 바꾼 시험 대역으로 모사한다(B 파일 무변).
+ROS·Gazebo 없이 가짜 TF·런타임·모델과 실제 `BStage.process_frame`을 쓴다. 「B 수정 뒤」는
+`BStage._candidate_view`를 바꾼 시험 대역으로 모사한다(B 파일 무변).
 """
 from __future__ import annotations
 
@@ -33,7 +32,7 @@ from test_run_pipeline_live_observation import CONFIG, Scenario
 from test_tracking_send_fixes import TRACK_SORT_CONFIG
 
 LIST = ("--b-input", "list")
-WORLD_DEFAULT = ("--tracking", "--world-tracker-config", str(WORLD_CONFIG))   # 공간 생략 = 실시간 기본 W(#239)
+WORLD_DEFAULT = ("--tracking", "--world-tracker-config", str(WORLD_CONFIG))   # 공간 생략 = 실시간 기본 W
 
 
 def accepts(test, out):
@@ -129,7 +128,7 @@ class PixelStageLTest(TrackCli):
         return code, err, out, rt
 
     def test_candidate_ids_on_envelope(self):
-        """확정 뒤 후보마다 서로 다른 양의 번호가 실리고 프레임 사이 유지. 확정 전은 None + 상태. B 결과 번호는 None(B 미수정)."""
+        """확정 뒤 후보마다 다른 양의 번호가 유지되고, 확정 전은 None + 상태, B 결과 번호는 None이다."""
         code, err, out, rt = self.run_l()
         self.assertEqual(code, 0, err)
 
@@ -148,7 +147,7 @@ class PixelStageLTest(TrackCli):
         self.assertGreater(s["list_candidates_with_track"], 0)
 
     def test_send_uses_chosen_a_id(self):
-        """송신 기록 번호 = 고른 후보의 A 번호(track_source a, 목표 번호 None). require true면 번호 없는 고른 볼트는 skip:no_track_id."""
+        """송신 기록 번호 = 고른 후보의 A 번호. require true면 번호 없는 볼트는 skip:no_track_id."""
         code, err, out, rt = self.run_l()
         self.assertEqual(code, 0, err)
 
@@ -159,12 +158,12 @@ class PixelStageLTest(TrackCli):
         self.assertTrue(sent and all(r["track_source"] == "a" and r["goal_part_track_id"] is None
                                      and r["part_track_id"] == r["a_part_track_id"] is not None for r in sent))
         self.assertTrue(skips and all(r["a_part_track_id"] is None and r["track_state"] for r in skips))
-        self.assertFalse(any(r["event"].startswith("release:") for r in recs))   # 목표 번호 None → release 0
+        self.assertFalse(any(r["event"].startswith("release:") for r in recs))   # release 0
         self.assertFalse(any(r["event"] == "track_id_mismatch" for r in recs))
         self.assertTrue(all(st._pending == {} for st in self.stages))
 
     def test_track_keys_only_in_stage_l(self):
-        """단계 L 전용 키(goal_part_track_id·a_part_track_id·track_source)는 단계 T 송신 기록에 없다(T 형식 그대로)."""
+        """단계 L 전용 키는 단계 T 송신 기록에 없다(T 형식 그대로)."""
         rt = ReleasingRuntime()
         code, err, out = self.run_sort(Scenario(6), config=sort_config(self.tmp.name, require=False),
                                        extra=("--live-sort-part", "--tracking", *PIXEL), factory=self.factory(rt))
@@ -172,7 +171,7 @@ class PixelStageLTest(TrackCli):
         self.assertFalse(any("track_source" in r or "a_part_track_id" in r for r in self.sort_records(out)))
 
     def test_b_reads_ids_goal_wins_and_dedupes(self):
-        """B 한 줄 반영 모사: 목표 번호 = A 번호(track_source goal), 뒤 프레임은 ALREADY_SENT, 결과 release는 목표 번호."""
+        """B 한 줄 반영 모사: 목표 번호 = A 번호, 뒤 프레임은 ALREADY_SENT, release는 목표 번호."""
         rt = ReleasingRuntime()
 
         with b_reads_ids():
@@ -205,7 +204,7 @@ class PixelStageLTest(TrackCli):
         self.assertEqual(self.summary(out)["sort_part"]["events"]["track_id_mismatch"], len(mism))
 
     def test_record_only_release_finds_list_goal(self):
-        """기록 전용(송신 끔) + B 한 줄 모사: 단계 L 반환 사전의 goal을 찾아 B 기록을 바로 푼다(`_goal_of`)."""
+        """기록 전용(송신 끔) + B 한 줄 모사: 단계 L 반환 사전의 goal로 B 기록을 푼다(`_goal_of`)."""
         with b_reads_ids():
             code, err, out = self.run_sort(three(8), config=CONFIG, extra=("--tracking", *PIXEL, *LIST),
                                            hook=self.stages.append)
@@ -227,7 +226,7 @@ class PixelStageLTest(TrackCli):
         self.assertEqual(released, [7])
 
     def test_unit_retry_limit_by_a_id(self):
-        """번호별 재시도 제한이 A 번호로 걸린다(목표 번호 None): 실패 1회 뒤 같은 A 번호는 skip:track_retry_limit."""
+        """번호별 재시도 제한이 A 번호로 걸려 실패 1회 뒤 같은 번호는 skip:track_retry_limit."""
         doc = json.loads(TRACK_SORT_CONFIG.read_text(encoding="utf-8"))["sort_part"]
         doc["retry"] = {"max_failures_per_track": 1, "failed_point_block_s": 1.0, "failed_point_block_mm": 1.0}
         rt = FakeRuntime()
@@ -255,7 +254,7 @@ class WorldStageLTest(WorldCli):
     """단계 L + 실시간 기본 W 추적."""
 
     def test_world_default_candidate_ids_and_send(self):
-        """공간 생략 = W: 후보 번호(W)·요약 tracking_space default, require true 송신은 A 번호만, world_result 계수."""
+        """공간 생략 = W: 후보 번호(W)·tracking_space default, require true 송신은 A 번호만, 계수."""
         code, err, out, rt = self.run_world(three(10), extra=(*WORLD_DEFAULT, *LIST, "--live-sort-part"),
                                             config=str(TRACK_SORT_CONFIG))
         self.assertEqual(code, 0, err)
@@ -280,7 +279,7 @@ class WorldStageLTest(WorldCli):
         self.assertGreater(self.summary(out)["tracking_link"]["counts"]["world_track_pending"], 0)
 
     def test_no_list_candidates_frames_go_to_world(self):
-        """단계 L은 목록이 빈 프레임(볼트 없음)도 W 추적 큐에 넣는다: offered = 전체 프레임(현재 응답)."""
+        """단계 L은 볼트 없는 프레임도 W 추적 큐에 넣는다: offered = 전체 프레임."""
         sc = Scenario(6, masks={i: three_bolts for i in range(0, 6, 2)})   # 홀수 프레임은 볼트 없음
         code, err, out, rt = self.run_world(sc, extra=(*WORLD_DEFAULT, *LIST), config=str(CONFIG))
         self.assertEqual(code, 0, err)
@@ -290,7 +289,7 @@ class WorldStageLTest(WorldCli):
         self.assertGreater(offered, listed)
 
     def test_world_list_sets_peek(self):
-        """단계 L W 실행도 detect 조회 함수(`peek`)를 연결하고 요약에 display_lookup이 있다(#242 경로 그대로)."""
+        """단계 L W 실행도 detect 조회 함수(`peek`)를 연결하고 요약에 display_lookup이 있다."""
         made = []
 
         class Probe:
@@ -336,7 +335,7 @@ class CenterStageLTest(WiringBase):
     """단계 L + 추적 + B center 발행 + 송신을 한 실행에서."""
 
     def test_all_options_together(self):
-        """--b-input list --tracking(픽셀) --b-center-overlay --live-sort-part: 0, center 발행, 후보 번호."""
+        """--b-input list --tracking(픽셀) --b-center-overlay --live-sort-part: 0, center·후보 번호."""
         code, err, out = self.run_sort(three(6), config=sort_config(self.tmp.name, require=False),
                                        extra=(*LIST, "--tracking", *PIXEL, "--b-center-overlay", "--live-sort-part"))
 

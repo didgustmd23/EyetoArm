@@ -1,8 +1,6 @@
-"""YOLO 연결 T5 — ultralytics 분할 어댑터(`AiSegDetector`) 시험. 가짜 model_factory·import·CUDA 확인을 주입한다.
+"""ultralytics 분할 어댑터(`AiSegDetector`) 시험. 가짜 model_factory·import·CUDA 확인을 주입한다.
 
-근거: 계획 `docs/superpowers/plans/2026-11-15-yolo-pipeline.md` r2 §2(BGR 입력·retina 마스크 계약), §4.2(준비 호출 순서:
-파일 존재 → 읽기·sha256 → 환경 변수 → import → 생성 → task·names·장치, 생성자는 I/O 없음), §4.3 4단계(출력 계약 확인), §4.5
-(분류), T5, A 상세설계 §7.1 ①(`YOLO_AUTOINSTALL=false`). 실제 ultralytics·torch·가중치 없이 돈다.
+실제 ultralytics·torch·가중치 없이 돈다.
 """
 import hashlib
 import os
@@ -123,7 +121,7 @@ class WeightsMixin:
 
 
 class PrepareTest(WeightsMixin, unittest.TestCase):
-    """준비 단계(§4.2 ③-a)의 순서·분류."""
+    """준비 단계의 순서·분류."""
 
     def assert_prepare_error(self, det, kind, text):
         """prepare가 kind·원인 문자열을 담은 ModelPrepareError를 낸다."""
@@ -194,7 +192,7 @@ class PrepareTest(WeightsMixin, unittest.TestCase):
         self.assert_prepare_error(det, LOAD, "bad checkpoint")
 
     def test_prepare_task_names_device_mismatch_is_config_invalid(self):
-        """task가 segment가 아니거나 names가 class_map과 다르거나, CUDA 장치가 없거나 번호가 범위 밖이면 MODEL_CONFIG_INVALID다."""
+        """task·names 불일치, CUDA 장치 없음·번호 범위 밖은 MODEL_CONFIG_INVALID다."""
         cases = [
             ({"model": FakeModel(task="detect")}, "task"),
             ({"model": FakeModel(names={0: "bolt"})}, "names"),
@@ -245,14 +243,14 @@ class PrepareTest(WeightsMixin, unittest.TestCase):
 
 
 class InferenceTest(WeightsMixin, unittest.TestCase):
-    """추론 호출(§4.3·§4.4)."""
+    """추론 호출."""
 
     def ready(self, make=None, cfg_over=None, prof=True):
         """준비를 마친 detector와 작업."""
         det, cfg = self.make(model=FakeModel(make=make), cfg_over=cfg_over)
         det.prepare()
         img = np.zeros((H, W, 3), np.uint8)
-        img[..., 0], img[..., 1], img[..., 2] = 10, 20, 30          # B·G·R 채널 값을 달리해 색 순서 변환을 드러낸다
+        img[..., 0], img[..., 1], img[..., 2] = 10, 20, 30          # 색 순서 변환을 드러내려 값을 달리함
         img[:, :, 0] += (np.arange(W, dtype=np.uint8) % 50)[None, :]
         fr = big_frame()
         fr = type(fr)(**{**{f: getattr(fr, f) for f in fr.__dataclass_fields__}, "image": img})
@@ -260,7 +258,7 @@ class InferenceTest(WeightsMixin, unittest.TestCase):
         return det, cfg, job
 
     def test_passes_bgr_crop_unchanged_and_kwargs(self):
-        """predict는 원본 BGR crop을 값·shape 그대로(색 변환·복사 수정 없이) 받고 설정의 imgsz·conf·iou·max_det·device·정밀도(half False → quantize None)·retina_masks를 받는다. 폐기된 half 인자는 넘기지 않는다. 원본 프레임은 바뀌지 않는다."""
+        """predict는 BGR crop을 그대로 받고 설정 인자(half 대신 quantize)를 받으며 원본은 안 바뀐다."""
         det, cfg, job = self.ready(cfg_over={"roi": [100, 50, 64, 48], "imgsz": 640})
         img = job.frame.image
         before = img.copy()
@@ -278,7 +276,7 @@ class InferenceTest(WeightsMixin, unittest.TestCase):
         self.assertTrue(np.array_equal(img, before))
 
     def test_half_maps_to_quantize(self):
-        """정밀도 대응(설치 Ultralytics `_handle_deprecation`과 같음): half False → quantize None(FP32), True → 16(FP16). 설정의 half 필드는 그대로 정규형에 남는다."""
+        """half False → quantize None(FP32), True → 16(FP16). 설정의 half 필드는 정규형에 남는다."""
         for half, want in ((False, None), (True, 16)):
             with self.subTest(half=half):
                 det, cfg, job = self.ready(cfg_over={"half": half})
@@ -313,7 +311,7 @@ class InferenceTest(WeightsMixin, unittest.TestCase):
         self.assertEqual((obs.reason, obs.candidate_count, res.instances), ("NO_OBJECT", 0, ()))
 
     def test_results_contract_violations_raise(self):
-        """출력 계약 위반(결과 수≠1, K>0인데 masks None, K 불일치, 비retina 해상도, NaN 박스, 비정수 클래스)은 ValueError, class_map 밖 클래스는 AiJobConfigError다."""
+        """출력 계약 위반은 ValueError, class_map 밖 클래스는 AiJobConfigError다."""
         def bad(kind):
             """종류별 잘못된 결과 생성 함수."""
             def make(s):
@@ -404,14 +402,14 @@ class FakeModule:
 
 
 class R2BoundaryTest(WeightsMixin, unittest.TestCase):
-    """R2 r1 F1·F2·L1 경계."""
+    """마스크·클래스 값·버전 기록 경계."""
 
     def crop(self):
         """가짜 crop(48×64 BGR)."""
         return np.zeros((48, 64, 3), np.uint8)
 
     def test_mask_nan_or_inf_is_contract_error(self):
-        """마스크 데이터의 NaN·+inf·-inf는 이진화로 숨기지 않고 ValueError(INFERENCE_ERROR)다(F1). 0/1 실수·bool 마스크와 K=0은 정상."""
+        """마스크의 NaN·±inf는 ValueError(INFERENCE_ERROR). 0/1 실수·bool 마스크와 K=0은 정상."""
         for bad in (np.nan, np.inf, -np.inf):
             with self.subTest(value=bad):
                 r = result_for(self.crop(), [(10, 5, 19, 14)])
@@ -449,7 +447,7 @@ class R2BoundaryTest(WeightsMixin, unittest.TestCase):
             det(job_for(cfg, big_frame()))
 
     def test_class_values_preserved_or_rejected(self):
-        """클래스 값: 정수 배열은 float을 거치지 않고 보존(uint64 2**53+1), int64 범위 밖(uint64 2**63)·float의 2**53 초과(정밀도 불확실)·2**63·비정수는 ValueError(L1)."""
+        """정수 클래스 값은 보존, int64 밖·float 2**53 초과·비정수는 ValueError."""
         def with_cls(values):
             """클래스 값을 바꾼 결과."""
             r = result_for(self.crop(), [(10, 5, 19, 14)])
@@ -485,7 +483,7 @@ class R2BoundaryTest(WeightsMixin, unittest.TestCase):
         return AiSegDetector(cfg, environ={}, import_module=import_module), imported
 
     def test_default_path_records_torch_version_for_cpu_and_gpu(self):
-        """기본 라이브러리 경로는 CPU·GPU 모두 ultralytics·torch 버전을 기록하고 model_source는 ultralytics다. GPU는 장치 이름도 기록한다(F2)."""
+        """기본 경로는 CPU·GPU 모두 ultralytics·torch 버전, GPU는 장치 이름도 기록한다."""
         det, imported = self.default_path("cpu")
         info = det.prepare()
         self.assertEqual(info["versions"], {"ultralytics": "8.4.211", "torch": "2.11.0+cu128"})

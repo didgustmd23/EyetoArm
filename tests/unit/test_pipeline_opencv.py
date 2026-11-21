@@ -1,9 +1,5 @@
-"""작업 5 OpenCV 어댑터 단위시험 — 실제 detect_planar 결과를 표시용 무효 관측으로만 변환하는지.
-
-근거: 계획 r4 작업 5(표시용 관측 고정·사유 우선순위·candidate_count), A 상세설계 §5.2·§5.4(사유 표),
-공통 자료형 초안 §3.3(무효 관측 reason 필수, 계산용 윤곽 승격 금지).
-합성 영상(흰 배경 위 검은 사각형)을 numpy로 그려 정답을 아는 입력을 만든다. 시험 정답을 같은 검출 코드로 역산하지 않는다.
-"""
+"""OpenCV 어댑터 단위시험: 실제 detect_planar 결과를 표시용 무효 관측으로만 변환하는지 본다.
+흰 배경 위 검은 사각형 합성 영상으로 정답을 아는 입력을 만들고 같은 검출 코드로 역산하지 않는다."""
 import dataclasses
 import unittest
 
@@ -74,10 +70,10 @@ TINY_EDGE = (0, 2, 4, 6)       # 면적 미달 + 잘림
 
 
 class DisplayObservationTest(unittest.TestCase):
-    """표시용 관측 고정(계획 r4 작업 5 첫 항목)."""
+    """표시용 관측 고정."""
 
     def test_display_result_never_becomes_valid_calculation(self):
-        """eligible 후보가 있어도 valid=False·calc_contour·observed_face·selected_index=None이고 eligible 후보를 자동 선택하지 않는다."""
+        """eligible 후보가 있어도 valid=False이고 계산 필드는 None이며 후보를 자동 선택하지 않는다."""
         p = pipeline()
         job = start(p, scene(CENTER))
         obs, result = process_opencv(job)
@@ -94,7 +90,7 @@ class DisplayObservationTest(unittest.TestCase):
         self.assertEqual(obs.process_ms, result.process_ms)
 
     def test_identity_fields_copied_with_same_types(self):
-        """관측 식별자 8필드가 작업·원본 프레임 값과 같은 타입·값이며 코어가 그대로 완료로 받는다."""
+        """관측 식별자 8필드가 작업·원본 프레임과 같은 타입·값이고 코어가 완료로 받는다."""
         p = pipeline()
         job = start(p, scene(CENTER), image_seq=7)
         obs, _ = process_opencv(job)
@@ -122,7 +118,7 @@ class DisplayObservationTest(unittest.TestCase):
 
 
 class ReasonPriorityTest(unittest.TestCase):
-    """사유 우선순위와 candidate_count(계획 작업 5 「제안 사유 정책」)."""
+    """사유 우선순위와 candidate_count."""
 
     def check(self, boxes, expected, prof="match"):
         """장면을 처리해 사유와 후보 수를 확인한다."""
@@ -156,7 +152,7 @@ class ReasonPriorityTest(unittest.TestCase):
         self.assertTrue(any(c.area_reject_reason is None and c.clip_reasons for c in result.candidates))
 
     def test_no_candidate_or_area_rejects_give_no_object(self):
-        """후보 없음·면적 탈락 후보만·면적과 잘림 동시 탈락 후보만이면 NO_OBJECT이고 후보 수는 전체 후보 수다."""
+        """후보 없음·면적 탈락 후보만 있으면 NO_OBJECT이고 후보 수는 전체 후보 수다."""
         self.assertEqual(len(self.check([], NO_OBJECT).candidates), 0)
         self.assertEqual(len(self.check([TINY], NO_OBJECT).candidates), 1)
         result = self.check([TINY_EDGE], NO_OBJECT)
@@ -172,7 +168,7 @@ class DetectorErrorTest(unittest.TestCase):
     """검출 예외는 관측을 만들지 않고 fail 경로로 간다."""
 
     def test_detector_exception_has_no_observation(self):
-        """영상 크기와 프레임 메타데이터가 어긋나 detect_planar가 예외를 내면 관측 없이 예외가 올라오고, 호출자가 fail(INFERENCE_ERROR)로 정리한다."""
+        """영상 크기가 메타데이터와 어긋나 detect_planar가 예외를 내면 관측 없이 예외가 올라온다."""
         p = pipeline()
         bad = scene(CENTER)[:, :32]   # 실제 영상 너비 32 ≠ frame.width 64
         job = start(p, bad)
@@ -187,7 +183,7 @@ class DetectorErrorTest(unittest.TestCase):
         self.assertEqual(p.counters.failed, 1)
 
     def test_uses_job_snapshot_config(self):
-        """처리 중 검출 설정이 바뀌어도 어댑터는 작업 스냅샷 설정으로 계산하고 결과 해시가 시작 설정과 같다."""
+        """처리 중 검출 설정이 바뀌어도 어댑터는 작업 스냅샷 설정으로 계산한다."""
         p = pipeline()
         job = start(p, scene(CENTER))
         p.change_settings(dataclasses.replace(p.settings, detector_config=config(fixed_threshold=90)),

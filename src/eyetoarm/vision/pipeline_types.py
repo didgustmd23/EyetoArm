@@ -1,15 +1,7 @@
-"""A 비전 파이프라인 내부 타입 — 설정 스냅샷·작업·완료 상태·처리 기록·계수.
+"""A 비전 파이프라인 내부 타입: 설정 스냅샷·작업·완료 상태·처리 기록·계수.
 
-근거: 계획 `docs/superpowers/plans/2026-11-15-a-vision-pipeline.md` r3 「인터페이스 제안」·작업 1,
-A 상세설계 §5.1(식별자)·§5.4(세대·재처리 조건)·§9(처리 기록·처리 건수).
-
-- 이름·필드 묶음은 계획의 **제안**이며 A 내부 타입이다. D API·B 계약·공통형이 아니다.
-- 검출 설정은 기존 `PlanarConfig` 또는 AI 분할 설정 `AiSegConfig`(둘 다 frozen, `config_sha256`)다(YOLO 연결
-  계획 r2 G1). 같은 의미의 설정·해시를 새로 만들지 않고, AI 설정을 외부 클로저에 숨겨 같은 설정 ID로 여러 모델을
-  돌리지 않는다. 표시 결과도 `PlanarResult` 또는 `AiSegResult`다(G3·G4).
-- `JobOutcome`·`PipelineCounters`는 작업 4에서 채운다. `ProcessRecord`·`InputStateRecord`는 필드
-  정의만 두며 채우는 동작은 작업 5에서 붙인다.
-- 명령 ID·가짜 식별자를 만들지 않는다. Qt·ROS·TCP를 import하지 않는다.
+A 내부 타입이며 D API·B 계약·공통형이 아니다. 명령 ID·가짜 식별자를 만들지 않는다.
+Qt·ROS·TCP를 import하지 않는다.
 """
 from __future__ import annotations
 
@@ -27,7 +19,7 @@ from eyetoarm.vision.ai_config import AiSegConfig
 from eyetoarm.vision.ai_result import AiSegResult
 from eyetoarm.vision.planar import PlanarConfig, PlanarResult
 
-# 검출 설정·표시 결과로 허용하는 형(YOLO 연결 계획 r2 G1–G4)
+# 검출 설정·표시 결과로 허용하는 형
 DetectorConfig = PlanarConfig | AiSegConfig
 DisplayResult = PlanarResult | AiSegResult
 
@@ -40,12 +32,7 @@ def _require_text(value, name: str) -> None:
 
 @dataclass(frozen=True)
 class SourceProfile:
-    """소스·보정 프로파일의 적용 조건(계획 「인터페이스 제안」, A 상세설계 §5.4 재처리 조건 3).
-
-    - 적용 조건만 보관한다. B 보정 수치를 계산하거나 담지 않는다.
-    - `crop`·`calibration_id`는 `FramePacket`의 같은 이름 필드와 같은 형이다.
-      B 프로파일 필드 이름은 초안 §8에서 미결이다.
-    """
+    """소스·보정 프로파일의 적용 조건. B 보정 수치는 담지 않는다."""
 
     source_id: str
     width: int
@@ -55,7 +42,7 @@ class SourceProfile:
 
     def applies_to(self, frame: FramePacket) -> bool:
         """이 프로파일이 그 프레임에 유효한지(source_id·해상도·크롭·calibration_id 일치, 보정 있음)."""
-        # 보정 누락은 B 유효 입력으로 허용하지 않는다(초안 §4-7)
+        # 보정 누락은 B 유효 입력으로 허용하지 않는다
         if self.calibration_id is None:
             return False
 
@@ -68,13 +55,9 @@ class SourceProfile:
 
 @dataclass(frozen=True)
 class PipelineSettings:
-    """처리 설정 스냅샷(계획 「인터페이스 제안」). frozen.
+    """처리 설정 스냅샷(frozen). `mode`는 A 내부 처리 모드(TCP 명령 모드 아님).
 
-    - `mode`는 A 내부 처리 모드다. TCP 명령 모드가 아니며 허용 값은 문서 미정이라
-      비어 있지 않은 문자열이면 받는다.
-    - `detector_config`는 `PlanarConfig`(OpenCV) 또는 `AiSegConfig`(AI). 생성자가 이미 값을 검증했다.
-    - `profile`이 None이면 표시용 처리만 가능하다(B 유효 입력·재처리 불가).
-    - 오버레이 색 등 표시 전용 설정은 처리 설정이 아니므로 두지 않는다(A 상세설계 §5.4).
+    `profile`이 None이면 표시용 처리만 가능하다(B 유효 입력·재처리 불가).
     """
 
     source_id: str
@@ -102,11 +85,9 @@ class PipelineSettings:
 
 @dataclass(frozen=True)
 class JobContext:
-    """시작한 처리 작업 하나의 스냅샷(계획 「인터페이스 제안」). frozen.
+    """시작한 처리 작업 하나의 스냅샷(frozen). 설정이 바뀌어도 시작 시점 `settings`로 계산·기록한다.
 
-    - `frame`은 파이프라인이 소유한 복사 프레임이다. 재처리는 같은 객체를 다시 쓴다.
-    - `generation`은 시작 시점의 현재 세대, `job_seq`는 실행 내 시작 순번이다.
-    - `settings`는 시작 시점 설정이며 이후 설정이 바뀌어도 이 작업은 이 값으로 계산·기록한다.
+    `frame`은 파이프라인 소유 복사본(재처리는 같은 객체 재사용), `generation`은 시작 시점 세대다.
     """
 
     frame: FramePacket
@@ -132,7 +113,7 @@ class JobStatus(str, Enum):
 
 
 class QueueDropReason(str, Enum):
-    """대기 프레임 폐기 사유(계획 작업 3·5의 사유별 집계). 이름은 A 내부 임시 결정이다."""
+    """대기 프레임 폐기 사유(사유별 집계 키)."""
 
     REPLACED_BY_NEWER = "replaced_by_newer"
     STALE_CAPTURE = "stale_capture_generation"
@@ -143,21 +124,10 @@ class QueueDropReason(str, Enum):
 
 @dataclass(frozen=True)
 class JobOutcome:
-    """작업 하나의 terminal 응답(계획 「인터페이스 제안」, 작업 4 보완 103 §4). frozen.
+    """작업 하나의 terminal 응답(frozen). 관측·표시 결과는 최초 완료 응답에서만 담는다.
 
-    - observation은 최초 완료 응답에서만 제공할 수 있다. 실패·폐기·중단 및 duplicate 응답은 None이다.
-      `display_result`도 같다.
-    - duplicate 응답은 최초 status·error·사건을 유지하되 데이터 재전달·상태 변경을 하지 않는다.
-      `invalidation`을 담아도 새로 발행한 사건이 아니라 최초 사건의 참조 정보다. 소비자는 duplicate
-      응답을 관측·사건·처리 기록으로 다시 발행하거나 집계하지 않는다.
-    - applied는 해당 호출이 완료 관측을 현재 슬롯에 반영했는지이며, 중복 응답은 False다.
-      무효 관측으로 교체해도 True일 수 있으므로 B 유효 입력·로봇 실행 가능을 뜻하지 않는다.
-      오류 차단선 이전에 시작한 늦은 완료는 관측이 유효해도 False다. 무효화 사건의 applied 계수와는
-      다른 개념이다.
-    - `error`는 실패·중단 원인 문자열(`fail()`의 cause, 계약 위반은 `adapter_contract_violation:...`).
-      완료·세대 폐기는 None.
-    - `invalidation`은 해당 실패·중단의 사건 또는 None이며 다시 만들어 중복 발행하지 않는다.
-    - `applied`·`duplicate`는 기본값이 있는 끝 필드라 기존 6인자 생성자를 그대로 쓸 수 있다.
+    duplicate 응답은 최초 상태·사건을 참조할 뿐이라 소비자가 다시 발행·집계하지 않는다.
+    `applied`는 완료 관측을 현재 슬롯에 반영했는지이며 B 유효 입력·로봇 실행 가능을 뜻하지 않는다.
     """
 
     context: JobContext
@@ -172,11 +142,9 @@ class JobOutcome:
 
 @dataclass(frozen=True)
 class InvalidationRecord:
-    """코어가 기록한 무효화 사건 하나와 그 평가 결과(#142 D1 안 A). frozen.
+    """코어가 기록한 무효화 사건 하나와 그 평가 결과(frozen). 사건마다 정확히 한 번 만든다.
 
-    - `event`는 `invalidation_events`의 같은 객체, `applied`는 기록 당시 현재 세대 차단에 반영했는지(ignored면 False)다.
-    - 코어 `_record_event`가 사건마다 정확히 한 번 만든다. 판정·계수 의미를 새로 정하지 않고 기존 결과를 옮겨 둘 뿐이다.
-    - JobOutcome.applied(완료 관측의 현재 반영)와는 다른 개념이다.
+    `applied`는 기록 당시 현재 세대 차단에 반영했는지이며 `JobOutcome.applied`와 다르다.
     """
 
     event: CandidateInvalidationEvent
@@ -185,20 +153,10 @@ class InvalidationRecord:
 
 @dataclass(frozen=True)
 class ProcessRecord:
-    """처리 작업 기록 한 줄(A 상세설계 §9 「처리 기록」). 작업 5의 `pipeline_records.process_record`가 채운다.
+    """처리 작업 기록 한 줄. 원본 시각과 시작 설정 ID를 그대로 남긴다.
 
-    - 원본 시각(`timestamp_ms`·`timestamp_base`)과 시작 설정 ID를 그대로 남긴다.
-    - `command_id`는 A가 만들지 않는다. 항상 None이며 다른 값은 ValueError.
-    - `eval_run_id`는 평가 실행 중일 때만 평가 도구가 발급한 값이고 아니면 None이다(A §9 「처리 작업마다
-      `eval_run_id`(평가 중일 때)」). A가 만들지 않는다. 기본값이 있는 끝 필드라 기존 생성자와 호환된다.
-    - AI 기록(YOLO 연결 계획 r2 §4.6, A §9): `method`("opencv"·"ai", 시작 설정 기준), `model_id`(AI만), `infer_ms`
-      (AI 완료의 predict 호출 ms), `ai_instances`(AI 완료의 인스턴스별 클래스·점수·거부·잘림·면적 dict 튜플, 다각형 없음).
-      모두 기본값 None인 끝 필드다. 실패·중단·세대 폐기에는 인스턴스가 없다.
-    - `axis_valid_count`(#174): 축 경로를 켠 AI 완료 작업의 **픽셀 후보 수**(`AiSegResult.axis_valid_count`). 보정·세대·현재성
-      검사 뒤 B로 간 수가 아니다(그것은 `valid`와 B 제출 기록으로 본다). None이면 기록 줄에 키를 쓰지 않는다(축 경로를 끈 기록 호환).
-    - `list_candidate_count`·`list_indices`(#189 단계 L): 단계 L 실행(`PipelineLog(b_input="list")`)의 축 경로 AI 완료 작업에서 A가 그
-      프레임 목록에 실은 후보 수와 원 인덱스(`list_candidate_indices`, 프레임 차단이면 0·빈 목록). 실제 B 전달 여부(현재성·세대)는
-      실행 요약 `b_list_calls`와 목록 기록기로 본다. 단계 T(기본)에서는 None이라 키를 쓰지 않는다(기록 바이트 동일).
+    `command_id`는 A가 만들지 않아 항상 None, `eval_run_id`는 평가 도구가 발급한 값 또는 None이다.
+    `axis_valid_count`는 B로 간 수가 아니라 픽셀 후보 수다. omit_if_none 필드는 None이면 키를 쓰지 않는다.
     """
 
     run_id: str
@@ -240,10 +198,7 @@ class ProcessRecord:
 
 @dataclass(frozen=True)
 class QueueDropRecord:
-    """작업을 시작하지 않고 대기 중 폐기한 프레임의 기록(계획 「인터페이스 제안」).
-
-    작업이 없으므로 `job_seq`·처리 `generation`을 두지 않는다. `dropped_monotonic_ns`는 PC 단조 시각.
-    """
+    """작업을 시작하지 않고 대기 중 폐기한 프레임의 기록. `dropped_monotonic_ns`는 PC 단조 시각."""
 
     run_id: str
     source_id: str
@@ -259,11 +214,7 @@ class QueueDropRecord:
 
 @dataclass(frozen=True)
 class InputStateRecord:
-    """입력 상태 기록(A 상세설계 §9 「입력 상태 로그」). 필드 정의만 두며 채우는 동작은 작업 5.
-
-    공통 `InputStatusEvent` 5개 필드 + 상태 지속 시간(`duration_ns`, PC 단조 시계, 미확정이면 None).
-    프레임 ID 필드를 두지 않는다.
-    """
+    """입력 상태 기록: `InputStatusEvent` 5개 필드 + 상태 지속 시간(`duration_ns`, PC 단조, 미확정 None)."""
 
     run_id: str
     source_id: str
@@ -275,13 +226,9 @@ class InputStateRecord:
 
 @dataclass
 class PipelineCounters:
-    """처리 건수(A 상세설계 §9 「처리 건수」, 계획의 12개 계수). 파이프라인 안에서만 바꾼다.
+    """처리 건수(파이프라인 안에서만 바꾼다). 사유·종류별 계수 키는 열거의 `.value` 문자열이다.
 
-    - 사유·종류별 계수는 열거의 `.value` 문자열을 키로 쓴다.
-    - 작업 1~4가 모든 필드를 채운다. 무효 완료(`invalid_completed_by_reason`)를 처리 실패(`failed`)로
-      세지 않는다. 시작한 작업은 completed·generation_discarded·failed·aborted 중 정확히 하나로 끝난다.
-    - `invalidation_*_by_kind`에는 처리 오류 4종과 `GENERATION_CHANGED`가 kind 키로 나뉘어 들어간다.
-      보고할 때 오류 4종 합계와 세대 전이 수를 따로 낸다.
+    무효 완료는 `failed`로 세지 않는다. 시작한 작업은 네 종료 계수 중 정확히 하나로 끝난다.
     """
 
     received: int = 0

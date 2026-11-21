@@ -1,22 +1,7 @@
-"""Gazebo 링크 카메라 실시간 입력(ROS 2) — `/link_cam/image`·`/link_cam/camera_info`·`/clock` → `FramePacket`.
+"""Gazebo 링크 카메라 실시간 입력(ROS 2): `/link_cam/image`·`camera_info`·`/clock` → `FramePacket`.
 
-근거: 계획 `docs/superpowers/plans/2026-11-16-live-link-camera.md` r3 §3.2(필드 대응)·§3.3(스레드·소유권)·§3.4(epoch)·
-§3.5(공개 전 입력 반영)·§3.6(QoS 호환 확인)·§3.7(프로필), A 상세설계 §5.1·§5.4·§6·§6.1, 계획서 §2.2(`SIM_TIME`).
-
-구성
-- `LiveLinkSource`: 실행기가 쓰는 소스. `read()`·`poll_input()`·`status_event()`·`input_applied()`·`frame_current()`·
-  `stats()`·`close()`. 수신 상태는 `LiveFrameSlot`(ROS 없음)에 있다.
-- 수신 콜백 처리(`handle_image`·`handle_clock`·`handle_camera_info`·`handle_publishers`·`handle_qos_incompatible`)는 메시지의
-  속성만 읽으므로 가짜 메시지로 시험할 수 있다.
-- `RclpyTransport`: 실제 rclpy 연결. **rclpy·메시지 패키지는 `start()` 안에서만 import한다**(코드 규약 §8). 자기 `Context`를 만들고
-  전역 신호 처리기를 설치하지 않는다(`SignalHandlerOptions.NO`). 밖에서 `Context`를 주입하면 그 컨텍스트는 종료하지 않는다
-  (A→C 같은 프로세스 통합 대비, 계획 §2).
-- 영상 변환은 `cv_bridge`를 지연 import해 `bgr8`로 바꾼다(RGB→BGR 한 번). 메시지 버퍼를 공유하는 배열이면 복사한다.
-
-담당 경계: TF 조회·좌표 변환·B 계산·C 연결·D 표시를 하지 않는다. `calibration_id`는 B `calibration.profile.from_camera_info`를
-import해 만든다(B 소스 수정 없음, 계획 결정 D3 — reviewer 지시). 정답 자료(Gazebo pose)를 구독하지 않는다.
-
-이 모듈의 설정 기본값(`LiveSourceConfig`, `LiveSlotConfig`)은 A 임시 개발값이며 사용자 확정값이 아니다.
+`LiveLinkSource`가 실행기용 소스이고 수신 상태는 `LiveFrameSlot`에 있다. rclpy·메시지 패키지는
+`RclpyTransport.start()` 안에서만 import한다. 설정 기본값은 A 임시 개발값이다.
 """
 from __future__ import annotations
 
@@ -32,10 +17,10 @@ from eyetoarm.inputs.base import FrameIdIssuer, FramePacket, InputStatus, InputS
 from eyetoarm.inputs.live_slot import (BoundaryKind, CameraProfileInfo, GenerationMirror, LiveFrameSlot, LiveInput, LiveSlotConfig,
                                        NoticeKind, TakeStatus)
 
-# 허용 영상 인코딩(계획 §3.2). 그 밖은 DECODE_FAILED
+# 허용 영상 인코딩. 그 밖은 DECODE_FAILED
 ALLOWED_ENCODINGS = ("rgb8", "bgr8")
 
-# 영상 번호 → epoch 대응을 보관하는 최근 프레임 수(공개 판정용, 계획 §3.5 C)
+# 영상 번호 → epoch 대응을 보관하는 최근 프레임 수(공개 판정용)
 _EPOCH_MEMORY = 256
 
 _RELIABILITY_NAMES = ("reliable", "best_effort")
@@ -45,11 +30,8 @@ _RELIABILITY_NAMES = ("reliable", "best_effort")
 class LiveSourceConfig:
     """실시간 소스 설정. 토픽·광학 프레임 기본값은 `config/robot/frames.yaml`의 `cameras.link`와 같다.
 
-    - `reliability`: 영상 구독 신뢰성 요청(`reliable` 기본, 계획 §3.6). 자동으로 바꾸지 않는다.
-    - `frame_wait_s`(0.2): `read()`가 새 영상을 기다리는 상한(A 임시 개발값).
-    - `graph_check_s`(0.5): 발행자 수·QoS 확인 주기(A 임시 개발값).
-    - `close_limit_s`(2.0): executor 종료·수신 스레드 join 상한(A 임시 개발값).
-    - `slot`: 상태기 설정(`LiveSlotConfig`, A 임시 개발값).
+    `reliability`(영상 구독 신뢰성, 자동으로 바꾸지 않음), `frame_wait_s`(read 대기 상한),
+    `graph_check_s`(발행자 확인 주기), `close_limit_s`(정리 상한), `slot`(상태기 설정).
     """
 
     image_topic: str = "/link_cam/image"
@@ -96,7 +78,7 @@ def stamp_to_ns(stamp) -> int:
 
 
 def owned_bgr(image) -> np.ndarray:
-    """변환 결과를 독립·연속·읽기 전용 BGR uint8 (H, W, 3) 배열로 만든다. 다른 버퍼와 공유하면 복사한다."""
+    """변환 결과를 독립·연속·읽기 전용 BGR uint8 (H, W, 3) 배열로 만든다. 버퍼를 공유하면 복사한다."""
     array = np.asarray(image)
 
     if array.dtype != np.uint8 or array.ndim != 3 or array.shape[2] != 3:
@@ -111,7 +93,7 @@ def owned_bgr(image) -> np.ndarray:
 
 
 def default_convert(message) -> np.ndarray:
-    """`cv_bridge`로 `bgr8` 배열을 만든다(지연 import). rgb8은 변환하며 새 배열, bgr8은 버퍼 공유일 수 있다."""
+    """`cv_bridge`로 `bgr8` 배열을 만든다(지연 import). bgr8은 버퍼 공유일 수 있다."""
     from cv_bridge import CvBridge
 
     return CvBridge().imgmsg_to_cv2(message, desired_encoding="bgr8")
@@ -120,7 +102,7 @@ def default_convert(message) -> np.ndarray:
 def qos_incompatibility(requested: str, offered: list[str]) -> str | None:
     """요청 신뢰성과 발행자 offered 신뢰성 목록을 비교한다. 비호환이면 진단 문구, 아니면 None.
 
-    reliable 요청은 best-effort 발행자와 연결되지 않는다(메시지가 하나도 오지 않음). best-effort 요청은 둘 다와 연결된다.
+    reliable 요청은 best-effort 발행자와 연결되지 않는다.
     """
     if requested == "reliable" and "best_effort" in offered:
         return "reliability offered=BEST_EFFORT requested=RELIABLE"
@@ -129,7 +111,7 @@ def qos_incompatibility(requested: str, offered: list[str]) -> str | None:
 
 
 def profile_info(message) -> CameraProfileInfo:
-    """`CameraInfo`(또는 같은 속성의 객체)에서 식별 정보를 만든다. B `from_camera_info`를 import만 해서 쓴다(D3)."""
+    """`CameraInfo`(또는 같은 속성의 객체)에서 식별 정보를 만든다(B `from_camera_info` 사용)."""
     from eyetoarm.calibration.profile import from_camera_info
 
     profile = from_camera_info(message)
@@ -141,19 +123,11 @@ def profile_info(message) -> CameraProfileInfo:
 # ---------------------------------------------------------------------- 소스
 
 class LiveLinkSource:
-    """링크 카메라 실시간 소스. 실행기의 단일 발급기·세대 공급자를 받는다(저장 소스와 같은 주입 규약).
+    """링크 카메라 실시간 소스. 실행기의 단일 발급기·세대 공급자를 받는다.
 
-    - `read()`: 새 영상이 있으면 `FramePacket`, 없거나 입력 반영이 먼저 필요하면 None, 닫혔으면
-      `InputStatusEvent(SOURCE_UNAVAILABLE, "closed")`, 변환 실패는 `InputStatusEvent(DECODE_FAILED)`.
-    - `poll_input()`: 경계·알림 목록(계획 §3.5 A·B·C에서 제어 흐름이 부름). 실행기는 하나씩 코어에 반영하고
-      `input_applied(item, 현재 세대)`를 부른다. 상태 사건이 필요한 항목은 `status_event(item)`으로 만든다.
-    - `frame_current(frame)`: 그 프레임을 받은 epoch가 지금도 현재인지(공개 직전 판정).
-    - `transport_factory(source) → transport`: 수신 연결. 기본은 `RclpyTransport`. 시험은 가짜를 넣는다.
-    - 생성자가 연결을 시작한다(모델 준비 동안에도 최신 칸만 갱신). 시작 실패는 예외가 아니라 첫 `poll_input`의 알림과
-      이후 `read()`의 `SOURCE_UNAVAILABLE "closed"`로 알린다.
-    - `frame_epoch(frame)`(#171 R1): 그 프레임을 받은 수신 epoch(모르면 None). 제어 흐름 전용(잠금 없는 표를 읽음).
-    - `boundary_hook(epoch, kind)`(#171 R1, 선택): 수신 경계마다 slot 잠금 안에서 부른다(`LiveFrameSlot` 설명). 기본 None이면 기존과 같다.
-    - 제어 흐름 메서드는 한 스레드에서 차례로 부른다. 수신 메서드(`handle_*`)는 수신 스레드에서 부른다.
+    `read()`는 새 영상이면 `FramePacket`, 없거나 입력 반영이 먼저면 None, 닫혔으면 `SOURCE_UNAVAILABLE`.
+    생성자가 연결을 시작하고, 시작 실패는 첫 `poll_input` 알림으로 알린다.
+    제어 흐름 메서드는 한 스레드에서 차례로, `handle_*`는 수신 스레드에서 부른다.
     """
 
     def __init__(self, *, source_id: str, issuer: FrameIdIssuer, generation_provider: Callable[[], int],
@@ -216,7 +190,7 @@ class LiveLinkSource:
     # ------------------------------------------------------------------ 수신 스레드 쪽(메시지 속성만 읽음)
 
     def handle_image(self, message) -> str:
-        """영상 메시지를 상태기에 넘긴다. 콜백 시간을 잰다. 헤더가 잘못되면 받지 않는다(invalid_header)."""
+        """영상 메시지를 상태기에 넘기고 콜백 시간을 잰다. 헤더가 잘못되면 받지 않는다."""
         t0 = time.perf_counter_ns()
 
         try:
@@ -225,7 +199,7 @@ class LiveLinkSource:
                                           width=int(message.width), height=int(message.height))
         except (AttributeError, TypeError, ValueError):
             outcome = "invalid_header"
-            self._slot.on_invalid_input("invalid_header")   # #196 A1-4: 버리되 수신 진단에서 사라지지 않게 센다
+            self._slot.on_invalid_input("invalid_header")  # 버리되 수신 진단에서 사라지지 않게 센다
 
         with self._callback_lock:
             self._callback_ns.append(time.perf_counter_ns() - t0)
@@ -233,7 +207,7 @@ class LiveLinkSource:
         return outcome
 
     def handle_clock(self, message) -> None:
-        """`/clock` 메시지(`clock.sec`·`clock.nanosec`)를 넘긴다. 잘못된 값은 버리고 `invalid_clock`으로 센다(#196 A1-4)."""
+        """`/clock` 메시지를 넘긴다. 잘못된 값은 버리고 `invalid_clock`으로 센다."""
         try:
             clock_ns = stamp_to_ns(message.clock)
         except (AttributeError, TypeError, ValueError):
@@ -243,10 +217,9 @@ class LiveLinkSource:
         self._slot.on_clock(clock_ns)
 
     def handle_camera_info(self, message) -> bool:
-        """`CameraInfo`를 식별 정보로 바꿔 넘긴다. 잘못된 K 등으로 만들 수 없으면 False.
+        """`CameraInfo`를 식별 정보로 바꿔 넘긴다. 만들 수 없으면 False.
 
-        해석 실패는 버리지 않는다(#180 #1): slot이 이전 프로필을 지우고 프로필 없음 경계를 만들며 `camera_info_invalid`를 센다
-        (`LiveFrameSlot.on_camera_info_invalid`). 그래서 이후 영상이 이전 `calibration_id`를 달지 않는다.
+        해석 실패는 slot이 이전 프로필을 지우게 해 이후 영상이 이전 `calibration_id`를 달지 않게 한다.
         """
         try:
             info = profile_info(message)
@@ -259,7 +232,7 @@ class LiveLinkSource:
         return True
 
     def handle_publishers(self, gids, offered: list[str]) -> None:
-        """발행자 GID 목록과 offered 신뢰성 목록을 넘긴다(R9: GID 집합 비교). 비호환이면 QoS 진단 알림(계획 §3.6)."""
+        """발행자 GID 목록과 offered 신뢰성 목록을 넘긴다(R9). 비호환이면 QoS 진단 알림."""
         self._offered = list(offered)
         self._slot.on_publisher_snapshot(frozenset(gids))
         problem = qos_incompatibility(self._config.reliability, offered)
@@ -268,7 +241,7 @@ class LiveLinkSource:
             self.handle_qos_incompatible(problem)
 
     def handle_receiver_failed(self, detail: str) -> None:
-        """수신 스레드가 비정상으로 멈췄다(spin 예외·정리 요청 없는 반환). 치명 알림으로 넘긴다(검토 r1 F1)."""
+        """수신 스레드가 비정상으로 멈췄다(spin 예외·정리 요청 없는 반환). 치명 알림으로 넘긴다."""
         self._receiver_error = detail
         self._slot.on_receiver_failed(detail)
 
@@ -310,7 +283,7 @@ class LiveLinkSource:
         self._slot.input_applied(item, generation)
 
     def read(self) -> FramePacket | InputStatusEvent | None:
-        """새 영상을 조립해 돌려준다(최대 `frame_wait_s` 대기). 계약은 클래스 설명."""
+        """새 영상을 조립해 돌려준다(최대 `frame_wait_s` 대기)."""
         if self._closed or self._start_error is not None:
             return self._event(InputStatus.SOURCE_UNAVAILABLE, "closed")
 
@@ -361,13 +334,13 @@ class LiveLinkSource:
         return frame
 
     def frame_current(self, frame: FramePacket) -> bool:
-        """그 프레임의 수신 epoch가 지금도 현재인지(계획 §3.5 C ②). 모르는 프레임은 False."""
+        """그 프레임의 수신 epoch가 지금도 현재인지. 모르는 프레임은 False."""
         epoch = self._epochs.get(frame.image_seq) if frame.run_id == self._issuer.run_id else None
 
         return epoch is not None and self._slot.is_current_epoch(epoch)
 
     def frame_epoch(self, frame: FramePacket) -> int | None:
-        """그 프레임을 받은 수신 epoch(#171 R1). 이 실행이 조립한 최근 프레임만 알고, 모르면 None. 제어 흐름 전용."""
+        """그 프레임을 받은 수신 epoch(모르면 None). 제어 흐름 전용."""
         if frame.run_id != self._issuer.run_id:
             return None
 
@@ -388,11 +361,9 @@ class LiveLinkSource:
         return out
 
     def close(self) -> None:
-        """수신 연결을 끊고 상태기를 닫는다(검토 r1 F2).
+        """수신 연결을 끊고 상태기를 닫는다.
 
-        - 정리 시작(`read`가 더는 프레임을 주지 않음)과 정리 완료를 구분한다. 연결 정리가 실패하면 RuntimeError를 올리고
-          완료로 표시하지 않으므로, 다시 부르면 남은 단계를 다시 시도한다(조용히 성공으로 돌아가지 않음).
-        - 완료 뒤에는 두 번 불러도 아무것도 하지 않는다.
+        연결 정리가 실패하면 RuntimeError를 올리고 완료로 표시하지 않아, 다시 부르면 남은 단계를 재시도한다.
         """
         if self._close_done:
             return
@@ -423,12 +394,9 @@ class LiveLinkSource:
 # ---------------------------------------------------------------------- 실제 rclpy 연결
 
 class RclpyTransport:
-    """rclpy 수신 연결. 자기 `Context`(또는 주입받은 것)·노드·구독 3개·발행자 확인 타이머·수신 스레드 1개.
+    """rclpy 수신 연결. 자기 `Context`(또는 주입받은 것)·노드·구독 3개·확인 타이머·수신 스레드 1개.
 
-    - 콜백은 `LiveLinkSource.handle_*`만 부른다(시각 1회·최신 칸 교체).
-    - `close(limit_s)`: executor 종료 → 노드 해제 → 스레드 join(한도) → (소유한 경우만) 컨텍스트 종료. 스레드가 한도 안에
-      멈추지 않으면 RuntimeError(멈춘 스레드는 강제로 끝낼 수 없다).
-    - 실제 통신 확인은 `_workspace/scenarios/live_link/`의 로컬 시나리오(L5)에서 한다. 추적 단위시험은 이 클래스를 실행하지 않는다.
+    콜백은 `LiveLinkSource.handle_*`만 부른다. 주입받은 `Context`는 종료하지 않는다.
     """
 
     THREAD_NAME = "eyetoarm-ros-rx"
@@ -513,7 +481,7 @@ class RclpyTransport:
             raise
 
     def _spin(self) -> None:
-        """수신 스레드 본체. 정리 요청(`close`) 없이 끝나면 예외든 정상 반환이든 비정상 종료로 소스에 알린다(검토 r1 F1)."""
+        """수신 스레드 본체. `close` 요청 없이 끝나면 예외든 정상 반환이든 비정상 종료로 알린다."""
         error = None
 
         try:
@@ -527,16 +495,14 @@ class RclpyTransport:
             try:
                 self._source.handle_receiver_failed(f"receiver stopped unexpectedly: {error or 'spin returned'}")
             except Exception as exc:
-                # 무시해도 결과가 유효로 바뀌지 않는다(#180 #10): 원인은 바로 위 `spin_error`에 이미 남았고, 알림이 빠져도
-                # 영상이 끊겨 slot의 FRAME_TIMEOUT 경계가 나온다. 알림 실패 사유만 원인 뒤에 덧붙여 보존한다
+                # 무시해도 결과가 유효로 바뀌지 않는다: 원인은 `spin_error`에 남았고, 영상이 끊기면 FRAME_TIMEOUT
+                # 경계가 나온다. 알림 실패 사유만 원인 뒤에 덧붙인다
                 self.spin_error = f"{self.spin_error or 'spin returned'}; notify failed: {type(exc).__name__}: {exc}"
 
     def close(self, limit_s: float) -> None:
-        """한도 안에서 단계별로 정리한다(검토 r1 F2): executor 종료 → 수신 스레드 join → 노드 해제 → (소유한) 컨텍스트 종료.
+        """executor 종료 → 수신 스레드 join → 노드 해제 → (소유한) 컨텍스트 종료를 `limit_s` 안에서 한다.
 
-        - 한 단계가 실패해도 뒤 단계를 계속하고, 실패를 모두 모아 마지막에 RuntimeError로 올린다.
-        - 성공한 단계는 다시 하지 않는다. 실패한 단계는 다음 `close`에서 다시 시도한다.
-        - 주입받은 컨텍스트는 종료하지 않는다. 모든 대기는 `limit_s`로 상한이 있다.
+        실패해도 뒤 단계를 계속하고 모아서 RuntimeError로 올린다. 실패한 단계만 다음 `close`에서 재시도한다.
         """
         self._closing = True
         errors: list[str] = []

@@ -1,8 +1,4 @@
-"""학습기 I3 — 평가 실행(`run_eval`) 시험. 가짜 시간·정확도 자식(`python -c`)과 임시 저장소로 순서·기록·실패·소유권을 확인한다.
-
-근거: 학습기 설계 r2 §6(크기별 새 자식 시간 측정 → 정확도 자식, 동시 부하 관측, eval.json·eval_per_gt.json, 요약 열, 기록 실패 →
-failed·요약 제외, SHA256SUMS 이전 판 보존), §5(자식 수명·정리·소유권), 구현 지시 I3(무효/부분 기록·중단·소유권·정리 실패).
-"""
+"""학습기 평가 실행(`run_eval`) 시험: 가짜 시간·정확도 자식과 임시 저장소로 순서·기록·실패·소유권을 본다."""
 import json
 import os
 import sys
@@ -138,8 +134,7 @@ class EvalSuccessTest(EvalFixture):
     """정상 평가."""
 
     def test_order_records_summary(self):
-        """후보마다 timing640 → timing1280 → accuracy(서로 다른 자식), eval.json·eval_per_gt.json, 세부 재현율, 부하 관측 시작·끝,
-        job_state eval:accuracy exited_cleaned, 요약 3행(A 열 순서), SHA256SUMS 이전 판 보존, lock 해제, rc 0."""
+        """후보마다 timing640 → timing1280 → accuracy 자식, 평가 기록·요약 3행·이전 판 보존, rc 0."""
         tr = self.trained()
         res = self.evaluate()
 
@@ -159,7 +154,7 @@ class EvalSuccessTest(EvalFixture):
             pids = {_read_json(os.path.join(d, "eval", "attempt_1", f"timing{s}.json"))["pid"] for s in (640, 1280)}
             self.assertEqual(len(pids), 2)                                       # 크기마다 새 자식
             hist = _read_json(os.path.join(d, "eval", "attempt_1", "timing640.json"))["history"]
-            self.assertEqual(hist[:2], ["construct", "predict"])                # 생성 뒤 첫 predict가 cold
+            self.assertEqual(hist[:2], ["construct", "predict"])  # 생성 뒤 첫 predict가 cold
             js = _read_json(os.path.join(d, "job_state.json"))
             self.assertEqual((js["state"], js["job"]), ("exited_cleaned", "eval:accuracy"))
         summ = _read_json(os.path.join(tr.run_set_dir, "summary.json"))["rows"]
@@ -187,7 +182,7 @@ class EvalFailureTest(EvalFixture):
     """무효·부분 기록, 실패, 중단, 소유권, 정리 실패."""
 
     def test_invalid_records_fail_without_eval_json(self):
-        """S1-01 시간 기록 일부만 씀·S1-02 준비 중 predict·S1-03 mAP NaN → 각각 failed, eval.json 없음, 요약 0행, rc 1, 후보는 계속."""
+        """시간 기록 일부·준비 중 predict·mAP NaN → 각각 failed, eval.json 없음, 요약 0행, rc 1."""
         tr = self.trained()
         res = self.evaluate(modes={("S1-01", "timing640"): "partial", ("S1-02", "timing1280"): "warm",
                                    ("S1-03", "accuracy"): "nan"})
@@ -199,10 +194,11 @@ class EvalFailureTest(EvalFixture):
         st = _read_json(os.path.join(self.exp(tr, "S1-02", "yolo11n-seg"), "eval", "attempt_1", "status.json"))
         self.assertTrue(any("predict called before cold call" in p for p in st["problems"]), st)
         self.assertEqual(_read_json(os.path.join(tr.run_set_dir, "summary.json"))["rows"], [])
-        self.assertEqual([j for e, j, _ in self.jobs if e == "S1-01"], ["timing640"])   # 실패 뒤 그 후보의 다음 자식 없음
+        # 실패 뒤 그 후보의 다음 자식 없음
+        self.assertEqual([j for e, j, _ in self.jobs if e == "S1-01"], ["timing640"])
 
     def test_child_error_and_deadline(self):
-        """자식 rc 3 → failed, 평가 기한 초과(잠자는 자식) → deadline으로 정리 확인·failed, 다음 후보는 평가된다."""
+        """자식 rc 3 → failed, 기한 초과(잠자는 자식) → 정리 확인·failed, 다음 후보는 평가된다."""
         tr = self.trained()
         res = self.evaluate(modes={("S1-01", "timing640"): "fail", ("S1-02", "accuracy"): "sleep"},
                             cfg=self.config(eval_deadline_s=0.5))
@@ -233,7 +229,7 @@ class EvalFailureTest(EvalFixture):
         self.assertIsNone(read_lock(tr.run_set_dir))
 
     def test_cleanup_unconfirmed_aborts_and_keeps_lock(self):
-        """신호 실패(권한 모사)로 정리 미확인 → 묶음 중단·lock 유지(cleanup_unconfirmed)·핸들 보존, 이후 후보 자식 0."""
+        """신호 실패로 정리 미확인 → 묶음 중단·lock 유지·핸들 보존, 이후 후보 자식 0."""
         tr = self.trained()
 
         def no_kill(pid, sig):
@@ -251,7 +247,7 @@ class EvalFailureTest(EvalFixture):
         self.assertEqual([e for e, _, _ in self.jobs], ["S1-01"])
 
     def test_weights_mismatch_and_not_completed_and_blocked(self):
-        """best.pt를 바꾸면 failed_not_started(자식 0), 학습 실패 후보는 skipped, 실행 중 job_state가 있으면 시작 거부(rc 2)."""
+        """best.pt가 바뀌면 failed_not_started, 학습 실패 후보는 skipped, 실행 중 job_state면 rc 2."""
         tr = self.trained()
         _write(os.path.join(self.exp(tr, "S1-01", "yolov8n-seg"), "weights", "best.pt"), b"tampered", "wb")
         _write(os.path.join(self.exp(tr, "S1-02", "yolo11n-seg"), "status.json"), json.dumps({"status": "failed"}))
@@ -300,7 +296,7 @@ class EvalLegacyTest(EvalFixture):
 
 
 class EvalR1Test(EvalFixture):
-    """I3 r0 검토 F1~F3 경계(오류 경로 정리, 기록 실패의 완료 게시 금지, 실제 평가 입력 fingerprint)."""
+    """오류 경로 정리, 기록 실패의 완료 게시 금지, 실제 평가 입력 fingerprint 경계."""
 
     def patched(self, module, name, fn):
         """모듈 속성을 시험 동안 바꾼다."""
@@ -310,7 +306,7 @@ class EvalR1Test(EvalFixture):
         return orig
 
     def test_f1_invalid_existing_eval_json_no_children_no_lock(self):
-        """기존 eval.json이 잘렸거나 필수 중첩 필드가 없으면 invalid_existing_eval(자식 0, 바이트 무변), 예외 없이 lock 해제·rc 1, 다른 후보는 평가."""
+        """기존 eval.json이 잘렸거나 필드가 없으면 invalid_existing_eval(자식 0), lock 해제·rc 1."""
         tr = self.trained()
         bad = {"S1-01_yolov8n-seg": "{", "S1-02_yolo11n-seg": json.dumps({"accuracy": {}})}
         for exp, text in bad.items():
@@ -329,7 +325,7 @@ class EvalR1Test(EvalFixture):
                          ["S1-03"])
 
     def test_f2_modified_published_eval_is_not_accepted(self):
-        """게시된 eval.json의 값을 바꾸면 attempt status의 해시와 맞지 않아 다음 호출에서 invalid_existing_eval(자식 0, 요약 제외)."""
+        """게시된 eval.json 값을 바꾸면 해시가 맞지 않아 다음 호출에서 invalid_existing_eval이다."""
         tr = self.trained()
         self.evaluate()
         path = os.path.join(self.exp(tr, "S1-01", "yolov8n-seg"), "eval", "eval.json")
@@ -346,7 +342,7 @@ class EvalR1Test(EvalFixture):
                          ["S1-02", "S1-03"])
 
     def test_f1_malformed_accuracy_fields_rejected(self):
-        """정확도 기록의 predictions가 빈 객체·by_size 값이 정수가 아니면 검사에서 거부(failed, eval.json 없음)."""
+        """정확도 기록의 predictions가 빈 객체이거나 by_size 값이 정수가 아니면 failed, eval.json 없음."""
         tr = self.trained()
         res = self.evaluate(modes={("S1-01", "accuracy"): "badpred", ("S1-02", "accuracy"): "badsize"})
 
@@ -355,8 +351,7 @@ class EvalR1Test(EvalFixture):
             self.assertFalse(os.path.exists(os.path.join(self.exp(tr, exp_id, fam), "eval", "eval.json")))
 
     def test_f1_summary_failure_keeps_error_and_releases_lock(self):
-        """요약 생성(평가 게시 뒤 요약 단계에서만 쓰는 summary_markdown)이 예외를 내도 밖으로 빠져나가지 않고 원래 오류를 남기며
-        lock 해제(정리 확인됨), rc 1. 평가 결과는 게시된 그대로다."""
+        """요약 생성 예외는 밖으로 새지 않고 원래 오류를 남기며 lock 해제, rc 1, 평가 결과는 그대로다."""
         from eyetoarm.training import eval_runner as er
         tr = self.trained()
 
@@ -372,7 +367,7 @@ class EvalR1Test(EvalFixture):
         self.assertEqual([c["status"] for c in res.candidates], ["evaluated"] * 3)
 
     def test_f2_watch_write_failure_is_not_success(self):
-        """감시 기록(watch.jsonl) 쓰기 실패 → 자식이 유효 기록·rc 0이어도 failed, eval.json 없음, 요약 제외, 원래 오류 보고, rc 1."""
+        """감시 기록 쓰기 실패 → 자식이 정상이어도 failed, eval.json 없음, 요약 제외, rc 1."""
         from eyetoarm.training import runner as rn
         tr = self.trained()
         real = rn.append_jsonl
@@ -393,7 +388,7 @@ class EvalR1Test(EvalFixture):
         self.assertTrue(any("watch disk full" in p for p in st["problems"]), st)
 
     def test_f2_status_or_attempts_write_failure_not_published(self):
-        """결과를 만든 뒤 attempt status.json 또는 attempts end 쓰기가 실패하면 eval.json·요약에 남지 않고, 다음 호출은 already_evaluated가 아니다."""
+        """결과 뒤 status.json·attempts end 쓰기가 실패하면 게시되지 않고 다음은 already_evaluated가 아니다."""
         from eyetoarm.training import eval_runner as er
         for target in ("status", "attempts_end"):
             with self.subTest(target=target):
@@ -428,8 +423,7 @@ class EvalR1Test(EvalFixture):
                 self.assertEqual([c["status"] for c in res2.candidates], ["evaluated"] * 3)
 
     def test_f3_eval_inputs_fingerprint_recorded_and_tracks_content(self):
-        """eval.json에 공개·Gazebo 평가 입력(영상·라벨 개수와 내용 해시, manifest·dataset.yaml 해시)이 남고, 같은 경로의 라벨·manifest
-        내용을 바꾸면 다른 run_set 평가의 fingerprint가 달라진다."""
+        """eval.json에 평가 입력의 개수·내용 해시가 남고, 라벨·manifest 내용이 바뀌면 fingerprint가 달라진다."""
         a = self.run_batch({}, run_set="s1_fa")
         self.evaluate(run_set="s1_fa")
         fa = _read_json(os.path.join(self.exp(a, "S1-01", "yolov8n-seg"), "eval", "eval.json"))
@@ -447,7 +441,7 @@ class EvalR1Test(EvalFixture):
         self.assertEqual(fa["gz640"]["images"]["sha256"], fb["gz640"]["images"]["sha256"])
 
     def test_f3_inputs_changed_during_eval_fails(self):
-        """평가 도중(정확도 자식 시작 때) Gazebo manifest 내용이 바뀌면 그 후보는 failed(입력 변경), eval.json 없음."""
+        """평가 도중 Gazebo manifest 내용이 바뀌면 그 후보는 failed(입력 변경), eval.json 없음."""
         tr = self.trained()
         orig = self.eval_factory()
 
@@ -469,10 +463,10 @@ class EvalR1Test(EvalFixture):
 
 
 class LegacyR1Test(EvalFixture):
-    """I3 r0 검토 F4: 등록 묶음이 최종 검증을 마치지 못한 후보는 평가가 소비하지 않는다."""
+    """등록 묶음이 최종 검증을 마치지 못한 후보는 평가가 소비하지 않는다."""
 
     def test_f4_sources_changed_during_registration_not_consumed(self):
-        """등록 검증 중 원본(S1-02 로그)이 바뀌면 rc 1, 어떤 후보도 completed로 게시되지 않고 이어지는 eval은 자식 0."""
+        """등록 검증 중 원본이 바뀌면 rc 1, completed 게시 없음, 이어지는 eval은 자식 0."""
         src = self.make_legacy()
         real = self.legacy_inspect
 
@@ -488,13 +482,13 @@ class LegacyR1Test(EvalFixture):
         self.assertEqual(reg.rc, 1)
         for exp_id, fam in FAMILIES:
             self.assertNotEqual(self.reg(reg, exp_id, fam)["status"], "completed")
-        self.assertFalse(os.path.exists(os.path.join(reg.run_set_dir, "REGISTERED.json")))   # 게시 표지 없음
+        self.assertFalse(os.path.exists(os.path.join(reg.run_set_dir, "REGISTERED.json")))
         res = self.evaluate(run_set="s1_legacy")
         self.assertEqual(self.jobs, [])
         self.assertTrue(all(c["status"].startswith("skipped") for c in res.candidates), res.candidates)
 
     def test_f4_late_write_failure_not_consumed(self):
-        """등록 후반 필수 기록(SHA256SUMS) 쓰기 실패 → rc 1·원래 오류 보고, 이어지는 eval은 자식 0. 등록 기록 변조도 소비하지 않는다."""
+        """등록 후반 SHA256SUMS 쓰기 실패 → rc 1·오류 보고, 이어지는 eval 자식 0, 변조 기록도 안 쓴다."""
         from eyetoarm.training import eval_runner as er
         self.make_legacy()
         orig = er.write_sha256sums
@@ -514,7 +508,7 @@ class LegacyR1Test(EvalFixture):
         self.assertEqual(self.jobs, [])
 
     def test_f4_tampered_registration_not_consumed(self):
-        """정상 등록 뒤 registration.json을 바꾸면(incomplete → completed) 게시 표지와 해시가 달라 eval이 소비하지 않는다."""
+        """정상 등록 뒤 registration.json을 바꾸면 게시 표지·해시가 달라 eval이 소비하지 않는다."""
         self.make_legacy(summary_rc=1)
         reg = self.register()
         path = os.path.join(reg.run_set_dir, "S1-02_yolo11n-seg", "registration.json")

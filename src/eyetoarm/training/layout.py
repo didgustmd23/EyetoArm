@@ -1,12 +1,7 @@
-"""산출물 배치·원자 기록·소유권 lock·완료/재개 판정(학습기 설계 r2 §4). 순수 로직이며 프로세스를 띄우지 않는다.
+"""학습 산출물 배치·원자 기록·소유권 lock·완료/재개 판정. 순수 로직이며 프로세스를 띄우지 않는다.
 
-- run_set 이름: 소문자·숫자·`_.-`, 64자 이하. smoke 설정은 `smoke_` 접두사 필수, 비교 설정은 금지.
-- 실험 폴더 `<run_set>/<exp_id>_<family>`는 `os.mkdir`로 원자 생성(있으면 거부, 덮어쓰기 없음).
-- `OWNER.lock`은 `O_CREAT|O_EXCL`로 원자 생성. 해제는 내용의 pid·시작 시각이 같은 소유자만.
-- 기록: JSON은 임시 파일 → fsync → `os.replace`(원자 교체), 이력은 JSONL 줄 추가만.
-- 완료 판정은 strip된 정상 완료본(epoch −1·optimizer None)을 인정하고, 최종 epoch 근거는 results.csv 1..E + progress(새 실행)
-  또는 대체 근거(legacy: 로그 완료 문구·run_all rc·잔존)로 따로 본다. legacy에 없는 콜백 기록을 꾸며 넣지 않는다.
-- 체크포인트 메타(epoch·optimizer 유무·train_args·load 가능)는 torch를 쓰는 자식 프로세스가 읽어 넘긴다.
+실험 폴더·`OWNER.lock`은 원자 생성(있으면 거부)하고, lock 해제는 같은 pid·시작 시각 소유자만 한다.
+legacy 완료 판정은 대체 근거만 보고, 없는 콜백 기록을 꾸며 넣지 않는다.
 """
 from __future__ import annotations
 
@@ -20,7 +15,7 @@ LOCK_NAME = "OWNER.lock"
 _RUN_SET_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
 # 완료·재개에서 같아야 하는 공통 학습 키(train_args 기준)
 COMMON_KEYS = ("data", "imgsz", "batch", "epochs", "seed", "deterministic", "workers", "device")
-# 설정에 있을 때만 대조하는 선택 공통 키(#141 hsv_v). 설정에 없으면 체크포인트 값(ultralytics 기본)을 비교하지 않는다
+# 설정에 있을 때만 대조하는 선택 공통 키. 없으면 체크포인트 값(ultralytics 기본)을 비교하지 않는다
 OPTIONAL_COMMON_KEYS = ("hsv_v",)
 
 
@@ -55,7 +50,7 @@ def make_exp_dir(run_set_dir: str, exp_id: str, family: str) -> str:
 
 
 def write_json_atomic(path: str, obj) -> None:
-    """JSON을 임시 파일에 쓰고 fsync 뒤 원자 교체한다. 직렬화 실패(ValueError)면 기존 파일을 건드리지 않는다."""
+    """JSON을 임시 파일에 쓰고 fsync 뒤 원자 교체한다. 직렬화 실패면 기존 파일을 건드리지 않는다."""
     text = json.dumps(obj, indent=1, ensure_ascii=False, allow_nan=False) + "\n"
     tmp = f"{path}.tmp.{os.getpid()}"
     try:
@@ -152,7 +147,7 @@ def _ckpt_reasons(name: str, meta: dict | None, target_epochs: int, common: dict
 
 
 def check_completion(ev: dict) -> tuple[bool, list[str]]:
-    """완료 판정(설계 r2 §4 조건 1~5). (완료 여부, 미충족 이유 목록)."""
+    """완료 판정. (완료 여부, 미충족 이유 목록)."""
     E = ev["target_epochs"]
     r = []
 
@@ -187,7 +182,7 @@ def check_completion(ev: dict) -> tuple[bool, list[str]]:
 
 def check_resume(*, last: dict, target_epochs: int, common: dict, exp_project: str, exp_name: str,
                  attempts: list, manifest: dict, candidate: dict, job_state: dict) -> list[str]:
-    """재개 허용 판정(설계 r2 §4 (a)~(d)). 빈 목록이면 허용."""
+    """재개 허용 판정((a) 실험 신원~(d) 후보). 빈 목록이면 허용."""
     r = []
 
     if job_state.get("state") in ("running", "starting", "cleanup_unconfirmed"):
