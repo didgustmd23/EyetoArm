@@ -6,9 +6,9 @@
 | --- | --- | --- |
 | Gazebo link / gripper / fixed cameras | ROS `sensor_msgs/Image` | `link/raw`, `gripper/raw`, `fixed/raw` |
 | A AI detect frame | AToCHandoff consumer in `run_pipeline.py` → local TCP `127.0.0.1:47093` | `link/detect` |
-| B center-overlay frame | ROS `sensor_msgs/Image`, default `/b/center_overlay/image` (`--center-topic` overrides it) | `link/center` |
+| B center-overlay frame + identity | ROS eyetoarm_interfaces/msg/CenterOverlay, default /b/center_overlay (--center-topic overrides it); image and B frame keys arrive together | link/center over ETV1/JPEG |
 
-The center-image subscription assigns C-side display sequence metadata because a plain ROS `Image` does not carry the full B frame identity. It is for video display; it does not synchronize a center image with a B sort goal or authorize a robot action.
+The center subscription consumes CenterOverlay so the JPEG and B frame identity come from the same ROS message. ETV1 preserves B source_id, image_seq, capture_generation, generation, job_seq, capture_stamp_ns, timestamp_base, and calibration_id; it adds the C relay session ID for D's session guard and carries B's original run ID as producer_run_id. D's current receiver uses the standard display envelope and does not surface optional producer fields to the GUI. CenterOverlay contains no grasp/place coordinates; those remain in /sort_part. The center stream is display-only and does not authorize a robot action.
 
 `sort_goal_receiver` provides the B→C ROS action server `/sort_part` using `eyetoarm_interfaces/action/SortPart`. It logs received goal fields and acknowledges receipt. Until the robot execution backend is connected, it returns `FAILED / EXECUTION_NOT_CONFIGURED`; it does not move the robot or report a sort as successful.
 
@@ -45,4 +45,4 @@ The relay listens on `0.0.0.0:47092` for D and `127.0.0.1:47093` for the local A
 
 ## Boundary
 
-The receiver and relay paths are implemented in C, but need a live integrated run to confirm B's publisher uses the agreed topic and message type. The center feed does not yet preserve B's run/image/generation identifiers. The action receiver is receipt-only; planning, execution, cancellation-to-stop behavior, and success/arrival reporting remain outside this receiver step. D's GUI selection signal must be connected by D so C can send `raw`, `detect`, or `center` on request.
+A live test confirmed B can publish CenterOverlay and C can receive its image and identity fields. C now forwards those fields with the center JPEG over ETV1. A live test with D's Windows GUI and repeated raw/detect/center switching remains to be done.

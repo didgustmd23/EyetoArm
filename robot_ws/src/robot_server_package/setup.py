@@ -21,6 +21,7 @@ setup(
         'console_scripts': [
             'tcp_server = robot_server_package.tcp_server:main',
             'display_relay = robot_server_package.display_relay:main',
+            'center_overlay_rx_probe = robot_server_package.center_overlay_rx_probe:main',
             'sort_goal_receiver = robot_server_package.sort_manager:main',
             'planning_scene_manager = robot_server_package.planning_scene_manager:main',
             'pose_plan_test = robot_server_package.pose_plan_test:main',

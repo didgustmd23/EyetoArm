@@ -16,7 +16,7 @@ MAX_META = 16 * 1024
 MAX_REQUEST_LINE = 4096
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 47092
-DEFAULT_CENTER_TOPIC = "/b/center_overlay/image"
+DEFAULT_CENTER_TOPIC = "/b/center_overlay"
 CAMERAS = {"link": "/link_cam/image", "gripper": "/gripper_cam/image", "fixed": "/overview_cam/image"}
 LINK_VARIANTS = {"raw", "detect", "center"}
 
@@ -325,7 +325,7 @@ def main():
     parser.add_argument("--handoff-port", type=int, default=47093,
                         help="local A-to-C display-frame ingress port")
     parser.add_argument("--center-topic", default=DEFAULT_CENTER_TOPIC,
-                        help="B center-overlay sensor_msgs/Image topic")
+                        help="B CenterOverlay message topic (contains the image and B frame identity)")
     parser.add_argument("--quality", type=int, default=80)
     args = parser.parse_args()
     if not 1 <= args.quality <= 100:
@@ -333,6 +333,7 @@ def main():
     import cv2
     import rclpy
     from cv_bridge import CvBridge
+    from eyetoarm_interfaces.msg import CenterOverlay
     from rclpy.executors import ExternalShutdownException
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import Image
@@ -369,34 +370,59 @@ def main():
                 node.get_logger().warning(f"{channel} frame dropped: {exc}")
         return node.create_subscription(Image, topic, on_image, qos_profile_sensor_data)
 
-    center_sequence = 0
-
-    def on_center_image(message):
-        nonlocal center_sequence
+    def on_center_overlay(message):
+        # CenterOverlay carries the annotated image and the B frame identity in one ROS message.
+        # Only accepted frame messages have a displayable image; status/end markers have no frame.
+        if message.kind != "accepted":
+            return
         try:
-            image = bridge.imgmsg_to_cv2(message, desired_encoding="bgr8")
+            image_message = message.image
+            stamp_ns = int(image_message.header.stamp.sec) * 1_000_000_000 + int(image_message.header.stamp.nanosec)
+            keys = {
+                "source_id": str(message.source_id),
+                "image_seq": int(message.image_seq),
+                "capture_generation": int(message.capture_generation),
+                "generation": int(message.generation),
+                "job_seq": int(message.job_seq),
+                "capture_stamp_ns": int(message.capture_stamp_ns),
+            }
+            if (keys["source_id"] != "gz_link"
+                    or any(keys[key] < 0 for key in ("image_seq", "capture_generation", "generation", "job_seq"))
+                    or keys["capture_stamp_ns"] < 0
+                    or keys["capture_stamp_ns"] != stamp_ns
+                    or not message.run_id
+                    or not message.timestamp_base):
+                raise ValueError("invalid B frame identity or image timestamp")
+            image = bridge.imgmsg_to_cv2(image_message, desired_encoding="bgr8")
             ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, args.quality])
             if not ok:
                 return
-            center_sequence += 1
-            seq = center_sequence
+            seq = keys["image_seq"]
+            # Keep the C relay run_id stable across raw/detect/center switches so D's
+            # session guard remains usable. Carry B's original run and correlation keys
+            # alongside the display envelope; B sequence/generation values are preserved.
             meta = {
-                "channel": "link", "variant": "center", "source_id": "gz_link",
-                "image_seq": seq, "generation": 0, "calibration_id": None,
-                "run_id": run_id, "capture_generation": 0,
-                "detector_config_id": "b-center-overlay-v1", "job_seq": seq,
-                "producer": "B", "producer_topic": args.center_topic,
-                "frame_id": message.header.frame_id,
-                "stamp_sec": int(message.header.stamp.sec),
-                "stamp_nanosec": int(message.header.stamp.nanosec),
+                "channel": "link", "variant": "center",
+                "source_id": keys["source_id"], "image_seq": seq,
+                "generation": keys["generation"],
+                "calibration_id": str(message.calibration_id) or None,
+                "run_id": run_id, "capture_generation": keys["capture_generation"],
+                "detector_config_id": "b-center-overlay-v1", "job_seq": keys["job_seq"],
+                "producer": "B", "producer_run_id": str(message.run_id),
+                "producer_topic": args.center_topic, "kind": message.kind,
+                "capture_stamp_ns": keys["capture_stamp_ns"],
+                "timestamp_base": str(message.timestamp_base),
+                "frame_id": image_message.header.frame_id,
+                "stamp_sec": int(image_message.header.stamp.sec),
+                "stamp_nanosec": int(image_message.header.stamp.nanosec),
             }
             relay.offer("link", pack_packet(meta, encoded.tobytes()), variant="center")
             relay.note_center_received()
         except Exception as exc:
             node.get_logger().warning(f"B center frame dropped: {exc}")
 
-    # 링크 raw는 선택된 경우에만 구독한다. detect는 A handoff, center는 B 토픽에서 받는다.
-    # 구독 생성/해제는 ROS executor 스레드에서 timer로 수행한다.
+    # Raw is subscribed only for the raw selection; detect uses A handoff and center uses B CenterOverlay.
+    # Subscription changes stay inside the ROS executor timer.
     link_subscription = {"value": subscribe("link", CAMERAS["link"])}
     applied_link_variant = {"value": "raw"}
     center_subscription = {"value": None}
@@ -426,7 +452,7 @@ def main():
         if center_enabled != applied_center_enabled["value"]:
             if center_enabled:
                 center_subscription["value"] = node.create_subscription(
-                    Image, args.center_topic, on_center_image, qos_profile_sensor_data)
+                    CenterOverlay, args.center_topic, on_center_overlay, qos_profile_sensor_data)
                 subscriptions.append(center_subscription["value"])
                 print("[C 영상] B center 입력 구독 재개", flush=True)
             else:

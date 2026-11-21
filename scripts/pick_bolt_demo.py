@@ -2,8 +2,7 @@
 """Gazebo UR5e·2F-85로 벨트 위 볼트를 집어 올렸다가 제자리에 내려놓는 시연.
 
     cd ~/EyetoArm && source /opt/ros/jazzy/setup.bash
-    python3 scripts/pick_bolt_demo.py                  # 기본 대상: part_01 (M6x40 볼트)
-    python3 scripts/pick_bolt_demo.py --part part_00   # M6x12 볼트
+    python3 scripts/pick_bolt_demo.py                  # 기본 대상: part_00 (M3x20 볼트)
     python3 scripts/pick_bolt_demo.py --lift 0.20      # 20 cm 들어 올리기
 
 볼트의 실제 위치·방향을 Gazebo에서 읽어 축 가운데를 위에서 잡는다. 역기구학은 이 파일 안의
@@ -32,10 +31,13 @@ JOINTS = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
 GRIPPER_JOINT = 'robotiq_85_left_knuckle_joint'
 TOOL_LINK = 'robotiq_85_base_link'
 GRIP_OPEN, GRIP_CLOSED = 0.0, 0.8     # 구동 관절(rad)
-FINGER_REACH = 0.163 / 3              # 그리퍼 밑면에서 닫힌 손끝 끝까지(m). 원본 2F-85 실측 0.163(열림 0.149)의 1/3 축소 모델 값
+FINGER_REACH = 0.0492                 # 손끝이 벨트에 닿지 않도록 3 mm 올린 접촉 높이 재시험값
 TIP_CLEARANCE = 0.0015                # 닫힌 손끝과 받침면 사이 여유(m)
-SHANK_RADIUS = 0.003                  # M6 축 반지름(m)
-SHANK_LENGTH = {'part_00': 0.012, 'part_01': 0.040}
+SHANK_RADIUS = 0.0015                 # M3 축 반지름(m)
+SHANK_LENGTH = {'part_00': 0.020}     # part_00: M3x20 축 길이(m)
+# part_00 모델 원점에서 축 끝 방향으로 Pb까지의 오프셋(m).
+# 월드 자세 (0.55, -0.30, 0.105), 축 방향 -X일 때 Pb=(0.544, -0.30, 0.105).
+GRASP_OFFSET_FROM_MODEL_ORIGIN = {'part_00': 0.006}
 APPROACH = 0.10                       # 잡기 전·놓은 뒤 위쪽 대기 높이(m)
 RELEASE_HEIGHT = 0.0                  # 놓을 때 잡은 높이 기준 추가 높이(m). 띄워서 놓으면 볼트가 굴러 벨트 밖으로 나간다
 RELEASE_STEP = 0.02                   # 놓을 때 그리퍼를 이만큼씩 천천히 연다(rad). 한 번에 열면 볼트가 튕겨 구른다
@@ -153,7 +155,7 @@ class Arm:
 
     def _call(self, client, goal, limit):
         future = client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=10.0)
+        rclpy.spin_until_future_complete(self.node, future, timeout_sec=30.0)
         handle = future.result()
         if handle is None or not handle.accepted: raise RuntimeError('제어기가 목표를 받지 않았다')
         result = handle.get_result_async()
@@ -169,8 +171,8 @@ class Arm:
             t = seconds * k / len(waypoints)
             goal.trajectory.points.append(JointTrajectoryPoint(
                 positions=[float(v) for v in q], time_from_start=Duration(sec=int(t), nanosec=int((t % 1) * 1e9))))
-        self._call(self.trajectory, goal, seconds * 4 + 20)
-        end = time.monotonic() + 8.0
+        self._call(self.trajectory, goal, seconds * 25 + 30)
+        end = time.monotonic() + 30.0
         while time.monotonic() < end and np.max(np.abs(self.joints() - waypoints[-1])) > 0.003:
             rclpy.spin_once(self.node, timeout_sec=0.05)
         return float(np.max(np.abs(self.joints() - waypoints[-1])))
@@ -178,7 +180,7 @@ class Arm:
     def grip(self, position, settle=0.5):
         goal = ParallelGripperCommand.Goal()
         goal.command = JointState(name=[GRIPPER_JOINT], position=[float(position)])
-        result = self._call(self.gripper, goal, 20.0)
+        result = self._call(self.gripper, goal, 90.0)
         self.wait(settle)
         return result
 
@@ -197,7 +199,7 @@ class Arm:
 
 def main():
     parser = argparse.ArgumentParser(description='볼트를 집어 올렸다가 내려놓는 Gazebo 시연')
-    parser.add_argument('--part', default='part_01', choices=sorted(SHANK_LENGTH), help='대상 볼트의 Gazebo 모델 이름')
+    parser.add_argument('--part', default='part_00', choices=sorted(SHANK_LENGTH), help='대상 볼트의 Gazebo 모델 이름')
     parser.add_argument('--world', default='sort_cell')
     parser.add_argument('--lift', type=float, default=0.15, help='들어 올리는 높이(m)')
     parser.add_argument('--hold', type=float, default=3.0, help='들어 올린 채 머무는 시간(초)')
@@ -215,7 +217,7 @@ def main():
     if abs(axis[2]) > 0.5 or np.linalg.norm(flat) < 1e-6:
         raise RuntimeError('볼트가 누워 있지 않아 이 시연의 잡기 방식으로는 잡을 수 없다')
     flat /= np.linalg.norm(flat)
-    center = position + axis * SHANK_LENGTH[args.part] / 2                 # 축 가운데
+    center = position + axis * GRASP_OFFSET_FROM_MODEL_ORIGIN[args.part]  # 기존 Pb 유지
     support = center[2] - SHANK_RADIUS                                     # 축 아래 받침면 높이
     grasp_z = support + TIP_CLEARANCE + FINGER_REACH
     print(f'{args.part}: 위치 ({position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f}) m, '
