@@ -589,6 +589,7 @@ class LiveWorldTracking:
                 rec["occlusion"] = occ_status
                 rec["occluded_ids"] = list(self._tracker.last_occluded)
                 rec["held"] = self._tracker.held_snapshot(ts)   # hold·가림 트랙 예측(재연결 분석용)
+                rec["belt_velocity"] = self._tracker.last_velocity
 
             if self.handoff_on:
                 self._link_generation = key.generation

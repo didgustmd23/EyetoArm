@@ -56,7 +56,7 @@ class GeometryTest(unittest.TestCase):
         self.assertIn("forearm_link", {o.link for o in occ})
 
 
-def occ_all(_x, _y):
+def occ_all(*_):
     """모두 가림."""
     return True
 
@@ -80,7 +80,7 @@ class OccludedHoldTest(unittest.TestCase):
 
     def test_not_occluded_counts_gap(self):
         """가리지 않으면(또는 판정 함수 없음 = TF 실패) 기존대로 1.5 s에 in_view_missing."""
-        for occ in (lambda x, y: False, None):
+        for occ in (lambda *a: False, None):
             s = Scene(late_ms=500)
             pid, t = s.confirm()
 
@@ -201,7 +201,7 @@ class ReentryVelocityTest(unittest.TestCase):
     """링크에서 놓친 트랙은 다시 화면 안으로 예측될 때도 다음 링크 위치 갱신까지 벨트 공통 속도(D10)."""
 
     def test_reentry_keeps_belt_velocity(self):
-        """자기 속도가 과대(30 mm/s)여도 화면 밖 → 안으로 돌아온 첫 프레임 예측은 벨트 공통 속도(20 mm/s)를 쓴다."""
+        """자기 속도(30 mm/s)가 아니라 벨트 공통 속도로 재진입 프레임을 예측한다(보이는 트랙이 1개라 직전 공통 속도 유지)."""
         s = Scene(late_ms=500)
 
         for k in range(60):   # B(x 620)는 20 mm/s로 1.5 s, A(x 520)는 30 mm/s
@@ -217,9 +217,57 @@ class ReentryVelocityTest(unittest.TestCase):
         s.link(260 * 25, [winp(1, 620.0, 0.02 * 260 * 25)], visible=inside)   # A 예측점이 화면 안으로(못 봄)
         self.assertFalse(a.out_link)
         self.assertTrue(a.hold_pred)
-        self.assertLess(abs(s.tr._pred_vy(a, 0.0, None) * 1000.0 - 20.0), 2.0)
-        s.link(261 * 25, [winp(0, 520.0, a.y + 0.02 * (261 * 25 - a.last_hit_ms)), winp(1, 620.0, 0.02 * 261 * 25)])
+        self.assertEqual(s.tr._pred_vy(a, 0.0, None), s.tr._hold_vy)
+        self.assertLess(s.tr._hold_vy * 1000.0, 27.0)
+        s.link(261 * 25, [winp(0, 520.0, a.y + s.tr._hold_vy * (261 * 25 - a.last_hit_ms)), winp(1, 620.0, 0.02 * 261 * 25)])
         self.assertFalse(a.hold_pred)
+
+
+class ArmFalseTrackVelocityTest(unittest.TestCase):
+    """D14: 그리퍼 오검출(정지) 트랙이 벨트 공통 속도를 끌어내리지 않는다."""
+
+    def scene(self):
+        """두 볼트 20 mm/s(x 520·620)를 1.5 s 보인 뒤, 둘 다 가려지고 그리퍼 오검출 하나(x 511, 정지)만 1.5 s 보인다."""
+        s = Scene(late_ms=500)
+
+        for k in range(60):
+            t = k * 25
+            s.link(t, [winp(0, 520.0, 0.02 * t), winp(1, 620.0, 0.02 * t)])
+
+        ids = {t.part_track_id for t in s.tr._tracks}
+        return s, ids
+
+    def run_false(self, s, occluded):
+        """가림 + 정지 오검출(x 511, y 90) 60프레임."""
+        for k in range(60, 120):
+            s.link(k * 25, [winp(5, 511.0, 90.0, length=13.0)], visible=inside, occluded=occluded)
+
+    def test_static_false_alone_keeps_velocity(self):
+        """재현: 오검출 하나만 보이면(최소 2 미만) 공통 속도는 직전 20 mm/s를 유지한다."""
+        s, ids = self.scene()
+        self.run_false(s, lambda x, y, m=0.0: abs(x - 511.0) > 3.0)   # 볼트 둘은 가림, 오검출은 캡슐 밖으로 둠
+        self.assertLess(abs(s.tr._hold_vy * 1000.0 - 20.0), 1.0)
+        self.assertTrue(s.tr.last_velocity["kept_previous"])
+
+    def test_near_arm_track_excluded(self):
+        """캡슐(+여유) 근처 트랙은 공통 속도에서 빠진다(기록에 excluded_near_arm)."""
+        s, ids = self.scene()
+        near = lambda x, y, m=0.0: True   # noqa: E731  모두 캡슐 근처
+        self.run_false(s, near)
+        self.assertTrue(s.tr.last_velocity["excluded_near_arm"])
+        self.assertLess(abs(s.tr._hold_vy * 1000.0 - 20.0), 1.0)
+        self.assertGreater(s.tr.stats()["handoff"]["velocity_excluded_near_arm"], 0)
+
+    def test_min_tracks_used_when_enough(self):
+        """쓸 수 있는 트랙이 2개 이상이면 그 중앙값으로 갱신한다(정지 벨트 0)."""
+        s = Scene(late_ms=500)
+
+        for k in range(60):
+            s.link(k * 25, [winp(0, 520.0, 0.0), winp(1, 620.0, 0.0)])
+
+        self.assertFalse(s.tr.last_velocity["kept_previous"])
+        self.assertEqual(sorted(s.tr.last_velocity["used_ids"]), sorted(t.part_track_id for t in s.tr._tracks))
+        self.assertLess(abs(s.tr._hold_vy), 1e-6)
 
 
 class OccluderLookup:
