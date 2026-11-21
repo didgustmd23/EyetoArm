@@ -5,18 +5,19 @@
 - `job` → `result`(AiSegResult) 또는 `job_error`(config: 설정 불일치, error: 그 밖)
 - `stop` 또는 연결 끊김 → 정리하고 끝냄
 
-SIGINT는 무시하고(부모가 정리 순서를 정함), 부모가 죽으면 SIGTERM을 받도록 PR_SET_PDEATHSIG를 건다.
+SIGINT는 무시하고(부모가 정리 순서를 정함), 부모가 죽으면 감시 스레드가 0.5 s 안에 끝낸다.
 rclpy는 import하지 않는다. `--factory`는 시험 주입용이며 운영값은 `AiSegDetector`다.
 """
 from __future__ import annotations
 
 import argparse
-import ctypes
 import dataclasses
 import importlib
 import os
 import signal
 import sys
+import threading
+import time
 from multiprocessing.connection import Connection
 
 from eyetoarm.common.types import InvalidationKind
@@ -24,18 +25,26 @@ from eyetoarm.vision.ai_config import load_ai_config
 from eyetoarm.vision.ai_process import ShmSlots
 from eyetoarm.vision.ai_result import AiJobConfigError, ModelPrepareError
 
-_PR_SET_PDEATHSIG = 1
+PARENT_POLL_S = 0.5
 
 
-def _set_parent_death_signal(parent_pid: int) -> None:
-    """부모가 죽으면 SIGTERM을 받게 한다(Linux). 걸기 전에 이미 부모가 바뀌었으면 바로 끝낸다."""
-    try:
-        ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
-    except (OSError, AttributeError) as exc:   # prctl 없는 환경: 연결 끊김(EOF)으로만 끝난다
-        print(f"ai_process_child: prctl unavailable: {exc}", file=sys.stderr)
+def _watch_parent(parent_pid: int) -> None:
+    """부모가 바뀌면(부모 죽음 → 재부모화) 바로 끝낸다. 작업 중(멈춘 predict 포함)에도 동작하도록 데몬 스레드로 돈다.
 
+    PR_SET_PDEATHSIG는 자식을 띄운 *스레드*가 끝나도 신호를 보내므로(대리 객체는 실행기 worker 스레드에서 띄움) 쓰지 않는다.
+    """
     if os.getppid() != parent_pid:
-        sys.exit(0)
+        os._exit(0)
+
+    def loop():
+        """부모 pid를 주기적으로 확인한다."""
+        while True:
+            time.sleep(PARENT_POLL_S)
+
+            if os.getppid() != parent_pid:
+                os._exit(0)
+
+    threading.Thread(target=loop, name="infer-child-parent-watch", daemon=True).start()
 
 
 def _resolve(spec: str):
@@ -126,7 +135,7 @@ def main(argv=None) -> int:
     parser.add_argument("--parent-pid", type=int, required=True)
     args = parser.parse_args(argv)
 
-    _set_parent_death_signal(args.parent_pid)
+    _watch_parent(args.parent_pid)
     conn = Connection(args.fd)
     slots: dict[str, ShmSlots] = {}
 

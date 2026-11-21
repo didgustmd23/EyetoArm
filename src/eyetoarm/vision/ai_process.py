@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import dataclasses
 import mmap
+import statistics
+from collections import deque
 import os
 import socket
 import subprocess
@@ -38,6 +40,31 @@ SHM_DIR = "/dev/shm"
 SHM_PREFIX = "eyetoarm_infer_"
 SLOT_COUNT = 2
 LOAD = InvalidationKind.MODEL_LOAD_FAILED
+
+
+class _TimeStat:
+    """시간 통계(ms): 전체 개수·최댓값과 최근 window개의 중앙값·p95. 긴 실행에서도 메모리가 일정하다."""
+
+    def __init__(self, window: int = 4096) -> None:
+        """최근 window개를 보관한다."""
+        self.n, self.max = 0, 0.0
+        self._recent: deque[float] = deque(maxlen=window)
+
+    def add(self, value_ms: float) -> None:
+        """값 하나."""
+        self.n += 1
+        self.max = max(self.max, value_ms)
+        self._recent.append(value_ms)
+
+    def as_dict(self) -> dict:
+        """기록용 요약(값이 없으면 n만)."""
+        if not self._recent:
+            return {"n": 0}
+
+        ordered = sorted(self._recent)
+
+        return {"n": self.n, "median": round(statistics.median(ordered), 3),
+                "p95": round(ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))], 3), "max": round(self.max, 3)}
 
 
 class InferProcessError(Exception):
@@ -144,8 +171,9 @@ class ProcessAiSegDetector:
         self._req = 0
         self._failed: str | None = None
         self._closed = False
-        self._stats = {"jobs": 0, "results": 0, "job_errors": 0, "cancelled": 0, "late_replies": 0,
-                       "copy_ms_max": 0.0, "roundtrip_ms_max": 0.0}
+        self._stats = {"jobs": 0, "results": 0, "job_errors": 0, "cancelled": 0, "late_replies": 0}
+        self._times = {name: _TimeStat() for name in ("copy_ms", "roundtrip_ms", "child_process_ms", "ipc_overhead_ms")}
+        self._ready: dict = {}
         self._exit: dict | None = None
 
     @property
@@ -168,8 +196,9 @@ class ProcessAiSegDetector:
         """요약 기록용 상태(계수·최대 시간·실패 사유·종료 정보)."""
         with self._lock:
             return {"pid": self.pid, "factory": self._factory, "torch_threads_requested": self._torch_threads,
-                    "failed": self._failed, "exit": self._exit, "pending_abandoned": len(self._abandoned),
-                    **dict(self._stats)}
+                    **self._ready, "failed": self._failed, "exit": self._exit,
+                    "pending_abandoned": len(self._abandoned), **dict(self._stats),
+                    "times": {name: t.as_dict() for name, t in self._times.items()}}
 
     # ------------------------------------------------------------------ 준비
 
@@ -239,9 +268,14 @@ class ProcessAiSegDetector:
             raise self._prepare_lost(f"unexpected reply {kind!r}")
 
         info = dict(payload["info"])
-        info["infer_process"] = {"pid": self._proc.pid, "start_to_ready_ms": (time.monotonic_ns() - t0) / 1e6,
-                                 "factory": self._factory, "torch_threads_requested": self._torch_threads,
-                                 "torch_threads": payload.get("torch_threads")}
+        ready = {"start_to_ready_ms": round((time.monotonic_ns() - t0) / 1e6, 3),
+                 "torch_threads": payload.get("torch_threads"), "device_name": info.get("device_name")}
+
+        with self._lock:
+            self._ready = ready
+
+        info["infer_process"] = {"pid": self._proc.pid, "factory": self._factory,
+                                 "torch_threads_requested": self._torch_threads, **ready}
 
         return info
 
@@ -317,8 +351,6 @@ class ProcessAiSegDetector:
             raise JobCancelled(f"infer process request {req} abandoned")
 
         t2 = time.perf_counter_ns()
-        self._note_ms("copy_ms_max", (t1 - t0) / 1e6)
-        self._note_ms("roundtrip_ms_max", (t2 - t1) / 1e6)
         kind, payload = msg[0], msg[1]
 
         if kind == "job_error":
@@ -336,6 +368,9 @@ class ProcessAiSegDetector:
 
         result = dataclasses.replace(result)   # __post_init__ 검증을 다시 거친다
         self._count("results")
+        roundtrip_ms = (t2 - t1) / 1e6
+        self._note_times(copy_ms=(t1 - t0) / 1e6, roundtrip_ms=roundtrip_ms, child_process_ms=result.process_ms,
+                         ipc_overhead_ms=max(0.0, roundtrip_ms - result.process_ms))
 
         return observation_from_ai(job, result), result
 
@@ -442,12 +477,15 @@ class ProcessAiSegDetector:
                 self._failed = reason
 
     def _count(self, key: str) -> None:
+        """계수 하나 증가."""
         with self._lock:
             self._stats[key] += 1
 
-    def _note_ms(self, key: str, value: float) -> None:
+    def _note_times(self, **values_ms: float) -> None:
+        """정상 결과 하나의 단계 시간(ms)."""
         with self._lock:
-            self._stats[key] = max(self._stats[key], round(value, 3))
+            for name, value in values_ms.items():
+                self._times[name].add(value)
 
     # ------------------------------------------------------------------ 종료
 

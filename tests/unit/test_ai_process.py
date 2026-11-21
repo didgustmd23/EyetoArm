@@ -486,6 +486,23 @@ class RunnerTest(Base):
         self.assertIn("infer_process_died", px.failed)
 
 
+class ThreadLifetimeTest(Base):
+    """자식을 띄운 스레드가 끝나도 자식은 살아 있다(실행기 worker 스레드에서 준비하는 경우)."""
+
+    def test_child_survives_preparing_thread_exit(self):
+        """다른 스레드에서 prepare한 뒤 그 스레드가 끝나도 작업·정상 종료(종료 코드 0)가 된다."""
+        px = self.proxy()
+        t = threading.Thread(target=px.prepare)
+        t.start()
+        t.join(30)
+        time.sleep(0.3)
+
+        self.assertIsNone(px._proc.poll())
+        _, job = self.job(image())
+        px(job, CancelToken())
+        self.assertEqual(px.close(), {"returncode": 0, "forced": False})
+
+
 class OrphanTest(Base):
     """부모가 강제로 죽어도 자식이 남지 않고, 부모는 torch를 import하지 않는다."""
 
@@ -502,7 +519,7 @@ time.sleep(60)
 """
 
     def test_parent_kill_terminates_child(self):
-        """부모 SIGKILL 뒤 자식은 PR_SET_PDEATHSIG로 끝나고, 부모 프로세스에는 torch·ultralytics가 없다."""
+        """부모 SIGKILL 뒤 자식은 부모 감시 스레드로 끝나고, 부모 프로세스에는 torch·ultralytics가 없다."""
         helper = subprocess.Popen([sys.executable, "-c", self.HELPER, self.cfg_path], env=self.env(),
                                   stdout=subprocess.PIPE, text=True)
         self.addCleanup(lambda: helper.poll() is None and helper.kill())
