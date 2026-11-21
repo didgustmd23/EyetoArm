@@ -107,11 +107,12 @@ def occluded_fn(camera_w: np.ndarray, capsules, plane_z_m: float):
     """가림 판정 함수: (x_mm, y_mm) 점(볼트 평면)과 카메라 사이 선분이 어느 캡슐 반지름 안을 지나면 True."""
     c = np.asarray(camera_w, dtype=np.float64)
 
-    def occluded(x_mm: float, y_mm: float) -> bool:
-        """그 점이 팔·그리퍼에 가려졌나."""
+    def occluded(x_mm: float, y_mm: float, margin_mm: float = 0.0) -> bool:
+        """그 점이 팔·그리퍼에 가려졌나(`margin_mm`만큼 캡슐을 부풀려 판정할 수 있다)."""
         p = np.array([x_mm / 1000.0, y_mm / 1000.0, plane_z_m])
+        m = margin_mm / 1000.0
 
-        return any(segment_distance(c, p, a, b) < r for a, b, r in capsules)
+        return any(segment_distance(c, p, a, b) < r + m for a, b, r in capsules)
 
     return occluded
 

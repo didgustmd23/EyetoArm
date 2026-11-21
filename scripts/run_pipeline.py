@@ -78,6 +78,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"AI 모델 준비 상한(기본 {RunnerConfig.model_load_timeout_s} s, A 임시 개발값)")
     parser.add_argument("--log-instance-geometry", action="store_true",
                         help="AI 인스턴스 박스·다각형을 ai_geometry로 기록한다(선택)")
+    parser.add_argument("--infer-process", action="store_true",
+                        help="AI 추론(crop·predict·변환·끝점)을 별도 자식 프로세스에서 한다(기본 끔, --detector ai 전용)")
+    parser.add_argument("--infer-torch-threads", type=_positive_int, default=None, metavar="N",
+                        help="--infer-process 자식의 torch CPU 스레드 수(기본: 라이브러리 기본값)")
     parser.add_argument("--log", metavar="PATH", required=True, help="JSONL 기록 파일(새로 씀)")
     parser.add_argument("--source-id", type=_non_empty, default=None,
                         help="소스 ID(기본: 저장 입력 stored0, --ros-link gz_link)")
@@ -155,6 +159,15 @@ def _check_detector_args(args) -> None:
             build_parser().error("--detector opencv requires --detect-config")
         if args.ai_config is not None or args.model_load_timeout is not None or args.log_instance_geometry:
             build_parser().error("--ai-config/--model-load-timeout/--log-instance-geometry are for --detector ai")
+
+    if args.infer_process and args.detector != "ai":
+        build_parser().error("--infer-process is for --detector ai only")
+
+    if args.infer_torch_threads is not None and not args.infer_process:
+        build_parser().error("--infer-torch-threads requires --infer-process")
+
+    if args.infer_process and args.synthetic_fixture is not None:
+        build_parser().error("--infer-process cannot be combined with --synthetic-observation-fixture (no AI detector)")
 
 
 def _check_source_args(args, ros_available) -> None:
@@ -396,21 +409,94 @@ def _prepare_synthetic_observation(args, err):
     return (fixture, inputs), 0
 
 
+def _ai_detector(args, config):
+    """AI 검출기와 추론 프로세스 대리 객체(꺼짐이면 None)를 만든다. 생성자는 I/O·프로세스 시작이 없다."""
+    if args.infer_process:
+        from eyetoarm.vision.ai_process import ProcessAiSegDetector
+
+        options = dict(getattr(args, "_infer_process_options", None) or {})
+        proxy = ProcessAiSegDetector(config, args.ai_config, torch_threads=args.infer_torch_threads, **options)
+
+        return proxy, proxy
+
+    # AI 어댑터는 이때만 import한다(OpenCV 경로는 ai_detector도 불러오지 않음)
+    from eyetoarm.vision.ai_detector import AiSegDetector
+
+    inject = {"model_factory": args._model_factory}
+
+    if args._import_module is not None:
+        inject["import_module"] = args._import_module
+
+    return AiSegDetector(config, **inject), None
+
+
+def _detector_run_kw(det, proxy) -> dict:
+    """실행기에 넘길 검출기 인자. 대리 객체는 취소 토큰을 받는다."""
+    kw = {"detector": det, "prepare": det.prepare}
+
+    if proxy is not None:
+        kw["detector_takes_token"] = True
+
+    return kw
+
+
+def _stop_or_infer_failed(proxy, stop=None):
+    """정지 조건에 추론 프로세스 실패를 더한다. 대리 객체가 없으면 받은 조건 그대로."""
+    if proxy is None:
+        return stop
+
+    return lambda: (stop is not None and stop()) or proxy.failed is not None
+
+
+def _finish_infer_process(proxy, err):
+    """실패 사유를 close 전에 읽고 자식을 닫아 (실패 사유, 요약)을 돌려준다. 대리 객체가 없으면 (None, None)."""
+    if proxy is None:
+        return None, None
+
+    failed = proxy.failed
+
+    try:
+        proxy.close()
+    except Exception as exc:   # 정리 실패도 실행 문제로 남긴다
+        failed = failed or f"infer process close failed: {type(exc).__name__}: {exc}"
+
+    summary = proxy.summary()
+    summary["failed"] = failed
+
+    if failed is not None:
+        err.write(f"run_pipeline: infer process failed: {failed}\n")
+
+    return failed, summary
+
+
+def _write_infer_record(log, summary, err) -> bool:
+    """JSONL에 추론 프로세스 요약 1줄. 쓰지 못하면 False."""
+    try:
+        log.write_infer_process(summary)
+    except Exception as exc:   # 기록 실패는 실행 문제로 올린다(호출자가 종료 1)
+        err.write(f"run_pipeline: cannot write infer_process record: {type(exc).__name__}: {exc}\n")
+        return False
+
+    return True
+
+
 def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_available=None,
          live_source_factory=None, b_stage_hook=None, extension_source=None, live_tf_factory=None,
          live_run_controller=None, list_consumer_factory=None,
          live_sort_part_factory=None, live_conveyor_probe=None, live_handoff_factory=None,
-         center_publisher_factory=None, live_gripper_factory=None) -> int:
+         center_publisher_factory=None, live_gripper_factory=None, infer_process_options=None) -> int:
     """CLI 진입점. 종료 코드를 돌려준다.
 
     나머지 키워드 인자(`b_stage_hook`·`extension_source`·`ros_available`·`*_factory`·`live_run_controller`·
     `import_module`·`live_conveyor_probe`)는 시험 주입 지점이며 기본은 실제 구현이다.
     `live_conveyor_probe` 결과는 요약 진단값으로만 쓰고 추적기에는 넘기지 않는다(정답 격리).
+    `infer_process_options`는 `--infer-process` 대리 객체 생성 인자(시험의 가짜 공장·환경)다.
     """
     err = stderr if stderr is not None else sys.stderr
     args = build_parser().parse_args(argv)  # 인자 오류는 argparse가 종료 2로 끝낸다
     _check_source_args(args, ros_available)
     args._model_factory, args._import_module = model_factory, import_module
+    args._infer_process_options = infer_process_options
     runner_config = build_runner_config(args)
 
     if args.source_id is None:
@@ -471,17 +557,13 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
     if synthetic is not None:
         return _run_synthetic_observation(args, settings, runner_config, detector_kw, synthetic, err, b_stage_hook)
 
+    proxy = None
+
     if args.detector == "ai":
-        # AI 어댑터는 이때만 import한다(OpenCV 경로는 ai_detector도 불러오지 않음). 생성자는 I/O가 없다
-        from eyetoarm.vision.ai_detector import AiSegDetector
+        det, proxy = _ai_detector(args, config)
+        detector_kw.update(_detector_run_kw(det, proxy))
 
-        inject = {"model_factory": model_factory}
-
-        if import_module is not None:
-            inject["import_module"] = import_module
-
-        det = AiSegDetector(config, **inject)
-        detector_kw.update(detector=det, prepare=det.prepare)
+    args._infer_proxy = proxy
 
     if args.live_observation_out is not None:
         return _run_live_observation(args, settings, runner_config, detector_kw, err, b_stage_hook=b_stage_hook,
@@ -522,32 +604,50 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
     probe = HandoffProbe()
     handoff = AToCHandoff(notify=probe.notify)
     probe.start(handoff)
+    infer_failed = infer_record_ok = None
+
     try:
         with stream:
             log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
-                              log_geometry=args.log_instance_geometry)
+                              log_geometry=args.log_instance_geometry, infer_process=proxy is not None)
             if args.ros_link:
                 with _StopSignals() as signals:
                     result = run(source_factory, settings, log, config=runner_config, stderr=err,
-                                 versions={"opencv": cv2.__version__}, should_stop=signals.stop.is_set,
+                                 versions={"opencv": cv2.__version__},
+                                 should_stop=_stop_or_infer_failed(proxy, signals.stop.is_set),
                                  handoff_sink=handoff, **detector_kw)
             else:
                 result = run(source_factory, settings, log, config=runner_config, stderr=err,
-                             versions={"opencv": cv2.__version__}, handoff_sink=handoff, **detector_kw)
+                             versions={"opencv": cv2.__version__}, handoff_sink=handoff,
+                             should_stop=_stop_or_infer_failed(proxy), **detector_kw)
+
+            infer_failed, infer_summary = _finish_infer_process(proxy, err)
+
+            if infer_summary is not None:
+                infer_record_ok = _write_infer_record(log, infer_summary, err)
     finally:
         probe.stop()
         handoff.close()
 
+        if proxy is not None:
+            proxy.close()   # 실행 중 예외로 위 정리를 건너뛴 경우(두 번 불러도 됨)
+
+    exit_code = result.exit_code
+
+    if exit_code == 0 and (infer_failed is not None or infer_record_ok is False):
+        exit_code = 1
+
     watch = (f"{runner_config.first_detect_timeout_s}/{runner_config.detect_timeout_s}" if runner_config.watchdog
              else "off")
     method = f"detector=ai model_id={config.model_id}" if args.detector == "ai" else "detector=opencv"
-    err.write(f"run_pipeline: exit={result.exit_code} reason={result.stop_reason} {method} frames={result.frames} "
+    err.write(f"run_pipeline: exit={exit_code} reason={result.stop_reason} {method} frames={result.frames} "
               f"input_errors={result.input_errors} detect_timeout={watch} timeouts={result.timeouts} "
               f"stalled={result.stalled}"
               + (f" live_inputs={result.live_inputs} input_boundary_aborts={result.input_boundary_aborts}"
-                 if args.ros_link else "") + "\n")
+                 if args.ros_link else "")
+              + (f" infer_process=on failed={infer_failed}" if proxy is not None else "") + "\n")
 
-    return result.exit_code
+    return exit_code
 
 
 _LIVE_RUNS = None
@@ -1126,6 +1226,7 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
     failure = None
     handoff = handoff_probe = None
     gripper_rx = None
+    infer_proxy = getattr(args, "_infer_proxy", None)
 
     if gripper_on:
         v, g = handoff_cfg
@@ -1160,12 +1261,13 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         with stream, _StopSignals() as signals:
             log_kw = {"b_input": B_INPUT_LIST} if listed else {}
             log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
-                              log_geometry=args.log_instance_geometry, **log_kw)
+                              log_geometry=args.log_instance_geometry, infer_process=infer_proxy is not None,
+                              **log_kw)
             run_kw = {"live_observation_b_input": "list"} if listed else {}
             result = run(source_factory, settings, log, run_id=run_id, config=runner_config, stderr=err,
                          versions={"opencv": cv2.__version__},
-                         should_stop=lambda: (signals.stop.is_set() or link.reset_pending
-                                              or link.state.failed is not None),
+                         should_stop=_stop_or_infer_failed(infer_proxy, lambda: (
+                             signals.stop.is_set() or link.reset_pending or link.state.failed is not None)),
                          handoff_sink=handoff, live_observation_sink=link, **run_kw, **detector_kw)
 
         exit_code = result.exit_code
@@ -1176,6 +1278,9 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
     finally:
         reset = link.reset_pending
         gripper_problem = None
+
+        # 실행기가 끝났으므로 추론 자식을 먼저 닫는다(실패 사유는 닫기 전에 읽음)
+        infer_failed, infer_summary = _finish_infer_process(infer_proxy, err)
 
         # 그리퍼 수신을 먼저 멈춘다(추적 스레드가 닫힌 뒤에는 넣어도 버려진다)
         if gripper_rx is not None:
@@ -1201,6 +1306,9 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
         if gripper_problem is not None:
             problems.append(gripper_problem)
+
+        if infer_failed is not None:
+            problems.append(f"infer process failed: {infer_failed}")
 
         if not link.cleanup_confirmed:
             problems.append(f"cleanup not confirmed: {list(record.close_errors)}")
@@ -1275,6 +1383,9 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
             if center_on:
                 tracking_extra["center_overlay"] = center_stats.summary(center_pub)
+
+            if infer_summary is not None:
+                tracking_extra["infer_process"] = infer_summary
             link.write_summary({"exit_code": exit_code, "reset_detected": reset, "problems": problems, **tracking_extra,
                                 "runner": None if result is None else {
                                     "exit_code": result.exit_code, "stop_reason": result.stop_reason,
@@ -1327,7 +1438,6 @@ def _run_capture_list(args, settings, runner_config, detector_kw, capture, err, 
     """
     from eyetoarm.transforms.b_stage import BStage
     from eyetoarm.transforms.observation_envelope_adapter import EnvelopeTfLookup
-    from eyetoarm.vision.ai_detector import AiSegDetector
     from eyetoarm.vision.capture_list_recorder import CaptureListRecorder
     from eyetoarm.vision.capture_meta import CaptureMetaSource
     from eyetoarm.vision.list_envelope import LIST_ENVELOPE_VERSION
@@ -1353,12 +1463,7 @@ def _run_capture_list(args, settings, runner_config, detector_kw, capture, err, 
                   "not falling back to stage T\n")
         return 1
 
-    inject = {"model_factory": args._model_factory}
-
-    if args._import_module is not None:
-        inject["import_module"] = args._import_module
-
-    det = AiSegDetector(settings.detector_config, **inject)
+    det, proxy = detector_kw["detector"], getattr(args, "_infer_proxy", None)
     kind, paths = ("images", list(args.images)) if args.images else ("video", [args.video])
     inner_factory = stored_source_factory(kind, paths, args.source_id)
     holder = {}
@@ -1387,12 +1492,21 @@ def _run_capture_list(args, settings, runner_config, detector_kw, capture, err, 
 
         with stream:
             log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
-                              log_geometry=args.log_instance_geometry, b_input=B_INPUT_LIST)
-            result = run(source_factory, settings, log, detector=det, prepare=det.prepare,
+                              log_geometry=args.log_instance_geometry, b_input=B_INPUT_LIST,
+                              infer_process=proxy is not None)
+            result = run(source_factory, settings, log, **_detector_run_kw(det, proxy),
                          b_list_consumer=recorder.wrap(consume), display_sink=recorder, config=runner_config,
-                         stderr=err, versions={"opencv": cv2.__version__})
+                         stderr=err, versions={"opencv": cv2.__version__}, should_stop=_stop_or_infer_failed(proxy))
+            infer_failed, infer_summary = _finish_infer_process(proxy, err)
+            infer_record_ok = infer_summary is None or _write_infer_record(log, infer_summary, err)
 
         problems = []
+
+        if infer_failed is not None:
+            problems.append(f"infer process failed: {infer_failed}")
+
+        if not infer_record_ok:
+            problems.append("infer_process record not written")
 
         if recorder.calls + recorder.rejected != result.b_list_calls:
             problems.append(f"recorded list inputs {recorder.calls} + rejected {recorder.rejected} != runner b_list_calls "
@@ -1409,9 +1523,13 @@ def _run_capture_list(args, settings, runner_config, detector_kw, capture, err, 
                           "capture_id": meta.capture_id, "capture_meta_sha256": meta.sha256, "inputs_sha256": inputs,
                           "detector_config_id": settings.detector_config_id,
                           "meta_mismatches": [] if source is None else source.mismatches,
-                          "on_output": None, "problems": problems, "runner_errors": result.errors})
+                          "on_output": None, "problems": problems, "runner_errors": result.errors,
+                          **({} if infer_summary is None else {"infer_process": infer_summary})})
     finally:
         recorder.close()
+
+        if proxy is not None:
+            proxy.close()   # 실행 중 예외로 위 정리를 건너뛴 경우(두 번 불러도 됨)
 
     for p in problems:
         err.write(f"run_pipeline: stage L mismatch: {p}\n")
@@ -1430,7 +1548,6 @@ def _run_capture_observation(args, settings, runner_config, detector_kw, capture
     BStage·기록기는 이 함수가 만들고 닫는다. `on_output`은 None(C·D·로봇 송신 없음).
     """
     from eyetoarm.transforms.b_stage import BStage
-    from eyetoarm.vision.ai_detector import AiSegDetector
     from eyetoarm.vision.capture_observation_recorder import VALID_MEANING, CaptureObservationRecorder
     from eyetoarm.transforms.observation_envelope_adapter import ObservationEnvelopeAdapter, EnvelopeTfLookup
     from eyetoarm.vision.observation_envelope import OBSERVATION_ENVELOPE_VERSION
@@ -1447,12 +1564,7 @@ def _run_capture_observation(args, settings, runner_config, detector_kw, capture
         err.write("run_pipeline: real A->B path requires stage.on_output None (no C/D/robot output)\n")
         return 1
 
-    inject = {"model_factory": args._model_factory}
-
-    if args._import_module is not None:
-        inject["import_module"] = args._import_module
-
-    det = AiSegDetector(settings.detector_config, **inject)
+    det, proxy = detector_kw["detector"], getattr(args, "_infer_proxy", None)
     kind, paths = ("images", list(args.images)) if args.images else ("video", [args.video])
     inner_factory = stored_source_factory(kind, paths, args.source_id)
     holder = {}
@@ -1482,12 +1594,20 @@ def _run_capture_observation(args, settings, runner_config, detector_kw, capture
 
         with stream:
             log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
-                              log_geometry=args.log_instance_geometry)
-            result = run(source_factory, settings, log, detector=det, prepare=det.prepare,
+                              log_geometry=args.log_instance_geometry, infer_process=proxy is not None)
+            result = run(source_factory, settings, log, **_detector_run_kw(det, proxy),
                          b_consumer=recorder.wrap(stage.consume), display_sink=recorder, config=runner_config,
-                         stderr=err, versions={"opencv": cv2.__version__})
+                         stderr=err, versions={"opencv": cv2.__version__}, should_stop=_stop_or_infer_failed(proxy))
+            infer_failed, infer_summary = _finish_infer_process(proxy, err)
+            infer_record_ok = infer_summary is None or _write_infer_record(log, infer_summary, err)
 
         problems = []
+
+        if infer_failed is not None:
+            problems.append(f"infer process failed: {infer_failed}")
+
+        if not infer_record_ok:
+            problems.append("infer_process record not written")
 
         if recorder.calls + recorder.rejected != result.b_calls:
             problems.append(f"recorded B outputs {recorder.calls} + rejected {recorder.rejected} != runner b_calls "
@@ -1511,9 +1631,13 @@ def _run_capture_observation(args, settings, runner_config, detector_kw, capture
                           "on_output": None, "problems": problems, "runner_errors": result.errors,
                           "b_adapter": {"extensions_received": recorder._adapter.received_extensions,
                                         "unsupported_received": recorder._adapter.received_unsupported,
-                                        "used_in_compute": []}})
+                                        "used_in_compute": []},
+                          **({} if infer_summary is None else {"infer_process": infer_summary})})
     finally:
         recorder.close()
+
+        if proxy is not None:
+            proxy.close()   # 실행 중 예외로 위 정리를 건너뛴 경우(두 번 불러도 됨)
 
     for p in problems:
         err.write(f"run_pipeline: real-path mismatch: {p}\n")

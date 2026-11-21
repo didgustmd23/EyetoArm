@@ -214,10 +214,15 @@ class PipelineLog:
     """파이프라인 기록을 1회씩만 쓰는 층. 무엇을 이미 썼는지(작업·사건·폐기)를 기억한다."""
 
     def __init__(self, recorder: JsonlRecorder, *, eval_run_id: str | None = None, log_geometry: bool = False,
-                 b_input: str = B_INPUT_SINGLE) -> None:
-        """기록기, 평가 실행 ID(평가가 아니면 None), AI geometry 기록 여부, B 입력 단계를 받는다."""
+                 b_input: str = B_INPUT_SINGLE, infer_process: bool = False) -> None:
+        """기록기, 평가 실행 ID(평가가 아니면 None), AI geometry 기록 여부, B 입력 단계, 추론 프로세스 사용 여부를 받는다."""
         if not isinstance(log_geometry, bool):
             raise ValueError(f"log_geometry must be a bool: {log_geometry!r}")
+
+        if not isinstance(infer_process, bool):
+            raise ValueError(f"infer_process must be a bool: {infer_process!r}")
+
+        self._infer_process = infer_process
 
         if b_input not in B_INPUT_MODES:
             raise ValueError(f"b_input must be one of {B_INPUT_MODES}: {b_input!r}")
@@ -258,6 +263,10 @@ class PipelineLog:
         if self._b_input == B_INPUT_LIST:
             meta["b_input"] = B_INPUT_LIST
 
+        # 추론 프로세스를 켰을 때만 표시한다(끔이면 바이트 동일). 설정 지문과는 무관하다
+        if self._infer_process and isinstance(meta["detector"], dict):
+            meta["detector"] = {**meta["detector"], "infer_process": True}
+
         self._recorder.write("run_meta", meta)
 
     def write_model_ready(self, info: dict) -> None:
@@ -268,6 +277,15 @@ class PipelineLog:
             raise TypeError(f"model_ready info must be a dict: {type(info).__name__}")
 
         self._recorder.write("model_ready", info)
+
+    def write_infer_process(self, summary: dict) -> None:
+        """추론 프로세스 요약 1줄(`infer_process`, 실행 끝). 실패 상태면 RecorderFailedError."""
+        self._check()
+
+        if not isinstance(summary, dict):
+            raise TypeError(f"infer_process summary must be a dict: {type(summary).__name__}")
+
+        self._recorder.write("infer_process", summary)
 
     def write_live_input(self, record: dict) -> None:
         """실시간 소스의 경계·알림 반영 1줄(`live_input`). 반영 순서가 기록 순서다."""

@@ -107,15 +107,19 @@ class VisibilityConfig:
     occluders: tuple[Occluder, ...]
     clipped_near_mm: float      # 확정 트랙 예측에서 이 거리 안의 잘린·마스크 후보는 새 트랙을 만들지 않는다
     velocity_window_ms: int     # 링크에 안 보이는 트랙 예측용 벨트 공통 속도의 기준선(이만큼 떨어진 링크 끝점 hit 차)
+    velocity_exclude_mm: float  # 공통 속도에서 뺄 트랙: 링크 카메라→트랙 선분이 가림 캡슐(+이 여유) 안을 지남(그리퍼 오검출)
+    velocity_min_tracks: int    # 공통 속도에 쓸 트랙이 이보다 적으면 직전 값을 유지
 
     def to_json(self) -> dict:
         """요약용 사전."""
         return {"margin_px": self.margin_px, "hold_limit_ms": self.hold_limit_ms, "occluded_limit_ms": self.occluded_limit_ms,
                 "occluders": [o.to_json() for o in self.occluders], "clipped_near_mm": self.clipped_near_mm,
-                "velocity_window_ms": self.velocity_window_ms}
+                "velocity_window_ms": self.velocity_window_ms, "velocity_exclude_mm": self.velocity_exclude_mm,
+                "velocity_min_tracks": self.velocity_min_tracks}
 
 
-_VIS_KEYS = {"margin_px", "hold_limit_ms", "occluded_limit_ms", "occluders", "clipped_near_mm", "velocity_window_ms"}
+_VIS_KEYS = {"margin_px", "hold_limit_ms", "occluded_limit_ms", "occluders", "clipped_near_mm", "velocity_window_ms",
+             "velocity_exclude_mm", "velocity_min_tracks"}
 
 
 def parse_visibility(doc) -> VisibilityConfig:
@@ -131,7 +135,13 @@ def parse_visibility(doc) -> VisibilityConfig:
     if isinstance(near, bool) or not isinstance(near, (int, float)) or not math.isfinite(near) or near <= 0:
         raise WorldTrackerConfigError(f"clipped_near_mm must be a positive number: {near!r}")
 
-    for name, v in (("hold_limit_ms", hold), ("occluded_limit_ms", occ), ("velocity_window_ms", doc["velocity_window_ms"])):
+    excl = doc["velocity_exclude_mm"]
+
+    if isinstance(excl, bool) or not isinstance(excl, (int, float)) or not math.isfinite(excl) or excl < 0:
+        raise WorldTrackerConfigError(f"velocity_exclude_mm must be a number >= 0: {excl!r}")
+
+    for name, v in (("hold_limit_ms", hold), ("occluded_limit_ms", occ), ("velocity_window_ms", doc["velocity_window_ms"]),
+                    ("velocity_min_tracks", doc["velocity_min_tracks"])):
         if type(v) is not int or v < 1:
             raise WorldTrackerConfigError(f"{name} must be an int >= 1: {v!r}")
 
@@ -140,7 +150,8 @@ def parse_visibility(doc) -> VisibilityConfig:
     except OccluderConfigError as exc:
         raise WorldTrackerConfigError(str(exc)) from exc
 
-    return VisibilityConfig(float(margin), hold, occ, occluders, float(near), doc["velocity_window_ms"])
+    return VisibilityConfig(float(margin), hold, occ, occluders, float(near), doc["velocity_window_ms"], float(excl),
+                            doc["velocity_min_tracks"])
 
 
 @dataclass(frozen=True)
@@ -460,11 +471,14 @@ class WorldTracker:
         self._visibility = visibility
         self._gripper_late_ms = gripper_late_ms
         self.last_occluded: list = []          # 마지막 링크 프레임에서 가림으로 판정한 트랙 번호(기록용)
-        self._hold_vy = 0.0                    # hold 예측용 벨트 공통 속도(mm/ms): 보이는 확정 트랙 중앙값, 없으면 직전 값
+        self._hold_vy = 0.0
+        self._occl_fn = None                   # 마지막 링크 프레임의 가림 판정 함수(공통 속도 제외 판정용)
+        self.last_velocity: dict | None = None  # 마지막 공통 속도 계산 내역(기록용)                    # hold 예측용 벨트 공통 속도(mm/ms): 보이는 확정 트랙 중앙값, 없으면 직전 값
         self._gripper_gate = None if gripper_gate_mm is None else (float(gripper_gate_mm[0]), float(gripper_gate_mm[1]))
         self._cam_ts: dict[str, int] = {}     # 카메라별 직전 프레임 시각(공백 Δt 귀속)
         self._events: list[dict] = []          # 넘기기·만료 사건(가시성·그리퍼가 켜졌을 때만)
         self._handoff = {"gripper_updates": 0, "gripper_late": 0, "near_confirmed_skipped": 0, "tentative_dropped_for_confirmed": 0,
+                         "velocity_kept_previous": 0, "velocity_excluded_near_arm": 0,
                          "gripper_not_updated": {}, "gripper_outcomes": {}, "retire_by_reason": {},
                          "camera_switches": 0}
         self._return_offsets: list[float] = []   # 링크 복귀 오프셋 거리(mm), 요약 분포용
@@ -509,6 +523,7 @@ class WorldTracker:
 
         return {"gripper_updates": h["gripper_updates"], "gripper_late": h["gripper_late"],
                 "near_confirmed_skipped": h["near_confirmed_skipped"], "tentative_dropped_for_confirmed": h["tentative_dropped_for_confirmed"],
+                "velocity_kept_previous": h["velocity_kept_previous"], "velocity_excluded_near_arm": h["velocity_excluded_near_arm"],
                 "gripper_not_updated": dict(h["gripper_not_updated"]),
                 "gripper_outcomes": dict(h["gripper_outcomes"]), "retire_by_reason": dict(h["retire_by_reason"]),
                 "camera_switches": h["camera_switches"], "link_return_offset_mm": _dist_summary(self._return_offsets)}
@@ -566,6 +581,7 @@ class WorldTracker:
         cands, merged = self._merge_duplicates([i for i in inputs if i.candidate])
 
         if self._visibility is not None:
+            self._occl_fn = occluded
             self._update_hold_vy()
 
         belt_vy = self._belt_vy(belt_running)
@@ -701,11 +717,34 @@ class WorldTracker:
 
         링크 프레임 간격(25 ms) 차분 속도는 1 mm 잡음이 40 mm/s가 되어 긴 hold에서 수십 mm 어긋난다(r6 D10 실측).
         """
-        v = [w for w in (self._long_vy(t) for t in self._tracks
-                         if t.part_track_id is not None and not t.out_link and not t.hold_pred) if w is not None]
+        vis = self._visibility
+        used, near_arm = {}, []
 
-        if v:
-            self._hold_vy = float(statistics.median(v))
+        for t in self._tracks:
+            if t.part_track_id is None or t.out_link or t.hold_pred:
+                continue
+
+            w = self._long_vy(t)
+
+            if w is None:
+                continue
+
+            # 링크 화면에 걸린 그리퍼·팔 오검출은 정지해 있어 공통 속도를 0으로 끌어내린다(D14): 캡슐 근처 트랙은 뺀다
+            if self._occl_fn is not None and self._occl_fn(t.x, t.y, vis.velocity_exclude_mm):
+                near_arm.append(t.part_track_id)
+                continue
+
+            used[t.part_track_id] = w
+
+        kept = len(used) < vis.velocity_min_tracks
+
+        if not kept:
+            self._hold_vy = float(statistics.median(used.values()))
+
+        self.last_velocity = {"vy_mm_per_s": round(self._hold_vy * 1000.0, 3), "used_ids": sorted(used),
+                              "excluded_near_arm": near_arm, "kept_previous": kept}
+        self._handoff["velocity_kept_previous"] += int(kept)
+        self._handoff["velocity_excluded_near_arm"] += len(near_arm)
 
     def _long_vy(self, t: _WTrack) -> float | None:
         """링크 끝점 hit 중 `velocity_window_ms` 이상 떨어진 가장 최근 쌍의 Y 속도(mm/ms). 기준선이 짧으면 None."""
