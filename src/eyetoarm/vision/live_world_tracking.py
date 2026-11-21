@@ -182,6 +182,8 @@ class LiveWorldTracking:
         self.counts = {k: 0 for k in ("offered", "dropped_full", "processed", "updated", "handoff_ok", "handoff_pending",
                                       "stale_skipped", "lag_resets", "reset_requests")}
         self.not_updated: dict[str, int] = {}
+        # #239: detect 영상 그리기 조회(`peek`) 계수. 밀림 규칙 입력(handoff_*·대기 창)과 섞지 않는다
+        self.display_counts = {"found": 0, "pending": 0, "reason": 0}
         self.lag_reset_log: list[dict] = []
         self.last_reset: str | None = None      # 마지막으로 처리한 초기화 사유(D3)
         self._queue_len_samples: collections.deque[int] = collections.deque(maxlen=4096)
@@ -241,6 +243,21 @@ class LiveWorldTracking:
             self._handoff_window.append(found)
 
         return value if found else None
+
+    def peek(self, context):
+        """detect 영상 그리기용(#239, C forwarder 스레드): 그 작업 결과를 **기다리지 않고** 읽는다.
+
+        그 작업 키(FrameKey 전체)의 값만 돌려준다(`TrackFrame` | 사유 문자열 | 아직 없거나 표에서 밀려나면 None). 다른 프레임 결과로
+        대신하지 않는다. `handoff_*` 계수·대기 창(밀림 규칙 입력)은 바꾸지 않고 `display_counts`만 센다.
+        """
+        key = self._k(frame_key(context))
+
+        with self._cond:
+            value = self._results.get(key)
+            kind = "pending" if value is None else ("reason" if isinstance(value, str) else "found")
+            self.display_counts[kind] += 1
+
+        return value
 
     @staticmethod
     def _k(key: FrameKey) -> tuple:
@@ -441,10 +458,12 @@ class LiveWorldTracking:
                    "handoff_pending_ratio": None if total == 0 else round(counts["handoff_pending"] / total, 4),
                    "dropped_full": counts["dropped_full"], "stale_skipped": counts["stale_skipped"],
                    "lag_resets": counts["lag_resets"], "lag_reset_log": list(self.lag_reset_log)}
+            display = dict(self.display_counts)   # #239: detect 영상 W 번호 조회(found·pending 배너·사유 배너)
             counts["queue_left"] = len(self._queue)   # 닫힐 때 처리하지 못하고 남은 수(합: offered = processed + dropped + stale + left)
 
         return {"config": self.config.to_json(), "counts": counts, "not_updated": dict(sorted(self.not_updated.items())),
                 "lag": lag, "tracker": self._tracker.stats(), "diagnostics": dict(self.diagnostics),
+                "display_lookup": display,
                 "crash": self.crash, "write_error": self.write_error}
 
 

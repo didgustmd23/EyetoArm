@@ -290,6 +290,16 @@ def draw_detections(image: np.ndarray, result: AiSegResult, tracks: TrackFrame |
     return canvas, drawn
 
 
+def draw_track_unavailable(canvas: np.ndarray, mode: str, why: str) -> None:
+    """번호를 그릴 수 없는 추적 프레임의 실험 표기(#239 W 표시). `canvas`에 직접 그린다.
+
+    `why`: `pending`(그 작업 결과가 아직 없음) 또는 사유(`tf_*`·`job_mismatch` 등). 번호 라벨은 그리지 않는다.
+    """
+    text = (f"TRACKING EXPERIMENTAL ({mode}) - ids pending, display-only" if why == "pending" else
+            f"TRACKING EXPERIMENTAL ({mode}) - ids unavailable ({why}), display-only")
+    _label(canvas, text, (4, 16), STATE_COLORS_BGR["stale"], 0.45)
+
+
 def _label(canvas: np.ndarray, text: str, org: tuple[int, int], color, scale: float = 0.5) -> None:
     """배경 상자 위에 글자를 쓴다."""
     (w, h), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
@@ -383,5 +393,5 @@ def render_view(snap: ViewSnapshot, max_width: int = 1600) -> np.ndarray:
     return np.vstack([header, pair])
 
 
-__all__ = ["DisplayBridge", "MASK_ALPHA", "ViewItem", "ViewSnapshot", "ViewState", "draw_detections", "render_view", "status_text",
+__all__ = ["DisplayBridge", "MASK_ALPHA", "ViewItem", "ViewSnapshot", "ViewState", "draw_detections", "draw_track_unavailable", "render_view", "status_text",
            "track_label"]

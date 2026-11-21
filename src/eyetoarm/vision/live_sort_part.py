@@ -29,6 +29,11 @@ Q7 = 별도 `sort_part.jsonl`만, Q8 = 클라이언트 `stats`는 참고만), �
 (SIM 시간) 동안 보내지 않는다(`skip:failed_point_block`). ②는 번호가 있어도 적용한다(팔·카메라 이동으로 번호가 바뀌면 ①이 무력하므로,
 reviewer Q5). 성공(`SUCCEEDED`)이면 그 번호의 실패 수를 지운다.
 
+확정 번호 대기(#239 D4, 설정 `sort_part.require_track_id` 선택·기본값 없음, 추적 켬이면 진입점이 필수로 요구): 참이면 번호 None
+`PICK_PLACE`는 클라이언트를 부르지 않고 `skip:no_track_id`(관측 `track_state` 함께)로 기록한다. B `_dedupe`는 번호 None을 기록하지
+않으므로 풀 기록이 없다. `PASS_THROUGH`는 그대로 보낸다(너트는 W 추적 대상이 아님). 확정 전에 시야를 벗어난 볼트는 끝내 보내지 않으며,
+그 위험은 요약 `no_track_id_states`·추적기 `tentative_dropped`로만 드러낸다(종료 코드 무변).
+
 `RecordingSortPartClient`는 B `SortPartClient`의 비공개 콜백(`_on_feedback`·`_on_accepted`·`_on_result`·`_finish`)을 덮어써 사건을
 기록 함수로 넘긴다(B 파일 무변, B에 공개 훅 제안 중). 이 모듈은 rclpy를 import하지 않는다(B 클라이언트 생성자만 rclpy를 지연 import).
 """
@@ -76,11 +81,17 @@ class SortPartConfig:
     close_limit_s: float     # spin 스레드·기록 스레드 join 상한
     spin_timeout_s: float    # spin_once 대기
     retry: RetryConfig | None = None   # #215 선택(없으면 제한 없음)
+    require_track_id: bool | None = None   # #239 선택(기본값 없음): 참이면 확정 번호 없는 PICK_PLACE를 보내지 않음
 
     def to_json(self) -> dict:
-        """요약용 사전."""
-        return {**{k: getattr(self, k) for k in sorted(_CONFIG_KEYS)},
-                "retry": "off" if self.retry is None else self.retry.to_json()}
+        """요약용 사전. `require_track_id`는 설정에 있을 때만 넣는다(없으면 형식 그대로)."""
+        doc = {**{k: getattr(self, k) for k in sorted(_CONFIG_KEYS)},
+               "retry": "off" if self.retry is None else self.retry.to_json()}
+
+        if self.require_track_id is not None:
+            doc["require_track_id"] = self.require_track_id
+
+        return doc
 
 
 def parse_sort_part(doc) -> SortPartConfig:
@@ -88,7 +99,7 @@ def parse_sort_part(doc) -> SortPartConfig:
     if not isinstance(doc, dict):
         raise SortPartConfigError("sort_part must be an object")
 
-    unknown, missing = set(doc) - _CONFIG_KEYS - {"retry"}, _CONFIG_KEYS - set(doc)
+    unknown, missing = set(doc) - _CONFIG_KEYS - {"retry", "require_track_id"}, _CONFIG_KEYS - set(doc)
 
     if unknown or missing:
         raise SortPartConfigError(f"sort_part: unknown keys {sorted(unknown)}, missing keys {sorted(missing)}")
@@ -113,7 +124,13 @@ def parse_sort_part(doc) -> SortPartConfig:
                             failed_point_block_s=_positive(r["failed_point_block_s"], "sort_part.retry.failed_point_block_s"),
                             failed_point_block_mm=_positive(r["failed_point_block_mm"], "sort_part.retry.failed_point_block_mm"))
 
-    return SortPartConfig(**{k: float(doc[k]) for k in _CONFIG_KEYS}, retry=retry)
+    require = doc.get("require_track_id")
+
+    # #239: bool만 받는다(1·0·문자열 거부). 추적 켬·끔과의 짝은 진입점이 확인한다
+    if "require_track_id" in doc and not isinstance(require, bool):
+        raise SortPartConfigError(f"sort_part.require_track_id must be true or false: {require!r}")
+
+    return SortPartConfig(**{k: float(doc[k]) for k in _CONFIG_KEYS}, retry=retry, require_track_id=require)
 
 
 def _positive(v, name: str) -> float:
@@ -184,6 +201,7 @@ class LiveSortPartSender:
         self._failed_points: list[tuple] = []          # (x_mm, y_mm, z_mm, 촬영 stamp ns)
         self._goal_meta: dict[str, tuple] = {}         # goal_id → (번호, 관측 위치 mm, 촬영 stamp ns)
         self.retry_counts = {"track_limit": 0, "point_block": 0, "failures_recorded": 0, "points_recorded": 0}
+        self.no_track_id_states: dict[str, int] = {}   # #239: skip:no_track_id의 관측 track_state 분포(기록 조건변수 안)
         self.config = config
         self.runtime = runtime
         self._is_failed = is_failed or (lambda: False)
@@ -292,7 +310,8 @@ class LiveSortPartSender:
         gid = goal.get("goal_id")
         keys = {"run_id": self.run_id, "image_seq": getattr(frame, "image_seq", None),
                 "ros_stamp_ns": getattr(frame, "ros_stamp_ns", None), "accept_event_seq": accept_event_seq,
-                "kind": goal.get("kind"), "spec": goal.get("spec"), **ids}
+                "kind": goal.get("kind"), "spec": goal.get("spec"),
+                **{k: v for k, v in ids.items() if k != "track_state"}}   # track_state(#239)는 no_track_id 줄에만
         track = goal.get("part_track_id")
 
         if self.tracking:
@@ -306,6 +325,19 @@ class LiveSortPartSender:
         if goal.get("kind") not in SEND_KINDS:
             event = f"skip:{goal.get('reason') or goal.get('kind')}"   # B ALREADY_SENT 포함: 풀지 않는다
             self._record(event, gid, keys)
+            return event
+
+        # #239 D4: 확정 번호 없는 PICK_PLACE는 보내지 않는다(같은 볼트를 번호 없이 한 번, 확정 뒤 한 번 더 보내지 않게).
+        # B `_dedupe`는 번호 None을 기록하지 않으므로 풀 기록이 없다. PASS_THROUGH(너트, W는 추적하지 않음)는 그대로 보낸다
+        if self.config.require_track_id and goal.get("kind") == "PICK_PLACE" and track is None:
+            state = ids.get("track_state")
+
+            with self._qcond:
+                key = str(state)
+                self.no_track_id_states[key] = self.no_track_id_states.get(key, 0) + 1
+
+            event = "skip:no_track_id"
+            self._record(event, gid, keys, track_state=state)
             return event
 
         pos = _position(goal)
@@ -455,9 +487,13 @@ class LiveSortPartSender:
             retry = ("off" if self.config.retry is None else
                      {**self.retry_counts, "track_failures": {str(k): v for k, v in sorted(self._track_failures.items())},
                       "failed_points": len(self._failed_points)})
+            no_track_states = dict(sorted(self.no_track_id_states.items()))
 
         return {"config": self.config.to_json(), "server_seen": getattr(self.runtime, "server_seen", None),
                 "tracking": self.tracking, "retry": retry,
+                **({} if self.config.require_track_id is None else
+                   {"require_track_id": self.config.require_track_id,
+                    "no_track_id_states": no_track_states}),
                 "events": counts, "unresolved_at_close": list(self.unresolved), "close_reason": self.close_reason,
                 "gate_wait_max_ms": round(self.gate_wait_max_ms, 3), "write_error": self.write_error, "crash": self.crash,
                 "client_stats_reference_only": _stats_copy(getattr(self.runtime, "stats", {}))}

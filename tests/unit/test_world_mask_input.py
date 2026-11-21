@@ -267,6 +267,9 @@ class D2ProbeTimeoutTest(unittest.TestCase):
             sc = Scenario(4)
             sc.link = lambda: t.controller.current
             from test_live_sort_part import SORT_CONFIG
+
+            # #239: 추적 켬 송신은 require_track_id가 필수라 추적용 시험 설정(같은 폴더의 새 파일)을 쓴다
+            SORT_CONFIG = SORT_CONFIG.with_name("live_observation_sort_part_track_test.json")
             from test_run_pipeline_capture_observation import model_with
             from test_run_pipeline_live_observation import FakeTf
 
