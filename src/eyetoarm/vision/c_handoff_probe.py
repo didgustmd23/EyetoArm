@@ -17,6 +17,7 @@ MAGIC = b"ETV1"
 PACKET_HEADER = struct.Struct(">4sI")
 DEFAULT_INGRESS_HOST = "127.0.0.1"
 DEFAULT_INGRESS_PORT = 47093
+CONSUMER_RESTART_LIMIT = 1
 
 
 class _DisplayFrameForwarder:
@@ -107,6 +108,8 @@ class _DisplayFrameForwarder:
                 pass
             self._pending.put_nowait(None)
         self._thread.join(timeout=2.0)
+        if self._thread.is_alive():
+            raise RuntimeError("display frame forwarder did not stop within 2 seconds")
 
 
 class HandoffProbe:
@@ -117,6 +120,8 @@ class HandoffProbe:
         self._stop = threading.Event()
         self._handoff: Any = None
         self._thread: threading.Thread | None = None
+        self._lifecycle_lock = threading.Lock()
+        self._closed = False
         self._forwarder = _DisplayFrameForwarder(
             display_host or os.environ.get("EYETOARM_DISPLAY_INGRESS_HOST", DEFAULT_INGRESS_HOST),
             display_port or int(os.environ.get("EYETOARM_DISPLAY_INGRESS_PORT", DEFAULT_INGRESS_PORT)),
@@ -127,19 +132,44 @@ class HandoffProbe:
         self.wakeup.set()
 
     def start(self, handoff: Any) -> None:
-        if self._thread is not None:
-            raise RuntimeError("handoff probe already started")
-        self._handoff = handoff
-        self._thread = threading.Thread(target=self._consume, name="c-handoff-probe", daemon=True)
-        self._thread.start()
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("handoff probe is closed")
+            if self._thread is not None:
+                raise RuntimeError("handoff probe already started; use restart() with a fresh handoff after failure")
+            self._handoff = handoff
+            self._thread = threading.Thread(target=self._consume, name="c-handoff-probe", daemon=True)
+            self._thread.start()
+
+    def restart(self, handoff: Any) -> None:
+        """Restart a failed consumer against a fresh handoff; a FAILED handoff is never reusable."""
+        with self._lifecycle_lock:
+            if self._closed or self._stop.is_set():
+                raise RuntimeError("handoff probe was stopped; create a new probe")
+            if self._thread is None:
+                raise RuntimeError("handoff probe has not been started")
+            if self._thread.is_alive():
+                raise RuntimeError("cannot restart while the consumer thread is still running")
+            if handoff is self._handoff:
+                raise ValueError("restart requires a fresh handoff instance")
+            self._handoff = handoff
+            self._thread = threading.Thread(target=self._consume, name="c-handoff-probe", daemon=True)
+            self._thread.start()
 
     def stop(self) -> None:
-        self._stop.set()
-        self.wakeup.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
+        with self._lifecycle_lock:
+            self._stop.set()
+            self.wakeup.set()
+            thread = self._thread
+            if thread is not None:
+                if thread is threading.current_thread():
+                    raise RuntimeError("handoff probe cannot join its own consumer thread")
+                thread.join(timeout=2.0)
+                if thread.is_alive():
+                    raise RuntimeError("handoff probe consumer did not stop within 2 seconds")
             self._thread = None
-        self._forwarder.close()
+            self._forwarder.close()
+            self._closed = True
 
     @staticmethod
     def _display_summary(display: Any) -> str:
@@ -191,14 +221,26 @@ class HandoffProbe:
             print(f"[C handoff] {common} data={extras}", flush=True)
 
     def _consume(self) -> None:
-        try:
-            self._consume_loop()
-        except Exception as exc:
-            # A consumer crash must fail-stop the producer through the handoff contract;
-            # otherwise the worker can disappear silently while A keeps producing.
-            reason = f"{type(exc).__name__}: {exc}"
-            print(f"[C handoff] consumer failed: {reason}", flush=True)
-            self._handoff.report_consumer_failure(reason)
+        restarts = 0
+        while not self._stop.is_set():
+            try:
+                self._consume_loop()
+                return
+            except Exception as exc:
+                reason = f"{type(exc).__name__}: {exc}"
+                if self._stop.is_set():
+                    return
+                if restarts < CONSUMER_RESTART_LIMIT:
+                    restarts += 1
+                    print(f"[C handoff] consumer loop restarting attempt={restarts}/"
+                          f"{CONSUMER_RESTART_LIMIT} reason={reason}", flush=True)
+                    # Ensure the resumed loop drains anything published during the exception.
+                    self.wakeup.set()
+                    continue
+                # Repeated failures fail-stop the producer; never leave A producing silently.
+                print(f"[C handoff] consumer failed after restart: {reason}", flush=True)
+                self._handoff.report_consumer_failure(reason)
+                return
 
     def _consume_loop(self) -> None:
         while True:
