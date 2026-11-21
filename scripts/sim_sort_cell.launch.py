@@ -30,6 +30,7 @@ ROBOT = SIM / "models" / "ur5e_2f85"
 def generate_launch_description():
     world = LaunchConfiguration("world")
     gui = LaunchConfiguration("gui")
+    physics_engine = LaunchConfiguration("physics_engine")
 
     description = Command([
         FindExecutable(name="xacro"), " ", str(ROBOT / "ur5e_2f85.urdf.xacro"),
@@ -51,6 +52,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("world", default_value=str(SIM / "worlds" / "sort_cell.sdf")),
         DeclareLaunchArgument("gui", default_value="true"),
+        DeclareLaunchArgument("physics_engine", default_value="gz-physics-bullet-featherstone-plugin",
+                              description="Gazebo physics engine (Bullet Featherstone supports the gripper mimic joints)"),
         DeclareLaunchArgument("link_camera_xyz", default_value="-0.3420864 -0.0601521 0.1400000",
                               description="upper_arm_link 기준 매립 시험 카메라 위치(m), 흰색 몸체 위쪽 옆면"),
         DeclareLaunchArgument("link_camera_rpy", default_value="1.5707963 0 -0.815927",
@@ -66,7 +69,7 @@ def generate_launch_description():
         *[AppendEnvironmentVariable("GZ_SIM_RESOURCE_PATH", p) for p in sorted(resource_paths)],
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(get_package_share_directory("ros_gz_sim"), "launch", "gz_sim.launch.py")),
-            launch_arguments={"gz_args": IfElseSubstitution(gui, if_value=["-r ", world], else_value=["-s -r ", world])}.items(),
+            launch_arguments={"gz_args": IfElseSubstitution(gui, if_value=["-r --physics-engine ", physics_engine, " ", world], else_value=["-s -r --physics-engine ", physics_engine, " ", world])}.items(),
         ),
         # publish_frequency: /tf 발행 상한(기본 20 Hz). 카메라(sim 40 Hz)보다 낮으면 촬영 시각 TF를 다음 발행까지 기다려
         # 50 ms TF 대기 한도를 넘는 프레임이 생긴다. 50 Hz에서 tf_late 0, TF 대기 즉시 100%(A 측정 #197·#198)
