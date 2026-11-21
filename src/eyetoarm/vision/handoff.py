@@ -40,6 +40,7 @@ from eyetoarm.vision.live_view import draw_detections, draw_track_unavailable
 from eyetoarm.vision.pipeline import VisionPipeline
 from eyetoarm.vision.pipeline_types import DisplayResult, JobOutcome, JobStatus
 from eyetoarm.vision.tracking import TrackFrame, TrackMode, matches_job
+from eyetoarm.vision.world_tracking_display import PrevDisplay
 
 # 제어 대기열 용량(A 개발 기본값, 계약 §7 D3. C 확정값 아님)
 DEFAULT_CAPACITY = 64
@@ -144,7 +145,8 @@ class HandoffView:
     job_seq: int
     tracks: TrackFrame | None = None   # 같은 RESULT의 TrackFrame(#151)
     # #239: 실행기 tracks가 없고 연결부에 W 조회(`set_track_source`)가 있으면, 그 작업의 W 결과를 그릴 때 읽는 함수
-    # (`() → TrackFrame | 사유 문자열 | None`, 기다리지 않음). 그 작업이 아닌 TrackFrame은 `job_mismatch`로 바꿔 돌려준다
+    # (`() → TrackFrame | PrevDisplay(#242 직전 결과 짝, 화면 전용) | 사유 문자열 | None`, 기다리지 않음).
+    # 그 작업이 아닌 TrackFrame은 `job_mismatch`로 바꿔 돌려준다
     track_lookup: Callable[[], object] | None = None
 
 
@@ -216,6 +218,10 @@ def annotate(view: HandoffView) -> np.ndarray:
     # #239 W: 그릴 때 같은 작업의 W 결과를 한 번 읽는다(기다리지 않음). 없거나 사유면 번호 없이 그 상태만 표기한다
     value = view.track_lookup()
 
+    # #242: 같은 작업 결과가 없어 직전 W 결과를 위치로 짝지은 표시 전용 번호(배너 `(world, prev)`로 구분)
+    if isinstance(value, PrevDisplay):
+        return draw_detections(image, view.display, value.tracks, mode_text=f"{TrackMode.WORLD.value}, prev")[0]
+
     if isinstance(value, TrackFrame):
         if {a.instance_index for a in value.assignments} == {i.index for i in view.display.instances}:
             return draw_detections(image, view.display, value)[0]
@@ -228,13 +234,14 @@ def annotate(view: HandoffView) -> np.ndarray:
     return canvas
 
 
-def _bound_track_lookup(source: Callable[[object], object], context) -> Callable[[], object]:
-    """W 조회 함수를 그 작업 문맥에 묶는다(#239). 그 작업이 아닌 TrackFrame은 쓰지 않는다(현재 프레임 결과만)."""
+def _bound_track_lookup(source: Callable[[object, object], object], context, display) -> Callable[[], object]:
+    """W 조회 함수를 그 작업 문맥·AI 결과에 묶는다(#239·#242). 그 작업이 아닌 TrackFrame(직전 짝의 표시 판정 포함)은 쓰지 않는다."""
 
     def lookup() -> object:
-        value = source(context)
+        value = source(context, display)
+        frame_tracks = value.tracks if isinstance(value, PrevDisplay) else value
 
-        if isinstance(value, TrackFrame) and not matches_job(value, context):
+        if isinstance(frame_tracks, TrackFrame) and not matches_job(frame_tracks, context):
             return "job_mismatch"
 
         return value
@@ -259,7 +266,7 @@ class AToCHandoff:
 
         self._capacity = capacity
         self._notify = notify
-        self._track_source: Callable[[object], object] | None = None   # #239 W 표시 조회(start_run 전에만 설정)
+        self._track_source: Callable[[object, object], object] | None = None   # #239 W 표시 조회(start_run 전에만 설정)
         self._clock_ns = clock_ns
         self._lock = threading.Lock()
 
@@ -292,10 +299,11 @@ class AToCHandoff:
 
     # ------------------------------------------------------------------ 생산자(A 제어 흐름)
 
-    def set_track_source(self, source: Callable[[object], object] | None) -> None:
+    def set_track_source(self, source: Callable[[object, object], object] | None) -> None:
         """W 추적 결과 조회 함수(#239, 예: `LiveWorldTracking.peek`)를 둔다. 첫 `start_run` 전에만 허용한다.
 
-        `source(JobContext) → TrackFrame | 사유 문자열 | None`은 기다리지 않아야 한다. 실행기 `tracks`(픽셀)가 있는 응답에는 쓰지 않는다.
+        `source(JobContext, AI 표시 결과) → TrackFrame | PrevDisplay | 사유 문자열 | None`(#242: 두 번째 인자는 직전 결과 위치 짝짓기용)은
+        기다리지 않아야 한다. 실행기 `tracks`(픽셀)가 있는 응답에는 쓰지 않는다.
         """
         if source is not None and not callable(source):
             raise HandoffContractError("track source must be callable or None")
@@ -435,7 +443,7 @@ class AToCHandoff:
             self._results_enqueued += 1
             self._current = (msg.msg_seq, ctx.generation, ctx.job_seq)
             lookup = (None if tracks is not None or self._track_source is None
-                      else _bound_track_lookup(self._track_source, ctx))
+                      else _bound_track_lookup(self._track_source, ctx, outcome.display_result))
             self._put_view(HandoffView(msg.msg_seq, f, outcome.display_result, ctx.generation, ctx.job_seq, tracks,
                                        track_lookup=lookup))
 

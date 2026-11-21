@@ -228,12 +228,14 @@ def track_label(a: TrackAssignment | None) -> str:
     return {TrackState.TENTATIVE: "trk?", TrackState.AMBIGUOUS: "amb"}.get(a.state, "")
 
 
-def draw_detections(image: np.ndarray, result: AiSegResult, tracks: TrackFrame | None = None) -> tuple[np.ndarray, int]:
+def draw_detections(image: np.ndarray, result: AiSegResult, tracks: TrackFrame | None = None, *,
+                    mode_text: str | None = None) -> tuple[np.ndarray, int]:
     """원본을 복사해 인스턴스를 그린 표시용 영상과 그린 대상 수를 돌려준다. **원본 배열은 바꾸지 않는다.**
 
     `tracks`(선택, #151)가 있으면 그 결과와 같은 인스턴스 index 집합이어야 하며(아니면 ValueError) 라벨 끝에 `track_label`을 붙이고,
     영상 왼쪽 위에 실험 표기(`TRACKING EXPERIMENTAL (<mode>) - ids display-only, no identity guarantee`)를 그린다. 그래서 이 영상만 받는
-    쪽(C 전달 `annotate`)에도 번호의 실험 상태가 남는다. tracks가 없으면 기존 그림과 같다.
+    쪽(C 전달 `annotate`)에도 번호의 실험 상태가 남는다. tracks가 없으면 기존 그림과 같다. `mode_text`(#242)를 주면 배너의 모드 자리에
+    그 문자열을 쓴다(예: `world, prev` = 직전 W 결과를 짝지은 표시 전용 번호). 주지 않으면 `tracks.mode` 값.
     색·채우기·거부/잘림 표기는 바꾸지 않는다(추적 성공을 초록 등 작업 가능 신호로 표시하지 않음).
 
     좌표는 `AiInstance`의 원본 픽셀 좌표(ROI 오프셋 반영 끝)를 그대로 쓴다(ROI를 다시 더하지 않음). 대상 범위(in_scope)
@@ -284,7 +286,7 @@ def draw_detections(image: np.ndarray, result: AiSegResult, tracks: TrackFrame |
         _label(canvas, label, (x1, max(y1 - 4, 14)), color)
 
     if tracks is not None:
-        _label(canvas, f"TRACKING EXPERIMENTAL ({tracks.mode.value}) - ids display-only, no identity guarantee",
+        _label(canvas, f"TRACKING EXPERIMENTAL ({mode_text or tracks.mode.value}) - ids display-only, no identity guarantee",
                (4, 16), STATE_COLORS_BGR["stale"], 0.45)
 
     return canvas, drawn

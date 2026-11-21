@@ -32,8 +32,10 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Callable
 
-from eyetoarm.vision.tracking import FrameKey
+from eyetoarm.vision.tracking import FrameKey, TrackFrame
 from eyetoarm.vision.world_tracking import WorldTracker, world_inputs
+from eyetoarm.vision.world_tracking_display import (DisplayPrevConfig, DisplayPrevConfigError, PrevSnapshot, match_prev,
+                                                    parse_display_prev, snapshot)
 
 RESULT_KEEP = 64
 
@@ -54,16 +56,23 @@ class LiveWorldConfig:
     lag_persist_n: int
     lag_cooldown_ms: float
     conveyor_probe_timeout_s: float   # #226 D2: C speed_mps 진단 조회 상한(진단 전용, 추적기에 전달 안 함)
+    # #242: detect 영상 직전 결과 표시(화면 전용). 설정 파일에서는 필수, 코드에서 직접 만들 때 None이면 직전 결과를 쓰지 않는다
+    display_prev: DisplayPrevConfig | None = None
 
     def to_json(self) -> dict:
         """요약용 사전."""
-        return {f.name: getattr(self, f.name) for f in fields(self)}
+        doc = {f.name: getattr(self, f.name) for f in fields(self)}
+        doc["display_prev"] = None if self.display_prev is None else self.display_prev.to_json()
+
+        return doc
 
 
 def parse_live_world(doc) -> LiveWorldConfig:
     """`queue_capacity`·`handoff_wait_s` + `lag` 블록(r1). 모르는 키·누락·범위 오류는 `LagConfigError`."""
-    if not isinstance(doc, dict) or set(doc) != {"queue_capacity", "handoff_wait_s", "lag", "conveyor_probe_timeout_s"}:
-        raise LagConfigError("live world block must have exactly queue_capacity, handoff_wait_s, lag, conveyor_probe_timeout_s")
+    if not isinstance(doc, dict) or set(doc) != {"queue_capacity", "handoff_wait_s", "lag", "conveyor_probe_timeout_s",
+                                                 "display_prev"}:
+        raise LagConfigError("live world block must have exactly queue_capacity, handoff_wait_s, lag, conveyor_probe_timeout_s, "
+                             "display_prev")
 
     lag = doc["lag"]
     keys = {"lag_limit_ms", "window_n", "pending_ratio_limit", "lag_persist_n", "lag_cooldown_ms"}
@@ -88,7 +97,16 @@ def parse_live_world(doc) -> LiveWorldConfig:
                            lag_limit_ms=pos(lag["lag_limit_ms"], "lag_limit_ms"), window_n=pos(lag["window_n"], "window_n", True),
                            pending_ratio_limit=ratio, lag_persist_n=pos(lag["lag_persist_n"], "lag_persist_n", True),
                            lag_cooldown_ms=pos(lag["lag_cooldown_ms"], "lag_cooldown_ms"),
-                           conveyor_probe_timeout_s=pos(doc["conveyor_probe_timeout_s"], "conveyor_probe_timeout_s"))
+                           conveyor_probe_timeout_s=pos(doc["conveyor_probe_timeout_s"], "conveyor_probe_timeout_s"),
+                           display_prev=_display_prev(doc["display_prev"]))
+
+
+def _display_prev(doc) -> DisplayPrevConfig:
+    """`display_prev` 블록(#242). 오류는 `LagConfigError`로 바꾼다(진입점이 같은 설정 오류로 다룸)."""
+    try:
+        return parse_display_prev(doc)
+    except DisplayPrevConfigError as exc:
+        raise LagConfigError(str(exc)) from exc
 
 
 def load_world_tracking_config(path: str):
@@ -183,7 +201,10 @@ class LiveWorldTracking:
                                       "stale_skipped", "lag_resets", "reset_requests")}
         self.not_updated: dict[str, int] = {}
         # #239: detect 영상 그리기 조회(`peek`) 계수. 밀림 규칙 입력(handoff_*·대기 창)과 섞지 않는다
-        self.display_counts = {"found": 0, "pending": 0, "reason": 0}
+        # #242: prev = 같은 작업 결과가 없어 직전 결과를 위치로 짝지어 그림, pending = 그것도 못 함(사유는 display_prev_miss)
+        self.display_counts = {"found": 0, "prev": 0, "pending": 0, "reason": 0}
+        self.display_prev_miss: dict[str, int] = {}
+        self._display_prev: PrevSnapshot | None = None   # 직전 갱신 W 결과의 표시용 사본(조건변수 안, 추적 스레드가 바꿈)
         self.lag_reset_log: list[dict] = []
         self.last_reset: str | None = None      # 마지막으로 처리한 초기화 사유(D3)
         self._queue_len_samples: collections.deque[int] = collections.deque(maxlen=4096)
@@ -244,18 +265,36 @@ class LiveWorldTracking:
 
         return value if found else None
 
-    def peek(self, context):
+    def peek(self, context, display=None):
         """detect 영상 그리기용(#239, C forwarder 스레드): 그 작업 결과를 **기다리지 않고** 읽는다.
 
-        그 작업 키(FrameKey 전체)의 값만 돌려준다(`TrackFrame` | 사유 문자열 | 아직 없거나 표에서 밀려나면 None). 다른 프레임 결과로
-        대신하지 않는다. `handoff_*` 계수·대기 창(밀림 규칙 입력)은 바꾸지 않고 `display_counts`만 센다.
+        그 작업 키(FrameKey 전체)의 값이 있으면 그것(`TrackFrame` | 사유 문자열). 없고(아직 없음·표에서 밀려남) `display`(그 작업 AI 결과)와
+        설정 `display_prev`가 있으면(#242) 직전 W 결과를 위치로 짝지은 표시 전용 `PrevDisplay`, 그것도 안 되면 None.
+        `handoff_*` 계수·대기 창(밀림 규칙 입력)과 추적 판정은 바꾸지 않고 `display_counts`·`display_prev_miss`만 센다.
         """
         key = self._k(frame_key(context))
 
         with self._cond:
             value = self._results.get(key)
-            kind = "pending" if value is None else ("reason" if isinstance(value, str) else "found")
+            prev, reset_pending = self._display_prev, self._reset_reason is not None
+
+        cfg = self.config.display_prev
+        miss = None
+
+        if value is None and display is not None and cfg is not None:
+            shown, why = match_prev(prev, context, display, cfg, reset_pending=reset_pending)
+            value, miss = shown, (None if shown is not None else why)
+        elif value is None:
+            miss = "off" if cfg is None else "no_display"
+
+        kind = ("pending" if value is None else "reason" if isinstance(value, str) else
+                "found" if isinstance(value, TrackFrame) else "prev")
+
+        with self._cond:
             self.display_counts[kind] += 1
+
+            if miss is not None:
+                self.display_prev_miss[miss] = self.display_prev_miss.get(miss, 0) + 1
 
         return value
 
@@ -354,14 +393,21 @@ class LiveWorldTracking:
                 self._apply_reset(reset)
 
             if lag_reset is not None:
+                self._clear_display_prev()
                 self._tracker.reset("lag")
                 self._write({"kind": "lag_reset", **lag_reset})
 
             if item is not None:
                 self._process(item, lag_ms if lag_reset is None else (now - item.enqueued_ns) / 1e6)
 
+    def _clear_display_prev(self) -> None:
+        """추적 스레드: 재설정 전 결과를 표시에 쓰지 않게 직전 사본을 지운다(#242)."""
+        with self._cond:
+            self._display_prev = None
+
     def _apply_reset(self, reason: str) -> None:
         """추적 스레드: 전 트랙 종료 + 기록(D3)."""
+        self._clear_display_prev()
         self._tracker.reset(reason)
         self.last_reset = reason
         self._write({"kind": "reset", "reason": reason, "t_mono_ns": self._clock_ns()})
@@ -412,9 +458,15 @@ class LiveWorldTracking:
                                     "center_raw_mm": _r(by_index[a.instance_index].center_raw_mm),
                                     "length_mm": _r1(by_index[a.instance_index].length_mm)} for a in track.assignments]})
 
+        # #242: 갱신한 결과면 확정 번호의 표시용 박스 사본을 둔다(화면 전용, 추적 판정·송신에는 쓰지 않음)
+        snap = snapshot(value, item.display) if isinstance(value, TrackFrame) else None
+
         with self._cond:
             self.counts["processed"] += 1
             self._results[self._k(key)] = value
+
+            if snap is not None:
+                self._display_prev = snap
 
             while len(self._results) > RESULT_KEEP:
                 self._results.popitem(last=False)
@@ -458,7 +510,8 @@ class LiveWorldTracking:
                    "handoff_pending_ratio": None if total == 0 else round(counts["handoff_pending"] / total, 4),
                    "dropped_full": counts["dropped_full"], "stale_skipped": counts["stale_skipped"],
                    "lag_resets": counts["lag_resets"], "lag_reset_log": list(self.lag_reset_log)}
-            display = dict(self.display_counts)   # #239: detect 영상 W 번호 조회(found·pending 배너·사유 배너)
+            # #239·#242: detect 영상 W 번호 조회(found·prev(직전 결과 짝)·pending 배너·사유 배너), pending 사유
+            display = {**self.display_counts, "prev_miss": dict(sorted(self.display_prev_miss.items()))}
             counts["queue_left"] = len(self._queue)   # 닫힐 때 처리하지 못하고 남은 수(합: offered = processed + dropped + stale + left)
 
         return {"config": self.config.to_json(), "counts": counts, "not_updated": dict(sorted(self.not_updated.items())),
