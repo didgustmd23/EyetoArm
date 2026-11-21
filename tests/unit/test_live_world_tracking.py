@@ -61,6 +61,28 @@ class WorldCli(TrackCli):
 class WorldCliTest(WorldCli):
     """W14·W10·W12."""
 
+    def test_world_planes_from_b_specs_per_spec(self):
+        """#250 P1: W 투영 높이를 B 규격에서 읽는다. 지금 규격(모두 105 mm)은 「uniform」이고 기록 높이 0.105·종류 없음,
+        BOLT_A 102 mm 사본이면 시작 줄에 종류별 높이가 찍히고 기록 높이는 그 두 값 중 하나다."""
+        code, err, out, _ = self.run_world(Scenario(6))
+        self.assertEqual(code, 0, err)
+        self.assertIn("bolt planes BOLT_A=105.0mm BOLT_B=105.0mm, mask 105.0mm (uniform)", err)
+        tracks = [t for r in self.world_records(out) if r.get("kind") == "frame" for t in r.get("tracks", [])]
+        self.assertTrue(tracks)
+        self.assertEqual({(t["plane_z_m"], t["plane_spec"]) for t in tracks if t["input"] != "none"}, {(0.105, None)})
+
+        specs = json.loads((ROOT / "config/calibration/part_specs.json").read_text(encoding="utf-8"))
+        specs["specs"]["BOLT_A"]["plane_z"] = 0.102
+        p = Path(self.tmp.name) / "specs_split.json"
+        p.write_text(json.dumps(specs), encoding="utf-8")
+        self.mod.PART_SPECS_PATH = p
+        code, err, out, _ = self.run_world(Scenario(6), out=self.out("split"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("bolt planes BOLT_A=102.0mm BOLT_B=105.0mm, mask 102.0mm (per spec by W length)", err)
+        planes = {t["plane_z_m"] for r in self.world_records(out) if r.get("kind") == "frame"
+                  for t in r.get("tracks", []) if t["input"] == "endpoint"}
+        self.assertTrue(planes and planes <= {0.102, 0.105}, planes)
+
     def test_w14_world_ids_reach_b_and_dedupe(self):
         """W14: W 번호가 하위 형 관측 → 실제 B goal로 가고, 결과 전 두 번째부터 ALREADY_SENT, 송신은 번호당 1회."""
         code, err, out, rt = self.run_world(Scenario(10))

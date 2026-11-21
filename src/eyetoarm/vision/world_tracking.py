@@ -26,6 +26,10 @@
   어느 쪽이든 값이 없으면 건너뛰고, 마스크 hit는 트랙의 길이·각도를 바꾸지 않는다. 이중 검출 합치기는 마스크 입력이 낀 쌍에 한해 「W 중심
   거리 ≤ `dup_endpoint_mm` 또는 마스크 포함률(교집합/작은 면적) ≥ `mask_dup_contain`」을 쓰고, 남기는 순서는 끝점 입력 먼저·다음 점수 순이다
   (#224 W+M 규칙 그대로). 마스크 입력은 **짝짓기에만** 쓴다: B 입력·번호 규칙(#215 확정·선택 인스턴스)은 바뀌지 않는다. 끄면 #217과 같다.
+- **종류별 투영 높이(#250 A-3 P1)**: `plane_z_m`에 `BoltPlanes`(B 규격의 볼트 종류별 기준 높이·총길이)를 주면, 끝점 볼트는 종류마다
+  그 높이로 두 끝점을 올려 W 길이가 그 종류 총길이에 가장 가까운 종류의 높이를 쓴다(종류는 이 고르기에만 쓰고 B 판정이 아니다).
+  종류 높이가 모두 같으면(지금 B 규격) 그 높이 하나라 결과가 실수 `plane_z_m`과 같다. 마스크 입력은 길이가 없어 기본 높이(B `class_plane_z`
+  「bolt」)를 쓴다. 시야 보정은 자기 설정 높이(`view_bias.plane_z_m`)로 보정량을 정하고, 보정 뒤 끝점은 고른 높이로 올린다.
 - 단일 소유(추적 스레드 하나). ROS·Qt를 import하지 않는다. 설정값은 모두 A 개발 임시값(시험 설정 파일, 기본값 없음).
 """
 from __future__ import annotations
@@ -135,6 +139,38 @@ class WorldInput:
     angle_deg: float | None = None
     kind: str = "endpoint"                                   # endpoint | mask | none(#226)
     mask: tuple | None = field(default=None, compare=False)  # (x0, y0, bool 배열) 원본 픽셀, 이중 검출 포함률 판정용
+    plane_z_m: float | None = None                           # #250: W로 올린 높이(m). 후보가 아니면 None
+    plane_spec: str | None = None                            # #250: 높이를 고른 B 규격 이름(BoltPlanes 끝점 입력만, 그 밖 None)
+
+
+@dataclass(frozen=True)
+class BoltPlanes:
+    """B 규격의 볼트 종류별 투영 높이(#250 A-3 P1). `specs` = ((이름, 기준 높이 m, 총길이 m), …), `default_z_m` = 마스크 입력용.
+
+    B 규격 파일을 고치지 않고 읽은 값을 그대로 담는다(진입점이 만든다). 값은 유한하고 높이·길이는 양수여야 한다.
+    """
+
+    default_z_m: float
+    specs: tuple[tuple[str, float, float], ...]
+
+    def __post_init__(self) -> None:
+        """값 검사: 유한 양수, 이름은 빈 문자열이 아니고 겹치지 않음, 종류 1개 이상."""
+        if not self.specs:
+            raise WorldTrackerConfigError("BoltPlanes needs at least one bolt spec")
+
+        names = [n for n, _, _ in self.specs]
+
+        if len(set(names)) != len(names) or not all(isinstance(n, str) and n for n in names):
+            raise WorldTrackerConfigError(f"BoltPlanes spec names must be unique non-empty strings: {names}")
+
+        for v in (self.default_z_m, *(z for _, z, _ in self.specs), *(L for _, _, L in self.specs)):
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+                raise WorldTrackerConfigError(f"BoltPlanes values must be finite positive numbers: {v!r}")
+
+    @property
+    def uniform(self) -> bool:
+        """종류 높이가 모두 기본 높이와 같은가(그러면 고르기 없이 기본 높이 하나)."""
+        return all(z == self.default_z_m for _, z, _ in self.specs)
 
 
 def mask_of(polygon) -> tuple | None:
@@ -194,14 +230,43 @@ def _project(endpoints_px, K, dist, T_W_C, plane_z_m) -> np.ndarray | None:
     return w if np.all(np.isfinite(w)) else None
 
 
-def world_inputs(result: AiSegResult, *, K, dist, T_W_C, plane_z_m: float, view_bias=None,
+def _pick_plane(endpoints_px, K, dist, T_W_C, planes: BoltPlanes) -> tuple[float, str | None]:
+    """끝점 볼트의 투영 높이(#250 P1): 종류마다 그 높이로 올린 W 길이와 그 종류 총길이의 차가 가장 작은 종류의 높이.
+
+    높이가 모두 같으면 기본 높이(이름 None). 어느 종류로도 투영이 안 되면 기본 높이(이름 None, 뒤의 투영이 실패를 낸다).
+    차가 같으면 `specs` 순서가 앞선 종류다.
+    """
+    if planes.uniform:
+        return planes.default_z_m, None
+
+    best = None
+
+    for name, z_m, total_m in planes.specs:
+        w = _project(endpoints_px, K, dist, T_W_C, z_m)
+
+        if w is None:
+            continue
+
+        err_mm = abs(float(math.hypot(*(w[1] - w[0]))) - total_m * 1000.0)
+
+        if best is None or err_mm < best[0]:
+            best = (err_mm, z_m, name)
+
+    return (planes.default_z_m, None) if best is None else (best[1], best[2])
+
+
+def world_inputs(result: AiSegResult, *, K, dist, T_W_C, plane_z_m: float | BoltPlanes, view_bias=None,
                  width: int | None = None, height: int | None = None, mask_fallback: bool = False) -> list[WorldInput]:
     """AI 결과 + 촬영 시각 `T_W_C` → W 추적 입력(인스턴스 순서 그대로). `view_bias`는 `ViewBiasConfig`(#207) 또는 None.
 
     `mask_fallback`(#226)이면 볼트 입력에 마스크(포함률용)를 붙이고, 끝점 없는 볼트를 마스크 W 평균 입력(`kind="mask"`)으로 넣는다.
+    `plane_z_m`이 `BoltPlanes`이면 끝점 볼트마다 종류별 높이를 고른다(#250 P1, 모듈 설명). 실수면 모든 볼트가 그 높이다(기존과 같음).
     """
     if not isinstance(result, AiSegResult):
         raise TrackingContractError(f"world_inputs needs AiSegResult: {type(result).__name__}")
+
+    planes = plane_z_m if isinstance(plane_z_m, BoltPlanes) else None
+    base_z = planes.default_z_m if planes is not None else float(plane_z_m)
 
     out = []
 
@@ -223,17 +288,18 @@ def world_inputs(result: AiSegResult, *, K, dist, T_W_C, plane_z_m: float, view_
         m = mask_of(inst.polygon) if mask_fallback else None
 
         if inst.axis_endpoints_px is None:
-            c = None if m is None else mask_center_w(m, K, dist, T_W_C, plane_z_m)
+            c = None if m is None else mask_center_w(m, K, dist, T_W_C, base_z)
 
-            if c is not None:   # #226 W+M: 끝점 없는 볼트 → 마스크 W 평균(짝짓기 전용)
+            if c is not None:   # #226 W+M: 끝점 없는 볼트 → 마스크 W 평균(짝짓기 전용). 길이가 없어 기본 높이
                 out.append(WorldInput(**base, candidate=True, untracked_reason=None, clipped=bool(inst.clipped), center_mm=c,
-                                      center_raw_mm=c, kind="mask", mask=m))
+                                      center_raw_mm=c, kind="mask", mask=m, plane_z_m=base_z))
             else:
                 out.append(WorldInput(**base, candidate=False, untracked_reason="no_endpoints", kind="none", mask=m))
 
             continue
 
-        raw = _project(inst.axis_endpoints_px, K, dist, T_W_C, plane_z_m)
+        z_m, spec = (base_z, None) if planes is None else _pick_plane(inst.axis_endpoints_px, K, dist, T_W_C, planes)
+        raw = _project(inst.axis_endpoints_px, K, dist, T_W_C, z_m)
         used = raw
 
         if view_bias is not None and raw is not None:
@@ -243,7 +309,7 @@ def world_inputs(result: AiSegResult, *, K, dist, T_W_C, plane_z_m: float, view_
                                    k_mm=view_bias.k_mm, width=width, height=height)
 
             if vb.applied:
-                used = _project(vb.endpoints_px, K, dist, T_W_C, plane_z_m)
+                used = _project(vb.endpoints_px, K, dist, T_W_C, z_m)
 
         if used is None or raw is None:
             out.append(WorldInput(**base, candidate=False, untracked_reason="projection_failed", kind="none", mask=m))
@@ -255,7 +321,8 @@ def world_inputs(result: AiSegResult, *, K, dist, T_W_C, plane_z_m: float, view_
                               center_raw_mm=(float(raw[:, 0].mean()), float(raw[:, 1].mean())),
                               endpoints_mm=((float(used[0, 0]), float(used[0, 1])), (float(used[1, 0]), float(used[1, 1]))),
                               length_mm=float(math.hypot(d[0], d[1])),
-                              angle_deg=float(math.degrees(math.atan2(d[1], d[0])) % 180.0), kind="endpoint", mask=m))
+                              angle_deg=float(math.degrees(math.atan2(d[1], d[0])) % 180.0), kind="endpoint", mask=m,
+                              plane_z_m=z_m, plane_spec=spec))
 
     return out
 
@@ -676,5 +743,5 @@ class WorldTracker:
                           assignments=tuple(out))
 
 
-__all__ = ["WORLD_JUMP", "WorldInput", "WorldTracker", "WorldTrackerConfig", "WorldTrackerConfigError", "containment",
+__all__ = ["WORLD_JUMP", "BoltPlanes", "WorldInput", "WorldTracker", "WorldTrackerConfig", "WorldTrackerConfigError", "containment",
            "mask_center_w", "mask_of", "parse_world_tracker", "world_inputs"]

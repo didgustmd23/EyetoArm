@@ -24,7 +24,7 @@ from eyetoarm.vision.live_world_tracking import (LagConfigError, LiveWorldConfig
 from eyetoarm.vision.live_observation_envelope import TfLookupResult
 from eyetoarm.vision.observation_envelope import CaptureTf
 from eyetoarm.vision.tracking import FrameKey, PartTracker, PartTrackIdIssuer, TrackMode, TrackState, TrackingContractError
-from eyetoarm.vision.world_tracking import (WORLD_JUMP, WorldInput, WorldTracker, WorldTrackerConfigError,
+from eyetoarm.vision.world_tracking import (WORLD_JUMP, BoltPlanes, WorldInput, WorldTracker, WorldTrackerConfigError,
                                             parse_world_tracker, world_inputs)
 from test_ai_result import instance, seg_result
 
@@ -159,6 +159,68 @@ class InputsTest(unittest.TestCase):
                            dist=DIST, T_W_C=T, plane_z_m=PLANE_Z, view_bias=vb, width=1280, height=720)[0]
         shift = math.dist(inp.center_mm, inp.center_raw_mm)
         self.assertTrue(0.5 < shift < 2.0, shift)
+
+
+def bolt_px_at(T, x_m, y_m, length_m, z_m, angle_deg=90.0):
+    """높이 z_m에 누운 W 볼트(중심·길이·축 각도) → 픽셀 끝점 (2, 2)(#250 P1 시험: 종류마다 축 높이가 다름)."""
+    a = math.radians(angle_deg)
+    h = length_m / 2
+    pts = np.array([[x_m - h * math.cos(a), y_m - h * math.sin(a), z_m], [x_m + h * math.cos(a), y_m + h * math.sin(a), z_m]])
+
+    return w_to_image(pts, K, DIST, T)
+
+
+# B-12 예상 규격(#245 계획 r0 §2.2): BOLT_A M3×20 23 mm 축 높이 102 mm, BOLT_B M6×40 46 mm 105 mm. 마스크 기본 = B 「bolt」(BOLT_A 키)
+SPLIT = BoltPlanes(default_z_m=0.102, specs=(("BOLT_A", 0.102, 0.023), ("BOLT_B", 0.105, 0.046)))
+
+
+class BoltPlanesTest(unittest.TestCase):
+    """#250 A-3 P1: W 투영 높이를 B 규격 종류별로 고른다."""
+
+    def test_endpoint_bolts_use_their_spec_height(self):
+        """M3×20(102 mm 높이)·M6×40(105 mm)이 같이 있으면 각자 자기 종류 높이로 올라가 W 중심이 정답과 0.01 mm 안, 길이 23·46 mm."""
+        T = cam((0.0, 0.0, 0.5))
+        insts = [instance(0, axis_endpoints_px=bolt_px_at(T, 0.50, 0.03, 0.023, 0.102)),
+                 instance(1, axis_endpoints_px=bolt_px_at(T, 0.55, -0.04, 0.046, 0.105, 30.0))]
+        inp = world_inputs(seg_result(insts, crop_wh=(1280, 720)), K=K, dist=DIST, T_W_C=T, plane_z_m=SPLIT)
+        self.assertEqual([(i.plane_spec, i.plane_z_m) for i in inp], [("BOLT_A", 0.102), ("BOLT_B", 0.105)])
+        np.testing.assert_allclose(inp[0].center_mm, (500.0, 30.0), atol=0.01)
+        np.testing.assert_allclose(inp[1].center_mm, (550.0, -40.0), atol=0.01)
+        self.assertAlmostEqual(inp[0].length_mm, 23.0, places=2)
+        self.assertAlmostEqual(inp[1].length_mm, 46.0, places=2)
+
+        # 대조: 높이 하나(105 mm)로 올리면 M3×20 중심이 1 mm 넘게 밀린다(P1이 고치는 차이)
+        one = world_inputs(seg_result(insts[:1], crop_wh=(1280, 720)), K=K, dist=DIST, T_W_C=T, plane_z_m=0.105)[0]
+        self.assertGreater(math.dist(one.center_mm, (500.0, 30.0)), 1.0)
+
+    def test_uniform_planes_equal_single_height(self):
+        """종류 높이가 모두 같으면(지금 B 규격) 결과가 실수 높이 하나와 같고 고른 종류 이름은 None이다."""
+        T = cam((0.0, 0.0, 0.5))
+        same = BoltPlanes(default_z_m=PLANE_Z, specs=(("BOLT_A", PLANE_Z, 0.018), ("BOLT_B", PLANE_Z, 0.046)))
+        insts = [instance(0, axis_endpoints_px=bolt_px(T, 0.50, 0.02)),
+                 instance(1, axis_endpoints_px=bolt_px(T, 0.56, -0.03, 0.012, 20.0))]
+        a = world_inputs(seg_result(insts, crop_wh=(1280, 720)), K=K, dist=DIST, T_W_C=T, plane_z_m=same)
+        b = world_inputs(seg_result(insts, crop_wh=(1280, 720)), K=K, dist=DIST, T_W_C=T, plane_z_m=PLANE_Z)
+        self.assertEqual([(x.center_mm, x.length_mm, x.angle_deg, x.plane_z_m) for x in a],
+                         [(x.center_mm, x.length_mm, x.angle_deg, x.plane_z_m) for x in b])
+        self.assertEqual([x.plane_spec for x in a], [None, None])
+
+    def test_mask_input_uses_default_height(self):
+        """끝점 없는 볼트의 마스크 입력(#226)은 길이가 없어 기본 높이(B 「bolt」)로 올린다."""
+        T = cam((0.0, 0.0, 0.5))
+        poly = np.array([[600.0, 340.0], [640.0, 340.0], [640.0, 352.0], [600.0, 352.0]])
+        inst = instance(0, axis_reason="AXIS_HEAD_AMBIGUOUS", polygon=poly, box_xyxy=(600.0, 340.0, 640.0, 352.0), area_px=480.0)
+        inp = world_inputs(seg_result([inst], crop_wh=(1280, 720)), K=K, dist=DIST, T_W_C=T, plane_z_m=SPLIT,
+                           mask_fallback=True)[0]
+        self.assertEqual((inp.kind, inp.plane_z_m, inp.plane_spec), ("mask", 0.102, None))
+
+    def test_invalid_planes_rejected(self):
+        """종류 없음·이름 중복·빈 이름·0·음수·비유한·bool 값은 설정 오류."""
+        for specs, default in (((), 0.1), ((("A", 0.1, 0.02), ("A", 0.1, 0.04)), 0.1), ((("", 0.1, 0.02),), 0.1),
+                               ((("A", 0.0, 0.02),), 0.1), ((("A", 0.1, -0.02),), 0.1), ((("A", float("nan"), 0.02),), 0.1),
+                               ((("A", 0.1, 0.02),), True)):
+            with self.subTest(specs=specs, default=default), self.assertRaises(WorldTrackerConfigError):
+                BoltPlanes(default_z_m=default, specs=specs)
 
 
 class TrackerTest(unittest.TestCase):

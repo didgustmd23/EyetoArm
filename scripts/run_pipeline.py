@@ -26,14 +26,19 @@
   하지 않는다(결정 D13). 실연결 실행 예:
       source /opt/ros/jazzy/setup.bash
       PYTHONPATH=src .venv/bin/python scripts/run_pipeline.py --ros-link --detector ai \\
-          --ai-config config/vision/ai_s1_01_live.json --log _workspace/evidence/live/run.jsonl --max-frames 300
+          --ai-config config/vision/ai_s1_08_live.json --log outputs/live/run.jsonl --max-frames 300
+  (운영 검출기 S1-08, 가중치 `models/vision/s1_08/best.pt`는 저장소에 있다. 예전 예시 `ai_s1_01_live.json`의 가중치는 Git 제외
+  `outputs/` 아래라 다른 PC에는 없다.)
 - **A→B 저장 입력 시험 연결(#166, synthetic/test-only):** `--synthetic-observation-fixture JSON --synthetic-observation-out PATH`(별칭 `--synthetic-a-to-b-fixture`·`--synthetic-a-to-b-out`)이면(저장 입력
   `--images`/`--video` 전용) fixture의 합성 관측을 실행기 detector 자리에 넣고, fixture의 `CameraProfile`·TF로 만든
   `BStage`의 `consume`을 `run(..., b_consumer=...)`에 넘긴다. 관측은 코어 검사 → `b_gate` → B 순서를 그대로 지난다.
   제품 AI/OpenCV 검출은 이 모드에서 돌지 않으며(모델을 불러오지 않음) 그 관측은 여전히 valid=False다. `stage.on_output`은
   연결하지 않는다(C·로봇 송신 없음). `--ros-link`(D13)·`--tracking`과 함께 쓸 수 없다(인자 오류 2). 기록·B 출력 파일이 이미
   있으면 덮어쓰지 않고 2로 끝낸다. 실행 뒤 B 호출 수가 fixture의 valid 레코드 수와 다르면 1이다. 합성 fixture 통과는 실제
-  RGB 검출·끝점 추출·mm 정확도·실시간 B 허용의 증거가 아니다.
+  RGB 검출·끝점 추출·mm 정확도·실시간 B 허용의 증거가 아니다. **검출 설정은 이 모드에서도 필요하다**(`--detect-config` 또는
+  `--detector ai --ai-config`, 검출은 돌지 않음): 관측의 `detector_config_id`가 그 설정 지문과 같아야 하고(다르면 작업이
+  `adapter_contract_violation:detector_config_id`로 실패), 설정 종류가 관측 방식(AI/OpenCV)을 정한다. 너트처럼 `class_name`을 싣는
+  fixture는 AI 설정이어야 한다(OpenCV 관측은 AI 전용 필드 금지). 시야 보정(`axis_view_bias`)을 켠 AI 설정은 거부한다(2, AI 끝점 없음).
 - **A→B 저장 입력 실제 경로(#168, opt-in):** `--capture-meta META --observation-out DIR`(별칭 `--a-to-b-capture-meta`·`--a-to-b-out`, 저장 입력 `--images`/`--video`·`--detector ai`
   전용, AI 설정 `axis_extractor` 필수). 관측은 **실제 AI 검출 + 볼트 끝점 추출기(M1)**에서 나오고, 메타는 원본 CameraInfo·
   프레임별 촬영 시각·그 시각 `world→optical_frame` TF만 준다(관측 주입 없음). B 입력은 `run(..., b_consumer=...)`의 `b_gate`
@@ -51,7 +56,10 @@
   실행의 정리 완료가 확인되기 전 새 실행을 거부한다(1). `stage.on_output`은 쓰지 않는다(C·D 송신·로봇 목표 없음). 설정 파일의
   값은 미확정 운영값의 시험 설정이며 `"status": "test_only"`가 필수다(`config/vision/live_observation_test.json`). 기록·출력이 이미
   있으면 덮어쓰지 않고 2. `--capture-meta`·`--synthetic-observation-*`과 함께 쓸 수 없다(2). `--tracking`(#215)을 더하면 확정 추적
-  번호만 관측·봉투에 실어 B 중복 방지(`_dedupe`·`release`)까지 넘긴다(M2 휴리스틱, 분열은 알려진 한계). 단계 L(#244)은 후보마다
+  번호만 관측·봉투에 실어 B 중복 방지(`_dedupe`·`release`)까지 넘긴다. 이 실시간 경로의 기본 추적은 W(작업 좌표, #239)이며
+  `--world-tracker-config JSON`이 필수다(없으면 2, 픽셀 추적은 `--tracking-space pixel`). W 투영 높이는 B 규격(`part_specs.json`)의
+  볼트 종류별 기준 높이에서 읽는다(#250: 종류 높이가 다르면 끝점 볼트마다 W 길이가 그 종류 총길이에 가까운 쪽 높이, 마스크 입력은 B 「bolt」
+  높이). 시야 보정 평면은 B 볼트 높이와 ±5 mm 안이어야 시작한다(#250, 넘으면 2, 시작 줄에 종류별 높이·차). 단계 L(#244)은 후보마다
   확정 번호를 A 하위 형 후보로 싣는다(B가 읽기 전에는 송신기가 고른 후보의 A 번호를 기록·재시도·require_track_id에 씀).
   `--b-input list`(#201)를 더하면 같은 연결·같은 프레임 단위 검사로 유효 볼트 목록(`eyetoarm.b_input/2`, 촬영 stamp TF 하나)을 B 목록
   소비자(`BStage.process_frame`)에 넘기고 소비자 결과를 기록한다(주석 없음). 소비자가 없으면 시작 때 1(단계 T로 바꾸지 않음).
@@ -59,7 +67,9 @@
   C 목표(`PICK_PLACE`·`PASS_THROUGH`)를 B `SortPartClient`로 ROS 액션 `/sort_part`에 보낸다(`vision/live_sort_part`, 사용자 결정
   2026-11-20 「승인하고 위험으로 기록만해」, 해제 전 시험 F6 없이 수용된 위험: A 상세설계 §11 「D13 해제 위험」). 송신은 수락 뒤 worker의
   게이트 안에서만 하며 `stage.on_output`은 쓰지 않는다(수락 전 송신 없음). 실행 닫힘(리셋·종료·fail-stop) 뒤 송신 0. 단계 T, 또는
-  단계 L(#233: B `process_frame`이 고른 1개만, 사진당 최대 1회, 추적 번호 없음이라 재시도 제한은 실패 지점 차단만). 설정 블록 `sort_part` 필수(짝이 아니면 2). C 서버가 없어도 실행하고 `server_seen=false` 경고·`no_server`로 기록한다. 기록은
+  단계 L(#233: B `process_frame`이 고른 1개만, 사진당 최대 1회. #244부터 추적을 켜면 고른 후보의 A 번호로 기록·재시도 제한·
+  `require_track_id`를 쓰고, 끄면 재시도 제한은 실패 지점 차단만). 설정 블록 `sort_part` 필수(짝이 아니면 2). 추적을 켠 송신은
+  `sort_part.require_track_id`가 필수다(#239, true면 확정 번호 없는 PICK_PLACE를 보내지 않고 `skip:no_track_id`). C 서버가 없어도 실행하고 `server_seen=false` 경고·`no_server`로 기록한다. 기록은
   출력 폴더 `sort_part.jsonl`. `eyetoarm_interfaces`(robot_ws 빌드·`source robot_ws/install/setup.bash`)가 없으면 1. 실행기 D13 가드
   (기본 `--ros-link`의 실시간 `b_consumer` 거부)는 그대로다.
 - **한 실행 연결(#233):** 실시간 A→B 실행(`--live-observation-out`)도 기본 `--ros-link`처럼 A 검출 결과를 C 연결부
@@ -67,7 +77,8 @@
   자리에 B `center_overlay_consumer`(`/b/center_overlay/image`, 인터페이스가 있으면 `/b/center_overlay`도)를 쓴다. 발행은 B 함수 설계대로
   B 계산 직후(검사 ③ 전)이며, 발행 실패는 요약·마지막 줄에만 남고 종료 코드에 반영하지 않는다. 단계 T에서는 거부한다(2).
 - 종료 코드: 0 정상(EOF·max-frames·정지 요청), 1 실행 실패(입력 없음·기록 실패·중단·close 실패·검출 시간 초과·멈춤 등),
-  2 인자·설정 오류.
+  2 인자·설정 오류, 3 실시간 기록 연결이 시각 되감기(월드 재설정 등)로 실행을 끝냄(`reset_detected`, 정리 정상·문제 없음 —
+  새 실행은 명령을 다시 실행해야 함). 정리 문제가 함께 있으면 1이 우선이다.
 """
 from __future__ import annotations
 
@@ -369,24 +380,65 @@ class _StopSignals:
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PART_SPECS_PATH = REPO_ROOT / "config/calibration/part_specs.json"   # B 파일(읽기만, BStage.from_config와 같은 경로)
-VIEW_BIAS_PLANE_TOL_M = 1e-9
+# #250 A-3 P2: 시야 보정 평면과 B 볼트 종류별 기준 높이의 허용 차(m). #245 계획 r0 §2.2: 보정량 계산에서 평면 차의 영향은
+# 수평 거리 약 0.5 m 대비 높이 차 비율(5 mm면 약 1 %)이라 작다. 넘으면 보정 설정을 B 규격에 맞게 다시 정해야 하므로 시작 거부(2)
+VIEW_BIAS_PLANE_TOL_M = 0.005
+EXIT_RESET_DETECTED = 3   # 실시간 기록 연결이 시각 되감기로 실행을 끝냄(정리 정상). 0·1·2 의미는 그대로
 
 
-def _check_view_bias_plane(bias, specs_path: Path | None = None) -> None:
-    """#207: 보정 `plane_z_m`이 B 볼트 기준 높이(BOLT_A·BOLT_B `plane_z`, B `class_plane_z`)와 같은지 본다. 다르면 ValueError.
+def _bolt_spec_heights(specs) -> dict[str, float]:
+    """B 규격의 볼트 기준 높이(m): 「bolt」(B `class_plane_z` 기본) + 볼트 종류별(`class_name` 「bolt」인 규격). 읽기만."""
+    from eyetoarm.transforms.work_result import class_plane_z
 
-    `specs_path`가 None이면 부를 때의 `PART_SPECS_PATH`(B 파일, 읽기만)를 쓴다.
+    heights = {"bolt": class_plane_z(specs, "bolt")}
+
+    for name, spec in specs["specs"].items():
+        if str(spec.get("class_name", "")).strip().lower() == "bolt":
+            heights[name] = class_plane_z(specs, "bolt", name)
+
+    return heights
+
+
+def _bolt_planes(specs):
+    """#250 A-3 P1: W 추적 투영 높이 = B 규격의 볼트 종류별 (기준 높이, 총길이), 마스크 입력용 기본 = B 「bolt」 높이. 읽기만."""
+    from eyetoarm.vision.world_tracking import BoltPlanes
+
+    heights = _bolt_spec_heights(specs)
+    rows = tuple((name, heights[name], float(specs["specs"][name]["total_length"])) for name in heights if name != "bolt")
+
+    return BoltPlanes(default_z_m=heights["bolt"], specs=rows)
+
+
+def _check_view_bias_plane(bias, specs_path: Path | None = None) -> dict[str, float]:
+    """#207·#250 P2: 보정 `plane_z_m`과 B 볼트 기준 높이(「bolt」·종류별)의 차가 모두 `VIEW_BIAS_PLANE_TOL_M`(±5 mm) 안인지 본다.
+
+    넘으면 ValueError(시작 거부 2). 통과하면 {이름: 높이 m}를 돌려준다(시작 줄에 찍는다). `specs_path`가 None이면 부를 때의
+    `PART_SPECS_PATH`(B 파일, 읽기만)를 쓴다. 보정 투영 높이는 종류별로 나누지 않고 설정 값 하나를 쓴다: 보정 시점에는 종류를 모르고
+    (B가 W 길이로 정함), 평면 차의 영향이 작다(#245 계획 r0 §2.2 P2).
     """
-    from eyetoarm.transforms.work_result import class_plane_z, load_specs
+    from eyetoarm.transforms.work_result import load_specs
 
     specs_path = PART_SPECS_PATH if specs_path is None else specs_path
-    specs = load_specs(specs_path)
-    heights = {"bolt": class_plane_z(specs, "bolt"), "BOLT_A": class_plane_z(specs, "bolt", "BOLT_A"),
-               "BOLT_B": class_plane_z(specs, "bolt", "BOLT_B")}
+    heights = _bolt_spec_heights(load_specs(specs_path))
 
     for name, z in heights.items():
         if abs(z - bias.plane_z_m) > VIEW_BIAS_PLANE_TOL_M:
-            raise ValueError(f"axis_view_bias.plane_z_m {bias.plane_z_m!r} != B part_specs {name} plane_z {z!r} ({specs_path})")
+            raise ValueError(f"axis_view_bias.plane_z_m {bias.plane_z_m!r} differs from B part_specs {name} plane_z {z!r} "
+                             f"by more than {VIEW_BIAS_PLANE_TOL_M * 1000:.0f} mm ({specs_path}): "
+                             "re-derive axis_view_bias for the current B specs")
+
+    return heights
+
+
+def _heights_text(heights: dict[str, float], ref_m: float | None = None) -> str:
+    """시작 줄용 「이름=높이 mm(차)」 목록. `ref_m`을 주면 그 높이와의 차(mm)도 붙인다."""
+    parts = []
+
+    for name, z in heights.items():
+        diff = "" if ref_m is None else f"({(z - ref_m) * 1000:+.1f})"
+        parts.append(f"{name}={z * 1000:.1f}mm{diff}")
+
+    return " ".join(parts)
 
 
 
@@ -473,14 +525,17 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
                    else capture[0].source_profile if capture is not None else None)
 
         if capture is not None and config.axis_extractor is None:
-            raise ValueError("--capture-meta requires an AI config with axis_extractor (e.g. \"m1\")")
+            raise ValueError("--capture-meta requires an AI config with axis_extractor (e.g. \"m2\")")
 
         # #207 시선 기반 끝점 보정: 켠 설정만 시작 때 대조한다(키 없음이면 아무것도 읽지 않음)
         if getattr(config, "axis_view_bias", None) is not None:
             if synthetic is not None:
                 raise ValueError("axis_view_bias is not supported with --synthetic-observation-fixture (no AI endpoints)")
 
-            _check_view_bias_plane(config.axis_view_bias)
+            heights = _check_view_bias_plane(config.axis_view_bias)
+            err.write(f"run_pipeline: axis_view_bias plane_z={config.axis_view_bias.plane_z_m * 1000:.1f}mm; B bolt heights "
+                      f"{_heights_text(heights, config.axis_view_bias.plane_z_m)} within ±{VIEW_BIAS_PLANE_TOL_M * 1000:.0f} mm "
+                      "(correction uses the single config plane)\n")
 
             if capture is None and args.live_observation_out is None:
                 err.write("run_pipeline: axis_view_bias inactive: no B input path (needs --capture-meta or "
@@ -902,13 +957,14 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
     # #217: W 추적 설정·볼트 평면 높이(B 규격 읽기만)는 출력·세션을 만들기 전에 확인한다
     if world_on:
-        from eyetoarm.transforms.work_result import class_plane_z, load_specs
+        from eyetoarm.transforms.work_result import load_specs
         from eyetoarm.vision.live_world_tracking import LagConfigError, load_world_tracking_config
 
         try:
             world_cfg = load_world_tracking_config(args.world_tracker_config)
-            world_plane_z = class_plane_z(load_specs(REPO_ROOT / "config/calibration/part_specs.json"), "bolt")
-        except (OSError, LagConfigError) as exc:
+            # #250 A-3 P1: B 규격의 볼트 종류별 높이(읽기만). 모두 같으면 기존과 같은 높이 하나
+            world_plane_z = _bolt_planes(load_specs(PART_SPECS_PATH))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
             err.write(f"run_pipeline: world tracking config error: {exc}\n")
             return 2
 
@@ -1099,7 +1155,10 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
         link.world.diagnostics["conveyor_speed_mps"] = probe
         space_note = "default for live" if getattr(args, "tracking_space_source", "explicit") == "default" else "explicit"
-        err.write(f"run_pipeline: tracking ON space=world({space_note}; W, belt plane z={world_plane_z:.3f} m) "
+        spec_heights = _heights_text({n: z for n, z, _ in world_plane_z.specs})
+        plane_note = (f"bolt planes {spec_heights}, mask {world_plane_z.default_z_m * 1000:.1f}mm"
+                      f"{' (uniform)' if world_plane_z.uniform else ' (per spec by W length)'}")
+        err.write(f"run_pipeline: tracking ON space=world({space_note}; W, {plane_note}) "
                   f"config_sha256={world_cfg[2]} "
                   f"lag_reset>{world_cfg[1].lag_limit_ms:.0f}ms; prediction uses W differencing only "
                   f"(conveyor speed_mps diagnostic={probe.get('speed_mps')} not used)\n")
@@ -1213,6 +1272,8 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
         if problems:
             exit_code = 1
+        elif reset and exit_code == 0:   # 감독 스크립트가 정상 종료와 구분하도록 되감기 종료는 3(#251 A-4)
+            exit_code = EXIT_RESET_DETECTED
 
         for p in problems:
             err.write(f"run_pipeline: live observation problem: {p}\n")

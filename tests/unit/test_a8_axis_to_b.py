@@ -37,6 +37,10 @@ W, H = CAM.width, CAM.height
 # #233: 종류별 기준 높이는 B 규격 파일에서 읽는다(B가 값을 바꾸면 합성 투영과 기대값이 함께 따라감)
 _SPECS = load_specs(ROOT / "config/calibration/part_specs.json")
 BOLT_Z, NUT_Z = class_plane_z(_SPECS, "bolt"), class_plane_z(_SPECS, "nut")
+# #250 A-7: 볼트 총길이도 B 규격에서 읽는다(B-12로 BOLT_A가 M6×12 18 mm → M3×20 23 mm로 바뀌어도 단언이 따라감)
+LEN_A, LEN_B = float(_SPECS["specs"]["BOLT_A"]["total_length"]), float(_SPECS["specs"]["BOLT_B"]["total_length"])
+# 집는 점 Pb = Pa에서 축 끝 쪽으로 머리 높이/2. B는 모든 볼트에 BOLT_A `head_height`를 쓴다(work_result.py `compute_bolt_from_endpoints`)
+GRASP_OFFSET_M = float(_SPECS["specs"]["BOLT_A"].get("head_height", 0.006)) / 2.0
 
 
 def _project(points_w, z):
@@ -151,8 +155,9 @@ class AxisToBStageTest(A8Base):
     """정상 경로: 시험용 볼트 두 점·너트 윗면 → A 코어 → `b_gate` → 실제 BStage."""
 
     def test_bolt_a_and_b_reach_bstage_with_pa_pb_and_keys(self):
-        """46 mm·18 mm 볼트 두 점 관측이 그대로 B에 도달해 BOLT_B/BOLT_A, 길이, Pa(보고 위치)·Pb(축 끝 쪽 3 mm), PICK_PLACE, 연결 키가 맞다."""
-        (p46, u46), (p18, u18) = bolt_endpoints(0.046, 0.55, -0.05, 30.0), bolt_endpoints(0.018, 0.55, 0.05, 120.0)
+        """B 규격 총길이(BOLT_B·BOLT_A) 볼트 두 점 관측이 그대로 B에 도달해 BOLT_B/BOLT_A, 길이, Pa(보고 위치)·Pb(축 끝 쪽 머리 높이/2),
+        PICK_PLACE, 연결 키가 맞다(#250 A-7: 길이·오프셋은 규격 파일에서)."""
+        (p46, u46), (p18, u18) = bolt_endpoints(LEN_B, 0.55, -0.05, 30.0), bolt_endpoints(LEN_A, 0.55, 0.05, 120.0)
         seen = {}
 
         def make(points, key):
@@ -168,15 +173,15 @@ class AxisToBStageTest(A8Base):
         self.assertEqual(res.b_calls, 2)
         self.assertEqual(len(outs), 2)
 
-        for out, key, spec, length, (cx, cy), u in ((outs[0], "b", "BOLT_B", 0.046, (0.55, -0.05), u46),
-                                                     (outs[1], "a", "BOLT_A", 0.018, (0.55, 0.05), u18)):
+        for out, key, spec, length, (cx, cy), u in ((outs[0], "b", "BOLT_B", LEN_B, (0.55, -0.05), u46),
+                                                     (outs[1], "a", "BOLT_A", LEN_A, (0.55, 0.05), u18)):
             with self.subTest(spec=spec):
                 r, obs = out.result, seen[key]
                 self.assertTrue(r.valid, r.reason)
                 self.assertEqual((r.spec, r.method, r.plane_z_m), (spec, "axis_endpoints", BOLT_Z))
                 self.assertAlmostEqual(r.measured_length_m, length, places=4)
                 np.testing.assert_allclose(r.center_w_m, (cx, cy), atol=1e-4)                       # Pa
-                np.testing.assert_allclose(r.grasp_w_m, np.array([cx, cy]) + u * 0.003, atol=1e-4)  # Pb
+                np.testing.assert_allclose(r.grasp_w_m, np.array([cx, cy]) + u * GRASP_OFFSET_M, atol=1e-4)  # Pb
                 self.assertEqual(out.goal["kind"], "PICK_PLACE")
 
                 # A 관측 → B → C·D 연결 키는 관측·프레임 식별자 그대로다(만들어 넣지 않음)
@@ -206,7 +211,7 @@ class AxisBlockedBeforeBTest(A8Base):
 
     def test_profile_none_blocks_at_gate(self):
         """프로파일이 없으면 축 관측이 유효여도 `b_gate`가 막아 B 0회다(관측 자체는 유효로 기록)."""
-        points, _ = bolt_endpoints(0.046, 0.55, -0.05, 30.0)
+        points, _ = bolt_endpoints(LEN_B, 0.55, -0.05, 30.0)
         res, stream, outs = self.run_b(1, {0: lambda job: axis_observation(job, points)},
                                        sett=a8_settings(profile=None))
 
@@ -215,7 +220,7 @@ class AxisBlockedBeforeBTest(A8Base):
 
     def test_identifier_mismatch_is_contract_violation(self):
         """관측 image_seq·calibration_id가 작업 프레임과 다르면 A 코어 계약 위반(INFERENCE_ERROR)이며 B 0회다."""
-        points, _ = bolt_endpoints(0.046, 0.55, -0.05, 30.0)
+        points, _ = bolt_endpoints(LEN_B, 0.55, -0.05, 30.0)
 
         for field, value in (("image_seq", 99), ("calibration_id", "other-cal")):
             with self.subTest(field=field):
@@ -250,7 +255,7 @@ class AxisBlockedBeforeBTest(A8Base):
 
     def test_tampered_endpoints_fail_without_exception(self):
         """생성 뒤 변조된 끝점은 공통형(I1)과 같은 형식·유한성·두 점 구분 규칙으로 막고, 예외 없이 계약 위반 INFERENCE_ERROR·b_gate 거짓으로 남는다."""
-        points, _ = bolt_endpoints(0.046, 0.55, -0.05, 30.0)
+        points, _ = bolt_endpoints(LEN_B, 0.55, -0.05, 30.0)
         p = VisionPipeline(a8_settings(), run_id=RUN_ID, clock_ns=FakeClock())
         tampered = {
             "nan": np.array([[np.nan, 1.0], [2.0, 3.0]]),
@@ -296,7 +301,7 @@ class AxisBlockedBeforeBTest(A8Base):
 
     def test_opencv_axis_with_class_none_is_forwarded(self):
         """OpenCV 설정의 축 관측(class None)은 코어 재검사를 통과해 `b_gate`가 참이다(정상 조합 보존)."""
-        points, _ = bolt_endpoints(0.046, 0.55, -0.05, 30.0)
+        points, _ = bolt_endpoints(LEN_B, 0.55, -0.05, 30.0)
         p = VisionPipeline(a8_settings(detector_config=settings().detector_config), run_id=RUN_ID, clock_ns=FakeClock())
         p.offer_frame(a8_frame(0, p.current_generation()))
         job = p.start_next()
@@ -319,7 +324,7 @@ class AxisBlockedBeforeBTest(A8Base):
 
     def test_duplicate_and_stale_generation_not_forwarded(self):
         """축 관측도 duplicate·다음 결과 뒤 재전달·세대 변경 뒤 재전달은 `b_gate`가 막는다(게이트 조건 무변)."""
-        points, _ = bolt_endpoints(0.046, 0.55, -0.05, 30.0)
+        points, _ = bolt_endpoints(LEN_B, 0.55, -0.05, 30.0)
         p = VisionPipeline(a8_settings(), run_id=RUN_ID, clock_ns=FakeClock())
 
         def go(seq):
@@ -347,7 +352,7 @@ class AxisReachesBThenSkipsTest(A8Base):
         """프레임·프로파일·관측은 같은 보정 번호지만 B 카메라 보정이 다르면 B에 도달한 뒤 CALIBRATION_MISMATCH로 SKIP한다."""
         other = from_fov(W, H, 1.05, CAM.frame_id)
         self.assertNotEqual(other.calibration_id, CAM.calibration_id)
-        points, _ = bolt_endpoints(0.046, 0.55, -0.05, 30.0)
+        points, _ = bolt_endpoints(LEN_B, 0.55, -0.05, 30.0)
         res, _, outs = self.run_b(1, {0: lambda job: axis_observation(job, points)}, camera=other)
 
         self.assertEqual(res.b_calls, 1)
@@ -356,7 +361,7 @@ class AxisReachesBThenSkipsTest(A8Base):
 
     def test_missing_tf_skips_in_b(self):
         """촬영 시각 TF가 없으면 B에 도달한 뒤 TF_UNAVAILABLE로 SKIP한다(최신 TF로 대신하지 않음)."""
-        points, _ = bolt_endpoints(0.046, 0.55, -0.05, 30.0)
+        points, _ = bolt_endpoints(LEN_B, 0.55, -0.05, 30.0)
         res, _, outs = self.run_b(1, {0: lambda job: axis_observation(job, points)}, tf_lookup=lambda frame: None)
 
         self.assertEqual(res.b_calls, 1)
@@ -368,7 +373,7 @@ class AxisPreservationTest(A8Base):
 
     def test_handoff_result_keeps_same_endpoints_readonly(self):
         """내부 전달 RESULT의 관측은 같은 객체이며 끝점 값·head→tip 순서·읽기 전용·식별자가 보존되고 display_only=False다."""
-        points, _ = bolt_endpoints(0.046, 0.55, -0.05, 30.0)
+        points, _ = bolt_endpoints(LEN_B, 0.55, -0.05, 30.0)
         p = VisionPipeline(a8_settings(), run_id=RUN_ID, clock_ns=FakeClock())
         h = AToCHandoff(clock_ns=FakeClock())
         h.start_run(p)
@@ -399,8 +404,8 @@ class AxisPreservationTest(A8Base):
 
     def test_reprocess_uses_new_detector_output_only(self):
         """검출 설정 변경 뒤 재처리 관측은 새 detector 출력이며, 이전 끝점이 현재 관측·B 전달로 남지 않는다."""
-        old_points, _ = bolt_endpoints(0.046, 0.55, -0.05, 30.0)
-        new_points, _ = bolt_endpoints(0.018, 0.55, 0.05, 120.0)
+        old_points, _ = bolt_endpoints(LEN_B, 0.55, -0.05, 30.0)
+        new_points, _ = bolt_endpoints(LEN_A, 0.55, 0.05, 120.0)
         p = VisionPipeline(a8_settings(), run_id=RUN_ID, clock_ns=FakeClock())
         p.offer_frame(a8_frame(0, p.current_generation()))
         j0 = p.start_next()
@@ -429,7 +434,7 @@ class AxisPreservationTest(A8Base):
 
     def test_jsonl_process_keys_unchanged(self):
         """JSONL 처리 기록의 키 집합은 축 관측이어도 기존 무효 관측과 같고 끝점 필드를 새로 쓰지 않는다(calc_contour와 같은 감사 한계)."""
-        points, _ = bolt_endpoints(0.046, 0.55, -0.05, 30.0)
+        points, _ = bolt_endpoints(LEN_B, 0.55, -0.05, 30.0)
         _, axis_stream, _ = self.run_b(1, {0: lambda job: axis_observation(job, points)})
         _, base_stream, _ = self.run_b(1, {})
 

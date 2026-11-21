@@ -71,8 +71,8 @@ MULTIPLE_OBJECTS = "MULTIPLE_OBJECTS"
 AXIS_OVERLAP_IOU = 0.5   # #163 §4 「볼트 마스크끼리 IoU ≥ 0.5」(명세 상수, #159 결과로 정하지 않음)
 
 # 기록에 남길 추출기 진단 키(수·문자열만)
-_DIAG_KEYS = ("pixels", "components", "holes", "width_ratio", "head_step_frac", "tilt_deg", "class_est",
-              "total_length_est_mm", "scale_px_per_mm",
+# (#250: 크기(mm) 진단 class_est·total_length_est_mm·scale_px_per_mm는 #245 E1 뒤 추출기가 내지 않아 뺐다)
+_DIAG_KEYS = ("pixels", "components", "holes", "width_ratio", "head_step_frac", "tilt_deg",
               # M2(#225)만 내는 값. M1 진단에는 없으므로 M1 기록은 그대로다
               "vote_width_ratio", "head_vote", "order_gate", "centerline", "tilt_used_deg")
 

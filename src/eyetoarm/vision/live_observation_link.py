@@ -257,7 +257,7 @@ class LiveObservationLink:
                  render: Callable | None, clock_ns: Callable[[], int] = time.monotonic_ns,
                  b_input: str = B_INPUT_SINGLE, list_consumer_factory: Callable | None = None,
                  view_bias=None, sort_part_runtime=None, tracking: bool = False,
-                 world_tracker=None, world_config=None, world_plane_z_m: float | None = None,
+                 world_tracker=None, world_config=None, world_plane_z_m=None,
                  list_consumer_kind: str | None = None, run_outputs: tuple | None = None) -> None:
         """출력 폴더(새로)·상태(start_closed)·기록기·디스패처·TF 준비를 만든다.
 
@@ -276,6 +276,7 @@ class LiveObservationLink:
           있어야 한다. 단계 T, 또는 단계 L(#233, 고른 1개만). 연결부가 소유해 정리 단계 `sort_part`에서 닫는다. None(기본)이면 송신 없음.
         - `tracking`(#215, 기본 False): 추적 번호 연결. 단계 T·L(#244). 끄면 `offer`의 `tracks`를 쓰지 않고 기록·요약이 기존과 같다.
         - `world_tracker`·`world_config`·`world_plane_z_m`(#217, 선택): W 추적 스레드. `tracking`이 참이어야 한다(단계 T·L).
+          `world_plane_z_m`은 높이 하나(m) 또는 종류별 높이 `world_tracking.BoltPlanes`(#250 P1)다.
         """
         # 설정 검사는 파일을 열기 전에 한다(#180 #7: 검사 실패가 기록 파일 핸들을 남기지 않게)
         if type(config.skip_queue_capacity) is not int or config.skip_queue_capacity <= 0:

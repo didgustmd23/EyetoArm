@@ -212,7 +212,7 @@ class FrameCurrencyTest(ListBase):
         sc = Scenario(5, masks={i: three_bolts for i in range(5)}, during={2: rewind})
         code, err, out = self.run_list(sc)
 
-        self.assertEqual(code, 0, err)
+        self.assertEqual(code, 3, err)   # #251 A-4: 되감기로 끝난 실행은 3(정상 0과 구분)
         self.assertIn("reason=reset_detected", err)
         self.assertEqual(self.consumer.stamps(), [sc.stamp(1)])
         kinds = [r["kind"] for r in self.records(out)]

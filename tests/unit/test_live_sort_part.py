@@ -456,7 +456,7 @@ class CliOnTest(CliBase):
         rt = FakeRuntime()
         sc = Scenario(5, during=ResetAndRestartTest.rewind_at(self, 2))
         code, err, out = self.run_sort(sc, factory=self.factory(rt), max_frames=5)
-        self.assertEqual(code, 0, err)
+        self.assertEqual(code, 3, err)   # #251 A-4: 되감기 종료는 3
         self.assertIn("reason=reset_detected", err)
         recs = self.sort_records(out)
         closed_at = [i for i, r in enumerate(recs) if r["event"] == "gate_closed_by"]
@@ -520,8 +520,9 @@ class CliOffAndArgsTest(CliBase):
         s = self.summary(out)
         self.assertNotIn("sort_part", s)
         # #233 r1: C 연결부(detect)는 항상 출구다. C 목표·center·D/로봇 출력은 없다
-        self.assertEqual((s["record_only"], s["outputs"]), (False, ["c_handoff_detect(127.0.0.1:47093)"]))
-        self.assertIn("outputs=c_handoff_detect(127.0.0.1:47093); no D/robot output from A, no auto restart", err)
+        addr = self.mod._handoff_address()   # #251: 설정된 주소(환경 변수 EYETOARM_DISPLAY_INGRESS_*)
+        self.assertEqual((s["record_only"], s["outputs"]), (False, [f"c_handoff_detect({addr})"]))
+        self.assertIn(f"outputs=c_handoff_detect({addr}); no D/robot output from A, no auto restart", err)
         self.assertNotIn("SORT_PART", err)
 
     def test_argument_and_config_errors(self):

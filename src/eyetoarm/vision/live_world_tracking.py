@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Callable
 
 from eyetoarm.vision.tracking import FrameKey, TrackFrame
-from eyetoarm.vision.world_tracking import WorldTracker, world_inputs
+from eyetoarm.vision.world_tracking import BoltPlanes, WorldTracker, world_inputs
 from eyetoarm.vision.world_tracking_display import (DisplayPrevConfig, DisplayPrevConfigError, PrevSnapshot, match_prev,
                                                     parse_display_prev, snapshot)
 
@@ -175,14 +175,18 @@ def _pct(values, q: float):
 class LiveWorldTracking:
     """실행 하나의 W 추적 스레드. 큐·결과 표·계수는 조건변수 하나가, 추적기와 기록 파일은 추적 스레드가 소유한다."""
 
-    def __init__(self, run_id: str, tracker: WorldTracker, config: LiveWorldConfig, *, tf_lookup: Callable, plane_z_m: float,
+    def __init__(self, run_id: str, tracker: WorldTracker, config: LiveWorldConfig, *, tf_lookup: Callable,
+                 plane_z_m: float | BoltPlanes,
                  out_dir: str, view_bias=None, clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
-        """`tf_lookup(frame) → TfLookupResult`(촬영 stamp 정확 조회). 기록 파일(`world_tracks.jsonl`, 새 파일)을 연다."""
+        """`tf_lookup(frame) → TfLookupResult`(촬영 stamp 정확 조회). 기록 파일(`world_tracks.jsonl`, 새 파일)을 연다.
+
+        `plane_z_m`은 볼트 투영 높이 하나(m) 또는 종류별 높이 `BoltPlanes`(#250 P1, `world_inputs`가 끝점 볼트마다 고름)다.
+        """
         self.run_id = run_id
         self._tracker = tracker
         self.config = config
         self._tf_lookup = tf_lookup
-        self._plane_z = float(plane_z_m)
+        self._plane_z = plane_z_m if isinstance(plane_z_m, BoltPlanes) else float(plane_z_m)
         self._view_bias = view_bias
         self._clock_ns = clock_ns
         self._fh = open(Path(out_dir) / "world_tracks.jsonl", "x", encoding="utf-8")
@@ -456,7 +460,9 @@ class LiveWorldTracking:
                                     "input": by_index[a.instance_index].kind,
                                     "center_mm": _r(by_index[a.instance_index].center_mm),
                                     "center_raw_mm": _r(by_index[a.instance_index].center_raw_mm),
-                                    "length_mm": _r1(by_index[a.instance_index].length_mm)} for a in track.assignments]})
+                                    "length_mm": _r1(by_index[a.instance_index].length_mm),
+                                    "plane_z_m": by_index[a.instance_index].plane_z_m,     # #250: W로 올린 높이
+                                    "plane_spec": by_index[a.instance_index].plane_spec} for a in track.assignments]})
 
         # #242: 갱신한 결과면 확정 번호의 표시용 박스 사본을 둔다(화면 전용, 추적 판정·송신에는 쓰지 않음)
         snap = snapshot(value, item.display) if isinstance(value, TrackFrame) else None

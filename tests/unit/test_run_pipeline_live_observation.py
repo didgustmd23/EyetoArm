@@ -26,6 +26,7 @@ from eyetoarm.transforms import b_stage as b_stage_mod
 from eyetoarm.transforms import sort_part_client
 from eyetoarm.vision import pipeline_runner
 from eyetoarm.vision.live_run_session import LiveRunController
+from handoff_isolation import isolate_cli
 from test_ros_image_adapter import FakeTransport, image_msg, info_msg, stamp, view_convert
 from test_run_pipeline_capture_observation import FRAME_ID, H, T_W_C, W, Case, bolt_mask, model_with, rect_mask
 
@@ -169,6 +170,9 @@ class Base(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("run_pipeline_live_obs_under_test", SCRIPT)
         self.mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.mod)
+
+        # #251 A-1: 기본 C 연결부는 송신 없는 대역(운영 47093으로 detect를 보내지 않음). 실제 연결부 시험은 test_handoff_isolation
+        isolate_cli(self.mod)
         self.consume_calls, self.c_calls = [], []
         real_consume = b_stage_mod.BStage.consume
 
@@ -280,7 +284,7 @@ class NormalPathTest(Base):
         # #233 r1: 실시간 A→B 실행은 C 연결부(detect)를 항상 출구로 가진다(C 목표·D·로봇 출력은 없음)
         self.assertEqual((s["record_only"], s["cleanup_confirmed"], s["reset_detected"], s["drained_before_end"]),
                          (False, True, False, True))
-        self.assertEqual(s["outputs"], ["c_handoff_detect(127.0.0.1:47093)"])
+        self.assertEqual(s["outputs"], [f"c_handoff_detect({self.mod._handoff_address()})"])   # #251: 설정된 주소
         self.assertEqual(self.tf.closed, 1)
         self.assertTrue(all(c[2] in {sc.stamp(i) for i in range(3)} for c in self.tf.calls))
 
@@ -351,10 +355,10 @@ class ResetAndRestartTest(Base):
         return {i: act}
 
     def test_reset_ends_run_and_revokes(self):
-        """프레임 1 수락 뒤 리셋 → 실행 정지(종료 0, reset_detected), 수락 철회 기록, 정리 확인, 이후 수락 0."""
+        """프레임 1 수락 뒤 리셋 → 실행 정지(종료 3, reset_detected), 수락 철회 기록, 정리 확인, 이후 수락 0."""
         sc = Scenario(5, during=self.rewind_at(2))
         code, err, out = self.run_cli(sc, max_frames=5)
-        self.assertEqual(code, 0, err)
+        self.assertEqual(code, 3, err)   # #251 A-4: 되감기 종료는 3(정상 0과 구분)
         self.assertIn("reason=reset_detected", err)
         self.assertIn("new run requires an explicit restart", err)
         recs = self.records(out)
@@ -368,10 +372,22 @@ class ResetAndRestartTest(Base):
         self.assertEqual((s["reset_detected"], s["cleanup_confirmed"]), (True, True))
         self.assertLess(sc.detections, 5)                     # 리셋 뒤 계속 처리하지 않음
 
+    def test_reset_exit_code_3_in_summary_and_problem_wins(self):
+        """#251 A-4: 되감기 종료는 요약 exit_code도 3. 정리 문제(TF 닫기 실패)가 함께 있으면 1이 우선."""
+        code, err, out = self.run_cli(Scenario(5, during=self.rewind_at(2)), max_frames=5, out=self.out("r3"))
+        self.assertEqual((code, self.summary(out)["exit_code"], self.summary(out)["reset_detected"]), (3, 3, True), err)
+        self.assertEqual(self.mod.EXIT_RESET_DETECTED, 3)
+
+        code, err, out = self.run_cli(Scenario(5, during=self.rewind_at(2)), max_frames=5, out=self.out("r1"),
+                                      tf=FakeTf(fail_close=10))
+        s = self.summary(out)
+        self.assertEqual((code, s["exit_code"], s["reset_detected"]), (1, 1, True), err)
+        self.assertTrue(s["problems"])
+
     def test_explicit_new_run_after_cleanup(self):
         """리셋으로 끝난 뒤 다시 실행하면 새 run_id·새 출력으로 처음부터 열린다(이전 결과 없음)."""
         code1, err1, out1 = self.run_cli(Scenario(5, during=self.rewind_at(2)), out=self.out("a"))
-        self.assertEqual(code1, 0, err1)
+        self.assertEqual(code1, 3, err1)   # #251 A-4: 되감기 종료는 3
         code2, err2, out2 = self.run_cli(Scenario(2), out=self.out("b"))
         self.assertEqual(code2, 0, err2)
         s1, s2 = self.summary(out1), self.summary(out2)

@@ -389,13 +389,23 @@ class StoredStageTTest(CaptureBase):
         self.assertEqual(c.summary()["view_bias"]["skipped_by_reason"], {"no_tf": 1})
 
     def test_plane_z_mismatch_refused_at_start(self):
-        """켬 + 보정 높이가 B part_specs와 다르면 시작 때 종료 2(B 호출 0)."""
+        """켬 + 보정 높이가 B part_specs 볼트 높이와 5 mm 넘게 다르면 시작 때 종료 2(B 호출 0, #250 P2)."""
         c = self.case()
-        ai = write_bias_config(c.ai, Path(self.tmp.name) / "ai_vb.json", plane_z_m=0.1057)
+        ai = write_bias_config(c.ai, Path(self.tmp.name) / "ai_vb.json", plane_z_m=PLANE_Z + 0.0051)
         code, err = self.cli(c, c.write_meta(c.meta()), ai=ai)
         self.assertEqual(code, 2, err)
         self.assertIn("plane_z", err)
+        self.assertIn("by more than 5 mm", err)
         self.assertEqual(self.b_obs, [])
+
+    def test_plane_z_within_5mm_runs_and_prints_heights(self):
+        """켬 + 보정 높이가 B 볼트 높이와 5 mm 안(0.7 mm)이면 시작하고, 시작 줄에 종류별 높이·차를 찍는다(#250 P2)."""
+        c = self.case()
+        ai = write_bias_config(c.ai, Path(self.tmp.name) / "ai_vb.json", plane_z_m=PLANE_Z + 0.0007)
+        code, err = self.cli(c, c.write_meta(c.meta()), ai=ai)
+        self.assertIn(code, (0, 1), err)
+        self.assertIn("run_pipeline: axis_view_bias plane_z=105.7mm; B bolt heights bolt=105.0mm(-0.7) "
+                      "BOLT_A=105.0mm(-0.7) BOLT_B=105.0mm(-0.7) within ±5 mm", err)
 
     def test_model_id_mismatch_refused_at_start(self):
         """켬 + model_id 불일치는 설정 오류 종료 2."""
@@ -406,13 +416,25 @@ class StoredStageTTest(CaptureBase):
         self.assertIn("valid_for_model_id", err)
 
     def test_plane_check_reads_given_specs(self):
-        """시작 대조 함수는 B 파일 볼트 높이(BOLT_A·BOLT_B)와 1e-9 m를 넘게 다르면 ValueError, 같으면 통과."""
+        """시작 대조 함수(#250 P2): B 볼트 높이(bolt·BOLT_A·BOLT_B)가 보정 높이와 5 mm 안이면 통과하며 높이를 돌려주고, 넘으면 ValueError."""
         good = ViewBiasConfig("C1", K_MM, PLANE_Z, "m@x")
-        self.mod._check_view_bias_plane(good)                      # 저장소 B 파일(읽기만)
+        self.assertEqual(self.mod._check_view_bias_plane(good), {"bolt": PLANE_Z, "BOLT_A": PLANE_Z, "BOLT_B": PLANE_Z})
         specs = json.loads(SPECS.read_text(encoding="utf-8"))
-        bad = copy.deepcopy(specs)
-        bad["specs"]["BOLT_B"]["plane_z"] = PLANE_Z + 1e-6
         p = Path(self.tmp.name) / "specs.json"
+
+        # B-12 예상 값: BOLT_A 102 mm·BOLT_B 105 mm(차 3 mm) → 통과, 종류별 높이를 그대로 돌려준다
+        split = copy.deepcopy(specs)
+        split["specs"]["BOLT_A"]["plane_z"] = 0.102
+        p.write_text(json.dumps(split), encoding="utf-8")
+        self.assertEqual(self.mod._check_view_bias_plane(good, p), {"bolt": 0.102, "BOLT_A": 0.102, "BOLT_B": PLANE_Z})
+
+        # 경계: 5 mm 바로 안(4.999 mm)은 통과, 5 mm를 넘으면(5.1 mm) 그 종류 이름과 함께 거부
+        edge = copy.deepcopy(specs)
+        edge["specs"]["BOLT_B"]["plane_z"] = PLANE_Z + 0.004999
+        p.write_text(json.dumps(edge), encoding="utf-8")
+        self.mod._check_view_bias_plane(good, p)
+        bad = copy.deepcopy(specs)
+        bad["specs"]["BOLT_B"]["plane_z"] = PLANE_Z + 0.0051
         p.write_text(json.dumps(bad), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "BOLT_B"):
             self.mod._check_view_bias_plane(good, p)
