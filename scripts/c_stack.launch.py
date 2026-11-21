@@ -25,7 +25,9 @@ from launch.substitutions import LaunchConfiguration
 
 ROOT = Path(__file__).resolve().parent.parent
 SIM_LAUNCH = ROOT / "scripts" / "sim_sort_cell.launch.py"
-AI_CONFIG = ROOT / "config" / "vision" / "ai_s1_08_live.json"
+# A 실시간 A→B 경로(M2 끝점·시야 보정) + B center 발행기(단계 L). detect handoff(47093)는 이 실행에서도 항상 켜진다.
+AI_CONFIG = ROOT / "config" / "vision" / "ai_s1_08_axis_m2_viewbias.json"
+LIVE_CONFIG = ROOT / "config" / "vision" / "live_observation_test.json"
 
 
 def generate_launch_description():
@@ -78,6 +80,9 @@ def generate_launch_description():
             cmd=[a_python, str(ROOT / "scripts" / "run_pipeline.py"),
                  "--ros-link", "--detector", "ai",
                  "--ai-config", str(AI_CONFIG),
+                 "--live-observation-out", str(ROOT / "logs" / f"a_live_obs_{stamp}"),
+                 "--live-observation-config", str(LIVE_CONFIG),
+                 "--b-input", "list", "--b-center-overlay",
                  "--log", str(ai_log)],
             cwd=str(ROOT),
             output="screen",
