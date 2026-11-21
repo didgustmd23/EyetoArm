@@ -14,7 +14,7 @@ from typing import Callable, MutableMapping
 
 import numpy as np
 
-from eyetoarm.common.types import InvalidationKind, PlanarObservation
+from eyetoarm.common.types import FramePacket, InvalidationKind, PlanarObservation
 from eyetoarm.vision.ai_config import AiSegConfig
 from eyetoarm.vision.ai_convert import convert, crop_frame, observation_from_ai
 from eyetoarm.vision.ai_result import AiJobConfigError, AiSegResult, ModelPrepareError, RawSegOutput
@@ -284,6 +284,12 @@ class AiSegDetector:
 
     def __call__(self, job: JobContext) -> tuple[PlanarObservation, AiSegResult]:
         """작업 하나를 추론해 (표시용 무효 관측, 표시 결과)를 돌려준다."""
+        result = self.infer(job.frame, job.detector_config_id)
+
+        return observation_from_ai(job, result), result
+
+    def infer(self, frame: FramePacket, detector_config_id: str) -> AiSegResult:
+        """프레임 하나를 crop·추론·변환해 표시 결과만 돌려준다. 추론 프로세스 자식도 이것을 부른다."""
         if self._model is None:
             raise RuntimeError("AiSegDetector used before prepare()")
 
@@ -292,12 +298,12 @@ class AiSegDetector:
 
         cfg = self._config
 
-        if job.detector_config_id != cfg.config_sha256:
-            raise AiJobConfigError(f"job start config {job.detector_config_id[:12]} != detector config "
+        if detector_config_id != cfg.config_sha256:
+            raise AiJobConfigError(f"job start config {detector_config_id[:12]} != detector config "
                                    f"{cfg.config_sha256[:12]}")
 
         t0 = time.perf_counter_ns()
-        crop, _ = crop_frame(job.frame, cfg)
+        crop, _ = crop_frame(frame, cfg)
 
         # predict에는 폐기된 `half` 대신 `quantize`로 넘긴다(False → None(FP32), True → 16(FP16))
         quantize = 16 if cfg.half else None
@@ -310,9 +316,8 @@ class AiSegDetector:
 
         raw = raw_from_results(results, crop.shape, infer_ms)
         del results  # 결과 객체(마스크 텐서)를 붙잡지 않는다
-        result = convert(raw, job.frame, cfg, started_ns=t0)
 
-        return observation_from_ai(job, result), result
+        return convert(raw, frame, cfg, started_ns=t0)
 
 
 __all__ = ["AiSegDetector", "REQUIRED_ENV", "raw_from_results"]
