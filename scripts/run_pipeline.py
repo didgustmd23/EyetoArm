@@ -51,7 +51,8 @@
   실행의 정리 완료가 확인되기 전 새 실행을 거부한다(1). `stage.on_output`은 쓰지 않는다(C·D 송신·로봇 목표 없음). 설정 파일의
   값은 미확정 운영값의 시험 설정이며 `"status": "test_only"`가 필수다(`config/vision/live_observation_test.json`). 기록·출력이 이미
   있으면 덮어쓰지 않고 2. `--capture-meta`·`--synthetic-observation-*`과 함께 쓸 수 없다(2). `--tracking`(#215)을 더하면 확정 추적
-  번호만 관측·봉투에 실어 B 중복 방지(`_dedupe`·`release`)까지 넘긴다(단계 T만, M2 휴리스틱, 분열은 알려진 한계).
+  번호만 관측·봉투에 실어 B 중복 방지(`_dedupe`·`release`)까지 넘긴다(M2 휴리스틱, 분열은 알려진 한계). 단계 L(#244)은 후보마다
+  확정 번호를 A 하위 형 후보로 싣는다(B가 읽기 전에는 송신기가 고른 후보의 A 번호를 기록·재시도·require_track_id에 씀).
   `--b-input list`(#201)를 더하면 같은 연결·같은 프레임 단위 검사로 유효 볼트 목록(`eyetoarm.b_input/2`, 촬영 stamp TF 하나)을 B 목록
   소비자(`BStage.process_frame`)에 넘기고 소비자 결과를 기록한다(주석 없음). 소비자가 없으면 시작 때 1(단계 T로 바꾸지 않음).
 - **실시간 C 목표 송신(#214 D13 해제, opt-in):** `--live-observation-out`에 `--live-sort-part`를 더하면 검사 ③이 수락한 B 결과의
@@ -193,7 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "후보 목록 eyetoarm.b_input/2). list는 --capture-meta 저장 입력 경로 또는 --live-observation-out 실시간 기록 전용 경로에서만 쓰며 B 목록 소비자"
                              "(BStage.process_frame)가 없으면 시작 때 거부한다(단계 T로 바꾸지 않음)")
     parser.add_argument("--tracking", action="store_true", help="--detector ai 전용. A-6 1차 실험: AI 검출 인스턴스 추적 번호를 붙인다(M2 휴리스틱, 팔 이동을 넘는 신원·중복 집기 방지 보장 없음). 기본 꺼짐. 저장·표시 경로는 표시·기록 전용이고, "
-                             "--live-observation-out과 함께면(#215, 단계 T만) 확정 번호만 B 중복 방지에 넘긴다")
+                             "--live-observation-out과 함께면(#215 단계 T, #244 단계 L 후보별) 확정 번호만 B 중복 방지에 넘긴다")
 
     return parser
 
@@ -252,9 +253,6 @@ def _check_source_args(args, ros_available) -> None:
             build_parser().error("--live-observation-out requires --ros-link")
         if args.detector != "ai":
             build_parser().error("--live-observation-out requires --detector ai")
-        # #215: 추적 번호 연결은 단계 T만(B-09 목록 규칙 전)
-        if args.tracking and args.b_input != "single":
-            build_parser().error("--live-observation-out --tracking is for stage T only (--b-input single)")
 
     # #239: 추적 공간 생략 시 실시간 기록 연결(--live-observation-out)은 W, 그 밖(저장 입력·기본 --ros-link 등)은 픽셀.
     # W 설정 파일은 숨은 기본 경로 없이 명시해야 한다(설정은 모두 test_only, 기본값 없음 규칙)
@@ -879,7 +877,8 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
                      else "config block sort_part given without --live-sort-part\n"))
         return 2
 
-    # #239 D4: 추적 켬(단계 T)이면 require_track_id 필수(기본값 없음). 번호가 없는 실행(추적 끔·단계 L)의 true는 볼트 송신 0이라 거부
+    # #239 D4: 추적 켬이면 require_track_id 필수(기본값 없음). 번호가 없는 실행(추적 끔)의 true는 볼트 송신 0이라 거부.
+    # #244: 단계 L + 추적은 고른 후보의 A 번호로 판정하므로 허용
     require = None if link_config.sort_part is None else link_config.sort_part.require_track_id
 
     if sort_on and args.tracking and require is None:
@@ -887,8 +886,8 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
                   "(true = send only confirmed part_track_id PICK_PLACE)\n")
         return 2
 
-    if sort_on and require is True and (not args.tracking or args.b_input == "list"):
-        err.write("run_pipeline: live observation config error: sort_part.require_track_id=true needs --tracking stage T "
+    if sort_on and require is True and not args.tracking:
+        err.write("run_pipeline: live observation config error: sort_part.require_track_id=true needs --tracking "
                   "(no track ids here: no PICK_PLACE would ever be sent)\n")
         return 2
 
@@ -1067,9 +1066,12 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         retry = link_config.sort_part.retry
         retry_text = ("off" if retry is None else f"max_failures_per_track={retry.max_failures_per_track} "
                       f"point_block={retry.failed_point_block_mm}mm/{retry.failed_point_block_s}s"
-                      + (" (stage L: point block only, no track ids)" if listed else ""))
+                      + (" (stage L: point block only, no track ids)" if listed and not args.tracking else ""))
+        # #244: 단계 L + 추적이면 송신 번호(기록·재시도·require_track_id)는 B가 후보 번호를 읽기 전까지 고른 후보의 A 번호
+        track_text = ((('world' if world_on else 'M2(heuristic)') if args.tracking else 'off')
+                      + (" (stage L: A candidate ids until B reads them)" if listed and args.tracking else ""))
         err.write(f"run_pipeline: LIVE A->B->C SORT_PART ON action=/sort_part server_seen={str(seen).lower()} "
-                  f"retry={retry_text} tracking={('world' if world_on else 'M2(heuristic)') if args.tracking else 'off'} "
+                  f"retry={retry_text} tracking={track_text} "
                   f"require_track_id={({True: 'true', False: 'false'}).get(link_config.sort_part.require_track_id, 'unset')} "
                   "(D13 released by user decision 2026-11-20, accepted risk without pre-release test F6)\n")
 

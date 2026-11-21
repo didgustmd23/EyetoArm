@@ -77,7 +77,7 @@ C는 2026-11-12 C-01·C-03·C-04·C-05·C-07에 회신했습니다(A 담당 전�
 | C-12 | 새 요청(0.13, 미발송) | `sort_manager` 목표 해석·벨트 예측 집기·`valid_until_ns` 만료 검사(C) | A→B→C 목표는 C까지 도착하지만 지금은 항상 `FAILED EXECUTION_NOT_CONFIGURED` |
 | C-13 | 새 요청(0.13, 미발송) | `CenterOverlay` 구독·번호표 보존·결과 값 D 전달(C) | D center 화면 번호가 C 순번, 「현재 측정」 미수신 |
 | C-14 | 새 요청(0.13, 미발송) | `/sort_part` 서버 하나만 뜨게 하는 장치(C·B) | 시험 서버와 C 수신기 동시 실행 시 결과가 섞일 수 있음 |
-| C-15 | 새 요청(0.13, 미발송) | 실행 묶음 정리: `set_pose` 연결, `ur5e_moveit_config` 조건부 조회, A 실행 인자(C) | A가 A 지시로 `c_stack.launch.py` A 인자만 임시 수정(미커밋) |
+| C-15 | 새 요청(0.13, 미발송) | 실행 묶음 정리: `set_pose` 연결, `ur5e_moveit_config` 조건부 조회, A 실행 인자(C) | A가 `c_stack.launch.py` A 실행 인자를 수정해 main 반영(PR #123), C 확인 필요 |
 | D-07 | D 답신(보완 예정) | `TcpClient` 콜백 예외 기록·재접속 유지 보완과 로컬 시험(D). **D 수정 커밋 `4a03bce`가 2026-11-20 main에 들어옴, A 미확인** | A 통신 시험 도구는 현재 예외 감싸기 유지(D 요청과 같음) |
 | C-03·C-05·C-07 | 동의(2026-11-12) | 실제 연결 뒤 시각·되감기·재시작 대응 확인, Hz·RTF 공동 측정(A·C) | 재시작 감지 시 실행 종료는 A 구현 완료. 실제 연결 시험 남음 |
 | C-04 | 조건부 | 통합 후 녹화 일정 재공유(C) | 저장 입력은 공개·자체 녹화로 진행 중 |
@@ -368,7 +368,7 @@ C→D는 raw 영상 3채널을 47092/ETV1/JPEG 시제품으로 전송해 테스�
 - **배경:** 2026-11-21 A가 실행 묶음으로 통합 확인을 하며 다음을 확인했습니다.
   1. C 컨베이어(`conveyor_controller`)가 쓰는 Gazebo 서비스 `/world/sort_cell/set_pose`의 연결(`ros_gz_bridge`)이 `sim_sort_cell.launch.py`·`c_stack.launch.py` 어디에도 없어, 컨베이어 시작이 `set_pose service is not ready`로 실패합니다. 별도 `parameter_bridge`로 띄워야 동작합니다.
   2. `c_stack.launch.py:38`이 `start_moveit:=false`에서도 `ur5e_moveit_config` 패키지 위치를 무조건 조회해, 이 패키지를 빌드하지 않은 환경에서 실행 자체가 실패합니다.
-  3. `c_stack.launch.py`의 A 실행이 예전 설정(`ai_s1_08_live.json`, 일반 `--ros-link`)이라 B center 영상이 나오지 않습니다. **A 지시로 A가 이 파일의 A 실행 인자만 임시 수정했습니다(2026-11-21, 미커밋):** `ai_s1_08_axis_m2_viewbias.json`, `--live-observation-out`, `--live-observation-config config/vision/live_observation_test.json`, `--b-input list --b-center-overlay`.
+  3. `c_stack.launch.py`의 A 실행이 예전 설정(`ai_s1_08_live.json`, 일반 `--ros-link`)이라 B center 영상이 나오지 않습니다. **A 요청으로 A가 이 파일의 A 실행 인자를 수정해 main에 반영했습니다(2026-11-21, PR #123). C 확인을 부탁드립니다:** `ai_s1_08_axis_m2_viewbias.json`, `--live-observation-out`, `--live-observation-config config/vision/live_observation_test.json`, `--b-input list --b-center-overlay`.
   4. `sort_goal_receiver`·`conveyor_controller`는 어느 실행 묶음에도 없습니다. `dashboard_stack.launch.py`(B)와 `c_stack.launch.py`(C)의 A 설정도 서로 다릅니다.
 - **확인할 내용:** `set_pose` 연결 추가, MoveIt 패키지 조회를 `start_moveit`일 때만, A 실행 인자(위 3) 채택 여부와 목표 송신(`--live-sort-part`) 포함 여부, 분류 경로 프로세스 포함, 두 실행 묶음의 A 설정 통일.
 - **근거:** `c_stack.launch.py:28·38·78-81`, `conveyor_controller.py:65`, A 작업 기록 #232·#238.
