@@ -80,12 +80,12 @@ class RequireConfigTest(TrackCli):
         self.assertEqual(rt.sent, [])
 
     def test_true_without_tracking_or_stage_l_is_2(self):
-        """번호가 없는 실행(추적 끔·단계 L)의 true는 거부 2(볼트 송신 0 설정을 조용히 받지 않음)."""
+        """번호가 없는 실행(추적 끔, 단계 T·L)의 true는 거부 2(볼트 송신 0 설정을 조용히 받지 않음)."""
         for i, extra in enumerate((("--live-sort-part",), ("--live-sort-part", "--b-input", "list"))):
             with self.subTest(extra=extra):
                 code, err, out = self.run_sort(Scenario(3), config=TRACK_SORT_CONFIG, extra=extra, out=self.out(f"t{i}"))
                 self.assertEqual(code, 2, err)
-                self.assertIn("require_track_id=true needs --tracking stage T", err)
+                self.assertIn("require_track_id=true needs --tracking", err)   # #244: 단계 L + 추적은 허용(추적 없을 때만 2)
 
     def test_false_or_unset_without_tracking_runs(self):
         """추적 끔 + false·키 없음은 지금처럼 실행(0)."""
@@ -208,15 +208,16 @@ class DefaultSpaceTest(WorldCli):
                 self.assertEqual(code, 0, err)
                 self.assertEqual(self.summary(out)["tracking_space"], {"space": space, "source": "explicit"})
 
-    def test_stage_l_tracking_refusal_unchanged(self):
-        """단계 L + --tracking 거부 문구는 기본 공간 결정보다 먼저(지금과 같음)."""
+    def test_stage_l_tracking_needs_world_config(self):
+        """#244: 단계 L + --tracking은 허용이고, 실시간 기본 W라 W 설정이 없으면 #239 안내로 2(단계 T 전용 거부는 없어짐)."""
         with contextlib.redirect_stderr(io.StringIO()) as argerr:
             code, err, out, rt = self.run_world(Scenario(2), extra=("--tracking", "--b-input", "list"), config=str(CONFIG))
 
         err = argerr.getvalue()
 
         self.assertEqual(code, 2)
-        self.assertIn("--live-observation-out --tracking is for stage T only", err)
+        self.assertNotIn("is for stage T only", err)
+        self.assertIn("--world-tracker-config JSON is required", err)
 
     def test_stored_input_default_pixel(self):
         """저장 입력 경로의 공간 생략은 픽셀(인자 해석만, W 설정 없이 통과)."""

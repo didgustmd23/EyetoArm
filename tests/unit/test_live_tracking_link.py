@@ -582,10 +582,10 @@ class TrackingOffTest(TrackCli):
         self.assertTrue(kwargs and all(set(kw) == {"tracks"} for kw in kwargs))
         self.assertTrue(any(isinstance(kw["tracks"], trk.TrackFrame) for kw in kwargs))
 
-    def test_list_with_tracking_refused(self):
-        """T1: 단계 L + 추적은 2."""
-        code, err, out = self.run_sort(Scenario(2), config=CONFIG, extra=("--tracking", "--b-input", "list"))
-        self.assertEqual(code, 2)
+    def test_list_with_tracking_allowed(self):
+        """T1(#244 변경): 단계 L + 픽셀 추적은 허용(0). 전에는 단계 T 전용이라 2였다."""
+        code, err, out = self.run_sort(Scenario(2), config=CONFIG, extra=("--tracking", *PIXEL, "--b-input", "list"))
+        self.assertEqual(code, 0, err)
 
 
 if __name__ == "__main__":

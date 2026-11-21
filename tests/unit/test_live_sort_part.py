@@ -525,7 +525,7 @@ class CliOffAndArgsTest(CliBase):
         self.assertNotIn("SORT_PART", err)
 
     def test_argument_and_config_errors(self):
-        """U12: 기록 연결 없이·단계 L 추적·블록 없음·블록만 있음·잘못된 블록은 2, 런타임·TF 0(#233: 단계 L 송신 자체는 허용)."""
+        """U12: 기록 연결 없이·단계 L 추적(W 설정 없음, #244 조합 자체는 허용)·블록 없음·블록만 있음·잘못된 블록은 2, 런타임·TF 0."""
         base = ["--detector", "ai", "--ai-config", self.case.ai, "--log", str(Path(self.tmp.name) / "x.jsonl")]
         bad = Path(self.tmp.name) / "bad.json"
         doc = json.loads(SORT_CONFIG.read_text(encoding="utf-8"))

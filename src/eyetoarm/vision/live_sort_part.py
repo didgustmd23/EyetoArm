@@ -29,6 +29,10 @@ Q7 = 별도 `sort_part.jsonl`만, Q8 = 클라이언트 `stats`는 참고만), �
 (SIM 시간) 동안 보내지 않는다(`skip:failed_point_block`). ②는 번호가 있어도 적용한다(팔·카메라 이동으로 번호가 바뀌면 ①이 무력하므로,
 reviewer Q5). 성공(`SUCCEEDED`)이면 그 번호의 실패 수를 지운다.
 
+단계 L 실효 번호(#244): 연결부가 `ids["a_part_track_id"]`(B가 고른 후보의 A 번호)를 주면 목표 번호가 None일 때 그 번호를 기록
+`part_track_id`·번호별 재시도·`require_track_id`에 쓴다(기록에 `goal_part_track_id`·`a_part_track_id`·`track_source` 함께, 둘 다 있고
+다르면 `track_id_mismatch` 줄). B 기록 해제는 목표 번호로만 한다. 단계 T 기록 형식은 그대로다.
+
 확정 번호 대기(#239 D4, 설정 `sort_part.require_track_id` 선택·기본값 없음, 추적 켬이면 진입점이 필수로 요구): 참이면 번호 None
 `PICK_PLACE`는 클라이언트를 부르지 않고 `skip:no_track_id`(관측 `track_state` 함께)로 기록한다. B `_dedupe`는 번호 None을 기록하지
 않으므로 풀 기록이 없다. `PASS_THROUGH`는 그대로 보낸다(너트는 W 추적 대상이 아님). 확정 전에 시야를 벗어난 볼트는 끝내 보내지 않으며,
@@ -311,11 +315,24 @@ class LiveSortPartSender:
         keys = {"run_id": self.run_id, "image_seq": getattr(frame, "image_seq", None),
                 "ros_stamp_ns": getattr(frame, "ros_stamp_ns", None), "accept_event_seq": accept_event_seq,
                 "kind": goal.get("kind"), "spec": goal.get("spec"),
-                **{k: v for k, v in ids.items() if k != "track_state"}}   # track_state(#239)는 no_track_id 줄에만
-        track = goal.get("part_track_id")
+                **{k: v for k, v in ids.items() if k not in ("track_state", "a_part_track_id")}}   # track_state(#239)는 no_track_id 줄에만
+        goal_track = goal.get("part_track_id")
+        stage_l = "a_part_track_id" in ids   # #244: 연결부가 단계 L 추적이면 고른 후보의 A 번호를 넘긴다
+        a_track = ids.get("a_part_track_id")
+
+        # #244 실효 번호: 목표 번호 우선, 없으면(B가 아직 후보 번호를 읽지 않음) 고른 후보의 A 번호. 기록·재시도·require_track_id에 쓴다.
+        # B 중복 방지 기록 해제(release)는 B가 기록한 목표 번호로만 한다
+        track = goal_track if goal_track is not None else a_track
 
         if self.tracking:
             keys["part_track_id"] = track
+
+        if stage_l:
+            keys.update(goal_part_track_id=goal_track, a_part_track_id=a_track,
+                        track_source="goal" if goal_track is not None else "a" if a_track is not None else None)
+
+            if goal_track is not None and a_track is not None and goal_track != a_track:
+                self._record("track_id_mismatch", gid, keys)   # 계수는 사건 계수(`events`)에. 송신은 목표 번호를 따른다
 
         if res is None or getattr(res, "valid", False) is not True:
             event = f"skip:{getattr(res, 'reason', None) or 'invalid'}"
@@ -366,7 +383,7 @@ class LiveSortPartSender:
 
         # 클라이언트를 부르지 않은 번호 있는 PICK_PLACE: B `_dedupe` 기록을 푼다(B 클라이언트가 풀지 않는 경우만)
         if event in _NO_CALL_RELEASE and goal.get("kind") == "PICK_PLACE":
-            self.release(track, event, gid, keys)
+            self.release(goal_track, event, gid, keys)   # #244: B가 기록한 목표 번호만(A 번호로 B 기록을 풀지 않음)
 
         return event
 

@@ -8,13 +8,17 @@
 - `confirmed_track_id(track_frame, context, obs)`: **확정(CONFIRMED) 번호만** 돌려준다. 그 작업의 TrackFrame(`matches_job`)이고
   상태를 갱신한 프레임(`updated`)이며 관측의 `selected_index`와 같은 `instance_index` 배정이 정확히 1개일 때만이다. 그 밖(tentative·
   ambiguous·untracked·갱신 안 함·다른 작업·선택 없음·추적 결과 없음)은 번호 None이고 사유 문자열을 함께 준다.
+- `TrackedObjectObservation`(#244): 단계 L 목록 후보(`common.types.ObjectObservation`)의 하위 형. 같은 두 필드를 더한다.
+  `FrameObservations`는 후보를 `isinstance`로 검사하므로 공통형·봉투 파일은 바뀌지 않는다. B는 `_candidate_view`에서
+  `getattr(c, "part_track_id", None)`으로 읽는다(B 요청, B 수정 전에는 B 결과 번호 None).
+- `candidate_track_id(track_frame, context, instance_index)`: 후보 index 하나의 확정 번호(규칙은 `confirmed_track_id`와 같음).
 - 번호는 A-6 1차 실험 번호다(M2 휴리스틱, 분열은 알려진 한계 #156). 중복 집기 방지 보증이 아니다.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
 
-from eyetoarm.common.types import PlanarObservation
+from eyetoarm.common.types import ObjectObservation, PlanarObservation
 from eyetoarm.vision.tracking import TrackFrame, TrackState, matches_job
 
 NO_TRACKS = "no_tracks"            # 추적 결과 없음(추적 실패 latch·OpenCV·현재 아님)
@@ -42,8 +46,38 @@ class TrackedPlanarObservation(PlanarObservation):
             raise ValueError(f"track_state must be a string or None: {self.track_state!r}")
 
 
+@dataclass(frozen=True)
+class TrackedObjectObservation(ObjectObservation):
+    """추적 번호를 더한 단계 L 후보(#244, 하위 형). 번호는 확정일 때만 양의 정수, 아니면 None."""
+
+    part_track_id: int | None = None
+    track_state: str | None = None
+
+    def __post_init__(self) -> None:
+        """상위 형 검사(좌표 복사 포함) 뒤 번호 형을 확인한다(bool 거부, 양의 정수 또는 None)."""
+        super().__post_init__()
+
+        if self.part_track_id is not None and (type(self.part_track_id) is not int or self.part_track_id < 1):
+            raise ValueError(f"part_track_id must be a positive int or None: {self.part_track_id!r}")
+
+        if self.track_state is not None and not isinstance(self.track_state, str):
+            raise ValueError(f"track_state must be a string or None: {self.track_state!r}")
+
+
+def with_candidate_track(c: ObjectObservation, part_track_id: int | None, track_state: str | None) -> TrackedObjectObservation:
+    """같은 후보 필드에 번호를 더한 새 후보(생성자 검사를 다시 거침)."""
+    values = {f.name: getattr(c, f.name) for f in fields(ObjectObservation)}
+
+    return TrackedObjectObservation(**values, part_track_id=part_track_id, track_state=track_state)
+
+
 def confirmed_track_id(track_frame, context, obs) -> tuple[int | None, str]:
     """(확정 번호 | None, 상태 문자열). 상태는 배정 상태 값(`confirmed`·`tentative`·`ambiguous`·`untracked`) 또는 위 사유 상수."""
+    return candidate_track_id(track_frame, context, getattr(obs, "selected_index", None))
+
+
+def candidate_track_id(track_frame, context, index) -> tuple[int | None, str]:
+    """인스턴스 index 하나의 (확정 번호 | None, 상태)(#244). index가 None이면(관측에 선택 없음) `no_selection`."""
     if not isinstance(track_frame, TrackFrame):
         return None, NO_TRACKS
 
@@ -52,8 +86,6 @@ def confirmed_track_id(track_frame, context, obs) -> tuple[int | None, str]:
 
     if not track_frame.updated:
         return None, NOT_UPDATED
-
-    index = getattr(obs, "selected_index", None)
 
     if index is None:
         return None, NO_SELECTION
@@ -78,5 +110,5 @@ def with_track(obs: PlanarObservation, part_track_id: int | None, track_state: s
     return TrackedPlanarObservation(**values, part_track_id=part_track_id, track_state=track_state)
 
 
-__all__ = ["NO_ASSIGNMENT", "NO_SELECTION", "NO_TRACKS", "NOT_UPDATED", "OTHER_JOB", "TrackedPlanarObservation",
-           "confirmed_track_id", "with_track"]
+__all__ = ["NO_ASSIGNMENT", "NO_SELECTION", "NO_TRACKS", "NOT_UPDATED", "OTHER_JOB", "TrackedObjectObservation",
+           "TrackedPlanarObservation", "candidate_track_id", "confirmed_track_id", "with_candidate_track", "with_track"]

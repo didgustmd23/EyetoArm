@@ -46,15 +46,21 @@
   넘기면 확정 번호만(`vision/tracked_observation.confirmed_track_id`) A 하위 형 관측(`TrackedPlanarObservation`)과 봉투 확장
   `tracking`에 싣는다(공통형·B 파일 무변, B는 관측의 `part_track_id`로 `_dedupe`). B 중복 방지 기록 해제는 `release_proxy`(이 연결부가
   만든 모든 B 단계에 `release`)가 맡는다: B 클라이언트 결과·`no_server`·`busy`, 검사 ③ 거부(`on_not_accepted`, `PICK_PLACE`만), 송신기가
-  클라이언트를 부르지 않은 경우, 송신이 꺼진 기록 전용 실행의 수락 뒤. `ALREADY_SENT` SKIP은 풀지 않는다. 단계 T만.
+  클라이언트를 부르지 않은 경우, 송신이 꺼진 기록 전용 실행의 수락 뒤. `ALREADY_SENT` SKIP은 풀지 않는다.
+- 단계 L 추적(#244): 목록 후보마다 같은 작업 추적 결과(픽셀 = 실행기 `tracks`, W = worker `world.wait`)에서 그 `instance_index`의 확정
+  번호를 A 하위 형 후보(`TrackedObjectObservation`)에 싣는다(공통형·봉투 필드 무변). B는 `_candidate_view`가 번호를 읽게 되면(B 요청)
+  목표에 싣는다. 그 전에는 목표 번호가 None이므로 송신기는 B가 고른 후보의 A 번호(`a_part_track_id`)를 기록·재시도·`require_track_id`에
+  쓰고, B 기록 해제는 목표 번호로만 한다. 수락·거부 훅은 단계 L 반환 사전의 `goal`도 찾는다(`_goal_of`).
 - W 추적(#217, 선택 `world_tracker`·`world_config`, 진입점 `--tracking-space world`): 실행기 픽셀 추적 대신 이 연결부가 추적
-  스레드(`vision/live_world_tracking`)를 둔다. `offer`가 AI 결과가 있는 현재 응답(건너뜀 사유 없음·`invalid_observation`)을 추적 큐에
+  스레드(`vision/live_world_tracking`)를 둔다. `offer`가 AI 결과가 있는 현재 응답(건너뜀 사유 없음·`invalid_observation`, 단계 L은
+  `no_list_candidates`도 #244)을 추적 큐에
   넣고(제어 흐름 TF 조회 없음), worker는 봉투를 만들기 직전 그 작업 결과를 상한까지 기다려 #215와 같은 규칙(확정 번호만)으로 싣는다.
   실행 닫힘·보정/프로필 경계에서 추적기 초기화를 요청한다. 정리 단계 `world_tracking`은 dispatcher 다음(TF를 닫기 전).
 - ROS·Qt를 import하지 않는다(TF 수신 묶음·B 단계·송신 런타임은 주입).
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import math
@@ -73,11 +79,14 @@ from eyetoarm.vision.live_observation_envelope import LiveCaptureTfLookup, make_
 from eyetoarm.vision.live_observation_events import LiveObservationEventWriter
 from eyetoarm.vision.live_observation_state import (SIM_TIME_REWIND, LiveObservationConfig, LiveObservationState)
 from eyetoarm.vision.live_sort_part import LiveSortPartSender, SortPartConfig, SortPartConfigError, parse_sort_part
-from eyetoarm.vision.tracked_observation import TrackedPlanarObservation, confirmed_track_id, with_track
+from eyetoarm.vision.tracked_observation import (TrackedPlanarObservation, candidate_track_id, confirmed_track_id,
+                                                 with_candidate_track, with_track)
 from eyetoarm.vision.ai_result import AiSegResult
 from eyetoarm.vision.live_world_tracking import LiveWorldTracking
 
 WORLD_TRACKABLE_SKIPS = (None, "invalid_observation")   # #217: 추적 큐에 넣는 실행기 판정(그 밖은 현재 응답이 아님)
+# #244: 단계 L은 목록이 빈 현재 프레임(끝점 없는 볼트만·볼트 없음)도 넣는다(마스크 대체 입력·시간 간격 유지)
+WORLD_TRACKABLE_LIST_SKIPS = WORLD_TRACKABLE_SKIPS + ("no_list_candidates",)
 TRACK_PENDING = "track_pending"
 from eyetoarm.vision.view_bias import apply_view_bias
 
@@ -102,6 +111,7 @@ class LiveListInput:
 
     context: object
     display: object
+    tracks: object = None   # #244: 픽셀 추적 실행의 같은 작업 TrackFrame(W·추적 끔이면 None)
 
     @property
     def job_seq(self):
@@ -264,8 +274,8 @@ class LiveObservationLink:
         - `render(stage, frame, out)` → PNG bytes | None(같은 프레임 주석).
         - `sort_part_runtime`(#214, 선택): C 송신 런타임(`send`·`stats`·`inflight_ids`·`server_seen`·`close`). 주면 `config.sort_part`가
           있어야 한다. 단계 T, 또는 단계 L(#233, 고른 1개만). 연결부가 소유해 정리 단계 `sort_part`에서 닫는다. None(기본)이면 송신 없음.
-        - `tracking`(#215, 기본 False): 추적 번호 연결. 단계 T만. 끄면 `offer`의 `tracks`를 쓰지 않고 기록·요약이 기존과 같다.
-        - `world_tracker`·`world_config`·`world_plane_z_m`(#217, 선택): W 추적 스레드. `tracking`이 참이어야 하고 단계 T만.
+        - `tracking`(#215, 기본 False): 추적 번호 연결. 단계 T·L(#244). 끄면 `offer`의 `tracks`를 쓰지 않고 기록·요약이 기존과 같다.
+        - `world_tracker`·`world_config`·`world_plane_z_m`(#217, 선택): W 추적 스레드. `tracking`이 참이어야 한다(단계 T·L).
         """
         # 설정 검사는 파일을 열기 전에 한다(#180 #7: 검사 실패가 기록 파일 핸들을 남기지 않게)
         if type(config.skip_queue_capacity) is not int or config.skip_queue_capacity <= 0:
@@ -273,9 +283,6 @@ class LiveObservationLink:
 
         if b_input not in (B_INPUT_SINGLE, B_INPUT_LIST):
             raise ValueError(f"b_input must be {B_INPUT_SINGLE!r} or {B_INPUT_LIST!r}: {b_input!r}")
-
-        if tracking and b_input != B_INPUT_SINGLE:
-            raise ValueError("tracking link is for stage T (b_input single) only")
 
         if world_tracker is not None and (not tracking or world_config is None or world_plane_z_m is None):
             raise ValueError("world tracking requires tracking=True, world_config and world_plane_z_m")
@@ -431,9 +438,17 @@ class LiveObservationLink:
         with self._lock:
             self.tracking_counts[key] = self.tracking_counts.get(key, 0) + 1
 
+    @staticmethod
+    def _goal_of(payload) -> dict:
+        """B 결과의 목표 사전(#244): 단계 T는 `BOutput.goal`, 단계 L은 `process_frame` 반환 사전의 `goal`(고른 목표, 없으면 None)."""
+        out = payload.output
+        goal = out.get("goal") if isinstance(out, dict) else getattr(out, "goal", None)
+
+        return goal if isinstance(goal, dict) else {}
+
     def _on_not_accepted(self, item, payload) -> None:
         """worker(#215): 검사 ③ 거부. B가 이 목표로 남긴 중복 방지 기록(`PICK_PLACE`일 때만)을 푼다. `ALREADY_SENT` SKIP은 풀지 않는다."""
-        goal = getattr(payload.output, "goal", None) or {}
+        goal = self._goal_of(payload)
         track = goal.get("part_track_id")
 
         if goal.get("kind") != "PICK_PLACE" or track is None:
@@ -459,7 +474,7 @@ class LiveObservationLink:
         if self.tracking:
             # #239: 송신기가 skip:no_track_id 줄에 남길 관측 추적 상태(그 밖의 기록 줄에는 넣지 않음)
             ids["track_state"] = getattr(obs, "track_state", None)
-            goal = getattr(payload.output, "goal", None) or {}
+            goal = self._goal_of(payload)
             self._count_tracking("accepted_with_track" if goal.get("part_track_id") is not None else "accepted_without_track")
 
             if goal.get("kind") == "SKIP" and goal.get("reason") == "ALREADY_SENT":
@@ -552,7 +567,37 @@ class LiveObservationLink:
         if observations is None:
             raise RuntimeError("b_list_skip_reason passed but frame_observations_from_ai built no list")
 
+        if self.tracking:
+            observations = self._with_candidate_tracks(frame, item, observations)
+
         return make_list_envelope(observations, world_frame=self.config.world_frame)
+
+    def _with_candidate_tracks(self, frame, item: LiveListInput, observations):
+        """worker(#244): 같은 작업 추적 결과 하나로 후보마다 확정 번호를 싣는다(하위 형 후보, 같은 프레임·TF·카메라).
+
+        픽셀은 `item.tracks`, W는 그 작업 결과를 상한까지 기다린다(단계 T와 같은 규칙, 프레임당 한 번). 못 받으면 모두 `track_pending`.
+        """
+        if self.world is not None:
+            from types import SimpleNamespace
+
+            ctx = SimpleNamespace(frame=frame, generation=item.generation, job_seq=item.job_seq,
+                                  detector_config_id=item.context.detector_config_id)
+            result = self.world.wait(ctx)
+            fixed = TRACK_PENDING if result is None else result if isinstance(result, str) else None
+            self._count_tracking(f"world_{fixed or 'result'}")
+        else:
+            result, fixed = item.tracks, None
+
+        candidates = []
+
+        for c in observations.candidates:
+            track_id, state = (None, fixed) if fixed is not None else candidate_track_id(result, item.context,
+                                                                                         c.instance_index)
+            candidates.append(with_candidate_track(c, track_id, state))
+            self._count_tracking("list_candidates_with_track" if track_id is not None else "list_candidates_without_track")
+            self._count_tracking(f"list_{state}")
+
+        return dataclasses.replace(observations, candidates=tuple(candidates))
 
     def _compute_list(self, st, envelope):
         """목록 소비자를 한 번 부르고 길이 분포를 센다. 송신을 켰으면 고른 결과를 이 봉투와 짝으로 둔다(#233)."""
@@ -604,6 +649,12 @@ class LiveObservationLink:
 
         with self._lock:
             self.list_goals_offered += 1
+
+        if self.tracking:   # #244: B가 고른 후보의 A 번호·상태(목표 번호가 None일 때 송신기의 실효 번호)
+            selected = payload.output.get("selected_instance_index") if isinstance(payload.output, dict) else None
+            cand = next((c for c in payload.envelope.observations.candidates if c.instance_index == selected), None)
+            ids = {**ids, "a_part_track_id": getattr(cand, "part_track_id", None),
+                   "track_state": getattr(cand, "track_state", None)}
 
         self.sort_part.offer(chosen, item.frame, ids, event_seq)
 
@@ -672,7 +723,9 @@ class LiveObservationLink:
         ids = {"job_seq": outcome.context.job_seq, "generation": outcome.context.generation, "rx_epoch": rx_epoch}
 
         # #217: 현재 응답(실행기 판정 통과·무효 관측)이면 추적 큐에 넣는다(넣기만, TF 없음). B로 보내지 않는 프레임도 추적은 본다
-        if (self.world is not None and skip_reason in WORLD_TRACKABLE_SKIPS and self._track_camera is not None
+        trackable = WORLD_TRACKABLE_LIST_SKIPS if self.b_input == B_INPUT_LIST else WORLD_TRACKABLE_SKIPS
+
+        if (self.world is not None and skip_reason in trackable and self._track_camera is not None
                 and isinstance(outcome.display_result, AiSegResult) and frame.calibration_id == self._calibration_id
                 and self.ended is None and not self.reset_pending):
             self.world.offer(outcome.context, outcome.display_result, self._track_camera)
@@ -710,7 +763,9 @@ class LiveObservationLink:
             return self._record_skip("link", "generation_discarded", frame, ids)
 
         if self.b_input == B_INPUT_LIST:
-            obs = LiveListInput(outcome.context, outcome.display_result)
+            # #244: 픽셀 추적이면 같은 작업 TrackFrame을 함께 둔다(W는 worker가 기다림, 추적 끔이면 None)
+            obs = LiveListInput(outcome.context, outcome.display_result,
+                                tracks=tracks if self.tracking and self.world is None else None)
         elif self.world is not None:   # #217: 번호는 worker가 추적 스레드 결과로 싣는다(지금은 대기 표시만)
             obs = with_track(obs, None, TRACK_PENDING)
             self._count_tracking("submitted_world")
