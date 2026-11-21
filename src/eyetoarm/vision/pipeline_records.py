@@ -214,15 +214,22 @@ class PipelineLog:
     """파이프라인 기록을 1회씩만 쓰는 층. 무엇을 이미 썼는지(작업·사건·폐기)를 기억한다."""
 
     def __init__(self, recorder: JsonlRecorder, *, eval_run_id: str | None = None, log_geometry: bool = False,
-                 b_input: str = B_INPUT_SINGLE, infer_process: bool = False) -> None:
-        """기록기, 평가 실행 ID(평가가 아니면 None), AI geometry 기록 여부, B 입력 단계, 추론 프로세스 사용 여부를 받는다."""
+                 b_input: str = B_INPUT_SINGLE, infer_process: bool = False,
+                 infer_process_source: str | None = None) -> None:
+        """기록기, 평가 실행 ID(평가가 아니면 None), AI geometry 기록 여부, B 입력 단계, 추론 프로세스 사용 여부·출처를 받는다.
+
+        출처는 None·"argument"·"default". 켬이거나 인자로 끈 경우에만 run_meta에 표시한다(기본 끔이면 바이트 동일).
+        """
         if not isinstance(log_geometry, bool):
             raise ValueError(f"log_geometry must be a bool: {log_geometry!r}")
 
         if not isinstance(infer_process, bool):
             raise ValueError(f"infer_process must be a bool: {infer_process!r}")
 
-        self._infer_process = infer_process
+        if infer_process_source not in (None, "argument", "default"):
+            raise ValueError(f"infer_process_source must be None, 'argument' or 'default': {infer_process_source!r}")
+
+        self._infer_process, self._infer_source = infer_process, infer_process_source
 
         if b_input not in B_INPUT_MODES:
             raise ValueError(f"b_input must be one of {B_INPUT_MODES}: {b_input!r}")
@@ -263,9 +270,14 @@ class PipelineLog:
         if self._b_input == B_INPUT_LIST:
             meta["b_input"] = B_INPUT_LIST
 
-        # 추론 프로세스를 켰을 때만 표시한다(끔이면 바이트 동일). 설정 지문과는 무관하다
-        if self._infer_process and isinstance(meta["detector"], dict):
-            meta["detector"] = {**meta["detector"], "infer_process": True}
+        # 추론 프로세스는 켬이거나 인자로 껐을 때만 표시한다(기본 끔이면 바이트 동일). 설정 지문과는 무관하다
+        if (self._infer_process or self._infer_source == "argument") and isinstance(meta["detector"], dict):
+            mark = {"infer_process": self._infer_process}
+
+            if self._infer_source is not None:
+                mark["infer_process_source"] = self._infer_source
+
+            meta["detector"] = {**meta["detector"], **mark}
 
         self._recorder.write("run_meta", meta)
 

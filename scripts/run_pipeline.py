@@ -78,10 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"AI 모델 준비 상한(기본 {RunnerConfig.model_load_timeout_s} s, A 임시 개발값)")
     parser.add_argument("--log-instance-geometry", action="store_true",
                         help="AI 인스턴스 박스·다각형을 ai_geometry로 기록한다(선택)")
-    parser.add_argument("--infer-process", action="store_true",
-                        help="AI 추론(crop·predict·변환·끝점)을 별도 자식 프로세스에서 한다(기본 끔, --detector ai 전용)")
+    parser.add_argument("--infer-process", dest="infer_process_on", action="store_true",
+                        help="AI 추론(crop·predict·변환·끝점)을 별도 자식 프로세스에서 한다(--detector ai 전용). "
+                             "기본: --ros-link --detector ai면 켬, 그 밖은 끔")
+    parser.add_argument("--no-infer-process", dest="infer_process_off", action="store_true",
+                        help="추론 자식 프로세스를 쓰지 않는다(실시간 AI 기본 켬을 끔)")
     parser.add_argument("--infer-torch-threads", type=_positive_int, default=None, metavar="N",
-                        help="--infer-process 자식의 torch CPU 스레드 수(기본: 라이브러리 기본값)")
+                        help="추론 자식의 torch CPU 스레드 수(기본: 라이브러리 기본값, 추론 프로세스가 켜졌을 때만)")
     parser.add_argument("--log", metavar="PATH", required=True, help="JSONL 기록 파일(새로 씀)")
     parser.add_argument("--source-id", type=_non_empty, default=None,
                         help="소스 ID(기본: 저장 입력 stored0, --ros-link gz_link)")
@@ -160,14 +163,62 @@ def _check_detector_args(args) -> None:
         if args.ai_config is not None or args.model_load_timeout is not None or args.log_instance_geometry:
             build_parser().error("--ai-config/--model-load-timeout/--log-instance-geometry are for --detector ai")
 
-    if args.infer_process and args.detector != "ai":
-        build_parser().error("--infer-process is for --detector ai only")
+    if args.infer_process_on and args.infer_process_off:
+        build_parser().error("--infer-process and --no-infer-process are mutually exclusive")
 
-    if args.infer_torch_threads is not None and not args.infer_process:
-        build_parser().error("--infer-torch-threads requires --infer-process")
+    if (args.infer_process_on or args.infer_process_off) and args.detector != "ai":
+        build_parser().error("--infer-process/--no-infer-process are for --detector ai only")
 
-    if args.infer_process and args.synthetic_fixture is not None:
+    if args.infer_process_on and args.synthetic_fixture is not None:
         build_parser().error("--infer-process cannot be combined with --synthetic-observation-fixture (no AI detector)")
+
+
+def _resolve_infer_process(args) -> None:
+    """추론 프로세스 실제 적용 여부(`args.infer_process`)와 출처(`args.infer_process_source`: argument·default)를 정한다.
+
+    인자가 없으면 실시간 AI(--ros-link --detector ai)만 켬이다. 시험이 모델·import를 주입하면 그 대역은 자식으로
+    넘길 수 없으므로 기본은 끔이고, 명시 --infer-process와 함께면 인자 오류(종료 2)다.
+    """
+    injected = args._model_factory is not None or args._import_module is not None
+
+    if args.infer_process_on:
+        on, source = True, "argument"
+    elif args.infer_process_off:
+        on, source = False, "argument"
+    else:
+        on = args.detector == "ai" and args.ros_link and args.synthetic_fixture is None and not injected
+        source = "default"
+
+    if on and injected:
+        build_parser().error("--infer-process cannot use an injected model_factory/import_module (in-process only)")
+
+    if args.infer_torch_threads is not None and not on:
+        build_parser().error("--infer-torch-threads requires the inference process (on by --infer-process or "
+                             "by default for --ros-link --detector ai)")
+
+    args.infer_process, args.infer_process_source = on, source
+
+
+def _infer_mode_text(args) -> str | None:
+    """시작 줄 문구. 기본으로 꺼진 경우는 None(기존 출력 그대로)."""
+    if args.infer_process:
+        note = " (default for --ros-link --detector ai; --no-infer-process to disable)" \
+            if args.infer_process_source == "default" else ""
+
+        return f"run_pipeline: infer_process=on source={args.infer_process_source}{note}"
+
+    if args.infer_process_source == "argument":
+        return "run_pipeline: infer_process=off source=argument"
+
+    return None
+
+
+def _infer_off_summary(args) -> dict | None:
+    """인자로 끈 경우의 요약 표시(기본으로 꺼진 경우는 None: 요약 키를 더하지 않음)."""
+    if not args.infer_process and args.infer_process_source == "argument":
+        return {"enabled": False, "source": "argument"}
+
+    return None
 
 
 def _check_source_args(args, ros_available) -> None:
@@ -448,10 +499,10 @@ def _stop_or_infer_failed(proxy, stop=None):
     return lambda: (stop is not None and stop()) or proxy.failed is not None
 
 
-def _finish_infer_process(proxy, err):
-    """실패 사유를 close 전에 읽고 자식을 닫아 (실패 사유, 요약)을 돌려준다. 대리 객체가 없으면 (None, None)."""
+def _finish_infer_process(proxy, err, args=None):
+    """실패 사유를 close 전에 읽고 자식을 닫아 (실패 사유, 요약)을 돌려준다. 대리 객체가 없으면 (None, 끔 표시 또는 None)."""
     if proxy is None:
-        return None, None
+        return None, None if args is None else _infer_off_summary(args)
 
     failed = proxy.failed
 
@@ -460,7 +511,7 @@ def _finish_infer_process(proxy, err):
     except Exception as exc:   # 정리 실패도 실행 문제로 남긴다
         failed = failed or f"infer process close failed: {type(exc).__name__}: {exc}"
 
-    summary = proxy.summary()
+    summary = {"enabled": True, "source": getattr(args, "infer_process_source", None), **proxy.summary()}
     summary["failed"] = failed
 
     if failed is not None:
@@ -497,6 +548,7 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
     _check_source_args(args, ros_available)
     args._model_factory, args._import_module = model_factory, import_module
     args._infer_process_options = infer_process_options
+    _resolve_infer_process(args)
     runner_config = build_runner_config(args)
 
     if args.source_id is None:
@@ -562,6 +614,10 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
     if args.detector == "ai":
         det, proxy = _ai_detector(args, config)
         detector_kw.update(_detector_run_kw(det, proxy))
+        mode_text = _infer_mode_text(args)
+
+        if mode_text is not None:
+            err.write(mode_text + "\n")
 
     args._infer_proxy = proxy
 
@@ -609,7 +665,8 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
     try:
         with stream:
             log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
-                              log_geometry=args.log_instance_geometry, infer_process=proxy is not None)
+                              log_geometry=args.log_instance_geometry, infer_process=proxy is not None,
+                              infer_process_source=args.infer_process_source)
             if args.ros_link:
                 with _StopSignals() as signals:
                     result = run(source_factory, settings, log, config=runner_config, stderr=err,
@@ -621,7 +678,7 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
                              versions={"opencv": cv2.__version__}, handoff_sink=handoff,
                              should_stop=_stop_or_infer_failed(proxy), **detector_kw)
 
-            infer_failed, infer_summary = _finish_infer_process(proxy, err)
+            infer_failed, infer_summary = _finish_infer_process(proxy, err, args)
 
             if infer_summary is not None:
                 infer_record_ok = _write_infer_record(log, infer_summary, err)
@@ -1262,6 +1319,7 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
             log_kw = {"b_input": B_INPUT_LIST} if listed else {}
             log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
                               log_geometry=args.log_instance_geometry, infer_process=infer_proxy is not None,
+                              infer_process_source=args.infer_process_source,
                               **log_kw)
             run_kw = {"live_observation_b_input": "list"} if listed else {}
             result = run(source_factory, settings, log, run_id=run_id, config=runner_config, stderr=err,
@@ -1280,7 +1338,7 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         gripper_problem = None
 
         # 실행기가 끝났으므로 추론 자식을 먼저 닫는다(실패 사유는 닫기 전에 읽음)
-        infer_failed, infer_summary = _finish_infer_process(infer_proxy, err)
+        infer_failed, infer_summary = _finish_infer_process(infer_proxy, err, args)
 
         # 그리퍼 수신을 먼저 멈춘다(추적 스레드가 닫힌 뒤에는 넣어도 버려진다)
         if gripper_rx is not None:
@@ -1493,11 +1551,12 @@ def _run_capture_list(args, settings, runner_config, detector_kw, capture, err, 
         with stream:
             log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
                               log_geometry=args.log_instance_geometry, b_input=B_INPUT_LIST,
-                              infer_process=proxy is not None)
+                              infer_process=proxy is not None,
+                              infer_process_source=args.infer_process_source)
             result = run(source_factory, settings, log, **_detector_run_kw(det, proxy),
                          b_list_consumer=recorder.wrap(consume), display_sink=recorder, config=runner_config,
                          stderr=err, versions={"opencv": cv2.__version__}, should_stop=_stop_or_infer_failed(proxy))
-            infer_failed, infer_summary = _finish_infer_process(proxy, err)
+            infer_failed, infer_summary = _finish_infer_process(proxy, err, args)
             infer_record_ok = infer_summary is None or _write_infer_record(log, infer_summary, err)
 
         problems = []
@@ -1594,11 +1653,12 @@ def _run_capture_observation(args, settings, runner_config, detector_kw, capture
 
         with stream:
             log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
-                              log_geometry=args.log_instance_geometry, infer_process=proxy is not None)
+                              log_geometry=args.log_instance_geometry, infer_process=proxy is not None,
+                              infer_process_source=args.infer_process_source)
             result = run(source_factory, settings, log, **_detector_run_kw(det, proxy),
                          b_consumer=recorder.wrap(stage.consume), display_sink=recorder, config=runner_config,
                          stderr=err, versions={"opencv": cv2.__version__}, should_stop=_stop_or_infer_failed(proxy))
-            infer_failed, infer_summary = _finish_infer_process(proxy, err)
+            infer_failed, infer_summary = _finish_infer_process(proxy, err, args)
             infer_record_ok = infer_summary is None or _write_infer_record(log, infer_summary, err)
 
         problems = []

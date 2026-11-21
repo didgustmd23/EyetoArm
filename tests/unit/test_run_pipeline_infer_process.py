@@ -172,12 +172,14 @@ class ArgsTest(StoredCase):
         imgs = self.images([0])
         cases = [
             (["--images", *imgs, "--detect-config", "x.json", "--log", str(self.d / "a.jsonl"), "--infer-process"],
-             "--infer-process is for --detector ai only"),
+             "--infer-process/--no-infer-process are for --detector ai only"),
             (["--images", *imgs, "--detector", "ai", "--ai-config", str(self.ai), "--log", str(self.d / "b.jsonl"),
-              "--infer-torch-threads", "2"], "--infer-torch-threads requires --infer-process"),
+              "--infer-torch-threads", "2"], "--infer-torch-threads requires the inference process"),
             (["--images", *imgs, "--detector", "ai", "--ai-config", str(self.ai), "--log", str(self.d / "c.jsonl"),
               "--infer-process", "--synthetic-observation-fixture", "f.json", "--synthetic-observation-out",
               str(self.d / "o")], "--synthetic-observation-fixture"),
+            (["--images", *imgs, "--detector", "ai", "--ai-config", str(self.ai), "--log", str(self.d / "d.jsonl"),
+              "--infer-process", "--no-infer-process"], "mutually exclusive"),
         ]
 
         for argv, msg in cases:
@@ -212,18 +214,22 @@ class StoredPathTest(StoredCase):
         meta_off = next(r for r in off if r["kind"] == "run_meta")
         meta_on = next(r for r in on if r["kind"] == "run_meta")
         self.assertNotIn("infer_process", meta_off["detector"])
-        self.assertTrue(meta_on["detector"]["infer_process"])
-        self.assertEqual({k: v for k, v in meta_on["detector"].items() if k != "infer_process"}, meta_off["detector"])
+        self.assertEqual((meta_on["detector"]["infer_process"], meta_on["detector"]["infer_process_source"]),
+                         (True, "argument"))
+        marks = {"infer_process", "infer_process_source"}
+        self.assertEqual({k: v for k, v in meta_on["detector"].items() if k not in marks}, meta_off["detector"])
         self.assertEqual(meta_on["detector_config_id"], meta_off["detector_config_id"])
 
         ready = next(r for r in on if r["kind"] == "model_ready")
         self.assertEqual(ready["infer_process"]["torch_threads_requested"], 2)
         self.assertFalse(any(r["kind"] == "infer_process" for r in off))
         summary = next(r for r in on if r["kind"] == "infer_process")
-        self.assertEqual((summary["results"], summary["failed"], summary["exit"]),
-                         (3, None, {"returncode": 0, "forced": False}))
+        self.assertEqual((summary["enabled"], summary["source"], summary["results"], summary["failed"]),
+                         (True, "argument", 3, None))
+        self.assertEqual(summary["exit"], {"returncode": 0, "forced": False})
         self.assertEqual(summary["times"]["roundtrip_ms"]["n"], 3)
         self.assertIn("infer_process=on failed=None", err_on)
+        self.assertIn("run_pipeline: infer_process=on source=argument\n", err_on)
         self.assertNotIn("infer_process=", err_off)
 
     def test_child_death_exits_1_with_reason(self):
@@ -292,11 +298,73 @@ class CapturePathTest(LeakCheck, CaptureBase):
         self.assertEqual(on.summary()["infer_process"]["results"], 2)
 
 
+class DefaultTest(StoredCase):
+    """기본값: 실시간 AI만 켬, 저장 입력은 끔, 끄기 인자, 시험 주입이 있으면 끔."""
+
+    def resolved(self, argv, **inject):
+        """인자 해석 뒤 (적용, 출처). 실행은 하지 않는다."""
+        args = self.mod.build_parser().parse_args(argv)
+        self.mod._check_detector_args(args)
+        args._model_factory, args._import_module = inject.get("model_factory"), inject.get("import_module")
+        self.mod._resolve_infer_process(args)
+
+        return args.infer_process, args.infer_process_source
+
+    def test_resolution_table(self):
+        """--ros-link AI는 기본 켬, 저장 입력 AI는 기본 끔, 인자는 그대로, 주입이 있으면 기본 끔·명시 켬은 오류."""
+        live = ["--ros-link", "--detector", "ai", "--ai-config", str(self.ai), "--log", "x.jsonl"]
+        stored = ["--images", "a.png", "--detector", "ai", "--ai-config", str(self.ai), "--log", "x.jsonl"]
+        opencv = ["--ros-link", "--detect-config", "c.json", "--log", "x.jsonl"]
+
+        self.assertEqual(self.resolved(live), (True, "default"))
+        self.assertEqual(self.resolved(live + ["--no-infer-process"]), (False, "argument"))
+        self.assertEqual(self.resolved(live + ["--infer-process"]), (True, "argument"))
+        self.assertEqual(self.resolved(stored), (False, "default"))
+        self.assertEqual(self.resolved(stored + ["--infer-process"]), (True, "argument"))
+        self.assertEqual(self.resolved(opencv), (False, "default"))
+        self.assertEqual(self.resolved(live, model_factory=fake.FakeModel), (False, "default"))
+        self.assertEqual(self.resolved(live + ["--infer-torch-threads", "4"]), (True, "default"))
+
+        import contextlib
+        for argv, inject in ((live + ["--infer-process"], {"model_factory": fake.FakeModel}),
+                             (stored + ["--infer-torch-threads", "4"], {})):
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit) as ctx:
+                self.resolved(argv, **inject)
+
+            self.assertEqual(ctx.exception.code, 2)
+
+    def test_stored_off_by_argument_is_recorded(self):
+        """저장 입력에서 --no-infer-process는 끔 그대로 동작하고 run_meta·기록·시작 줄에 인자로 껐다고 남는다."""
+        log = self.d / "noarg.jsonl"
+        code, err = self.stored(self.images([0]), log, "--no-infer-process", model_factory=fake.FakeModel)
+
+        self.assertEqual(code, 0, err)
+        recs = records(log)
+        meta = next(r for r in recs if r["kind"] == "run_meta")
+        self.assertEqual((meta["detector"]["infer_process"], meta["detector"]["infer_process_source"]),
+                         (False, "argument"))
+        rec = next(r for r in recs if r["kind"] == "infer_process")
+        self.assertEqual((rec["enabled"], rec["source"]), (False, "argument"))
+        self.assertIn("run_pipeline: infer_process=off source=argument\n", err)
+
+    def test_stored_default_off_adds_nothing(self):
+        """저장 입력 기본(끔)은 run_meta·기록·stderr에 추론 프로세스 표시를 더하지 않는다(기존과 같음)."""
+        log = self.d / "plain.jsonl"
+        code, err = self.stored(self.images([0]), log, model_factory=fake.FakeModel)
+
+        self.assertEqual(code, 0, err)
+        recs = records(log)
+        self.assertNotIn("infer_process", next(r for r in recs if r["kind"] == "run_meta")["detector"])
+        self.assertFalse(any(r["kind"] == "infer_process" for r in recs))
+        self.assertNotIn("infer_process", err)
+
+
 class LivePathTest(LeakCheck, CliBase):
     """실시간 기록 연결 경로: 1장 실행에서 대리 객체 연결·요약·정리."""
 
     def test_live_one_frame_with_infer_process(self):
-        """--ros-link --live-observation-out --infer-process 1장: 종료 0, run_meta 표시, summary.json에 infer_process."""
+        """--ros-link --live-observation-out(추론 프로세스 인자 없음) 1장: 기본 켬으로 자식이 뜨고 종료 0, 표시는 source=default."""
         out = self.out()
         log = str(Path(self.tmp.name) / "live.jsonl")
         sc = Scenario(1)
@@ -304,8 +372,7 @@ class LivePathTest(LeakCheck, CliBase):
         made = []
         from test_run_pipeline_live_observation import CONFIG
         argv = ["--ros-link", "--detector", "ai", "--ai-config", self.case.ai, "--log", log,
-                "--live-observation-out", out, "--live-observation-config", str(CONFIG), "--max-frames", "1",
-                "--infer-process"]
+                "--live-observation-out", out, "--live-observation-config", str(CONFIG), "--max-frames", "1"]
         err = io.StringIO()
         code = self.mod.main(argv, stderr=err, ros_available=lambda: True, live_source_factory=sc.factory_maker(made),
                              live_tf_factory=lambda c: FakeTf(), live_run_controller=self.controller,
@@ -313,9 +380,13 @@ class LivePathTest(LeakCheck, CliBase):
 
         self.assertEqual(code, 0, err.getvalue())
         meta = next(r for r in records(log) if r["kind"] == "run_meta")
-        self.assertTrue(meta["detector"]["infer_process"])
+        self.assertEqual((meta["detector"]["infer_process"], meta["detector"]["infer_process_source"]),
+                         (True, "default"))
+        self.assertIn("run_pipeline: infer_process=on source=default (default for --ros-link --detector ai;",
+                      err.getvalue())
         s = self.summary(out)
-        self.assertEqual((s["infer_process"]["results"], s["infer_process"]["failed"]), (1, None))
+        self.assertEqual((s["infer_process"]["enabled"], s["infer_process"]["source"], s["infer_process"]["results"],
+                          s["infer_process"]["failed"]), (True, "default", 1, None))
         self.assertEqual(s["infer_process"]["exit"], {"returncode": 0, "forced": False})
 
 
