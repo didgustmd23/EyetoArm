@@ -308,5 +308,60 @@ class DisplayModelTest(unittest.TestCase):
         self.assertIsNone(self.model.matched_result())
 
 
+    def detect(self, seq, run, generation=1, capture=1, **extra):
+        return self.model.ingest_frame("link", self.image, source_id="link", image_seq=seq, generation=generation,
+                                       calibration_id="cal", run_id="run", capture_generation=capture,
+                                       detector_config_id="config", job_seq=seq, source_run_id=run, **extra)
+
+    def test_optional_identity_is_kept_and_defaults_to_none(self):
+        self.assertTrue(self.frame())
+        self.assertEqual({k: self.model.frames[("link", "raw")][k] for k in
+                          ("source_run_id", "producer_run_id", "capture_stamp_ns", "timestamp_base", "frame_id")},
+                         dict.fromkeys(("source_run_id", "producer_run_id", "capture_stamp_ns", "timestamp_base", "frame_id")))
+        extra = dict(producer_run_id="b-run", capture_stamp_ns=5, timestamp_base="sim", frame_id="cam")
+        self.assertTrue(self.detect(2, "a1", **extra))
+        kept = self.model.frame("link")
+        self.assertEqual((kept["source_run_id"], kept["producer_run_id"], kept["capture_stamp_ns"],
+                          kept["timestamp_base"], kept["frame_id"]), ("a1", "b-run", 5, "sim", "cam"))
+        for bad in (dict(capture_stamp_ns=True), dict(capture_stamp_ns=-1), dict(frame_id=""), dict(producer_run_id=3)):
+            self.assertFalse(self.detect(3, "a1", **bad))
+        self.assertEqual(self.model.frame("link")["image_seq"], 2)
+
+    def test_source_run_switch_resets_link_and_retires_the_old_run(self):
+        self.assertTrue(self.detect(50, "a1"))
+        self.result(seq=50, order=1)
+        self.assertIsNotNone(self.model.matched_result())
+        self.assertTrue(self.detect(1, "a2", capture=0))         # A2 restarts low: accepted, A1 state cleared
+        self.assertEqual(self.model.frame("link")["image_seq"], 1)
+        self.assertIsNone(self.model.result)
+        self.assertFalse(self.detect(51, "a1"))                   # late A1 is dropped
+        self.assertEqual(self.model.frame("link")["source_run_id"], "a2")
+        self.assertTrue(self.detect(5, "a2", capture=0))
+        self.assertFalse(self.detect(4, "a2", generation=2, capture=0))  # same run: an older physical frame stays refused
+        self.assertTrue(self.detect(6, "a2", generation=2, capture=0))   # same run, generation up: old generation cleared
+        self.assertEqual(self.model.frame("link")["generation"], 2)
+        self.assertFalse(self.detect(9, "a2", generation=1, capture=5))  # generation regress refused
+        self.assertEqual(self.model.generations["link"], 2)
+        self.assertTrue(self.frame(seq=7, generation=2))          # no source_run_id: unchanged ordering rules
+        self.model.reset_session("server")
+        self.assertEqual((self.model.source_runs, list(self.model.retired_source_runs)), ({}, []))
+
+    def test_source_run_survives_variant_and_relay_session_resets(self):
+        self.assertTrue(self.detect(50, "a1"))
+        self.model.reset_source("link", "variant switch")
+        self.model.begin_session("run-2", "link")                # relay new run (_clear_session)
+        self.model.begin_session("run", "link")
+        self.assertEqual(self.model.source_runs, {"link": "a1"})
+        self.assertTrue(self.detect(1, "a2", capture=0))
+        self.assertFalse(self.detect(51, "a1"))                   # late A1 cannot retire A2
+        self.assertTrue(self.detect(2, "a2", capture=0))
+        self.assertEqual(list(self.model.retired_source_runs), ["a1"])
+        self.assertTrue(self.model.ingest_frame("fixed", self.image, source_id="fixed", image_seq=1, generation=0,
+                                                calibration_id=None, run_id="run", capture_generation=0,
+                                                detector_config_id="raw", job_seq=1, source_run_id="aux",
+                                                frame_id="top"))
+        self.assertEqual((self.model.frame("fixed")["frame_id"], self.model.source_runs), ("top", {"link": "a2"}))
+
+
 if __name__ == "__main__":
     unittest.main()

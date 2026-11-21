@@ -42,6 +42,7 @@ CHANNELS = {"link": "gz_link", "gripper": "gz_gripper", "fixed": "gz_fixed"}
 LINK_SOURCE = CHANNELS["link"]
 VARIANTS = ("raw", "detect", "center")
 INT_KEYS = ("image_seq", "generation", "capture_generation", "job_seq")
+OPTIONAL_TEXT_KEYS = ("source_run_id", "producer_run_id", "timestamp_base", "frame_id")   # A·B 원래 실행·시각 식별(선택)
 RECONNECT_MS = 1500
 CONNECT_TIMEOUT_MS = 2000              # 명령 연결 connect_timeout_ms 초기값과 같다. 응답 없는 주소에 묶이지 않게
 READ_CHUNK = 1024 * 1024               # 한 번에 읽어 파서에 넣는 최대 바이트
@@ -90,6 +91,15 @@ def parse_metadata(raw: bytes) -> tuple[str, dict]:
         raise PacketError("calibration_id 키 없음")
     envelope = {key: meta[key] for key in ("source_id", *INT_KEYS, "run_id", "detector_config_id")}
     envelope.update(calibration_id=calibration, variant=variant)
+    # 선택 키: 키가 없으면 None. 키가 있으면 null 을 포함해 형식이 틀린 값은 패킷 오류다
+    for key in OPTIONAL_TEXT_KEYS:
+        if key in meta and not _text(meta[key]):
+            raise PacketError(f"{key} 오류")
+        envelope[key] = meta.get(key)
+    stamp = meta.get("capture_stamp_ns")
+    if "capture_stamp_ns" in meta and (type(stamp) is not int or stamp < 0):
+        raise PacketError("capture_stamp_ns 가 0 이상 정수가 아님")
+    envelope["capture_stamp_ns"] = stamp
     return channel, envelope
 
 
@@ -180,6 +190,9 @@ class RelayViewReceiver(QObject):
         self.run_id: str | None = None
         self.requested_variant: str | None = None   # 이 연결에서 마지막으로 보낸 링크 요청(송신만, C 적용 미확인)
         self._retired: deque[str] = deque(maxlen=RETIRED_RUNS)
+        # 링크 생산자 실행(source_run_id) 추적. 연결·종류·relay run 리셋과 따로 두고 주소 변경에서만 버린다
+        self._link_source_run: str | None = None
+        self._retired_sources: deque[str] = deque(maxlen=RETIRED_RUNS)    # 지나간 링크 생산자 실행. 늦은 패킷을 버린다
         self._last_frame_at: float | None = None
         self._parser = EtvParser()
         self._pending: dict[tuple[str, str], tuple[str, dict, bytes]] = {}
@@ -248,6 +261,8 @@ class RelayViewReceiver(QObject):
             self._last_frame_at = None
             self.run_id = None
             self._retired.clear()
+            self._link_source_run = None
+            self._retired_sources.clear()
         self._open()
         return changed
 
@@ -353,10 +368,32 @@ class RelayViewReceiver(QObject):
                 return
             for channel, envelope, jpeg in packets:
                 key = (channel, envelope["variant"])
+                if not self._accept_source_run(key, envelope):
+                    continue
                 self._pending.pop(key, None)      # 도착 순서를 유지하며 같은 칸의 이전 패킷은 바로 버린다
                 self._pending[key] = (channel, envelope, jpeg)
         if self._pending and not self._flush_timer.isActive():
             self._flush_timer.start()
+
+    def _accept_source_run(self, key: tuple[str, str], envelope: dict) -> bool:
+        """도착 순서대로 링크 생산자 실행(source_run_id) 전환을 본다. 지난 실행이면 False(버림). 보조 채널은 추적하지 않는다.
+
+        flush 전에 해야 같은 Qt 차례에 A2 뒤 늦게 온 A1 이 칸의 대기 패킷(A2)을 덮지 못한다."""
+        source_run = envelope["source_run_id"]
+        if key[0] != "link" or source_run is None or envelope["run_id"] in self._retired:   # 없으면 기존 규칙. 지난 relay run 은 flush 가 버린다
+            return True
+        if source_run in self._retired_sources:
+            self.stale_session_drops += 1
+            self._last_error = "지난 source_run_id 패킷 무시"
+            self._parser.last_error = ""
+            return False
+        current = self._link_source_run
+        if current is not None and current != source_run:
+            # 생산자(A 등) 재시작: 새 실행의 순번은 이전과 별개다. 칸의 순번만 새로 잡고 확인은 연결 기준으로 유지한다
+            self._retired_sources.append(current)
+            self._newest.pop(key, None)
+        self._link_source_run = source_run
+        return True
 
     def _flush(self) -> None:
         pending, self._pending = self._pending, {}
@@ -375,6 +412,7 @@ class RelayViewReceiver(QObject):
                 self.run_id = run_id
                 self._reset_confirmation()   # 확인은 run 별
                 self.display_session.emit(run_id, LINK_SOURCE)   # 첫 패킷이 fixed·gripper 여도 링크 소스를 먼저 정한다
+            key = (channel, envelope["variant"])
             image = decode_jpeg(jpeg)
             if image is None:
                 self.decode_errors += 1
@@ -382,7 +420,7 @@ class RelayViewReceiver(QObject):
                 self._parser.last_error = ""
                 continue
             self.frame_count += 1
-            key, order = (channel, envelope["variant"]), (envelope["capture_generation"], envelope["image_seq"])
+            order = (envelope["capture_generation"], envelope["image_seq"])
             newest = self._newest.get(key)
             advanced = newest is not None and order > newest   # 같은 연결·run 에서 순번이 실제로 앞섰다
             if newest is None or advanced:
