@@ -1,7 +1,6 @@
-"""#186 정답 격리: 런타임 패키지가 평가 패키지·정답 경로를 참조하지 않고, 평가 패키지가 런타임 패키지를 import하지 않음.
+"""정답 격리: 런타임 패키지는 평가 패키지·정답 경로를 참조하지 않고, 평가는 런타임을 import하지 않는다.
 
-근거: 코드 규약 §5(정답은 평가 경로에서만 읽는다), 계획서 §2.1, A 상세설계 §3·§9, reviewer 계획 검토 보완 3.
-AST로 import 문과 문자열 상수를 본다. 런타임이 정답을 import·구독하면 평가 전체가 무효가 되므로 결합 자체를 막는다.
+AST로 import 문과 문자열 상수를 본다. 런타임이 정답을 읽으면 평가 전체가 무효라 결합 자체를 막는다.
 """
 import ast
 import unittest
@@ -9,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "eyetoarm"
-# D GUI 소스는 dashboard-client 아래에 있다(2026-11-19 기준 src/eyetoarm/gui에는 .py가 없음). 둘 다 본다.
+# D GUI 소스는 dashboard-client 아래에 있어 둘 다 본다.
 EXTRA_ROOTS = (ROOT / "dashboard-client" / "src" / "eyetoarm",)
 RUNTIME_PACKAGES = ("vision", "inputs", "calibration", "transforms", "tcp", "gui", "common", "commtest")
 FORBIDDEN_STRINGS = ("ground_truth", "evaluation/", "sorteval")

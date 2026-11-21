@@ -1,27 +1,7 @@
-"""실시간 A→B 실행 세션(#173 사용자 정정 2026-11-18): Gazebo 리셋·시간 역행이면 현재 실행을 끝내고, 새 실행은 명시적으로 처음부터 시작한다.
+"""실시간 실행 세션: Gazebo 리셋·시간 역행이면 현재 실행을 끝내고, 새 실행은 명시 호출로만 처음부터 만든다.
 
-근거: reviewer 전달 사용자 정정(같은 실행 안 되감기 재개·C 정지 확인 연동을 이 방식으로 대체), `_workspace/171_builder2_live_a_to_b_plan.md` r3
-(상태·디스패처·TF 준비 부품). **준비 부품이며 실시간 실행 경로·제품 진입점에 연결하지 않는다**(D13 유지). 자동 재시작은 없다.
-
-구성
-- `LiveRunSession`: 실행 하나의 묶음. `run_id`, 새 `LiveObservationState`(`start_closed=True`), 새 입력 칸(slot), 새 TF 수신 묶음,
-  새 디스패처(B 단계는 디스패처가 새로 만든다), TF 준비(`TfRewindReadiness`, 경계 0). 실행끼리 어떤 객체도 공유하지 않는다.
-- 열림 조건: 그 실행의 slot에서 꺼낸 영상(그 영상의 수신 epoch = 현재 경계)으로 (1) 보정 정보(`calibration_id`)가 있으면
-  `state.on_applied(epoch, generation, calibration_id)`, (2) 그 영상 촬영 stamp의 TF 정확 조회가 그 실행의 새 버퍼에서 성공하면
-  `state.on_tf_ready(epoch, 시도)`. 둘 다 끝나야 계산이 열린다. 첫 열림 전 경계(CameraInfo 첫 수신 등)도 TF 준비를 요구한다
-  (`start_closed`). 새 버퍼는 실행 시작 때 비어 있으므로 준비 시도 때 버퍼를 비우지 않는다(비우면 이미 받은 촬영 시각 TF를 잃는다).
-- 리셋 감지: slot 경계 훅(slot 잠금 안)에서 `SIM_TIME_REWIND`이면 `state.run_end("reset:…")`만 한다(상태 잠금만, slot·디스패처를
-  건드리지 않음 = 교착 없음). 이것으로 이전 결과 현재성 해제(revoke)·계산 중 결과 수락 차단·이후 제출 거부가 즉시 일어난다. 대기 작업
-  버리기·worker 종료·slot 닫기·TF 닫기는 제어 흐름이 `service()`(또는 `end_run`)에서 한다. 되감기가 아닌 경계는 `state.on_rx_boundary`로
-  넘긴다(기존 규칙).
-- 출처 표지: 세션의 `take()`는 영상을 `RunFrame(run_id, …)`으로 감싼다. `submit()`은 그 세션 `run_id`의 영상만 받는다(`foreign_run`).
-  이전 실행 영상이 수신 epoch·세대·보정 번호가 우연히 같아도 새 실행에 들어가지 않는다.
-- `LiveRunController`: 현재 세션 하나. `start_run(run_id)`는 명시 호출로만 새 세션을 만든다. 현재 세션이 살아 있거나, 끝났어도
-  정리 완료(`cleanup_confirmed`: worker·slot·TF 정리 단계 모두 성공 + worker 스레드 종료)가 확인되지 않았거나, `run_id`를 다시 쓰면
-  거부한다. 정리 실패는 `retry_cleanup()`으로 실패한 단계만 다시 한다(#173 r1 reviewer 재현 결함). 리셋 뒤 `service()`는 끝내기만 하고 새 실행을 만들지 않는다.
-- 남는 한계(보장 아님): 새 실행의 TF 버퍼·구독은 새것이지만, 리셋 직전 이전 실행 발행자가 보낸 `/tf`·영상이 새 구독에 늦게 도착하면
-  stamp만으로는 출처를 가를 수 없다(보고서 §4). 이 모듈은 이를 막지 않는다.
-- ROS·Qt를 import하지 않는다(모든 수신·TF 객체는 주입).
+실행마다 상태·slot·TF·디스패처를 새로 만들어 공유하지 않고, 영상은 `RunFrame(run_id, …)`으로 출처를 표시한다.
+자동 재시작은 없다. ROS·Qt를 import하지 않는다(수신·TF 객체는 주입).
 """
 from __future__ import annotations
 
@@ -33,7 +13,7 @@ from eyetoarm.transforms.live_tf_buffer import TfRewindReadiness
 from eyetoarm.vision.live_observation_state import SIM_TIME_REWIND, LiveObservationConfig, LiveObservationState
 
 
-_INIT_FAILURE_CLOSE_LIMIT_S = 1.0   # 생성 실패 때 이미 만든 부품을 닫는 상한(s, A 임시값)
+_INIT_FAILURE_CLOSE_LIMIT_S = 1.0   # 생성 실패 때 이미 만든 부품을 닫는 상한(s)
 
 
 @dataclass(frozen=True)
@@ -61,13 +41,7 @@ class LiveRunSession:
     def __init__(self, run_id: str, *, generation: int, state_config: LiveObservationConfig,
                  make_slot: Callable, make_tf: Callable, make_dispatcher: Callable, frame_of: Callable,
                  world_frame: str, static_pairs: tuple, wait_limit_s: float, future_tolerance_ns: int) -> None:
-        """새 상태·slot·TF·디스패처·TF 준비를 만든다.
-
-        - `make_slot(boundary_hook)` → slot(`take`·`close`·`on_*`).
-        - `make_tf()` → TF 수신 묶음(`lookup`·`has_static`·`clear`·`close(limit_s)`), 시작된 상태로 돌려준다.
-        - `make_dispatcher(state, tf)` → 디스패처(`submit`·`start`·`close(limit_s)`).
-        - `frame_of(record, generation)` → 실시간 프레임(`ros_stamp_ns`·`optical_frame`·`calibration_id` 포함).
-        """
+        """새 상태·slot·TF·디스패처·TF 준비를 주입 공장(`make_*`·`frame_of`)으로 만든다."""
         if not isinstance(run_id, str) or not run_id:
             raise ValueError(f"run_id must be a non-empty string: {run_id!r}")
 
@@ -93,8 +67,7 @@ class LiveRunSession:
                                                lookup=self.tf.lookup, world_frame=world_frame, static_pairs=static_pairs,
                                                wait_limit_s=wait_limit_s, future_tolerance_ns=future_tolerance_ns)
         except Exception:
-            # 부분 생성 실패(#180 #7): 이미 시작한 TF 묶음·만든 디스패처를 닫고 원래 예외를 올린다. 정리 실패는 원래 예외를 가리지 않는다
-            # #196 A1-6: 이미 만든 slot도 닫는다(slot.close는 인자 없음)
+            # 이미 만든 부품을 닫고 원래 예외를 올린다(정리 실패가 원래 예외를 가리지 않게)
             parts = ((self.dispatcher, True), (self.slot, False), (self.tf, True))
 
             for part, takes_limit in parts:
@@ -118,7 +91,7 @@ class LiveRunSession:
     # ------------------------------------------------------------------ 수신 쪽(slot 잠금 안)
 
     def _on_boundary(self, epoch: int, kind) -> None:
-        """slot 경계 훅. 되감기면 실행 종료 표지와 상태 닫기만 한다(상태 잠금만 잡는다)."""
+        """slot 경계 훅(slot 잠금 안). 되감기면 종료 표지와 상태 닫기만 한다(상태 잠금만, 교착 없음)."""
         if getattr(kind, "value", kind) == SIM_TIME_REWIND:
             with self._lock:
                 if self.reset_reason is None:
@@ -131,7 +104,7 @@ class LiveRunSession:
         try:
             self.state.on_rx_boundary(epoch, kind)
         except Exception:
-            # 현재성 갱신 실패를 slot 계수로만 두면 이전 수락이 현재로 남는다(#180 #5). 상태를 닫고 slot에 알린다
+            # slot 계수로만 두면 이전 수락이 현재로 남으므로 상태를 닫고 slot에 알린다
             self.state.fail("boundary_hook_error")
             raise
 
@@ -200,10 +173,9 @@ class LiveRunSession:
         return "ok" if ok else "refused"
 
     def end(self, reason: str, *, limit_s: float) -> RunEnd:
-        """실행을 끝낸다: 상태 닫기(현재성 해제·수락 차단) → 대기 작업 버리기·worker 종료 → slot 닫기 → TF 닫기.
+        """실행을 끝낸다: 상태 닫기 → worker 종료 → slot 닫기 → TF 닫기.
 
-        정리 단계가 실패하면(worker가 상한 안에 안 멈춤, 닫기 예외) 기록에 남기고 `cleanup_confirmed`는 거짓이다. 두 번째 호출부터는
-        `retry_cleanup`과 같다(실패한 단계만 다시 하고 새 기록을 돌려준다). 상태 닫기는 처음 한 번만 한다.
+        정리 실패는 기록에 남기고 `cleanup_confirmed`는 거짓이다. 두 번째 호출부터는 `retry_cleanup`과 같다.
         """
         with self._lock:
             first = self.ended is None
@@ -291,9 +263,9 @@ class LiveRunController:
         return None
 
     def start_run(self, run_id: str, make_session: Callable[[str], object] | None = None):
-        """새 실행. 현재 실행이 끝나지 않았거나, 끝났어도 정리 완료가 확인되지 않았거나, run_id를 다시 쓰면 ValueError.
+        """새 실행. 현재 실행이 안 끝났거나 정리 미확인이거나 run_id를 다시 쓰면 ValueError.
 
-        `make_session`을 주면 이번 실행만 그 공장으로 만든다(진입점이 실행마다 출력·설정을 달리 줄 때). 세션 규약은 같다.
+        `make_session`을 주면 이번 실행만 그 공장으로 만든다.
         """
         reason = self.refusal(run_id)
 

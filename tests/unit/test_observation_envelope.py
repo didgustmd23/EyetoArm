@@ -1,9 +1,7 @@
-"""A→B 입력 봉투(`vision/observation_envelope`, #168 「전달 자료의 확장성」) 단위시험.
+"""A→B 입력 봉투(`vision/observation_envelope`) 단위시험.
 
-근거: `_workspace/168_a_to_b_real_path_implementation_spec.md` 「전달 자료의 확장성」·「확장 봉투 시험」.
-- 필수 필드 전달, 선택 확장의 추가·부재, 모르는 확장의 무해한 처리(이름만 남기고 내용 버림), 잘못된 버전·타입·좌표 기준·
-  stamp 결합의 명시적 실패, B에는 frame·관측만 넘어가고 TF는 봉투 것만 쓰는지를 확인한다.
-- 값은 합성(카메라 from_fov, 고정 자세)이며 정확도와 무관하다.
+필수 필드 전달, 선택 확장의 추가·부재·모르는 확장 처리, 결합 오류의 명시적 실패, B 입구 어댑터를 본다.
+값은 합성(카메라 from_fov, 고정 자세)이며 정확도와 무관하다.
 """
 import json
 import unittest
@@ -81,7 +79,7 @@ class RequiredFieldsTest(unittest.TestCase):
     """필수 필드 전달."""
 
     def test_envelope_carries_required_fields(self):
-        """봉투는 같은 프레임·관측 객체, 촬영 정보, 읽기 전용 TF, correlation_keys와 같은 상관 키, 버전을 담고 끝점은 관측 안에 그대로다."""
+        """봉투는 같은 프레임·관측 객체, 촬영 정보, 읽기 전용 TF, 상관 키, 버전을 담는다."""
         f = make_frame()
         obs = make_obs(f)
         env = build(f, obs)
@@ -128,7 +126,7 @@ class BindingErrorTest(unittest.TestCase):
             make_observation_envelope(f, {"valid": True}, capture=capture(), camera=CAM, tf=tf())
 
     def test_frame_capture_camera_mismatches(self):
-        """촬영 시각·광학 프레임·크기·보정 번호·카메라 프로파일·영상 모양·관측 식별자가 어긋나면 거부된다."""
+        """촬영 시각·광학 프레임·크기·보정 번호·프로파일·영상 모양·관측 식별자가 어긋나면 거부된다."""
         f = make_frame()
         cases = {
             "stamp": dict(capture=capture(stamp_ns=STAMP + 1)),
@@ -167,7 +165,7 @@ class ExtensionTest(unittest.TestCase):
     """확장 필드: 추가·부재·모르는 이름·형식 오류."""
 
     def test_supported_extensions_accepted_and_normalized(self):
-        """ai_instances·tracking은 결합·좌표 기준을 검사해 받고(polygon 읽기 전용), 봉투 기록에 이름만 남는다."""
+        """ai_instances·tracking은 결합·좌표 기준을 검사해 받고, 봉투 기록에 이름만 남는다."""
         f = make_frame()
         obs = make_obs(f)
         ext = {"ai_instances": {"binding": binding(obs), "pixel_basis": "raw",
@@ -185,8 +183,7 @@ class ExtensionTest(unittest.TestCase):
         self.assertEqual(set(SUPPORTED_EXTENSIONS), {"ai_instances", "tracking"})
 
     def test_unknown_extension_preserved_not_interpreted(self):
-        """모르는 확장은 내용을 JSON 정규 문자열로 그대로 unsupported에 보존하고(해석 안 함), 핵심 필드·상관 키는 확장이 없을 때와 같다.
-        JSON으로 표현할 수 없는 미지원 값은 거부한다."""
+        """모르는 확장은 JSON 정규 문자열로 unsupported에 보존하고, JSON으로 못 쓰는 값은 거부한다."""
         f = make_frame()
         obs = make_obs(f)
         plain = build(f, obs)
@@ -204,7 +201,7 @@ class ExtensionTest(unittest.TestCase):
                     build(f, obs, extensions={"depth_map": bad})
 
     def test_malformed_known_extension_rejected(self):
-        """결합 키 불일치(다른 stamp·job), 좌표 기준 불일치, 프레임 밖 polygon, 신뢰도 범위 밖, 추적 번호 형식 오류는 거부된다."""
+        """결합 키·좌표 기준 불일치, 프레임 밖 polygon, 신뢰도 범위 밖, 추적 번호 오류는 거부된다."""
         f = make_frame()
         obs = make_obs(f)
 
@@ -234,7 +231,7 @@ class ExtensionTest(unittest.TestCase):
 
 
 class StrictNumberTest(unittest.TestCase):
-    """확장·TF 수치는 변환 전에 형을 검사하고 변환 오류를 모두 ObservationEnvelopeError로 정리한다(#168 F3 실패 우선 회귀)."""
+    """확장·TF 수치는 변환 전에 형을 검사하고 변환 오류를 ObservationEnvelopeError로 정리한다."""
 
     def inst_ext(self, obs, **item_over):
         """ai_instances 확장 하나(항목 일부 덮어쓰기)."""
@@ -245,7 +242,7 @@ class StrictNumberTest(unittest.TestCase):
         return {"ai_instances": {"binding": binding(obs), "pixel_basis": "raw", "items": [item]}}
 
     def test_bad_confidence_values(self):
-        """confidence가 거대 정수(10**400)·문자열·bool·복소수·NaN·None이면 OverflowError 등이 새지 않고 ObservationEnvelopeError다."""
+        """confidence가 거대 정수·문자열·bool·복소수·NaN·None이면 ObservationEnvelopeError다."""
         f = make_frame()
         obs = make_obs(f)
 
@@ -255,7 +252,7 @@ class StrictNumberTest(unittest.TestCase):
                     build(f, obs, extensions=self.inst_ext(obs, confidence=bad))
 
     def test_bad_polygon_values(self):
-        """polygon 좌표가 문자열·bool·복소수·비유한·거대 정수·들쭉날쭉·문자열 dtype 배열이면 조용히 변환하지 않고 ObservationEnvelopeError다."""
+        """polygon 좌표가 숫자가 아니거나 비유한·거대·들쭉날쭉하면 ObservationEnvelopeError다."""
         f = make_frame()
         obs = make_obs(f)
         cases = {
@@ -324,7 +321,7 @@ class AdapterTest(unittest.TestCase):
         return Stage()
 
     def test_adapter_receives_extensions_and_computes_with_frame_obs(self):
-        """어댑터는 지원·미지원 확장을 그대로 결과에 돌려주고(used_in_compute 빈 튜플), 계산은 stage.consume(frame, obs)만 부르며 그 동안만 봉투 TF를 준다."""
+        """어댑터는 확장을 그대로 돌려주고, stage.consume(frame, obs)만 부르며 그 동안만 봉투 TF를 준다."""
         f = make_frame()
         obs = make_obs(f)
         env = build(f, obs, extensions={"tracking": {"binding": binding(obs), "part_track_id": 3},
@@ -347,7 +344,7 @@ class AdapterTest(unittest.TestCase):
         self.assertIsNone(lookup(f))   # 소비가 끝나면 봉투 TF를 주지 않는다
 
     def test_adapter_rejects_non_envelope_and_foreign_lookup(self):
-        """봉투가 아닌 값은 거부(B 미호출)하고, stage의 tf_lookup이 어댑터 것이 아니면 생성 단계에서 거부한다."""
+        """봉투가 아닌 값은 거부(B 미호출)하고, 어댑터 것이 아닌 stage의 tf_lookup은 생성 때 거부한다."""
         lookup = EnvelopeTfLookup()
         seen = {}
         adapter = ObservationEnvelopeAdapter(self.stage(lookup, seen), lookup)

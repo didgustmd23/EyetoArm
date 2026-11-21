@@ -1,18 +1,7 @@
-"""A→B 목록 봉투 `eyetoarm.b_input/2`(#189 단계 L): 같은 프레임의 유효 물체 후보 목록(`FrameObservations`)과 상관 키.
+"""A→B 목록 봉투 `eyetoarm.b_input/2`: 같은 프레임의 유효 물체 후보 목록(`FrameObservations`)과 상관 키.
 
-근거: A 상세설계 §5.2 「후보 목록의 필드와 타입 (B-09 협의안)」, B 협업 요청 §8.2 「B-09 B 회신 (2026-11-19)」(형식 그대로 수락,
-프레임 공통 TF 하나, B가 `instance_index` 순 앞 8개만 계산), 계획 `_workspace/189_builder2_stage_L_plan.md` r0 §4.
-
-규칙
-- `b_input/1`(`vision/observation_envelope`, 관측 하나)과 별개 자료형이다. 1은 바꾸지 않는다.
-- 프레임·촬영 정보·카메라·TF·후보 대조는 `FrameObservations` 생성자가 이미 했다(공통 검사 함수, 봉투 1과 같은 규칙).
-  `make_list_envelope`는 버전·형과 TF 부모 = world 프레임(#196 A3-2, 봉투 1과 같음)을 보고 상관 키를 고정한다. 어긋나면 `ListEnvelopeError`(B를 부르지 않고 기록).
-- 상관 키는 B `correlation_keys`를 그대로 불러 같은 키 8개를 만든다. 후보별 대응 열쇠는 여기에 `instance_index`를 더한다.
-- 봉투 확장 필드(`ai_instances`·`tracking`)는 두지 않는다. 추적 번호(#244)는 후보 하위 형(`vision.tracked_observation.
-  TrackedObjectObservation`의 `part_track_id`·`track_state`)으로 싣는다(공통형·봉투 필드 무변, B는 `getattr`로 읽음).
-- A는 후보를 고르거나 자르지 않는다. 선택·C 송신은 B 소관이다.
-- `to_record()`는 JSON 안전한 요약(영상은 지문·모양만, TF 행렬 없음 — 봉투 1과 같음)이다.
-- ROS·Qt를 import하지 않는다. B 입구(`BStage.process_frame`)는 B가 만든다(이 모듈은 B 파일을 바꾸지 않음).
+후보 대조는 `FrameObservations` 생성자가 하고, 여기서는 버전·형과 TF 부모 = world 프레임을 본다(어긋나면
+`ListEnvelopeError`). A는 후보를 고르거나 자르지 않는다. ROS·Qt를 import하지 않는다.
 """
 from __future__ import annotations
 
@@ -68,7 +57,7 @@ class ListEnvelope:
 
 
 def _track_keys(c) -> dict:
-    """추적 번호를 실은 후보(#244 하위 형)일 때만 번호·상태 키. 그 밖은 빈 사전(추적 끔 기록 형식 그대로)."""
+    """추적 번호를 실은 후보일 때만 번호·상태 키. 그 밖은 빈 사전(추적 끔 기록 형식 그대로)."""
     if not hasattr(c, "part_track_id"):
         return {}
 
@@ -85,9 +74,9 @@ def _correlation(obs: FrameObservations) -> dict:
 
 def make_list_envelope(observations, *, world_frame: str = "world",
                        version: str = LIST_ENVELOPE_VERSION) -> ListEnvelope:
-    """목록 봉투를 만든다. 버전이 다르거나 `FrameObservations`가 아니거나 TF 부모가 `world_frame`이 아니면 ListEnvelopeError.
+    """목록 봉투를 만든다. 버전·형이 다르거나 TF 부모가 `world_frame`이 아니면 ListEnvelopeError.
 
-    #196 A3-2: v1(`make_observation_envelope`)과 같이 TF 부모 = world 프레임을 생성 때 대조한다(TF가 None이면 대조 없음).
+    TF가 None이면 부모 대조를 하지 않는다.
     """
     if version != LIST_ENVELOPE_VERSION:
         raise ListEnvelopeError(f"unsupported list envelope version {version!r} (expected {LIST_ENVELOPE_VERSION!r})")

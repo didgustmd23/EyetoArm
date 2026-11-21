@@ -1,23 +1,7 @@
-"""저장 입력 실제 A→B 경로(#168)의 B 결과·주석 영상 기록기.
+"""저장 입력 A→B 경로의 B 결과·주석 영상 기록기(`b_consumer` 자리 함수).
 
-근거: `_workspace/168_a_to_b_real_path_implementation_spec.md` §3, `transforms/b_stage.py`(`BStage.consume`·`render_center`).
-
-- `CaptureObservationRecorder.wrap(consume)`은 실행기 `b_consumer` 자리 함수다. `b_admit`(= `b_gate`)를 통과한 관측마다 실행기가 부른다.
-  같은 `FramePacket`(관측을 만든 그 프레임)으로 `consume`을 부르고, **같은 `BOutput`**으로 `render_center(frame.image, [out])`를
-  불러 원본 크기 주석 프레임을 만든다. 입력 배열은 바꾸지 않는다(호출 전후 지문 비교, 다르면 예외 → 실행 실패).
-- 주석 영상 정책: B 결과에 `T_W_C`가 있을 때만 PNG를 쓴다. `T_W_C`가 없으면(TF 없음·시간 초과 → B SKIP) 그럴듯한 위치를
-  그리지 않으며 `annotation: null`과 사유를 남긴다. B로 보내지 않은 관측(무효·`b_gate` 거부)은 `frames.jsonl`에 사유만 남고
-  주석 영상이 없다(`annotation: "not_sent_to_b"`).
-- `valid=True` 관측은 추출기 형식 조건 통과 뜻이다. 기록에 `valid_meaning`으로 명시한다(정확도·운영 승인 아님, #167 K0).
-- 출력 폴더는 새로 만든다(이미 있으면 FileExistsError). 파일은 덮어쓰지 않는다(`open(..., "x")`).
-- C·D로 보내지 않는다. `stage.on_output`을 쓰지 않는다.
-- A→B 경계는 입력 봉투(`vision/observation_envelope.ObservationEnvelope`, 버전 명시)다. 촬영 정보·TF는 녹화 메타 레코드에서 만들고 프레임·관측과
-  대조한다. 봉투 오류는 B를 부르지 않고 `b_input_rejected`로 기록한다(실행 끝 판정에서 종료 1). 봉투 전체는 B 입구 어댑터
-  (`transforms/observation_envelope_adapter.ObservationEnvelopeAdapter`)로 간다. 어댑터는 계산에 frame·관측만 쓰고 확장은 받아서 돌려준다. TF는 봉투 것
-  (`EnvelopeTfLookup`)만 쓴다. 지금 A는 확장 필드를 만들지 않는다. 받은 확장·미지원·계산 사용 여부는 `b_adapter`로 기록한다(기록 키는 기존 계약 문자열 유지).
-- 시선 기반 끝점 보정(#207, 선택 `view_bias`): 봉투를 만든 직후 공통 지점 `vision/view_bias.apply_view_bias`로 끝점을 보정한 봉투를
-  B에 넘긴다. 켰을 때만 `b_output.input`에 B에 넘긴 끝점·원 끝점(`axis_endpoints_px_raw`)·`view_bias`를 남긴다. TF 없는 프레임은
-  보정하지 않고 사유(`no_tf`)를 남긴다. `frames.jsonl`(A 검출 기록)은 원 끝점 그대로다.
+관측을 봉투로 검사해 B에 넘기고, 같은 `BOutput`으로 주석 영상을 그린다. `T_W_C`가 없으면 주석을 그리지 않고,
+봉투 오류는 B를 부르지 않고 `b_input_rejected`로 남긴다. 출력 폴더는 새로 만들고 파일을 덮어쓰지 않는다.
 """
 from __future__ import annotations
 
@@ -79,7 +63,7 @@ def _frame_keys(frame, obs) -> dict:
 
 
 def capture_from_meta(meta, frame, error=ValueError):
-    """녹화 메타 레코드로 그 프레임의 촬영 정보·촬영 시각 TF를 만든다(메타가 없으면 `error`). 단계 T·L 기록기 공통(#189)."""
+    """녹화 메타 레코드로 그 프레임의 촬영 정보·촬영 시각 TF를 만든다(메타가 없으면 `error`)."""
     record = meta.frames.get(getattr(frame, "source_index", -1))
 
     if record is None:
@@ -116,8 +100,7 @@ class CaptureObservationRecorder:
     def __init__(self, out_dir: str, stage, meta, adapter, extension_source=None, view_bias=None) -> None:
         """출력 폴더를 새로 만든다(있으면 FileExistsError).
 
-        `meta`는 CaptureMeta, `adapter`는 그 stage의 ObservationEnvelopeAdapter. `extension_source(frame, obs)`는 봉투에 실을 확장 사전을 주는
-        주입 지점이다(기본 None = 확장 없음; A는 아직 확장을 생산하지 않는다). `view_bias`(#207)는 `ViewBiasConfig` 또는 None(꺼짐).
+        `extension_source(frame, obs)`는 봉투에 실을 확장 사전을 주는 주입 지점(None = 확장 없음).
         """
         self._meta = meta
         self._view_bias = view_bias
@@ -136,9 +119,9 @@ class CaptureObservationRecorder:
         self.kinds: dict[str, int] = {}
         self.reasons: dict[str, int] = {}
 
-    # ---- display_sink 규약(실행기 handle()이 terminal 응답마다 기록 뒤·B 지점 앞에 부름) ----
+    # ---- display_sink 규약(terminal 응답마다 기록 뒤·B 지점 앞) ----
     def on_outcome(self, outcome, current, **_kw) -> None:
-        """terminal 응답 하나를 frames.jsonl에 남긴다(관측 유효·사유·끝점). B 호출 여부는 b_outputs.jsonl과 job_seq로 맞춘다."""
+        """terminal 응답 하나를 frames.jsonl에 남긴다. B 호출 여부는 b_outputs.jsonl과 job_seq로 맞춘다."""
         ctx, obs = outcome.context, outcome.observation
         f = ctx.frame
         record = {"kind": "outcome", "image_seq": f.image_seq, "source_index": getattr(f, "source_index", None),
@@ -182,7 +165,7 @@ class CaptureObservationRecorder:
                 self._b.write({"kind": "b_input_rejected", "input": _frame_keys(frame, obs), "error": str(exc)})
                 return None
 
-            # #207 공통 보정 지점(끔이면 같은 봉투)
+            # 공통 보정 지점(끔이면 같은 봉투)
             env, bias = apply_view_bias(env, self._meta.camera, self._view_bias)
 
             adapted = self._adapter.consume(env)
@@ -240,7 +223,7 @@ class CaptureObservationRecorder:
         return consumer
 
     def _bias_input(self, env, bias: list) -> dict:
-        """#207 `input`에 더할 보정 키(켬일 때만). 끝점을 B에 넘긴 값으로 덮고 원 끝점·보정 결과를 더한다(실시간 기록과 같은 키)."""
+        """`input`에 더할 보정 키(켬일 때만). 끝점을 B에 넘긴 값으로 덮고 원 끝점·보정 결과를 더한다."""
         if self._view_bias is None:
             return {}
 

@@ -1,18 +1,7 @@
-"""추적 번호를 실은 A 관측(#215): 실시간 A→B→C 경로에서 확정 추적 번호만 B에 넘긴다.
+"""추적 번호를 실은 A 관측·단계 L 후보(공통형의 하위 형)와 확정 추적 번호 조회.
 
-근거: 계획 `_workspace/215_builder2_tracking_live_plan_r0.md`(reviewer PASS 2026-11-20, Q1 (가): 공통형 무변, A 하위 형).
-
-- `TrackedPlanarObservation`: `common.types.PlanarObservation`의 하위 형(frozen). 끝에 `part_track_id`(양의 정수 | None)와
-  `track_state`(기록용 문자열 | None)만 더한다. 상위 형 검사(`isinstance`)·봉투 검사·`dataclasses.replace`(#207 시야 보정)를 그대로
-  통과하고, B는 `getattr(obs, "part_track_id", None)`으로 읽으므로 B·공통형 파일은 바뀌지 않는다. 실시간 기록 연결(`--tracking`)만 쓴다.
-- `confirmed_track_id(track_frame, context, obs)`: **확정(CONFIRMED) 번호만** 돌려준다. 그 작업의 TrackFrame(`matches_job`)이고
-  상태를 갱신한 프레임(`updated`)이며 관측의 `selected_index`와 같은 `instance_index` 배정이 정확히 1개일 때만이다. 그 밖(tentative·
-  ambiguous·untracked·갱신 안 함·다른 작업·선택 없음·추적 결과 없음)은 번호 None이고 사유 문자열을 함께 준다.
-- `TrackedObjectObservation`(#244): 단계 L 목록 후보(`common.types.ObjectObservation`)의 하위 형. 같은 두 필드를 더한다.
-  `FrameObservations`는 후보를 `isinstance`로 검사하므로 공통형·봉투 파일은 바뀌지 않는다. B는 `_candidate_view`에서
-  `getattr(c, "part_track_id", None)`으로 읽는다(B 요청, B 수정 전에는 B 결과 번호 None).
-- `candidate_track_id(track_frame, context, instance_index)`: 후보 index 하나의 확정 번호(규칙은 `confirmed_track_id`와 같음).
-- 번호는 A-6 1차 실험 번호다(M2 휴리스틱, 분열은 알려진 한계 #156). 중복 집기 방지 보증이 아니다.
+번호는 확정(CONFIRMED)일 때만 넘기고 그 밖은 None과 사유 문자열을 준다. B는 `getattr(..., "part_track_id", None)`으로
+읽으므로 공통형·봉투 파일은 바뀌지 않는다. 번호는 실험 번호이며 중복 집기 방지 보증이 아니다.
 """
 from __future__ import annotations
 
@@ -48,7 +37,7 @@ class TrackedPlanarObservation(PlanarObservation):
 
 @dataclass(frozen=True)
 class TrackedObjectObservation(ObjectObservation):
-    """추적 번호를 더한 단계 L 후보(#244, 하위 형). 번호는 확정일 때만 양의 정수, 아니면 None."""
+    """추적 번호를 더한 단계 L 후보(하위 형). 번호는 확정일 때만 양의 정수, 아니면 None."""
 
     part_track_id: int | None = None
     track_state: str | None = None
@@ -72,12 +61,12 @@ def with_candidate_track(c: ObjectObservation, part_track_id: int | None, track_
 
 
 def confirmed_track_id(track_frame, context, obs) -> tuple[int | None, str]:
-    """(확정 번호 | None, 상태 문자열). 상태는 배정 상태 값(`confirmed`·`tentative`·`ambiguous`·`untracked`) 또는 위 사유 상수."""
+    """선택 인스턴스의 (확정 번호 | None, 상태 문자열). 상태는 배정 상태 값 또는 위 사유 상수."""
     return candidate_track_id(track_frame, context, getattr(obs, "selected_index", None))
 
 
 def candidate_track_id(track_frame, context, index) -> tuple[int | None, str]:
-    """인스턴스 index 하나의 (확정 번호 | None, 상태)(#244). index가 None이면(관측에 선택 없음) `no_selection`."""
+    """인스턴스 index 하나의 (확정 번호 | None, 상태). index가 None이면 `no_selection`."""
     if not isinstance(track_frame, TrackFrame):
         return None, NO_TRACKS
 
@@ -104,7 +93,7 @@ def candidate_track_id(track_frame, context, index) -> tuple[int | None, str]:
 
 
 def with_track(obs: PlanarObservation, part_track_id: int | None, track_state: str | None) -> TrackedPlanarObservation:
-    """같은 관측 필드에 번호를 더한 새 관측(생성자 검사를 다시 거침). 상위 형의 모든 필드를 그대로 옮긴다."""
+    """같은 관측 필드에 번호를 더한 새 관측(생성자 검사를 다시 거침)."""
     values = {f.name: getattr(obs, f.name) for f in fields(PlanarObservation)}
 
     return TrackedPlanarObservation(**values, part_track_id=part_track_id, track_state=track_state)

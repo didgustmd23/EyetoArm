@@ -1,19 +1,7 @@
-"""A→C 같은 프로세스 내부 연결부(#142 Task 2) — 순서 있는 제어 대기열·최신 1칸 영상·현재 결과 거울·fail-stop.
+"""A→C 같은 프로세스 내부 연결부: 순서 있는 제어 대기열·최신 1칸 영상·현재 결과 거울·fail-stop.
 
-근거: `_workspace/142_builder2_a_c_handoff_contract.md` r3(검토 PASS, `_workspace/codex-reviews/2026-11-17-a-c-handoff-contract-review-r3.md`)
-§2(메시지·무효 범위·영상 칸·소비자 API·notify)·§3(fail-stop·수명)·§4(보존식), A 상세설계 §3 「A→C 전달」·§5.4 규칙 1~3.
-
-- **A 내부 연결부 제안**이다. C 공개 API·진입점은 합의 전이며(계약 §6 C1~C8) 이 모듈은 C 코드에 의존하지 않는다.
-  C 협업 문서의 `publish_result`·`publish_invalidation`·`publish_view`는 제안 이름일 뿐 여기서 구현한 C API가 아니다.
-- threading만 쓴다(ROS·Qt·torch·asyncio import 없음). 그리기는 live_view의 OpenCV 함수를 재사용한다.
-- **생산자**(A 제어 흐름, 첫 생산자 호출 스레드에 고정): `start_run`·`sync_invalidations`·`note_input_status`·`offer_result`·`clear`·
-  `end_run`·`check`. **소비자**(수신 측 1개 가정): `take_control`·`take_view`·`is_current`·`current_result`·`state`·
-  `report_consumer_failure`·`stats`. `close`는 통합 쪽이 어느 스레드에서든 부른다.
-- 제어 메시지에는 영상 배열·FramePacket·JobContext·JobOutcome 참조를 두지 않는다. 영상은 현재 결과와 짝인 프레임 1장(`HandoffView`)뿐이다.
-- 잠금 안에서는 참조 대입·계수만 한다. 그리기·notify·대기는 잠금 밖이다. notify가 막히면 생산자도 막힌다(비차단 보장 밖).
-- 용량 64는 **A 개발 기본값**이며 C 확정값이 아니다. 넘침·notify 예외·수신 측 실패는 상태 latch `FAILED(reason)`로 끝나며
-  자동 복구(ack/RESYNC)는 없다(D2).
-- 표시용 valid=False 관측을 valid로 바꾸지 않는다. 로봇 목표·B 소비와 무관하다.
+생산자 메서드는 첫 생산자 호출 스레드에 고정되고, 소비자(수신 측 1개)는 꺼내기·현재성 확인만 한다. 잠금 안에서는
+참조 대입·계수만 하며, 넘침·notify 예외·수신 측 실패는 `FAILED(reason)`로 latch되고 자동 복구는 없다.
 """
 from __future__ import annotations
 
@@ -42,7 +30,7 @@ from eyetoarm.vision.pipeline_types import DisplayResult, JobOutcome, JobStatus
 from eyetoarm.vision.tracking import TrackFrame, TrackMode, matches_job
 from eyetoarm.vision.world_tracking_display import PrevDisplay
 
-# 제어 대기열 용량(A 개발 기본값, 계약 §7 D3. C 확정값 아님)
+# 제어 대기열 용량(개발 기본값, 확정값 아님)
 DEFAULT_CAPACITY = 64
 
 
@@ -71,10 +59,10 @@ class HandoffState(str, Enum):
 
 
 class MsgKind(str, Enum):
-    """제어 메시지 종류(계약 §2.2)."""
+    """제어 메시지 종류."""
 
     RUN_START = "RUN_START"          # 전체 해제
-    INVALIDATION = "INVALIDATION"    # 범위 무효화(§2.3), applied=False는 상태 무변
+    INVALIDATION = "INVALIDATION"    # 범위 무효화, applied=False는 상태 무변
     INPUT_STATUS = "INPUT_STATUS"    # 전체 해제(세대 무변)
     RESULT = "RESULT"                # 현재 결과 교체
     CLEAR = "CLEAR"                  # 전체 해제(결과 보류 등)
@@ -91,15 +79,9 @@ class HandoffStatus:
 
 @dataclass(frozen=True)
 class HandoffMessage:
-    """제어 메시지 하나(계약 §2.2). 바깥 필드는 사건 필드와 겹치지 않는 이름을 쓴다. 해당 없는 필드는 None(가짜 0 없음).
+    """제어 메시지 하나. 해당 없는 필드는 None(가짜 0 없음).
 
-    - 공통: `msg_seq`(1부터 단조, 실행이 바뀌어도 초기화 안 함), `msg_kind`, `run_id`, `source_id`, `core_generation`(만들 때 코어
-      현재 세대), `published_monotonic_ns`(PC 단조).
-    - RUN_START: `detector_config_id`·`method`·`model_id`. INVALIDATION: `event`(코어 사건 객체 그대로)·`applied`.
-      INPUT_STATUS: `status`·`detail`·`event_monotonic_ns`. CLEAR: `reason`. RUN_END: `exit_code`·`stop_reason`.
-    - RESULT: 프레임 메타(`image_seq`·`capture_generation`·`timestamp_ms`·`timestamp_base`·`ros_stamp_ns`·`received_monotonic_ns`·
-      `calibration_id`), 작업 `generation`·`job_seq`·`detector_config_id`, `observation`(valid 그대로), `display`, `display_only`.
-      SIM_TIME 촬영시각(`timestamp_ms`·`ros_stamp_ns`)과 PC 단조 시각을 서로 빼지 않는다.
+    `msg_seq`는 1부터 단조이며 실행이 바뀌어도 초기화하지 않는다. SIM_TIME 촬영 시각과 PC 단조 시각을 서로 빼지 않는다.
     """
 
     msg_seq: int
@@ -131,36 +113,29 @@ class HandoffMessage:
     reason: str | None = None
     exit_code: int | None = None
     stop_reason: str | None = None
-    tracks: TrackFrame | None = None   # RESULT만: 같은 작업의 추적 결과(#151, 추적 켬일 때). 표시 실험 번호, 영상 참조 없음
+    tracks: TrackFrame | None = None   # RESULT만: 같은 작업의 추적 결과(추적 켬일 때), 영상 참조 없음
 
 
 @dataclass(frozen=True)
 class HandoffView:
-    """영상 칸 항목(계약 §2.6). 같은 응답의 프레임(코어 소유 읽기 전용 복사)과 표시 결과 쌍이다. 원본 배열에 쓰지 않는다."""
+    """영상 칸 항목: 같은 응답의 프레임(읽기 전용 복사)과 표시 결과 쌍. 원본 배열에 쓰지 않는다."""
 
     msg_seq: int
     frame: object
     display: DisplayResult | None
     generation: int
     job_seq: int
-    tracks: TrackFrame | None = None   # 같은 RESULT의 TrackFrame(#151)
-    # #239: 실행기 tracks가 없고 연결부에 W 조회(`set_track_source`)가 있으면, 그 작업의 W 결과를 그릴 때 읽는 함수
-    # (`() → TrackFrame | PrevDisplay(#242 직전 결과 짝, 화면 전용) | 사유 문자열 | None`, 기다리지 않음).
+    tracks: TrackFrame | None = None   # 같은 RESULT의 TrackFrame
+    # 실행기 tracks가 없을 때 그 작업의 W 결과를 그릴 때 읽는 함수(기다리지 않음).
     # 그 작업이 아닌 TrackFrame은 `job_mismatch`로 바꿔 돌려준다
     track_lookup: Callable[[], object] | None = None
 
 
 @dataclass(frozen=True)
 class HandoffStats:
-    """계수 스냅샷(계약 §4). 범위가 둘이며 섞지 않는다.
+    """계수 스냅샷. 연결부 수명 전체 계수와 현재 실행(`events_*`) 계수를 섞지 않는다.
 
-    - **연결부 수명 전체**: 제어(`published`·`taken`·`pending`·`rejected`), 영상(`views_*`), 결과(`results_*`), 알림, `events_enqueued_total`.
-      보존식 published = taken + pending, views_put = views_taken + views_replaced + views_cleared + view_pending,
-      results_enqueued + results_rejected = results_offered.
-    - **현재 실행(`run_id`, 마지막 start_run)**: `events_enqueued`·`events_unsent`·`events_applied`·`events_ignored`. start_run에서 0으로 시작한다.
-      보존식 events_enqueued + events_unsent = `records_seen`(그 실행 코어의 records 길이를 생산자 경계에서 읽은 값).
-      생산자가 실행 끝에 마지막 sync를 부르면 records_seen = len(코어 records)이다. sync 뒤 새로 생긴 사건은 다음 sync 경계 전까지
-      세지 않는다(소비자 스레드에서 코어를 읽지 않음). applied/ignored 합은 그 코어의 kind별 계수 합과 같다(넘긴 기록 기준).
+    보존식: published = taken + pending, events_enqueued + events_unsent = `records_seen`.
     """
 
     capacity: int
@@ -198,11 +173,9 @@ def _method_of(pipeline: VisionPipeline) -> tuple[str, str | None]:
 
 
 def annotate(view: HandoffView) -> np.ndarray:
-    """영상 칸 항목의 주석 영상(A 소유 helper, 계약 §2.6 D4). 수신 측이 꺼낸 뒤 잠금 밖에서 부른다.
+    """영상 칸 항목의 주석 영상. 수신 측이 꺼낸 뒤 잠금 밖에서 부르며 원본은 바꾸지 않는다.
 
-    원본을 복사해 그리며 원본은 바꾸지 않는다. AI 표시 결과는 live_view `draw_detections`(원본 좌표 그대로, ROI 재가산 없음)를 쓴다.
-    OpenCV `PlanarResult`·표시 결과 없음은 이번 범위에서 오버레이 없이 원본 복사본을 돌려준다. 그린 뒤 공개 직전에
-    `is_current(view.msg_seq)`를 다시 확인하는 것은 호출자 몫이다.
+    AI 표시 결과가 아니면 오버레이 없는 복사본을 돌려준다. 공개 직전 `is_current` 재확인은 호출자 몫이다.
     """
     if not isinstance(view, HandoffView):
         raise HandoffContractError(f"annotate needs HandoffView: {type(view).__name__}")
@@ -215,10 +188,10 @@ def annotate(view: HandoffView) -> np.ndarray:
     if view.tracks is not None or view.track_lookup is None:
         return draw_detections(image, view.display, view.tracks)[0]
 
-    # #239 W: 그릴 때 같은 작업의 W 결과를 한 번 읽는다(기다리지 않음). 없거나 사유면 번호 없이 그 상태만 표기한다
+    # 그릴 때 같은 작업의 W 결과를 한 번 읽는다(기다리지 않음). 없거나 사유면 그 상태만 표기한다
     value = view.track_lookup()
 
-    # #242: 같은 작업 결과가 없어 직전 W 결과를 위치로 짝지은 표시 전용 번호(배너 `(world, prev)`로 구분)
+    # 같은 작업 결과가 없어 직전 W 결과를 위치로 짝지은 표시 전용 번호(배너 `(world, prev)`로 구분)
     if isinstance(value, PrevDisplay):
         return draw_detections(image, view.display, value.tracks, mode_text=f"{TrackMode.WORLD.value}, prev")[0]
 
@@ -235,7 +208,7 @@ def annotate(view: HandoffView) -> np.ndarray:
 
 
 def _bound_track_lookup(source: Callable[[object, object], object], context, display) -> Callable[[], object]:
-    """W 조회 함수를 그 작업 문맥·AI 결과에 묶는다(#239·#242). 그 작업이 아닌 TrackFrame(직전 짝의 표시 판정 포함)은 쓰지 않는다."""
+    """W 조회 함수를 그 작업 문맥·AI 결과에 묶는다. 그 작업이 아닌 TrackFrame은 쓰지 않는다."""
 
     def lookup() -> object:
         value = source(context, display)
@@ -250,7 +223,7 @@ def _bound_track_lookup(source: Callable[[object, object], object], context, dis
 
 
 class AToCHandoff:
-    """A→C 내부 연결부(계약 §2.1). 제어 FIFO·영상 1칸·현재 결과 거울·상태를 한 잠금으로 바꾼다."""
+    """A→C 내부 연결부. 제어 FIFO·영상 1칸·현재 결과 거울·상태를 한 잠금으로 바꾼다."""
 
     def __init__(self, *, capacity: int = DEFAULT_CAPACITY, notify: Callable[[], None] | None = None,
                  clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
@@ -266,7 +239,8 @@ class AToCHandoff:
 
         self._capacity = capacity
         self._notify = notify
-        self._track_source: Callable[[object, object], object] | None = None   # #239 W 표시 조회(start_run 전에만 설정)
+        # W 표시 조회(start_run 전에만 설정)
+        self._track_source: Callable[[object, object], object] | None = None
         self._clock_ns = clock_ns
         self._lock = threading.Lock()
 
@@ -300,10 +274,9 @@ class AToCHandoff:
     # ------------------------------------------------------------------ 생산자(A 제어 흐름)
 
     def set_track_source(self, source: Callable[[object, object], object] | None) -> None:
-        """W 추적 결과 조회 함수(#239, 예: `LiveWorldTracking.peek`)를 둔다. 첫 `start_run` 전에만 허용한다.
+        """W 추적 결과 조회 함수(예: `LiveWorldTracking.peek`)를 둔다. 첫 `start_run` 전에만 허용한다.
 
-        `source(JobContext, AI 표시 결과) → TrackFrame | PrevDisplay | 사유 문자열 | None`(#242: 두 번째 인자는 직전 결과 위치 짝짓기용)은
-        기다리지 않아야 한다. 실행기 `tracks`(픽셀)가 있는 응답에는 쓰지 않는다.
+        `source(JobContext, AI 표시 결과)`는 기다리지 않아야 하며, 실행기 `tracks`가 있는 응답에는 쓰지 않는다.
         """
         if source is not None and not callable(source):
             raise HandoffContractError("track source must be callable or None")
@@ -315,10 +288,9 @@ class AToCHandoff:
             self._track_source = source
 
     def start_run(self, pipeline: VisionPipeline) -> int:
-        """실행을 시작한다: 코어를 결합하고 현재 실행 사건 계수(커서)를 0으로 두고 RUN_START(전체 해제)를 넣는다. msg_seq를 돌려준다.
+        """코어를 결합하고 현재 실행 사건 계수를 0으로 둔 뒤 RUN_START(전체 해제)를 넣는다. msg_seq를 돌려준다.
 
-        이전 실행의 사건 계수는 버리고(수명 전체는 `events_enqueued_total`) 이전 실행 사건을 다시 보내지 않는다. 대기열에 남은 이전
-        실행 메시지는 그대로 순서대로 남는다. 코어에 이미 기록이 있으면 records_seen에 넣고 다음 sync에서 넘긴다.
+        이전 실행 사건은 다시 보내지 않으며, 대기열에 남은 이전 실행 메시지는 순서대로 남는다.
         """
         self._enter_producer()
 
@@ -345,8 +317,7 @@ class AToCHandoff:
     def sync_invalidations(self, pipeline: VisionPipeline) -> int:
         """코어 `invalidation_records`의 새 항목을 순서대로 INVALIDATION으로 넣는다. 넣은 수를 돌려준다.
 
-        각 기록은 한 번만 넘긴다(커서 = 현재 실행 `events_enqueued`). 이 호출이 미전달 수를 확정하는 생산자 경계다: 코어 records 길이를
-        `records_seen`으로 먼저 남기고, 넣지 못하면(FAILED·CLOSED·넘침) 커서가 그 항목에 멈춰 나머지가 `events_unsent`가 된다.
+        각 기록은 한 번만 넘긴다. 넣지 못하면 커서가 그 항목에 멈추고 나머지가 `events_unsent`가 된다.
         """
         self._enter_producer()
         self._require_bound(pipeline)
@@ -398,10 +369,9 @@ class AToCHandoff:
         return msg.msg_seq
 
     def offer_result(self, outcome: JobOutcome, *, tracks: TrackFrame | None = None) -> int:
-        """제출 조건(계약 §2.4-1)을 통과한 응답을 RESULT로 넣고 영상 칸을 같은 응답의 프레임으로 교체한다. msg_seq를 돌려준다.
+        """현재 반영을 마친 응답을 RESULT로 넣고 영상 칸을 같은 응답의 프레임으로 교체한다. msg_seq를 돌려준다.
 
-        계약: 최초·현재 반영 완료(`COMPLETED`·applied·not duplicate)이고 그 관측이 결합한 코어의 현재 관측이어야 한다.
-        어긋나면 HandoffContractError(계수 무변). FAILED·CLOSED면 넣지 않고 `results_rejected`.
+        결합한 코어의 현재 관측이 아니면 HandoffContractError. FAILED·CLOSED면 넣지 않고 `results_rejected`.
         """
         self._enter_producer()
         pipeline = self._require_bound(None)
@@ -452,7 +422,7 @@ class AToCHandoff:
         return msg.msg_seq
 
     def clear(self, reason: str) -> int:
-        """CLEAR(전체 해제)를 넣는다. 예: 코어는 현재 관측을 바꿨지만 결과를 공개하지 않은 경우(`result_withheld`, 계약 §2.4-2)."""
+        """CLEAR(전체 해제)를 넣는다. 예: 코어가 현재 관측을 바꿨지만 결과를 공개하지 않은 경우."""
         self._enter_producer()
         self._require_bound(None)
 
@@ -469,7 +439,7 @@ class AToCHandoff:
         return msg.msg_seq
 
     def end_run(self, exit_code: int, stop_reason: str) -> int:
-        """RUN_END(전체 해제)를 넣는다. 연결부는 닫지 않는다(수명은 통합 쪽, 계약 §3)."""
+        """RUN_END(전체 해제)를 넣는다. 연결부는 닫지 않는다(수명은 통합 쪽)."""
         self._enter_producer()
         self._require_bound(None)
 
@@ -486,7 +456,7 @@ class AToCHandoff:
         return msg.msg_seq
 
     def check(self) -> None:
-        """대기 지점의 실패 확인(계약 §3). OPEN이면 무동작, FAILED면 HandoffFailed, CLOSED면 HandoffClosed. 메시지·계수 무변."""
+        """대기 지점의 실패 확인. OPEN이면 무동작, FAILED면 HandoffFailed, CLOSED면 HandoffClosed."""
         self._enter_producer()
 
         with self._lock:
@@ -506,7 +476,7 @@ class AToCHandoff:
             return out, self._after_take()
 
     def take_view(self) -> tuple[HandoffView | None, bool]:
-        """영상 칸을 꺼내고 비운다. (항목 또는 None, 꺼낸 뒤 모두 비었는지). FAILED·CLOSED에서는 칸이 이미 비어 있다."""
+        """영상 칸을 꺼내고 비운다. (항목 또는 None, 꺼낸 뒤 모두 비었는지)."""
         with self._lock:
             item, self._view = self._view, None
 
@@ -516,7 +486,7 @@ class AToCHandoff:
             return item, self._after_take()
 
     def is_current(self, msg_seq: int) -> bool:
-        """그 RESULT가 아직 현재인지: 상태 OPEN이고 현재 결과 거울의 msg_seq와 같을 때만 True(계약 §2.3)."""
+        """그 RESULT가 아직 현재인지: 상태 OPEN이고 현재 결과 거울의 msg_seq와 같을 때만 True."""
         with self._lock:
             return (self._state is HandoffState.OPEN and self._current is not None
                     and self._current[0] == msg_seq)
@@ -533,12 +503,12 @@ class AToCHandoff:
             return HandoffStatus(self._state, self._reason)
 
     def report_consumer_failure(self, reason: str) -> None:
-        """수신 측 실패를 latch한다(`FAILED("consumer: …")`). 생산자는 다음 생산자 호출이나 `check()`에서 알게 된다."""
+        """수신 측 실패를 latch한다. 생산자는 다음 생산자 호출이나 `check()`에서 알게 된다."""
         with self._lock:
             self._fail(f"consumer: {reason}")
 
     def stats(self) -> HandoffStats:
-        """계수 스냅샷(계약 §4, 범위는 `HandoffStats`). 생산자 경계에서 갱신한 수치만 읽고 코어를 읽지 않는다."""
+        """계수 스냅샷. 생산자 경계에서 갱신한 수치만 읽고 코어를 읽지 않는다."""
         with self._lock:
             return HandoffStats(
                 capacity=self._capacity, published=self._published, taken=self._taken, pending=len(self._queue),
@@ -553,7 +523,7 @@ class AToCHandoff:
                 notify_calls=self._notify_calls)
 
     def close(self) -> None:
-        """CLOSED로 latch한다(FAILED 사유 유지). 영상 칸·현재 결과를 비운다. 재호출 멱등. 남은 메시지는 꺼낼 수 있다."""
+        """CLOSED로 latch한다(FAILED 사유 유지). 재호출 멱등이며 남은 메시지는 꺼낼 수 있다."""
         with self._lock:
             if self._state is HandoffState.CLOSED:
                 return
@@ -647,7 +617,7 @@ class AToCHandoff:
             self._notify_calls += 1
 
     def _apply_scope(self, event: CandidateInvalidationEvent) -> None:
-        """(잠금 안) applied 사건의 무효 범위를 현재 결과 거울에 적용한다(계약 §2.3, 코어 §5.4 규칙 1~3)."""
+        """(잠금 안) applied 사건의 무효 범위를 현재 결과 거울에 적용한다."""
         if self._current is None:
             return
 

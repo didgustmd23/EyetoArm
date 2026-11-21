@@ -1,7 +1,4 @@
-"""#183 통신 시험 취합 순수 로직: 분위수(최근접 순위), 4분류 비율, 참조값(판정 없음), local_mock 표시·executor 설정 병기.
-
-근거: `_workspace/183_builder_comm_test_tool_plan.md` r0 §5, reviewer 계획 검토 보완 2, TCP 명세서 §8.4, A 상세설계 §10.
-"""
+"""통신 시험 취합 순수 로직: 분위수(최근접 순위), 4분류 비율, 참조값(판정 없음), local_mock 표시·executor 설정 병기."""
 import unittest
 
 from eyetoarm.commtest.aggregate import percentile, summarize, to_markdown

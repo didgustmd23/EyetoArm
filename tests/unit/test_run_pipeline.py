@@ -1,8 +1,6 @@
-"""작업 6a 저장 입력 실행기 단위·결합시험 — 실제 저장 이미지·짧은 영상, terminal 통지, B 소비 조건, 정리·종료 코드.
+"""저장 입력 실행기 단위·결합시험 — 실제 저장 이미지·짧은 영상, terminal 통지, B 소비 조건, 정리·종료 코드.
 
-근거: 계획 r4 작업 6(P1~P3 보완), A 상세설계 §5.4·§9, 작업 4 순환 계약(통지 없으면 활성 유지), 작업 5 fail-stop 기록.
-유효 관측과 B 소비 지점 시험은 **시험용 detector**를 쓴다. 현재 OpenCV 표시 어댑터는 유효 관측을 내지 않는다.
-실제 C·ROS·YOLO·B 계산을 쓰지 않으며, 이 시험은 C 영향 검증이 아니다.
+유효 관측·B 소비 시험은 시험용 detector를 쓴다. 실제 C·ROS·YOLO·B 계산은 쓰지 않는다.
 """
 import dataclasses
 import importlib.util
@@ -32,7 +30,7 @@ from test_video_input import write_video
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SCRIPT = os.path.join(ROOT, "scripts", "run_pipeline.py")
-# 6a 동기 경로 시험: 6b 기본값(감시 켬 10/1)과 달리 감시를 명시적으로 끈다(동기 호출·스레드 1개 전제 유지)
+# 동기 경로 시험이라 기본값(감시 켬 10/1)과 달리 감시를 끈다(동기 호출·스레드 1개 전제)
 FAST = RunnerConfig(close_attempts=3, close_retry_interval_s=0.0, max_consecutive_input_errors=3,
                     first_detect_timeout_s=None, detect_timeout_s=None)
 
@@ -134,7 +132,7 @@ class Base(unittest.TestCase):
         return res, stream, err
 
     def assert_balance(self, res):
-        """종료 후 보존식(A §9)."""
+        """종료 후 보존식."""
         c = res.counters
         self.assertEqual(c.received, c.first_started + sum(c.queue_dropped.values()))
         self.assertEqual(c.first_started + c.reprocess_started,
@@ -142,10 +140,10 @@ class Base(unittest.TestCase):
 
 
 class RealStoredInputTest(Base):
-    """실제 저장 이미지·짧은 영상으로 끝까지 실행(OpenCV 표시 어댑터, 계획 작업 6 항목 7)."""
+    """실제 저장 이미지·짧은 영상으로 끝까지 실행(OpenCV 표시 어댑터)."""
 
     def test_real_stored_images_run_to_end(self):
-        """실제 PNG 3장과 깨진 파일 1개를 끝까지 처리: EOF까지 계속, 처리 기록 3, 입력 오류 1(입력 상태 기록), 원본 시각 보존, 보존식. 입력 오류가 있으므로 종료 1."""
+        """PNG 3장 + 깨진 파일 1개: EOF까지 계속, 처리 기록 3, 입력 오류 1, 원본 시각 보존, 종료 1."""
         with tempfile.TemporaryDirectory() as d:
             paths = []
             for i, img in enumerate((scene(CENTER), scene(EDGE), scene())):
@@ -222,10 +220,10 @@ class RealStoredInputTest(Base):
 
 
 class BGateTest(Base):
-    """B 소비 조건(계획 r4 작업 6 「소비 조건」)."""
+    """B 소비 조건."""
 
     def test_b_callback_called_once_for_current_valid_only(self):
-        """유효→무효 순서에서 B 지점은 유효 완료 응답 1회만 받고, 두 번째 무효 결과는 이전 유효 결과를 재사용하지 않는다."""
+        """유효→무효 순서에서 B는 유효 완료 1회만 받고, 무효 결과에 이전 유효 결과를 재사용하지 않는다."""
         calls = []
         sett = settings()
         res, stream, _ = self.run_with(frames_factory(2), detector=ScriptedDetector({0: "valid", 1: "invalid"}),
@@ -279,7 +277,7 @@ class BGateTest(Base):
 
 
 class TerminalNoticeTest(Base):
-    """terminal 통지 보장(반환하는 호출·전달된 중단) — 계획 r4 작업 6 「terminal 통지 보장」."""
+    """terminal 통지 보장(반환하는 호출·전달된 중단)."""
 
     def test_worker_exception_becomes_fail_and_next_job_runs(self):
         """detector 예외는 그 작업만 INFERENCE_ERROR 실패이고 다음 작업이 이어지며, 끝까지 처리한 뒤 실패 누적으로 종료 1이다."""
@@ -314,7 +312,7 @@ class TerminalNoticeTest(Base):
         self.assertEqual(err.getvalue(), "")
 
     def test_cancel_aborts_and_late_result_is_duplicate(self):
-        """detector가 JobCancelled를 올리면 JOB_ABORTED로 정리되고 실행은 계속되며 의도한 취소라 종료 0이다. 중단 뒤 늦은 완료는 duplicate라 소비·기록되지 않는다."""
+        """JobCancelled는 JOB_ABORTED로 정리·실행 계속·종료 0, 중단 뒤 늦은 완료는 duplicate라 무시."""
         res, stream, _ = self.run_with(frames_factory(2), detector=ScriptedDetector({0: JobCancelled("user")}))
 
         self.assertEqual(res.exit_code, 0)
@@ -331,7 +329,7 @@ class TerminalNoticeTest(Base):
         self.assertFalse(b_gate(p, late))
 
     def test_keyboard_interrupt_aborts_job_and_closes_once(self):
-        """detector 안의 KeyboardInterrupt는 그 작업을 JOB_ABORTED로 정리한 뒤 실행을 끝낸다: 종료 1, close·소스 close 각 1회, 사건 1줄."""
+        """KeyboardInterrupt는 작업을 JOB_ABORTED로 정리하고 끝낸다: 종료 1, close 각 1회, 사건 1줄."""
         holder = {}
         res, stream, err = self.run_with(frames_factory(3, holder), detector=ScriptedDetector({1: KeyboardInterrupt()}))
 
@@ -344,7 +342,7 @@ class TerminalNoticeTest(Base):
         self.assert_balance(res)
 
     def test_unhandled_base_exception_leaves_active_job_for_close(self):
-        """detector가 잡지 않는 BaseException(SystemExit)을 내면 활성 작업은 close가 JOB_ABORTED로 한 번 정리하고 그 결과·사건을 1회 기록한다."""
+        """잡지 않는 BaseException(SystemExit)이면 close가 활성 작업을 JOB_ABORTED로 한 번 정리·기록한다."""
         res, stream, _ = self.run_with(frames_factory(2), detector=ScriptedDetector({0: SystemExit(3)}))
 
         self.assertEqual((res.exit_code, res.closed), (1, True))
@@ -355,7 +353,7 @@ class TerminalNoticeTest(Base):
         self.assert_balance(res)
 
     def test_no_overlapping_workers(self):
-        """detector는 동시에 두 번 불리지 않고 작업 수만큼 순서대로 불린다(동기 호출, 이전 호출이 반환한 뒤 다음 시작)."""
+        """detector는 동시에 두 번 불리지 않고 작업 수만큼 순서대로 불린다(동기 호출)."""
         det = ScriptedDetector({})
         res, _, _ = self.run_with(frames_factory(5), detector=det)
 
@@ -365,7 +363,7 @@ class TerminalNoticeTest(Base):
 
 
 class CloseRetryTest(Base):
-    """close 유한 재시도·최종 실패 보고(계획 r4 P2)."""
+    """close 유한 재시도·최종 실패 보고."""
 
     class ArmedClock:
         """무장 뒤 지정 횟수만큼 실패하는 시계(None이면 계속 실패)."""
@@ -409,7 +407,7 @@ class CloseRetryTest(Base):
         self.assertEqual(holder["source"].closes, 1)
 
     def test_close_retry_hands_over_abort_once_with_active_job(self):
-        """활성 작업이 남은 채(SystemExit) close 첫 시계 조회만 실패하면 재시도가 JOB_ABORTED로 한 번 정리하고 결과·사건 1회, 원래 실패 코드 1."""
+        """활성 작업이 남은 채 close 첫 시계 조회만 실패하면 재시도가 JOB_ABORTED로 1회 정리, 코드 1."""
         clock = self.ArmedClock()
         holder = {}
         stream = io.StringIO()
@@ -605,7 +603,7 @@ class InputPathTest(Base):
         self.assertEqual((res.exit_code, res.stop_reason, res.frames), (0, "max_frames", 2))
 
     def test_seek_failure_preserves_current_selection(self):
-        """실제 VideoSource에서 실패한 탐색은 위치·세대·선택을 보존하고, 성공한 탐색은 세대를 올리고 다음 프레임이 새 capture_generation을 받는다."""
+        """실패한 탐색은 위치·세대·선택을 보존, 성공한 탐색은 세대를 올리고 새 capture_generation을 준다."""
         with tempfile.TemporaryDirectory() as d:
             path = write_video(os.path.join(d, "clip.avi"), 4, fps=10.0)
             p = VisionPipeline(settings(source_id="src0", profile=None), run_id=RUN_ID, clock_ns=FakeClock())

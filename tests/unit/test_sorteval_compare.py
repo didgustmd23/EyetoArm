@@ -1,8 +1,4 @@
-"""#186 AI/OpenCV 동일 조건 비교: 같은 조건 판정, 조건 불일치 표시, 같은 검출 방식 거부, FAKE_INPUT 전파, CLI 연결.
-
-근거: A 상세설계 §7.1(같은 평가셋·설정에서 비교, 채택 판단은 3주차 말), `_workspace/186_builder2_sort_test_plan.md` r0 §6,
-reviewer 계획 검토 보완 5.
-"""
+"""AI/OpenCV 동일 조건 비교 시험: 같은 조건 판정, 조건 불일치 표시, 같은 방식 거부, FAKE_INPUT 전파, CLI."""
 import importlib.util
 import json
 import tempfile
@@ -73,7 +69,7 @@ class CompareTest(unittest.TestCase):
         self.assertTrue(any("detector.method" in d for d in c["condition_differences"]))
 
     def test_fake_banner_propagates(self):
-        """둘 중 하나라도 가짜 입력이면 비교 MD 머리에 FAKE_INPUT(보완 5)."""
+        """둘 중 하나라도 가짜 입력이면 비교 MD 머리에 FAKE_INPUT."""
         seq = seq_of()
         a = summary(seq, "opencv")
         b = summary(seq, "ai")

@@ -1,9 +1,5 @@
-"""#173 B1~B4 단위시험: 동적 정확 조회·되감기 준비에서 stamp 0·음수·None·bool·float를 조회 호출 전에 막고, 시각 0(`Time()`)은 정적 쌍
-확인에서만 쓴다.
-
-근거: `_workspace/173_builder2_live_tf_ros_verification_spec.md` r1 §2.1(B1~B4). tf2에서 시각 0은 "최신" 조회라, 0이 조회 함수까지 가면
-반환 stamp 검사로 나중에 거부하더라도 최신 대체 금지 조건 위반이다. 실제 ROS는 쓰지 않는다(가짜 모듈).
-"""
+"""동적 정확 조회·되감기 준비에서 잘못된 stamp를 조회 호출 전에 막는지 시험한다.
+tf2에서 시각 0은 "최신" 조회라 정적 쌍 확인에서만 쓴다. 실제 ROS는 쓰지 않는다."""
 import types
 import unittest
 
@@ -25,7 +21,7 @@ def frame(stamp, optical=OPTICAL):
 
 class B1ExactLookupTest(unittest.TestCase):
     def test_bad_stamps_never_reach_lookup(self):
-        """B1: 0·음수·bool·float·문자열 stamp는 조회 함수 호출 0건, tf None, 상태 invalid_stamp."""
+        """0·음수·bool·float·문자열 stamp는 조회 호출 0건, tf None, 상태 invalid_stamp."""
         calls = []
         lk = LiveCaptureTfLookup(lambda *a: calls.append(a) or (np.eye(4), a[2]), world_frame="world",
                                  wait_limit_s=0.05)
@@ -37,7 +33,7 @@ class B1ExactLookupTest(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_none_stamp_still_no_stamp_and_no_call(self):
-        """None(stamp 없음)은 기존 상태 no_stamp 그대로, 조회 호출 0건."""
+        """None(stamp 없음)은 상태 no_stamp, 조회 호출 0건."""
         calls = []
         lk = LiveCaptureTfLookup(lambda *a: calls.append(a), world_frame="world", wait_limit_s=0.05)
         self.assertEqual(lk(frame(None)).status, "no_stamp")
@@ -68,7 +64,7 @@ class B2RewindReadinessTest(unittest.TestCase):
         return st, rd
 
     def test_bad_stamps_no_lookup_no_open(self):
-        """B2: 첫 프레임 stamp가 0·음수·bool·float·문자열이면 조회 0건·on_tf_ready 0건·준비 안 열림."""
+        """첫 프레임 stamp가 잘못되면 조회 0건·on_tf_ready 0건·준비 안 열림."""
         st, rd = self.setup()
         for s in BAD_STAMPS:
             with self.subTest(stamp=s):
@@ -90,7 +86,7 @@ class B2RewindReadinessTest(unittest.TestCase):
         self.assertTrue(st.token.ready)
 
     def test_world_to_optical_cannot_be_static_pair(self):
-        """B4: 정확 조회 대상(world→optical)을 정적 쌍으로 두면 준비하지 않는다(시각 0 확인으로 대체 금지)."""
+        """정확 조회 대상(world→optical)을 정적 쌍으로 두면 준비하지 않는다."""
         st = LiveObservationState(run_id="r", generation=0, calibration_id="c",
                                   config=LiveObservationConfig(write_capacity=4, reserved_capacity=16))
         st.on_rx_boundary(1, "sim_time_rewind")
@@ -113,7 +109,7 @@ class B3RuntimeLookupTest(unittest.TestCase):
         return rt
 
     def test_bad_stamp_raises_before_buffer(self):
-        """B3: runtime.lookup은 0·음수·bool·float이면 buffer.lookup_transform 전에 ValueError."""
+        """runtime.lookup은 잘못된 stamp면 buffer.lookup_transform 전에 ValueError."""
         rt = self.start()
         for s in (0, -1, True, 1.5, 0.0):
             with self.subTest(stamp=s):
@@ -131,7 +127,7 @@ class B3RuntimeLookupTest(unittest.TestCase):
 
 class B4StaticOnlyTest(unittest.TestCase):
     def test_has_static_only_for_allowed_pairs(self):
-        """B4: has_static(시각 0)은 런타임에 등록한 정적 쌍에만 쓰고, 목록 밖(동적 사슬 포함)은 확인하지 않고 False."""
+        """has_static(시각 0)은 등록한 정적 쌍에만 쓰고 목록 밖은 확인 없이 False."""
         log = Log()
         rt = LiveTfRuntime(object(), modules=fake_modules(log),
                            static_pairs=(("upper_arm_link", "link_cam_link"),))

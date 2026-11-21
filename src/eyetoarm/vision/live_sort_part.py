@@ -1,45 +1,8 @@
-"""실시간 A→B→C 목표 송신(#214, D13 해제): 실시간 기록 연결이 수락한 B 결과의 C 목표를 B `SortPartClient`로 `/sort_part`에 보낸다.
+"""실시간 기록 연결이 검사 ③에서 수락한 B 결과의 C 목표를 B `SortPartClient`로 `/sort_part`에 보낸다.
 
-근거: 계획 `_workspace/214_builder2_d13_release_plan_r0.md`(reviewer PASS 2026-11-20: Q1 = 검사 ③ 뒤 송신 (c), Q5 = 서버 없어도 실행,
-Q7 = 별도 `sort_part.jsonl`만, Q8 = 클라이언트 `stats`는 참고만), 사용자 결정 「승인하고 위험으로 기록만해」(A 상세설계 1.27 §11 「D13 해제
-위험」, 해제 전 시험 F6 없이 수용).
-
-- **송신 자리:** 디스패처 검사 ③ 수락 뒤 worker(`offer`). `BStage.on_output`은 B 계산 안·수락 전에 불리므로 쓰지 않는다(연결부의
-  `on_output` 거부 유지). 실행기 D13 가드(`pipeline_runner`의 실시간 `b_consumer`·`b_list_consumer` 거부)도 그대로다.
-- **보내는 조건:** 수락 + `out.result.valid` + `goal.kind`가 `PICK_PLACE`·`PASS_THROUGH` + 게이트 열림 + 상태 fail-stop 아님 + 클라이언트
-  규칙(`no_server`·`busy`면 클라이언트가 보내지 않음). 단계 T, 또는 단계 L(#233: 연결부가 B `process_frame`이 고른 1개만 넘김).
-  어느 쪽이든 프레임당 1회 시도 = 사진 한 장에 목표 최대 1개. 단계 L은 추적 번호가 없어(B `_candidate_view`) 재시도 제한 중 실패 지점 차단(②)만 작동한다.
-- **게이트:** 잠금 하나. `offer`는 잠금 안에서 「닫힘·실패 아님 확인 → `client.send`(기다리지 않는 호출)」를 하고, `close_run`도 같은
-  잠금으로 닫는다. 그래서 `close_run`이 돌아온 뒤 시작하는 송신은 0이다. 대가로 `close_run`(소스 slot 잠금 안의 되감기 훅에서도 불림)이
-  진행 중 송신 한 번을 기다릴 수 있다(`gate_wait_max_ms`).
-- **기록:** `sort_part.jsonl`(새 파일). 넣는 쪽(worker·spin 스레드)은 메모리 큐에만 넣고 기록 스레드가 쓴다. 판정은 이 기록으로 하며
-  클라이언트 `stats`(B, 잠금 없는 Counter)는 요약에 참고로만 둔다.
-- **식별 필드:** A는 `sort_job_id`·`run_epoch`(C)·`valid_until_ns`(B·C)를 채우지 않는다. 대조용으로 A 키(`run_id`·세대·`job_seq`·
-  촬영 stamp·`accept_event_seq`)와 `goal_id`를 기록에 남긴다.
-- **취소 없음:** B 클라이언트에 취소 API가 없어 닫힘 때 결과 대기 목표는 `unresolved_at_close`로만 기록한다(C에서는 계속 실행될 수 있음).
-
-추적 번호(#215, `--tracking`): 확정 번호가 관측에 실리면 B `_dedupe`가 번호마다 결과 전 1회만 `PICK_PLACE`로 둔다(그 뒤는
-`SKIP`/`ALREADY_SENT`, 이 송신기는 풀지 않음). B 기록은 결과(B 클라이언트 `_finish`)·`no_server`·`busy`에서 B 클라이언트가 풀고,
-**송신기가 클라이언트를 부르지 않은 `PICK_PLACE`**(게이트 닫힘·상태 실패·재시도 제한)는 송신기가 `release_target.release(번호)`로
-푼다(`release:<사유>` 기록). 추적을 켜면 모든 기록 줄에 `part_track_id`가 붙는다(끄면 형식 그대로).
-
-재시도 제한(#215, 설정 `sort_part.retry` 선택, 없으면 제한 없음 = `retry=off`): ① 번호별로 `FAILED`·`EXPIRED`·`ERROR`·`REJECTED`가
-`max_failures_per_track`회 쌓이면 그 번호의 `PICK_PLACE`를 보내지 않는다(`skip:track_retry_limit`). ② 실패한 목표의 관측 위치
-(`observed_position_mm`, base_link mm) 근방 `failed_point_block_mm` 안의 `PICK_PLACE`를 그 실패 목표 촬영 시각 뒤 `failed_point_block_s`
-(SIM 시간) 동안 보내지 않는다(`skip:failed_point_block`). ②는 번호가 있어도 적용한다(팔·카메라 이동으로 번호가 바뀌면 ①이 무력하므로,
-reviewer Q5). 성공(`SUCCEEDED`)이면 그 번호의 실패 수를 지운다.
-
-단계 L 실효 번호(#244): 연결부가 `ids["a_part_track_id"]`(B가 고른 후보의 A 번호)를 주면 목표 번호가 None일 때 그 번호를 기록
-`part_track_id`·번호별 재시도·`require_track_id`에 쓴다(기록에 `goal_part_track_id`·`a_part_track_id`·`track_source` 함께, 둘 다 있고
-다르면 `track_id_mismatch` 줄). B 기록 해제는 목표 번호로만 한다. 단계 T 기록 형식은 그대로다.
-
-확정 번호 대기(#239 D4, 설정 `sort_part.require_track_id` 선택·기본값 없음, 추적 켬이면 진입점이 필수로 요구): 참이면 번호 None
-`PICK_PLACE`는 클라이언트를 부르지 않고 `skip:no_track_id`(관측 `track_state` 함께)로 기록한다. B `_dedupe`는 번호 None을 기록하지
-않으므로 풀 기록이 없다. `PASS_THROUGH`는 그대로 보낸다(너트는 W 추적 대상이 아님). 확정 전에 시야를 벗어난 볼트는 끝내 보내지 않으며,
-그 위험은 요약 `no_track_id_states`·추적기 `tentative_dropped`로만 드러낸다(종료 코드 무변).
-
-`RecordingSortPartClient`는 B `SortPartClient`의 비공개 콜백(`_on_feedback`·`_on_accepted`·`_on_result`·`_finish`)을 덮어써 사건을
-기록 함수로 넘긴다(B 파일 무변, B에 공개 훅 제안 중). 이 모듈은 rclpy를 import하지 않는다(B 클라이언트 생성자만 rclpy를 지연 import).
+프레임당 1회 시도(목표 최대 1개)이고, 게이트 잠금으로 `close_run`이 돌아온 뒤 시작하는 송신은 0이다.
+사건은 메모리 큐를 거쳐 기록 스레드가 `sort_part.jsonl`에 쓰며, 판정은 클라이언트 `stats`가 아니라 이 기록으로 한다.
+rclpy를 import하지 않는다(B 클라이언트 생성자만 지연 import).
 """
 from __future__ import annotations
 
@@ -65,7 +28,11 @@ class SortPartConfigError(ValueError):
 
 @dataclass(frozen=True)
 class RetryConfig:
-    """실패 재시도 제한 시험값(#215, 기본값 없음)."""
+    """실패 재시도 제한(기본값 없음).
+
+    번호별 실패가 `max_failures_per_track`회면 그 번호를, 실패 위치 근방 `failed_point_block_mm` 안은
+    `failed_point_block_s`(SIM 시간) 동안 `PICK_PLACE`를 보내지 않는다. 성공이면 그 번호의 실패 수를 지운다.
+    """
 
     max_failures_per_track: int
     failed_point_block_s: float
@@ -78,14 +45,14 @@ class RetryConfig:
 
 @dataclass(frozen=True)
 class SortPartConfig:
-    """송신 시험 설정(기본값 없음, 모두 필수, 시험값)."""
+    """송신 설정(기본값 없음, 모두 필수)."""
 
-    server_wait_s: float     # 시작 때 서버 대기(보이지 않아도 실행, Q5)
+    server_wait_s: float     # 시작 때 서버 대기(보이지 않아도 실행)
     result_wait_s: float     # 닫을 때 결과 대기(기록용)
     close_limit_s: float     # spin 스레드·기록 스레드 join 상한
     spin_timeout_s: float    # spin_once 대기
-    retry: RetryConfig | None = None   # #215 선택(없으면 제한 없음)
-    require_track_id: bool | None = None   # #239 선택(기본값 없음): 참이면 확정 번호 없는 PICK_PLACE를 보내지 않음
+    retry: RetryConfig | None = None   # 없으면 제한 없음
+    require_track_id: bool | None = None   # 참이면 확정 번호 없는 PICK_PLACE를 보내지 않음
 
     def to_json(self) -> dict:
         """요약용 사전. `require_track_id`는 설정에 있을 때만 넣는다(없으면 형식 그대로)."""
@@ -130,7 +97,7 @@ def parse_sort_part(doc) -> SortPartConfig:
 
     require = doc.get("require_track_id")
 
-    # #239: bool만 받는다(1·0·문자열 거부). 추적 켬·끔과의 짝은 진입점이 확인한다
+    # bool만 받는다(1·0·문자열 거부). 추적 켬·끔과의 짝은 진입점이 확인한다
     if "require_track_id" in doc and not isinstance(require, bool):
         raise SortPartConfigError(f"sort_part.require_track_id must be true or false: {require!r}")
 
@@ -146,7 +113,10 @@ def _positive(v, name: str) -> float:
 
 
 class RecordingSortPartClient(SortPartClient):
-    """B 클라이언트 + 사건 기록(`event_sink(event, goal_id, detail)`). 사건은 spin 스레드(콜백)나 worker(송신 오류)에서 온다."""
+    """B 클라이언트의 비공개 콜백을 덮어써 사건을 `event_sink(event, goal_id, detail)`로 넘긴다.
+
+    사건은 spin 스레드(콜백)나 worker(송신 오류)에서 온다.
+    """
 
     def __init__(self, node, event_sink: Callable[[str, str, dict], None], stage=None, **kw) -> None:
         """B 생성자(rclpy·인터페이스 지연 import) 뒤 기록 함수를 둔다."""
@@ -188,16 +158,17 @@ class RecordingSortPartClient(SortPartClient):
 
 
 class LiveSortPartSender:
-    """실행 하나의 C 목표 송신기. 게이트(잠금)는 worker·닫는 쪽이, 기록 큐는 모든 넣는 쪽이 같이 쓰고 기록 스레드가 소유한다.
+    """실행 하나의 C 목표 송신기. 게이트는 worker·닫는 쪽이 같이 쓰고, 기록 파일은 기록 스레드가 소유한다.
 
-    `runtime`: `send(out) → bool`, `stats`(Counter 유사), `inflight_ids() → list`, `server_seen`(bool), `close(limit_s)`.
+    `runtime`: `send(out) → bool`, `stats`, `inflight_ids()`, `server_seen`, `close(limit_s)`.
     """
 
     def __init__(self, run_id: str, config: SortPartConfig, runtime, out_dir: str, *,
                  is_failed: Callable[[], bool] | None = None, clock_ns: Callable[[], int] = time.monotonic_ns,
                  tracking: bool = False, release_target=None) -> None:
-        """기록 파일(`sort_part.jsonl`, 새 파일)을 연다. `tracking`이면 기록에 `part_track_id`를 붙이고, 클라이언트를 부르지 않은
-        번호 있는 `PICK_PLACE`는 `release_target.release(번호)`로 B 기록을 푼다."""
+        """새 기록 파일 `sort_part.jsonl`을 연다. `tracking`이면 모든 줄에 `part_track_id`를 붙인다.
+
+        클라이언트를 부르지 않은 번호 있는 `PICK_PLACE`는 `release_target.release(번호)`로 B 기록을 푼다."""
         self.run_id = run_id
         self.tracking = bool(tracking)
         self.release_target = release_target
@@ -205,7 +176,7 @@ class LiveSortPartSender:
         self._failed_points: list[tuple] = []          # (x_mm, y_mm, z_mm, 촬영 stamp ns)
         self._goal_meta: dict[str, tuple] = {}         # goal_id → (번호, 관측 위치 mm, 촬영 stamp ns)
         self.retry_counts = {"track_limit": 0, "point_block": 0, "failures_recorded": 0, "points_recorded": 0}
-        self.no_track_id_states: dict[str, int] = {}   # #239: skip:no_track_id의 관측 track_state 분포(기록 조건변수 안)
+        self.no_track_id_states: dict[str, int] = {}   # skip:no_track_id의 track_state 분포(기록 조건변수 안)
         self.config = config
         self.runtime = runtime
         self._is_failed = is_failed or (lambda: False)
@@ -232,7 +203,7 @@ class LiveSortPartSender:
         """메모리 큐에 넣는다(기다리지 않음). 계수는 같은 잠금."""
         rec = {"t_mono_ns": self._clock_ns(), "event": event, "goal_id": goal_id, **(keys or {}), **detail}
 
-        if self.tracking:   # #215: 추적을 켜면 모든 줄에 번호 키(목표 없는 줄·모르는 목표는 null)
+        if self.tracking:   # 목표 없는 줄·모르는 목표는 null
             rec.setdefault("part_track_id", None)
 
         with self._qcond:
@@ -308,20 +279,22 @@ class LiveSortPartSender:
     # ------------------------------------------------------------------ 송신(worker)
 
     def offer(self, out, frame, ids: dict, accept_event_seq: int | None) -> str:
-        """수락된 B 결과 하나. 결과 사건 이름을 돌려준다(sent | skip:… | gate_closed | state_failed | no_server | busy | send_error)."""
+        """수락된 B 결과 하나를 보낸다. 사건 이름(sent | skip:… | gate_closed | state_failed | …)을 준다.
+
+        `valid`이고 `goal.kind`가 송신 대상이며 게이트 열림·상태 실패 아님·재시도 제한 통과일 때만 보낸다."""
         goal = getattr(out, "goal", None) or {}
         res = getattr(out, "result", None)
         gid = goal.get("goal_id")
         keys = {"run_id": self.run_id, "image_seq": getattr(frame, "image_seq", None),
                 "ros_stamp_ns": getattr(frame, "ros_stamp_ns", None), "accept_event_seq": accept_event_seq,
                 "kind": goal.get("kind"), "spec": goal.get("spec"),
-                **{k: v for k, v in ids.items() if k not in ("track_state", "a_part_track_id")}}   # track_state(#239)는 no_track_id 줄에만
+                # track_state는 no_track_id 줄에만 남긴다
+                **{k: v for k, v in ids.items() if k not in ("track_state", "a_part_track_id")}}
         goal_track = goal.get("part_track_id")
-        stage_l = "a_part_track_id" in ids   # #244: 연결부가 단계 L 추적이면 고른 후보의 A 번호를 넘긴다
+        stage_l = "a_part_track_id" in ids   # 단계 L 추적이면 연결부가 고른 후보의 A 번호를 넘긴다
         a_track = ids.get("a_part_track_id")
 
-        # #244 실효 번호: 목표 번호 우선, 없으면(B가 아직 후보 번호를 읽지 않음) 고른 후보의 A 번호. 기록·재시도·require_track_id에 쓴다.
-        # B 중복 방지 기록 해제(release)는 B가 기록한 목표 번호로만 한다
+        # 실효 번호: 목표 번호 우선, 없으면 고른 후보의 A 번호. B 기록 해제는 목표 번호로만 한다
         track = goal_track if goal_track is not None else a_track
 
         if self.tracking:
@@ -332,7 +305,7 @@ class LiveSortPartSender:
                         track_source="goal" if goal_track is not None else "a" if a_track is not None else None)
 
             if goal_track is not None and a_track is not None and goal_track != a_track:
-                self._record("track_id_mismatch", gid, keys)   # 계수는 사건 계수(`events`)에. 송신은 목표 번호를 따른다
+                self._record("track_id_mismatch", gid, keys)   # 송신은 목표 번호를 따른다
 
         if res is None or getattr(res, "valid", False) is not True:
             event = f"skip:{getattr(res, 'reason', None) or 'invalid'}"
@@ -344,8 +317,7 @@ class LiveSortPartSender:
             self._record(event, gid, keys)
             return event
 
-        # #239 D4: 확정 번호 없는 PICK_PLACE는 보내지 않는다(같은 볼트를 번호 없이 한 번, 확정 뒤 한 번 더 보내지 않게).
-        # B `_dedupe`는 번호 None을 기록하지 않으므로 풀 기록이 없다. PASS_THROUGH(너트, W는 추적하지 않음)는 그대로 보낸다
+        # 같은 볼트를 번호 없이 한 번, 확정 뒤 한 번 더 보내지 않게 한다. PASS_THROUGH(너트)는 그대로 보낸다
         if self.config.require_track_id and goal.get("kind") == "PICK_PLACE" and track is None:
             state = ids.get("track_state")
 
@@ -381,9 +353,9 @@ class LiveSortPartSender:
 
         self._record(event, gid, keys)
 
-        # 클라이언트를 부르지 않은 번호 있는 PICK_PLACE: B `_dedupe` 기록을 푼다(B 클라이언트가 풀지 않는 경우만)
+        # B 클라이언트를 부르지 않았으면 B 클라이언트가 풀지 않으므로 여기서 `_dedupe` 기록을 푼다
         if event in _NO_CALL_RELEASE and goal.get("kind") == "PICK_PLACE":
-            self.release(goal_track, event, gid, keys)   # #244: B가 기록한 목표 번호만(A 번호로 B 기록을 풀지 않음)
+            self.release(goal_track, event, gid, keys)   # A 번호로 B 기록을 풀지 않는다
 
         return event
 
@@ -438,9 +410,9 @@ class LiveSortPartSender:
         self._record("gate_closed_by", None, None, reason=reason, waited_ms=round(waited_ms, 3))
 
     def close(self, limit_s: float) -> bool:
-        """게이트 닫기 → 결과 대기(`result_wait_s`) → 남은 목표 기록 → 런타임(spin·노드) 정리 → 기록 스레드 멈춤. 재시도할 수 있다.
+        """게이트 닫기 → 결과 대기 → 남은 목표 기록 → 런타임 정리 → 기록 스레드 멈춤(재시도 가능).
 
-        런타임 정리가 실패해도 기록 스레드는 멈추고(그때까지의 기록은 씀) 그 실패를 다시 던진다. 재시도는 런타임 정리만 다시 한다.
+        취소 API가 없어 남은 목표는 `unresolved_at_close`로만 기록한다. 런타임 정리 실패는 다시 던진다.
         """
         self.close_run(self.close_reason or "close")
         runtime_error = None
@@ -486,7 +458,7 @@ class LiveSortPartSender:
     # ------------------------------------------------------------------ 요약
 
     def problem(self) -> str | None:
-        """진입점이 종료 1로 드러낼 문제(기록 실패). 서버 없음·busy는 문제가 아니다(Q5)."""
+        """진입점이 종료 1로 드러낼 문제(기록 실패). 서버 없음·busy는 문제가 아니다."""
         if self.crash is not None:
             return f"sort_part record writer crashed: {self.crash}"
 

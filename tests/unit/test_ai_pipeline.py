@@ -1,7 +1,6 @@
-"""YOLO 연결 T3 — 코어 설정형·표시 결과형 합집합(G1–G4) 시험.
+"""코어 설정형·표시 결과형 합집합(OpenCV·AI) 시험.
 
-근거: 계획 `docs/superpowers/plans/2026-11-15-yolo-pipeline.md` r2 §1 G1–G4·§4.1·§4.8·T3, A 상세설계 §5.4
-(검출 방식·AI 설정 변경은 세대 증가, 작업은 시작 설정 스냅샷으로 계산·기록), §7.1(OpenCV↔AI 전환은 세대 증가).
+검출 방식·AI 설정 변경은 세대 증가, 작업은 시작 설정 스냅샷으로 계산·기록한다.
 관측은 시험용 표시 관측(method="ai", valid=False)이며 실제 모델 결과가 아니다.
 """
 import dataclasses
@@ -43,14 +42,14 @@ def ai_display(job, **over):
 
 
 class AiSettingsTest(unittest.TestCase):
-    """설정형 합집합(G1·G2)."""
+    """설정형 합집합."""
 
     def pipe(self, sett=None):
         """AI 설정 파이프라인."""
         return VisionPipeline(sett or ai_settings(), run_id=RUN_ID, clock_ns=FakeClock())
 
     def test_settings_accept_ai_config_and_id_is_its_hash(self):
-        """PipelineSettings는 AiSegConfig를 받고 detector_config_id는 그 config_sha256이다. 작업 스냅샷도 같은 ID다."""
+        """detector_config_id는 AiSegConfig의 config_sha256이고 작업 스냅샷도 같은 ID다."""
         s = ai_settings()
         p = self.pipe(s)
         p.offer_frame(frame(0))
@@ -68,7 +67,7 @@ class AiSettingsTest(unittest.TestCase):
                     PipelineSettings(source_id="src0", mode="planar", detector_config=bad, profile=None)
 
     def test_switch_opencv_to_ai_bumps_generation_and_drops_current(self):
-        """OpenCV → AI 전환은 DETECTOR_CONFIG_CHANGED 세대 전이 1건, 현재 관측 무효, 대기 폐기다. 같은 AI 설정 재적용은 변경 아님."""
+        """OpenCV → AI 전환은 세대 전이 1건·관측 무효·대기 폐기, 같은 AI 설정 재적용은 변경 아님."""
         p = VisionPipeline(settings(), run_id=RUN_ID, clock_ns=FakeClock())
         p.offer_frame(frame(0))
         j = p.start_next()
@@ -125,7 +124,7 @@ class AiSettingsTest(unittest.TestCase):
 
 
 class AiDisplayResultTest(unittest.TestCase):
-    """표시 결과형 합집합(G3·G4)과 방식·설정 일치 검사."""
+    """표시 결과형 합집합과 방식·설정 일치 검사."""
 
     def start(self, sett):
         """작업 하나를 시작한다."""
@@ -145,7 +144,7 @@ class AiDisplayResultTest(unittest.TestCase):
         self.assertIsInstance(outcome.observation, PlanarObservation)
 
     def test_mismatched_display_or_method_is_adapter_contract_violation(self):
-        """방식이 어긋난 표시 결과·관측, 다른 설정 해시의 AiSegResult, 다른 형은 INFERENCE_ERROR(adapter_contract_violation)다."""
+        """방식·설정 해시·형이 어긋난 표시 결과는 INFERENCE_ERROR(adapter_contract_violation)다."""
         cases = []
 
         p, job = self.start(ai_settings())
@@ -185,7 +184,7 @@ class AiDisplayResultTest(unittest.TestCase):
 
 
 class AiTamperLivenessTest(unittest.TestCase):
-    """r1 F1: 생성 뒤 변조한 method·config_sha256(배열·비문자열)도 예외로 새지 않고 그 작업만 INFERENCE_ERROR로 정리된다."""
+    """생성 뒤 변조한 method·config_sha256도 예외로 새지 않고 그 작업만 INFERENCE_ERROR가 된다."""
 
     def tamper(self, obj, **fields):
         """frozen 객체를 생성 뒤 변조한다(생성자 검증을 우회한 잘못된 어댑터 출력 모사)."""
@@ -233,7 +232,7 @@ class AiTamperLivenessTest(unittest.TestCase):
                     self.assert_failed_once_then_next_runs(p, job, obs, None, "method")
 
     def test_tampered_display_config_sha_arrays_and_non_strings(self):
-        """AiSegResult.config_sha256이 다원소 배열·한 원소 배열·비문자열이면 display_result_config 위반으로 1회 실패하고 진행이 이어진다."""
+        """config_sha256이 배열·비문자열이면 display_result_config 위반으로 1회 실패하고 진행한다."""
         for kind in ("multi", "single", "int"):
             with self.subTest(kind=kind):
                 p = VisionPipeline(ai_settings(), run_id=RUN_ID, clock_ns=FakeClock())

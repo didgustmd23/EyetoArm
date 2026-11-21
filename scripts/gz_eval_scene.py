@@ -1,20 +1,8 @@
 #!/usr/bin/env python3
-"""Gazebo 평가 세트 장면 생성(월드 사본·표본 배치) + 공용 함수.
+"""Gazebo 평가 세트의 월드 사본 SDF와 표본 계획 JSON을 만든다(Gazebo는 실행하지 않음).
 
-A 상세설계 §7.1 「2단계 전이 학습 방향」의 Gazebo 평가 세트용(A 제안). 이 스크립트는 **Gazebo를 실행하지 않는다**.
-월드 사본 SDF와 표본 계획(JSON)만 만든다. 실행·수집은 `scripts/gz_eval_capture.py`.
-
-방식(A 제안, 정적 검사로 확인):
-- RGB 카메라와 같은 링크·같은 pose에 `segmentation` 카메라(`<segmentation_type>semantic</segmentation_type>`)를 둔다.
-- 부품 슬롯마다 **고유 라벨**(1..N)을 `gz-sim-label-system`으로 붙인다. 라벨 값이 곧 부품 슬롯이므로 semantic
-  모드로도 인스턴스를 구분한다(panoptic 모드여도 라벨 채널만 읽으면 같다). 배경·벨트는 라벨 0.
-- 한 번의 `gz sim` 실행(=묶음)에서 카메라·조명은 고정하고, 부품 pose만 `set_pose_vector` 서비스로 바꿔 표본을 찍는다.
-  묶음마다 카메라 pose·조명을 바꾼 월드 사본을 새로 만든다.
-- 클래스 슬롯: 클래스마다 최대 6개(BOLT_A M6×12, BOLT_B M6×40, NUT M6) = 18 슬롯. 표본에 쓰지 않는 슬롯은
-  카메라 뒤 바닥(화면 밖)으로 옮긴다. 부품은 `<static>true</static>`로 넣어 물리로 움직이지 않게 한다.
-
-시드 규칙: 평가 시드는 `EVAL_SEED_BASE`(= 9_000_000) + 묶음 번호. 학습용 시드는 이 구간을 쓰지 않는다
-(`is_eval_seed`). 같은 시드 → 같은 계획.
+부품 슬롯마다 고유 분할 라벨(1..N, 배경 0)을 붙이고, 묶음(`gz sim` 한 번) 안에서는 카메라·조명을
+고정한 채 부품 pose만 바꾼다. 평가 시드는 `EVAL_SEED_BASE` + 묶음 번호(학습 시드와 겹치지 않음).
 """
 from __future__ import annotations
 
@@ -27,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-# ---------------------------------------------------------------- 상수(월드 배치는 simulation/worlds/sort_cell.sdf 임시값)
+# ---------------------------------------------------------------- 상수(sort_cell.sdf 임시값)
 WORLD_SRC = Path(__file__).resolve().parents[1] / "simulation" / "worlds" / "sort_cell.sdf"
 WORLD_NAME = "sort_cell"
 EVAL_SEED_BASE = 9_000_000
@@ -42,7 +30,7 @@ CLASSES = {  # 세부 클래스 → (모델, YOLO 2클래스 id, 놓는 자세 r
     "NUT": ("nut_m6", 1, (0.0, 0.0), 0.1005),
 }
 SLOTS_PER_CLASS = 6
-CAM_BASE = {"xyz": (0.20, -0.15, 0.525), "aim": (0.55, -0.25, BELT_TOP_Z)}  # §6.1 경사 예시(사본 확인값)
+CAM_BASE = {"xyz": (0.20, -0.15, 0.525), "aim": (0.55, -0.25, BELT_TOP_Z)}  # 경사 카메라 예시값
 PARK = (-2.0, 0.0, 0.05)        # 쓰지 않는 슬롯(카메라 뒤 바닥)
 
 
@@ -253,12 +241,10 @@ def _slot_include_xml(slot, cls, label):
 
 
 def build_world(batch: Batch, world_src: Path = WORLD_SRC) -> str:
-    """원본 월드를 읽어 사본 문자열을 만든다(원본은 수정하지 않음).
+    """원본 월드를 읽어 평가용 사본 문자열을 만든다(원본은 수정하지 않음).
 
-    - 이름이 `part_00`~`part_09`인 `<include>` 줄과 `appearance_check_cam` 모델을 뺀다.
-      지금 원본 월드에 있는 것은 외형 확인용 부품 3개(part_00~02)다.
-    - 해의 diffuse를 묶음 조명값으로 바꾼다.
-    - 평가 카메라와 18개 부품 슬롯(라벨 1..18, 초기 위치는 화면 밖)을 넣는다.
+    `part_00`~`part_09` `<include>`와 `appearance_check_cam`을 빼고, 해 diffuse를 묶음 조명값으로
+    바꾸고, 평가 카메라와 18개 부품 슬롯(라벨 1..18, 초기 위치는 화면 밖)을 넣는다.
     """
     src = Path(world_src).read_text(encoding="utf-8")
     out_lines = []

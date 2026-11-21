@@ -1,9 +1,7 @@
-"""YOLO 연결 T6·T7 — 실행기 모델 준비 단계·AI 작업 분류·AI 기록·CLI 시험(가짜 모델·가짜 모듈, 실제 ultralytics 없음).
+"""실행기 모델 준비 단계·AI 작업 분류·AI 기록·CLI 시험(가짜 모델·모듈, 실제 ultralytics 없음).
 
-근거: 계획 `docs/superpowers/plans/2026-11-15-yolo-pipeline.md` r2 §4.2(준비 호출 순서·결과별 실행기 동작 표·worker 규칙),
-§4.5(분류), §4.6(필수 ai_instances·model_ready·선택 ai_geometry·CLI), T6·T7, 구현 지시(Q1: 준비 상한 10 s는 A 임시 개발 기본값,
-사용자 확정 첫 검출 10 s·이후 1 s와 구분, 준비는 첫 검출 기회를 소모하지 않음).
-멈춤·실제 SIGINT 준비 시나리오는 `_workspace/scenarios/yolo_pipeline/`(Git 제외)에서 따로 시험한다. 관측은 항상 valid=False다.
+준비 상한 기본값 10 s는 첫 검출 10 s·이후 1 s와 따로이며, 준비는 첫 검출 기회를 쓰지 않는다.
+관측은 항상 valid=False다.
 """
 import dataclasses
 import importlib.util
@@ -104,7 +102,7 @@ class Base(unittest.TestCase):
         return res, stream, err, holder
 
     def assert_balance(self, res):
-        """종료 후 보존식(A §9)."""
+        """종료 후 보존식."""
         c = res.counters
         self.assertEqual(c.received, c.first_started + sum(c.queue_dropped.values()))
         self.assertEqual(c.first_started + c.reprocess_started,
@@ -112,10 +110,10 @@ class Base(unittest.TestCase):
 
 
 class PrepareStageTest(Base):
-    """준비 단계(계획 §4.2 결과별 표)."""
+    """준비 단계 결과별 실행기 동작."""
 
     def test_prepare_success_writes_model_ready_then_frames(self):
-        """준비 성공 → run_meta·model_ready 뒤 프레임 처리. 준비와 검출은 같은 worker 스레드, model_ready에 model_source·model_id·load ms."""
+        """준비 성공 → run_meta·model_ready 뒤 프레임 처리, 준비와 검출은 같은 worker 스레드."""
         model = FakeModel(make=lambda s: result_for(s, [(10, 5, 29, 24)]))
         cfg = self.cfg()
         det = AiSegDetector(cfg, model_factory=lambda p: model, environ={})
@@ -129,12 +127,12 @@ class PrepareStageTest(Base):
                          (cfg.model_id, "injected_factory", {}, "cpu"))
         self.assertGreaterEqual(ready["model_load_ms"], 0.0)
         self.assertEqual(kinds(stream).count("process"), 2)
-        self.assertEqual(len({c[3] for c in model.calls}), 1)                  # predict는 한 스레드(준비한 worker)
+        self.assertEqual(len({c[3] for c in model.calls}), 1)   # predict는 한 스레드(준비한 worker)
         self.assertNotEqual(model.calls[0][3], threading.get_ident())
         self.assertEqual(detector_threads(), [])
 
     def test_prepare_missing_weights_event_once_no_read_exit_1(self):
-        """가중치 없음 → MODEL_LOAD_FAILED 프레임 없는 사건 1건(cause에 경로), read 0, process 0, model_ready 없음, 소스 close 1, 종료 1."""
+        """가중치 없음 → MODEL_LOAD_FAILED 사건 1건, read·process 0, 소스 close, 종료 1."""
         cfg = self.cfg(weights_path=os.path.join(self.dir.name, "missing.pt"))
         det = AiSegDetector(cfg, model_factory=lambda p: self.fail("factory called"), environ={})
 
@@ -159,7 +157,7 @@ class PrepareStageTest(Base):
         self.assertEqual((res.exit_code, holder["source"].reads), (1, 0))
 
     def test_prepare_hash_mismatch_config_invalid_event_once(self):
-        """가중치 sha256 불일치 → MODEL_CONFIG_INVALID 프레임 없는 사건 1건·read 0·정지 사유 model_config_invalid·종료 1."""
+        """가중치 sha256 불일치 → MODEL_CONFIG_INVALID 사건 1건·read 0·종료 1."""
         cfg = self.cfg(weights_sha256="0" * 64)
         res, stream, _, holder = self.run_ai(AiSegDetector(cfg, model_factory=lambda p: None, environ={}), cfg)
 
@@ -184,7 +182,7 @@ class PrepareStageTest(Base):
                 self.assertEqual((res.exit_code, res.stop_reason, holder["source"].reads), (1, "model_load_failed", 0))
 
     def test_prepare_timeout_then_late_completion_discarded(self):
-        """준비가 상한(주입 시계 10 s)을 넘기면 MODEL_LOAD_FAILED(prepare_timeout) 1건, 유예 안 늦은 준비 결과는 버리고 read 0·detector 0·종료 1(model_load_timeout)."""
+        """준비가 상한을 넘기면 MODEL_LOAD_FAILED(prepare_timeout), 늦은 결과는 버리고 종료 1."""
         clock = WatchClock()
         calls = []
 
@@ -237,7 +235,7 @@ class PrepareStageTest(Base):
         self.assertEqual((holder["source"].reads, res.late_results), (0, 1))
 
     def test_first_limit_applies_to_first_detection_not_prepare(self):
-        """기본값(준비 10·첫 검출 10·이후 1)과 주입 시계: 준비 9 s·첫 검출 9 s는 통과, 둘째 검출 2 s는 detect_timeout. 준비는 첫 검출 기회를 쓰지 않는다."""
+        """준비 9 s·첫 검출 9 s는 통과, 둘째 검출 2 s는 detect_timeout(준비는 첫 검출 기회와 별개)."""
         clock = WatchClock()
         plan = {0: 9.0, 1: 2.0}
 
@@ -307,7 +305,7 @@ class AiJobClassificationTest(Base):
     """작업 중 AI 오류 분류."""
 
     def test_job_config_error_is_model_config_invalid_and_continues(self):
-        """detector의 AiJobConfigError는 그 작업만 MODEL_CONFIG_INVALID(작업 값)로 실패, 일반 ValueError는 INFERENCE_ERROR. 실행은 계속되고 누적 실패로 종료 1. 감시 켬·끔 모두."""
+        """AiJobConfigError는 그 작업만 MODEL_CONFIG_INVALID, ValueError는 INFERENCE_ERROR, 종료 1."""
         def detector(job):
             """작업 0: 설정 오류, 1: 출력 오류, 2: 정상."""
             if job.job_seq == 0:
@@ -353,10 +351,10 @@ class AiJobClassificationTest(Base):
 
 
 class AiRecordsTest(Base):
-    """필수 AI 기록·선택 geometry·run_meta·fail-stop(계획 §4.6)."""
+    """필수 AI 기록·선택 geometry·run_meta·fail-stop."""
 
     def test_ai_process_has_instance_classes_scores_by_default(self):
-        """옵션 없이도 process에 method·model_id·infer_ms·ai_instances(클래스·점수·거부·잘림·면적)가 있고, 같은 줄 식별자가 그 작업이다."""
+        """옵션 없이도 process에 method·model_id·infer_ms·ai_instances가 그 작업 식별자로 남는다."""
         model = FakeModel(make=lambda s: result_for(s, [(10, 5, 29, 24), (50, 50, 69, 69)], cls=[0.0, 1.0],
                                                     conf=[0.9, 0.6]))
         cfg = self.cfg()
@@ -421,7 +419,7 @@ class AiRecordsTest(Base):
         self.assertTrue({(10, 5), (29, 24)} <= {(int(x), int(y)) for x, y in inst["polygon"]})
 
     def test_run_meta_detector_block_for_ai(self):
-        """AI run_meta의 detector 묶음에 방식·설정 ID·model_id·가중치 해시·클래스·임계값·크기·장치가 있다. 모든 줄 format_version 1."""
+        """AI run_meta의 detector 묶음에 방식·설정 ID·모델·해시·임계값 등이 있고 format_version 1."""
         cfg = self.cfg()
         _, stream, _, _ = self.run_ai(AiSegDetector(cfg, model_factory=lambda p: FakeModel(), environ={}), cfg, n=1)
         d = lines(stream)[0]["detector"]
@@ -455,7 +453,7 @@ class AiRecordsTest(Base):
 
 
 class PrepareFailureWithLogFailureTest(Base):
-    """R3 r1 F1: 준비 실패와 사건 기록 실패가 겹쳐도 원래 준비 실패 원인이 결과·stderr에 남는다."""
+    """준비 실패와 사건 기록 실패가 겹쳐도 원래 준비 실패 원인이 결과·stderr에 남는다."""
 
     class BreakSecond(io.StringIO):
         """두 번째 write(=준비 실패 사건 줄)부터 실패."""
@@ -470,7 +468,7 @@ class PrepareFailureWithLogFailureTest(Base):
             return super().write(t)
 
     def test_prepare_failure_cause_survives_event_write_failure(self):
-        """LOAD(가중치 없음)·CONFIG(해시 불일치)·prepare_timeout 각각: 사건 쓰기가 실패해도 원래 원인과 기록 실패가 모두 errors·stderr에 남고, 대표 정지 사유는 원래 준비 실패, 종료 1·read 0·코어/소스 정리·미확인 사건 1·작업 계수 0."""
+        """준비 실패 세 종류 각각에서 사건 쓰기가 실패해도 원래 원인이 대표 정지 사유로 남는다."""
         clock = WatchClock()
 
         def slow_prepare():
@@ -513,7 +511,7 @@ class PrepareFailureWithLogFailureTest(Base):
 
 
 class AiCliTest(Base):
-    """CLI 방식 선택·충돌·설정·준비 실패(T7)."""
+    """CLI 방식 선택·충돌·설정·준비 실패."""
 
     def load_cli(self):
         """scripts/run_pipeline.py를 모듈로 불러온다."""
@@ -534,7 +532,7 @@ class AiCliTest(Base):
         return img, ai, planar
 
     def test_cli_ai_with_fake_model_uses_config_conf(self):
-        """--detector ai --ai-config로 실행하면 model_ready·AI process가 남고 predict는 설정 파일의 conf(0.4)를 받으며 종료 0."""
+        """--detector ai --ai-config 실행은 model_ready·AI process를 남기고 conf 0.4로 종료 0."""
         mod = self.load_cli()
         img, ai, _ = self.write_inputs(conf=0.4)
         out = os.path.join(self.dir.name, "run.jsonl")
@@ -553,7 +551,7 @@ class AiCliTest(Base):
         self.assertIn("model_id=", err.getvalue())
 
     def test_cli_detector_choice_and_conflicts(self):
-        """방식·설정 충돌은 종료 2: ai인데 --ai-config 없음, ai에 --detect-config, opencv인데 --detect-config 없음, opencv에 --ai-config, 준비 상한 0, 잘못된 AI 설정 파일."""
+        """방식·설정 충돌, 준비 상한 0, 잘못된 AI 설정 파일은 종료 2."""
         mod = self.load_cli()
         img, ai, planar = self.write_inputs()
         bad_ai = os.path.join(self.dir.name, "bad.json")
@@ -583,7 +581,7 @@ class AiCliTest(Base):
         self.assertEqual(cfg.model_load_timeout_s, 3.5)
 
     def test_cli_ai_missing_dependency_is_exit_1_with_event(self):
-        """ultralytics import 실패(미설치 모사)는 설정 오류가 아니라 준비 실패: 종료 1, MODEL_LOAD_FAILED 사건 1, process 0."""
+        """ultralytics import 실패는 준비 실패: 종료 1, MODEL_LOAD_FAILED 사건 1, process 0."""
         mod = self.load_cli()
         img, ai, _ = self.write_inputs()
         out = os.path.join(self.dir.name, "run.jsonl")

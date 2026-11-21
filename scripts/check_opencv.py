@@ -1,21 +1,8 @@
 #!/usr/bin/env python3
-"""OpenCV ArUco 검출·IPPE_SQUARE PnP 동작 점검 (독립 시험 스크립트).
+"""OpenCV ArUco 검출·IPPE_SQUARE PnP가 동작하는지 합성 입력으로 점검하는 독립 시험 스크립트.
 
-현재 Python 환경의 OpenCV가 마커 생성 → 검출 → 모서리 대응 → PnP 후보 출력까지
-실제로 동작하는지 합성 입력으로 확인한다. ROS·PySide6·카메라·네트워크를 쓰지 않는다.
-
-  python3 scripts/check_opencv.py                 # 사람이 읽는 출력
-  python3 scripts/check_opencv.py --json          # 기계가 읽는 출력
-  python3 scripts/check_opencv.py --output-dir outputs/opencv_check   # 합성 이미지·오버레이 저장
-
-종료 코드: 0 = 필수 시험 전체 PASS, 1 = FAIL이 하나 이상(실행됐지만 기대 불일치),
-2 = FAIL은 없지만 UNVERIFIED가 하나 이상(의존성·API 부재로 필수 시험 실행 불가).
---output-dir를 주면 이미지 저장 결과(image_save)도 별도로 기록하고 종료 코드에 포함한다:
-파일 쓰기 실패·imwrite False → FAIL, 디렉터리 생성·권한 등 환경 제약 → UNVERIFIED.
-
-기준 문서: A 상세설계 §8(마커 좌표계 M·모서리 대응·OpenCV 환경).
-한계: 이 시험이 통과해도 실제 촬영 정확도, 카메라 보정, B의 최종 후보 선택·모호성 판정,
-ROS 영상 변환, GUI·TCP·로봇 통합은 검증되지 않는다.
+사용: python3 scripts/check_opencv.py [--json] [--output-dir outputs/opencv_check]
+종료 코드: 0 = 전체 PASS, 1 = FAIL 있음, 2 = FAIL 없이 UNVERIFIED 있음.
 """
 from __future__ import annotations
 
@@ -28,7 +15,7 @@ from pathlib import Path
 
 PASS, FAIL, UNVERIFIED = "PASS", "FAIL", "UNVERIFIED"
 
-# ── 시험 조건 (A 상세설계 §8과 사용자 지정 시험 조건) ─────────────────────────────
+# ── 시험 조건 ──────────────────────────────────────────────────────────────────
 DICT_NAME = "DICT_4X4_50"
 MARKER_ID = 7
 MARKER_PX = 200                  # 생성 마커 영상 한 변(픽셀)
@@ -37,11 +24,10 @@ MARKER_LENGTH_M = 0.08           # 마커 변 길이 L (m)
 FX = FY = 800.0
 CX, CY = 320.0, 240.0
 
-# 합성 PnP 시험 전용 수치 허용치. 렌더링·검출 오차가 없는 정확한 투영점에 대한 값이며
-# 프로젝트의 검출·자세 품질 임계값(4주차 파일럿에서 결정)이 아니다.
+# 합성 PnP 시험 전용 허용치이며, 프로젝트의 검출·자세 품질 임계값이 아니다.
 PNP_POS_TOL_M = 1e-6
 PNP_ROT_TOL_DEG = 1e-4
-# 회전 대응 시험의 기본 픽셀 허용치(시험용 값, --corner-tolerance-px로 조절).
+# 회전 대응 시험의 기본 픽셀 허용치(--corner-tolerance-px로 조절).
 DEFAULT_CORNER_TOL_PX = 1.0
 
 API_NAMES = [
@@ -82,14 +68,14 @@ def transform_points(R_C_M, t_C_M_m, pts_M):
 
 
 def project_pinhole(pts_C, fx, fy, cx, cy):
-    """왜곡 없는 핀홀 투영: u = fx·X/Z + cx, v = fy·Y/Z + cy. PnP 결과와 독립적으로 정답 영상점을 만든다."""
+    """왜곡 없는 핀홀 투영으로 PnP와 독립된 정답 영상점을 만든다."""
     import numpy as np
     P = np.asarray(pts_C, dtype=np.float64)
     return np.stack([fx * P[:, 0] / P[:, 2] + cx, fy * P[:, 1] / P[:, 2] + cy], axis=1)
 
 
 def rotation_angle_deg(R_a, R_b) -> float:
-    """두 회전행렬 사이 상대 회전각(°). trace 공식은 0° 근처에서 정밀도가 낮아 atan2 형식을 쓴다."""
+    """두 회전행렬 사이 상대 회전각(°). 0° 근처 정밀도를 위해 atan2 형식을 쓴다."""
     import numpy as np
     R = np.asarray(R_a).T @ np.asarray(R_b)
     s = 0.5 * math.sqrt(max(0.0, (R[2, 1] - R[1, 2]) ** 2 + (R[0, 2] - R[2, 0]) ** 2 + (R[1, 0] - R[0, 1]) ** 2))
@@ -100,8 +86,7 @@ def rotation_angle_deg(R_a, R_b) -> float:
 def rot90_points(pts_xy, k: int, size_px: int, origin_xy):
     """np.rot90(marker, k)로 회전한 정사각 영상(size_px)에서 점이 옮겨 가는 위치.
 
-    OpenCV 픽셀 중심 좌표(정수 = 픽셀 중심) 기준. np.rot90(k=1)은 화면 기준 반시계 90°이며
-    마커 내부 좌표 (x, y) → (y, N−1−x). origin_xy는 캔버스에서 마커 영상의 좌상단 위치.
+    OpenCV 픽셀 중심 좌표 기준. origin_xy는 캔버스에서 마커 영상의 좌상단 위치.
     """
     import numpy as np
     o = np.asarray(origin_xy, dtype=np.float64)
@@ -230,7 +215,7 @@ class ArucoBackend:
         return a.drawMarker(self.dictionary, marker_id, size_px)
 
     def detect(self, gray):
-        """(corners 목록[각 (4,2)], ids 목록). 반환 모서리 순서는 그대로 둔다(화면 기준 재정렬 금지)."""
+        """(corners 목록[각 (4,2)], ids 목록). 반환 모서리 순서는 재정렬하지 않는다."""
         import numpy as np
         a = self.cv2.aruco
 
@@ -273,7 +258,7 @@ def test_api_selection(backend):
 
 
 def test_synthetic_detection(np, backend, ctx):
-    """합성 마커 1개를 검출한다. 성공하면 `ctx`에 마커·캔버스·기준 모서리(corners0)를 남긴다."""
+    """합성 마커 1개를 검출하고, 성공하면 `ctx`에 마커·캔버스·기준 모서리를 남긴다."""
     name = "synthetic_detection"
 
     if not backend.usable:
@@ -320,7 +305,7 @@ def test_blank_negative(np, backend):
 
 
 def test_rotation_correspondence(np, backend, ctx, tol_px: float):
-    """마커를 0·90·180·270° 돌려 검출하고, 모서리 인덱스가 회전 기대 위치와 `tol_px` 안에서 대응하는지 본다."""
+    """마커를 0·90·180·270° 돌려 검출한 모서리가 기대 위치와 `tol_px` 안에서 대응하는지 본다."""
     name = "rotation_correspondence"
 
     if not backend.usable:
@@ -355,7 +340,7 @@ def test_rotation_correspondence(np, backend, ctx, tol_px: float):
         expected = rot90_points(c0, k, MARKER_PX, origin)
         max_diff = float(np.max(np.linalg.norm(got - expected, axis=1)))
 
-        # 인덱스 대응이 의미 있는지: 다른 순환 대응(인덱스를 1~3칸 민 경우)과의 차이가 커야 한다.
+        # 다른 순환 대응(1~3칸 민 경우)과의 차이가 커야 인덱스 대응이 의미 있다.
         alt = min(float(np.max(np.linalg.norm(np.roll(got, s, axis=0) - expected, axis=1))) for s in (1, 2, 3))
         row_ok = all_finite(got) and max_diff <= tol_px
         ok &= row_ok
@@ -374,7 +359,7 @@ def test_rotation_correspondence(np, backend, ctx, tol_px: float):
 
 
 def _pnp_candidates(cv2, np, obj_M, img_px, K, dist):
-    """IPPE_SQUARE로 PnP 후보를 모두 구해 (retval, 후보 목록)을 돌려준다. 후보마다 R·t·모서리 깊이·재투영 오차."""
+    """IPPE_SQUARE PnP 후보를 모두 구해 (retval, 후보 목록)을 돌려준다."""
     retval, rvecs, tvecs, reproj = cv2.solvePnPGeneric(obj_M, img_px, K, dist, flags=cv2.SOLVEPNP_IPPE_SQUARE)
     cands = []
     reproj = None if reproj is None else np.asarray(reproj, dtype=np.float64).ravel()
@@ -429,7 +414,7 @@ def test_pnp_synthetic(cv2, np):
         rot_err = rotation_angle_deg(c["R"], R_true)
         finite_ok &= all_finite(c["R"], c["t"], c["z"], [c["reproj"]])
 
-        # 정답과의 비교는 시험 판정용일 뿐, 제품의 후보 선택 방식이 아니다.
+        # 정답 비교는 시험 판정용일 뿐, 제품의 후보 선택 방식이 아니다.
         within = pos_err <= PNP_POS_TOL_M and rot_err <= PNP_ROT_TOL_DEG
         match |= within
         reports.append(_cand_report(c, {"position_error_m": _r(pos_err, 12), "rotation_error_deg": _r(rot_err, 9),
@@ -488,14 +473,12 @@ def test_detect_to_pnp(cv2, np, backend, ctx):
 
 
 # ── 이미지 저장 (--output-dir 요청 시에만) ────────────────────────────────────────
-# 저장은 필수 영상처리 시험 6개와 별개인 선택 기능이다. 결과는 report["image_save"]에 따로 남기고
-# 종료 코드에는 반영한다: 파일 쓰기 실패·False 반환 → FAIL(1), 디렉터리 생성·권한 등 환경 제약 → UNVERIFIED(2).
+# 선택 기능이다. 결과는 report["image_save"]에 따로 남기고 종료 코드에도 반영한다.
 
 def save_images(cv2, np, ctx, out_dir: Path):
-    """합성 이미지·오버레이를 저장하고 저장 결과(dict)를 돌려준다. 예외를 밖으로 던지지 않는다.
+    """합성 이미지·오버레이를 저장하고 저장 결과(dict)를 돌려준다. 예외를 던지지 않는다.
 
-    성공 판정은 이번 호출의 cv2.imwrite 반환값(True)과 쓴 뒤 파일 존재로 한다.
-    같은 이름의 기존 파일이 있다는 사실만으로 성공으로 보지 않는다.
+    성공은 이번 호출의 imwrite 반환값(True)과 쓴 뒤 파일 존재로만 판정한다.
     """
     import os
     name = "image_save"
@@ -575,7 +558,7 @@ def _image_targets(cv2, np, ctx):
 # ── 실행 ─────────────────────────────────────────────────────────────────────────
 
 def run(cv2, np, corner_tol_px: float, output_dir: str | None = None):
-    """필수 시험 6개(와 요청 시 이미지 저장)를 실행해 보고서 dict를 돌려준다. `exit_code` 키 포함."""
+    """필수 시험 6개(와 요청 시 이미지 저장)를 실행해 `exit_code`를 포함한 보고서 dict를 돌려준다."""
     env = environment(cv2, np)
     backend = ArucoBackend(cv2)
     ctx: dict = {}
@@ -595,7 +578,7 @@ def run(cv2, np, corner_tol_px: float, output_dir: str | None = None):
                         "GUI·TCP·로봇 통합은 이 점검으로 검증되지 않음"}
     judged = list(results)
 
-    if output_dir:  # 요청했을 때만 저장 결과를 추가한다
+    if output_dir:
         save = save_images(cv2, np, ctx, Path(output_dir))
         report["image_save"] = save
         report["saved_files"] = save["saved_files"]

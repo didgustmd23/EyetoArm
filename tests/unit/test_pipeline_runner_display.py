@@ -1,7 +1,6 @@
-"""실행기 표시 전달 지점(#138 `display_sink`) 시험 — 호출 위치·순서, 현재 결과만 표시, 경계 전달, valid=False·B 미사용 유지.
+"""실행기 표시 전달 지점(`display_sink`) 시험: 호출 위치·순서, 현재 결과만 표시, 경계 전달, B 미사용.
 
-근거: reviewer 지시 138 §3(기본 꺼짐, 최초 현재 적용 결과만, 늦은·폐기·duplicate 미표시, 기존 runner 의미 유지)·§5(오류/timeout/재접속
-전달 순서). 실제 `LiveLinkSource`에 가짜 수신 연결을 붙인 `test_pipeline_runner_live.Live`를 그대로 쓴다. ROS·YOLO·창 없음.
+`test_pipeline_runner_live.Live`(가짜 수신 연결을 붙인 실제 `LiveLinkSource`)를 쓴다. ROS·YOLO·창 없음.
 """
 import io
 import threading
@@ -23,7 +22,7 @@ from test_run_pipeline import lines
 
 
 class RecordingSink:
-    """호출을 순서대로 적고, 호출 순간까지 쓰인 기록 줄 수를 함께 남기는 전달 지점. 실제 브리지에도 그대로 넘긴다."""
+    """호출과 그 순간까지 쓰인 기록 줄 수를 순서대로 남기고 실제 브리지에도 넘기는 전달 지점."""
 
     def __init__(self, stream):
         """기록 스트림(호출 시점 확인용)."""
@@ -104,7 +103,7 @@ class DisplaySinkTest(unittest.TestCase):
         self.assertEqual([r["status"] for r in recs if r["kind"] == "process"], ["COMPLETED"])
 
     def test_current_result_shown_after_log_valid_false_no_b(self):
-        """정상 프레임: 처리 기록을 쓴 **뒤** on_outcome(current=True) 1회, 칸은 같은 프레임·AI 결과, 관측 valid=False, B 호출 0."""
+        """정상 프레임: 처리 기록 뒤 on_outcome(current=True) 1회, 관측 valid=False, B 호출 0."""
         live = DisplayLive(feed=lambda s, c: s.handle_image(image_msg(1)))
         live.should_stop = stop_after_jobs(live, 1)
         res, recs, err = live.run()
@@ -119,7 +118,7 @@ class DisplaySinkTest(unittest.TestCase):
         self.assertFalse(any(r.get("valid") for r in recs if r["kind"] == "process"))
 
     def test_frame_timeout_during_detection(self):
-        """검출 중 수신 중단: on_input(frame_timeout)이 먼저, 작업은 ABORTED input_boundary로 current=False, 칸은 비고 STALE."""
+        """검출 중 수신 중단: on_input(frame_timeout)이 먼저, 작업은 ABORTED로 current=False, STALE."""
         live = DisplayLive(feed=lambda s, c: s.handle_image(image_msg(1)),
                            hooks={0: lambda lv: setattr(lv.clock, "now", lv.clock.now + 2 * S)})
         live.should_stop = stop_after_jobs(live, 1)
@@ -134,7 +133,7 @@ class DisplaySinkTest(unittest.TestCase):
         self.assertEqual(live.sink.bridge.shown, 0)
 
     def test_rewind_during_detection_discarded(self):
-        """검출 중 되감기: on_input(sim_time_rewind, 세대 변경)이 먼저, 결과는 DISCARDED_GENERATION으로 current=False."""
+        """검출 중 되감기: on_input(sim_time_rewind)이 먼저, 결과는 DISCARDED_GENERATION으로 current=False."""
         def feed(src, clock):
             """clock 10 s, 영상."""
             src.handle_clock(SimpleClock(10))
@@ -155,7 +154,7 @@ class DisplaySinkTest(unittest.TestCase):
         self.assertIsNone(live.sink.bridge.snapshot().item)
 
     def test_reconnect_then_new_generation_shown(self):
-        """수신 중단 → 새 영상(재접속): 이전 세대 결과는 표시되지 않고, 새 세대 결과만 current=True로 표시된다."""
+        """수신 중단 → 재접속: 이전 세대 결과는 표시되지 않고 새 세대 결과만 current=True로 표시된다."""
         def hook(live):
             """검출 중 끊김(2 s) 뒤 새 영상."""
             live.clock.now += 2 * S
@@ -175,7 +174,7 @@ class DisplaySinkTest(unittest.TestCase):
         self.assertEqual((item.generation, item.frame.timestamp_ms), (1, 5000))
 
     def test_timeout_late_result_not_shown(self):
-        """검출 시간 초과: ABORTED detect_timeout만 전달(current=False), 유예 안 늦은 결과(duplicate)는 전달하지 않는다. 종료 1."""
+        """검출 시간 초과: ABORTED detect_timeout만 전달하고 늦은 결과는 전달하지 않는다. 종료 1."""
         cfg = RunnerConfig(close_attempts=1, first_detect_timeout_s=0.05, detect_timeout_s=0.05, cancel_grace_s=1.0,
                            stop_check_interval_s=0.01)
         live = DisplayLive(cfg=cfg, feed=lambda s, c: s.handle_image(image_msg(1)),
@@ -225,7 +224,7 @@ class DisplayGateTest(unittest.TestCase):
     """`display_gate`: valid를 보지 않고 최초 현재 적용 결과만 통과."""
 
     def test_gate_matches_b_gate_except_validity(self):
-        """코어에서 완료한 표시용 invalid 관측은 통과, duplicate·세대 변경 뒤는 통과하지 않는다. b_gate는 invalid라 통과하지 않는다."""
+        """표시용 invalid 관측은 통과, duplicate·세대 변경 뒤는 불통과. b_gate는 invalid라 불통과."""
         from eyetoarm.vision.pipeline import GenerationCause, VisionPipeline
         from test_pipeline import RUN_ID, frame
 

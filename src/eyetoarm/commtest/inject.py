@@ -1,11 +1,8 @@
-"""**시험 모드 전용** 장애 주입(#183 계획 r0 §2·§3, reviewer Q1·Q4). TCP §8.6: 운영 경로와 분리된 시험 모드에서만 쓴다.
+"""시험 모드 전용 장애 주입. 운영 경로와 분리된 시험 모드에서만 쓴다.
 
-- `Injector`: 별도 TCP 연결로 D `protocol.build_move`·`build_get_status`가 만든 바이트를 보내고, 직접 응답 한 줄을 D
-  `parse_status`로 읽는다. 같은 ID 재송신·내용 변경·서버 BUSY 확인용이다. D `TcpClient`의 비공개 API는 쓰지 않는다.
-- `FaultRelay`: 클라이언트 ↔ 서버 사이 TCP 중계기. 서버→클라이언트 줄을 규칙으로 삼키거나 연결을 강제로 끊는다.
-  D 클라이언트의 재전송·재접속 경로를 실제로 타게 하려는 것이다.
-- 둘 다 `test_mode=True`가 아니면 생성 단계에서 ValueError. 모든 사건을 `log`(목록)에 `fault_injected: True`로 남긴다.
-- 모두 하나의 asyncio 루프(실행기 소유)에서만 쓴다.
+`Injector`는 별도 연결로 D `protocol`이 만든 바이트를 보내 같은 ID 재송신·서버 BUSY를 확인하고,
+`FaultRelay`는 클라이언트 ↔ 서버 중계로 줄을 삼키거나 끊어 D의 재전송·재접속 경로를 타게 한다.
+둘 다 `test_mode=True`가 아니면 ValueError이고, 하나의 asyncio 루프(실행기 소유)에서만 쓴다.
 """
 from __future__ import annotations
 
@@ -18,7 +15,7 @@ from eyetoarm.tcp.protocol import ProtocolError, parse_status
 
 
 def require_test_mode(test_mode: bool, what: str) -> None:
-    """시험 모드가 아니면 ValueError(운영 경로에서 주입 금지, TCP §8.6)."""
+    """시험 모드가 아니면 ValueError(운영 경로에서 주입 금지)."""
     if test_mode is not True:
         raise ValueError(f"{what} is a fault injector and requires test_mode=True (TCP spec §8.6)")
 
@@ -71,7 +68,7 @@ class Injector:
 
 
 def _parse_object(line: bytes) -> dict:
-    """중계기가 들여다볼 JSON 객체. 해석할 수 없거나 객체가 아닌 줄(`[1]`, `5`, `"x"`)은 빈 사전(줄은 그대로 넘긴다, #196 A4-3)."""
+    """중계기가 들여다볼 JSON 객체. 해석할 수 없거나 객체가 아닌 줄은 빈 사전(줄은 그대로 넘긴다)."""
     try:
         msg = json.loads(line)
     except ValueError:
@@ -90,7 +87,7 @@ class FaultRelay:
         self.log = log
         self.swallow_rule: Callable[[dict], bool] | None = None   # 서버→클라이언트 줄 삼킴 규칙
         self.cut_after_swallow = False                             # 삼킨 직후 그 연결 쌍을 끊음(1회)
-        self.stop_swallow_on_resend: str | None = None             # 이 command_id("*" = 아무 ID)의 MOVE가 다시 지나가면 삼킴 해제
+        self.stop_swallow_on_resend: str | None = None             # 이 ID("*"=아무)의 MOVE 재통과 시 삼킴 해제
         self._move_seen: dict[str, int] = {}
         self._server: asyncio.AbstractServer | None = None
         self._pairs: list = []
@@ -129,21 +126,21 @@ class FaultRelay:
         self._close_pair(pair)
 
     async def _pump_c2s(self, reader, writer) -> None:
-        """클라이언트→서버 펌프(연결 끊김은 정상 종료로 기록, 그 밖의 예외는 `relay_c2s_failed`로 기록, #196 A4-3)."""
+        """클라이언트→서버 펌프. 연결 끊김은 정상 종료, 그 밖의 예외는 `relay_c2s_failed`로 기록한다."""
         try:
             await self._c2s(reader, writer)
         except (ConnectionError, OSError) as exc:
             self._event("relay_c2s_closed", error=f"{type(exc).__name__}: {exc}"[:200])
-        except Exception as exc:  # noqa: BLE001 - 작업 최상단: 버려진 작업에 묻히지 않게 기록한다(규약 §10)
+        except Exception as exc:  # noqa: BLE001 - 작업 최상단: 버려진 작업에 묻히지 않게 기록한다
             self._event("relay_c2s_failed", error=f"{type(exc).__name__}: {exc}"[:200])
 
     async def _pump_s2c(self, reader, writer, pair) -> None:
-        """서버→클라이언트 펌프(연결 끊김은 정상 종료로 기록, 그 밖의 예외는 `relay_s2c_failed`로 기록, #196 A4-3)."""
+        """서버→클라이언트 펌프. 연결 끊김은 정상 종료, 그 밖의 예외는 `relay_s2c_failed`로 기록한다."""
         try:
             await self._s2c(reader, writer, pair)
         except (ConnectionError, OSError) as exc:
             self._event("relay_s2c_closed", error=f"{type(exc).__name__}: {exc}"[:200])
-        except Exception as exc:  # noqa: BLE001 - 작업 최상단: 버려진 작업에 묻히지 않게 기록한다(규약 §10)
+        except Exception as exc:  # noqa: BLE001 - 작업 최상단: 버려진 작업에 묻히지 않게 기록한다
             self._event("relay_s2c_failed", error=f"{type(exc).__name__}: {exc}"[:200])
 
     async def _c2s(self, reader, writer) -> None:

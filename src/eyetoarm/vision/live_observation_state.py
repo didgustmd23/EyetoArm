@@ -1,33 +1,8 @@
-"""실시간 A→B 현재성 상태(`LiveObservationState`, #171 R2): 단일 잠금 토큰·경계 준비·계산 권한·결과 수락·공통 순번 기록.
+"""실시간 관측 현재성 상태: 단일 잠금으로 토큰·경계 준비·계산 권한·결과 수락·공통 순번 기록을 관리한다.
 
-근거: `_workspace/171_builder2_live_a_to_b_plan.md` r3 §3.1~3.5·§4.1·§8. **준비 부품이며 실시간 실행 경로에 연결하지 않는다**(D13 유지).
-
-규칙
-- 토큰 `LiveObservationToken(run_id, rx_epoch, generation, calibration_id, ready, token_seq)`은 불변 값이다. 바뀔 때마다 `token_seq`가 오른다.
-- 잠금 하나가 토큰·경계 준비 상태·계산 중 표·공통 순번·쓰기 대기열을 보호한다. 잠금 안에서는 비교·상태 전이·순번·등록만 한다.
-  TF 조회·봉투·B 계산·렌더·디스크 쓰기는 호출자가 잠금 밖에서 한다(`lock_held()`로 시험이 확인한다).
-- 경계 준비: 수신 경계(`on_rx_boundary`)마다 새 `boundary_id`(수신 epoch) 아래 `applied`·`tf_ready`를 따로 둔다. `tf_ready` 처음 값은
-  `tf_ready_required(kind)`가 참이면 False(되감기), 아니면 True다. `on_applied`·`on_tf_ready`는 **같은 boundary_id**일 때만 자기 표지를
-  세우고, 둘 다 참이면 순서와 무관하게 연다(`ready=True`). 이전 경계 통지는 어떤 필드도 바꾸지 않고 세기만 한다.
-- 계산 권한(②): `begin_compute(token)`이 토큰 비교와 `QUEUED → COMPUTING` 전이를 한 잠금 구간에서 한다. 이 전이 전 무효화는 B 호출 0,
-  전이 뒤 무효화는 `COMPUTING` 항목에 표지를 남겨 `accept`(③)가 거부한다(출력 0).
-- 결과 수락(③): `accept`가 토큰·무효화 표지 비교와 순번 부여·쓰기 대기열 등록을 한 잠금 구간에서 한다.
-- 공통 순번 `event_seq`: accept·invalidation·revoke·ready·run_end·failed가 같은 순번열을 쓴다. 수락 뒤 무효화는 그 수락의 revoke가 된다.
-- TF 준비 시도(#172 r1 F1): `begin_tf_attempt(boundary_id)`가 그 경계의 시도 번호를 올리고, `on_tf_ready(boundary_id, attempt_id)`는
-  **현재 시도 번호**일 때만 받는다. `on_tf_anomaly`는 시도 번호를 올려 진행 중이던 조회 완료를 무효로 만든다. 그래서 이상 전에 시작한
-  조회가 나중에 정확 stamp를 돌려줘도 다시 열지 못하고, 새 시도(버퍼 정리·정적/동적 재확인)가 끝나야 열린다.
-- `fail(reason)`(#172 r1 F2): 기록기 실패 등 외부 fail-stop. 닫고 계산 중 항목을 무효로 하며 이후 제출·계산·수락을 막는다.
-- 쓰기 밀림: 일반 칸(`write_capacity`)이 차면 수락하지 않는다(`writer_backpressure`). 수락한 뒤 버리지 않는다. 무효화·철회 등은 예약 칸
-  (`reserved_capacity`)에 넣고, 예약 칸까지 차면 fail-stop(`b_writer_overflow`)한다.
-- 용량 값은 결정 L-8 전 **시험 후보**이며 기본값이 없다(호출자가 반드시 준다).
-- 사전 정지 보류(#173 되감기 계획 r1 §2.3.2 F3a): `hold_for_stop(detail)`이 한 잠금 구간에서 토큰을 닫고(현재 수락 철회 = 이전 결과
-  현재성 해제), 계산 중 항목에 무효 표지를 남기고(진행 중 결과 수락 차단), 보류 표지를 세운다. 보류 중에는 경계가 준비돼도 열지 않는다.
-  `release_stop_hold(detail)`로만 풀린다. 정지 확인 응답은 호출자가 `hold_for_stop`이 **돌아온 뒤에** 보낸다.
-- 새 실행 시작(#173 사용자 정정, 리셋 = 새 실행): `start_closed=True`면 토큰을 닫힌 채 시작하고 경계 0(`run_start`)의
-  `applied`·`tf_ready`를 모두 False로 둔다. 새 영상의 보정 정보 반영(`on_applied(0, …)`)과 촬영 시각 TF 준비(`on_tf_ready(0, …)`)가
-  모두 끝나야 열린다. 처음 열리기 전에 생긴 경계(예: CameraInfo 첫 수신의 `profile_changed`)도 TF 준비를 요구한다(첫 열림은 항상
-  보정 반영 + 촬영 시각 TF). 기본값 False는 기존 동작 그대로다.
-- ROS·Qt를 import하지 않는다.
+잠금 안에서는 비교·상태 전이·순번·등록만 하고 TF·봉투·B 계산·렌더·쓰기는 호출자가 잠금 밖에서 한다.
+경계는 `applied`·`tf_ready`가 같은 `boundary_id`에서 모두 참일 때만 열리고, 용량 값은 기본값이 없다.
+ROS·Qt를 import하지 않는다.
 """
 from __future__ import annotations
 
@@ -37,18 +12,18 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Callable
 
-SIM_TIME_REWIND = "sim_time_rewind"   # live_slot.BoundaryKind.SIM_TIME_REWIND 값(이 모듈은 inputs를 import하지 않음)
+SIM_TIME_REWIND = "sim_time_rewind"   # `BoundaryKind.SIM_TIME_REWIND` 값(inputs를 import하지 않음)
 RUN_START = "run_start"               # 새 실행의 처음 경계(start_closed)
 
 
 def rewind_requires_tf(kind) -> bool:
-    """기본 규칙(계획 §3.1): 되감기 경계만 TF 준비 완료를 요구한다."""
+    """기본 규칙: 되감기 경계만 TF 준비 완료를 요구한다."""
     return getattr(kind, "value", kind) == SIM_TIME_REWIND
 
 
 @dataclass(frozen=True)
 class LiveObservationConfig:
-    """쓰기 대기열 용량(결정 L-8 전 시험 후보, 기본값 없음)."""
+    """쓰기 대기열 용량(기본값 없음, 호출자가 반드시 준다)."""
 
     write_capacity: int     # 수락 기록 일반 칸(W)
     reserved_capacity: int  # 무효화·철회·준비·종료 예약 칸(R)
@@ -104,7 +79,7 @@ class LiveObservationState:
     def __init__(self, *, run_id: str, generation: int, calibration_id: str | None, config: LiveObservationConfig,
                  rx_epoch: int = 0, tf_ready_required: Callable[[object], bool] = rewind_requires_tf,
                  clock_ns: Callable[[], int] = time.monotonic_ns, start_closed: bool = False) -> None:
-        """처음 토큰은 열린 상태(경계 없음). 경계 전 프레임도 보정 번호가 없으면 B 조건에서 걸러진다.
+        """처음 토큰은 열린 상태(경계 없음).
 
         `start_closed=True`(새 실행): 닫힌 토큰 + 경계 0(`run_start`, 반영·TF 준비 모두 필요).
         """
@@ -271,7 +246,7 @@ class LiveObservationState:
             return self._boundary.tf_attempt
 
     def on_tf_ready(self, boundary_id: int, attempt_id: int) -> bool:
-        """TF 준비 완료(되감기 §4.1). 이전 경계이거나 현재 시도가 아니면 아무것도 바꾸지 않는다(False)."""
+        """TF 준비 완료. 이전 경계이거나 현재 시도 번호가 아니면 아무것도 바꾸지 않는다(False)."""
         with self._locked():
             if self._closed or self._boundary is None or boundary_id != self._boundary.boundary_id:
                 self._count("stale_tf_ready_ignored")
@@ -291,9 +266,9 @@ class LiveObservationState:
             return True
 
     def on_tf_anomaly(self, boundary_id: int, detail: str) -> bool:
-        """준비 뒤·준비 중 이전 실행 잔여로 보이는 TF(§4.1-5): TF 준비를 되돌리고 시도 번호를 올려 진행 중 시도를 무효로 하고 닫는다.
+        """이전 실행 잔여로 보이는 TF: TF 준비를 되돌리고 시도 번호를 올려 진행 중 시도를 무효로 하고 닫는다.
 
-        다시 열려면 새 `begin_tf_attempt`(버퍼 정리·재확인)와 그 시도의 `on_tf_ready`가 필요하다. 이전 경계면 무시.
+        다시 열려면 새 `begin_tf_attempt`와 그 시도의 `on_tf_ready`가 필요하다. 이전 경계면 무시.
         """
         with self._locked():
             if self._closed or self._boundary is None or boundary_id != self._boundary.boundary_id:
@@ -306,9 +281,9 @@ class LiveObservationState:
             return True
 
     def hold_for_stop(self, detail: str) -> int:
-        """사전 정지(F3a): 이전 결과 현재성 해제·진행 중 결과 수락 차단·보류 표지를 한 잠금 구간에서 한다. 보류 뒤 토큰 순번을 돌려준다.
+        """사전 정지: 현재 결과 철회·진행 중 수락 차단·보류 표지를 한 잠금 구간에서 하고 토큰 순번을 준다.
 
-        이미 닫혔으면(run_end·fail-stop) 보류 표지만 세운다(제출·계산·수락은 이미 막혀 있다).
+        정지 확인 응답은 이 함수가 돌아온 뒤 보낸다. 이미 닫혔으면 보류 표지만 세운다.
         """
         with self._locked():
             self._stop_hold = detail
@@ -323,7 +298,7 @@ class LiveObservationState:
             return self._token.token_seq
 
     def release_stop_hold(self, detail: str) -> bool:
-        """사전 정지 보류를 푼다(새 경계의 fence가 정해진 뒤 호출자가 부름). 경계가 이미 준비됐으면 연다. 보류가 없으면 False."""
+        """사전 정지 보류를 푼다(새 경계 fence 확정 뒤). 경계가 준비됐으면 연다. 보류가 없으면 False."""
         with self._locked():
             if self._stop_hold is None:
                 self._count("release_without_hold")
@@ -338,7 +313,7 @@ class LiveObservationState:
             return True
 
     def fail(self, reason: str) -> None:
-        """외부 fail-stop(쓰기 실패 등): 닫고 이후 제출·계산·수락을 막는다. 기록을 더 넣지 않는다(쓰는 쪽이 멈춤). 두 번째부터 무시."""
+        """외부 fail-stop: 닫고 이후 제출·계산·수락을 막는다. 기록은 더 넣지 않고 두 번째부터 무시."""
         with self._locked():
             if self._failed is not None:
                 return
@@ -368,7 +343,7 @@ class LiveObservationState:
     # ------------------------------------------------------------------ 계산 권한·수락(worker)
 
     def begin_compute(self, token: LiveObservationToken) -> int | None:
-        """검사 ②: 토큰이 열린 현재 토큰이면 `COMPUTING`으로 전이하고 compute_id를 준다. 아니면 None(B 호출 금지)."""
+        """검사 ②: 열린 현재 토큰이면 `COMPUTING`으로 전이하고 compute_id를 준다. 아니면 None(B 호출 금지)."""
         with self._locked():
             if not self._is_open(token):
                 self._count("stale_after_tf")

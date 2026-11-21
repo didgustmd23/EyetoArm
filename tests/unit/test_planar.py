@@ -1,14 +1,6 @@
-"""vision/planar.py 설정 로더·표시용 윤곽 추출 단위시험.
-
-근거: A 상세설계 §5.1(원본 픽셀 복원)·§7(평면 검출 처리, 설정 식별자), vision/planar.py의 설정
-필드·처리 순서·식별자 정규화(A 내부 잠정안), vision/pixel_map.py(단순 스케일 복원 잠정 규약).
-
-- 입력은 NumPy로 그린 합성 영상이다. 기대 좌표·면적·경계 상자는 손으로 계산한 상수이며
-  OpenCV 처리 결과로 기대값을 만들지 않는다.
-- `cv2.findContours`의 직사각형 윤곽은 화소 중심 꼭짓점이다. 화소 x0..x1, y0..y1을 채운
-  직사각형의 넓이는 (x1 - x0) * (y1 - y0)이다.
-- 결과는 표시용이며 B 계산용 유효 결과·클래스·규격 판정이 아니다.
-"""
+"""`vision/planar.py` 설정 로더·표시용 윤곽 추출 단위시험.
+입력은 NumPy 합성 영상이고 기대 좌표·면적·경계 상자는 손 계산 상수다(OpenCV 결과로 만들지 않음).
+화소 x0..x1, y0..y1을 채운 직사각형 윤곽의 넓이는 (x1 - x0) * (y1 - y0)이다."""
 import dataclasses
 import json
 import os
@@ -42,14 +34,14 @@ BASE = {
 
 
 def cfg(**over):
-    """기본 설정(`BASE`: 어두운 물체·고정 임계값 128·최소 넓이 100)에서 키워드로 준 값만 바꾼 `PlanarConfig`."""
+    """기본 설정(`BASE`)에서 키워드로 준 값만 바꾼 `PlanarConfig`."""
     fields = dict(BASE)
     fields.update(over)
     return PlanarConfig(**fields)
 
 
 def frame(image, **over):
-    """합성 영상 크기에 맞춘 A `FramePacket`(`image_seq` 7·세대 3·VIDEO_POS). 키워드로 필드를 바꿀 수 있다."""
+    """합성 영상 크기에 맞춘 A `FramePacket`(`image_seq` 7·세대 3·VIDEO_POS)."""
     h, w = image.shape[:2] if image.ndim >= 2 else (0, 0)
     fields = {
         "image": image, "run_id": "run-test", "source_id": "src0", "image_seq": 7, "timestamp_ms": 1234,
@@ -108,10 +100,10 @@ def load_dict(d):
 
 
 class ConfigLoadTest(unittest.TestCase):
-    """설정 로더가 정상 설정을 읽고 식별자(`config_sha256`)를 정규화하는지 확인한다(A 상세설계 §7 「설정 식별자」)."""
+    """설정 로더가 정상 설정을 읽고 식별자(`config_sha256`)를 정규화하는지 확인한다."""
 
     def test_repo_config_loads(self):
-        """저장소 설정 `opencv_planar.json`을 읽으면 Otsu·어두운 물체·ROI 없음 값과 고정된 식별자가 나온다."""
+        """저장소 설정 `opencv_planar.json`을 읽으면 Otsu·어두운 물체·ROI 없음과 고정 식별자가 나온다."""
         c = load_config(REPO_CONFIG)
 
         self.assertEqual(c.polarity, "dark")
@@ -132,7 +124,7 @@ class ConfigLoadTest(unittest.TestCase):
         self.assertEqual(load_config(pathlib.Path(REPO_CONFIG)).polarity, "dark")
 
     def test_same_hash_for_key_order_whitespace_int_float(self):
-        """키 순서·들여쓰기·정수와 같은 값의 실수 표기가 달라도 식별자가 같다(64자리 16진)."""
+        """키 순서·들여쓰기·정수와 같은 값의 실수 표기가 달라도 식별자가 같다."""
         a = load_dict(BASE)
         reordered = dict(reversed(list(BASE.items())))
         b = load_text(json.dumps(reordered, indent=4))
@@ -219,7 +211,7 @@ class ConfigRejectTest(unittest.TestCase):
             load_text(text)
 
     def test_nan_infinity_and_overflow(self):
-        """NaN·Infinity·`1e400`과 float 범위를 넘는 정수는 거부한다(코드 규약 §6 숫자 표현 범위)."""
+        """NaN·Infinity·`1e400`과 float 범위를 넘는 정수는 거부한다."""
         for bad in ["NaN", "Infinity", "-Infinity", "1e400"]:
             with self.subTest(bad=bad):
                 # json.dumps로는 비표준 상수를 쓸 수 없어 직렬화한 텍스트의 숫자를 바꿔 넣는다.
@@ -250,7 +242,7 @@ class ConfigRejectTest(unittest.TestCase):
         self.assert_rejected({**BASE, "resize_wh": [10, True]})
 
     def test_wrong_types(self):
-        """형이 틀린 값(정수 자리의 실수·문자열, 다른 버전·상태, 음수 여백, 객체 ROI 등)은 거부한다."""
+        """형이 틀린 값(정수 자리의 실수·문자열, 다른 버전·상태, 음수 여백 등)은 거부한다."""
         cases = [
             ("format_version", 1.0), ("format_version", 2), ("status", "final"),
             ("gaussian_blur_ksize", 3.0), ("morph_open_ksize", "3"),
@@ -264,7 +256,7 @@ class ConfigRejectTest(unittest.TestCase):
                 self.assert_rejected({**BASE, key: value})
 
     def test_enums_and_fixed_constants(self):
-        """허용 목록에 없는 극성·임계값 방식과 고정 상수가 아닌 보간·윤곽 옵션은 거부한다(대소문자 구분)."""
+        """허용 목록 밖의 극성·임계값 방식과 고정 상수가 아닌 보간·윤곽 옵션은 거부한다."""
         cases = [
             ("polarity", "auto"), ("polarity", "Dark"), ("threshold_method", "adaptive"),
             ("resize_interpolation", "INTER_LINEAR"), ("contour_retrieval", "RETR_TREE"),
@@ -309,7 +301,7 @@ class ConfigRejectTest(unittest.TestCase):
         load_dict({**BASE, "max_area_source_px2": 100.5})
 
     def test_threshold_combination(self):
-        """Otsu에는 고정 임계값이 없어야 하고, 고정 방식에는 0~255 임계값이 있어야 한다(경계 0·255 허용)."""
+        """Otsu에는 고정 임계값이 없고 고정 방식에는 0~255 임계값이 있어야 한다."""
         self.assert_rejected({**BASE, "threshold_method": "otsu", "fixed_threshold": 128})
         self.assert_rejected({**BASE, "threshold_method": "fixed", "fixed_threshold": None})
         self.assert_rejected({**BASE, "fixed_threshold": -0.1})
@@ -338,7 +330,7 @@ class ConfigRejectTest(unittest.TestCase):
 
 
 class ThresholdTest(unittest.TestCase):
-    """이진화(극성·고정 임계값·Otsu) 결과를 합성 영상으로 확인한다(A 상세설계 §7)."""
+    """이진화(극성·고정 임계값·Otsu) 결과를 합성 영상으로 확인한다."""
 
     def test_uniform_background_has_no_candidates(self):
         """균일한 흰 배경에서는 윤곽·후보가 없고 사용한 임계값은 설정값 128이다."""
@@ -350,7 +342,7 @@ class ThresholdTest(unittest.TestCase):
         self.assertEqual(r.threshold_used, 128.0)
 
     def test_dark_object_on_white(self):
-        """흰 바탕 검은 사각형은 손 계산 넓이 361·바운딩 박스로 검출되고, 테두리 접촉·넓이 탈락 없이 적격이다."""
+        """흰 바탕 검은 사각형은 넓이 361·바운딩 박스로 검출되고 적격이다."""
         img = fill(canvas(100, 80, 255), 20, 10, 39, 29, 0)
         r = detect_planar(frame(img), cfg(polarity="dark"))
 
@@ -374,11 +366,11 @@ class ThresholdTest(unittest.TestCase):
         self.assertEqual(r.candidates[0].bbox_source, (20.0, 10.0, 39.0, 29.0))
 
     def test_wrong_polarity_gives_background_contour(self):
-        """극성을 반대로 주면 배경이 물체가 되어 영상 전체 윤곽 하나가 나오고, 네 변에 닿아 부적격이다."""
+        """극성을 반대로 주면 배경이 물체가 되어 영상 전체 윤곽 하나가 나오고 부적격이다."""
         img = fill(canvas(100, 80, 255), 20, 10, 39, 29, 0)
         r = detect_planar(frame(img), cfg(polarity="bright"))
 
-        # 밝은 배경이 물체가 되어 영상 테두리 전체 윤곽 하나가 나온다(공개 표본에서 관찰한 실패 사례와 같은 형태).
+        # 밝은 배경이 물체가 되어 영상 테두리 전체 윤곽 하나가 나온다(공개 표본의 실패 형태).
         self.assertEqual(r.raw_contour_count, 1)
 
         c = r.candidates[0]
@@ -388,7 +380,7 @@ class ThresholdTest(unittest.TestCase):
         self.assertFalse(c.eligible)
 
     def test_fixed_threshold_boundary(self):
-        """고정 임계값은 「화소 > 임계값이면 배경」이다. 물체 화소 100은 임계값 100에서 물체, 99에서 배경이다."""
+        """고정 임계값은 「화소 > 임계값이면 배경」이다(물체 100은 임계값 100에서 물체)."""
         img = fill(canvas(100, 80, 200), 20, 10, 39, 29, 100)
 
         # 고정 임계값 100: 화소 > 100 이 배경. 100인 물체 화소는 dark에서 물체(255)가 된다.
@@ -428,7 +420,7 @@ class FilterStageTest(unittest.TestCase):
         self.assertEqual(on.candidates[0].bbox_source, (20.0, 10.0, 39.0, 29.0))
 
     def test_open_removes_thin_noise(self):
-        """3×3 열림 연산을 켜면 2×2 점과 1화소 두께 선이 사라지고 사각형의 넓이·바운딩 박스는 그대로다."""
+        """3×3 열림 연산은 2×2 점과 1화소 선을 지우고 사각형 넓이·바운딩 박스는 그대로 둔다."""
         img = fill(canvas(100, 80, 255), 20, 10, 39, 29, 0)
         fill(img, 60, 60, 61, 61, 0)      # 2×2 점
         fill(img, 70, 40, 90, 40, 0)      # 1화소 두께 선
@@ -482,7 +474,7 @@ class AreaFilterTest(unittest.TestCase):
         self.assertTrue(self.by_area(r)[1.0].eligible)
 
     def test_below_and_above(self):
-        """하한 미만은 `area_below_min`, 상한 초과는 `area_above_max`이고 범위 안 후보는 사유가 없다."""
+        """하한 미만은 `area_below_min`, 상한 초과는 `area_above_max`, 범위 안은 사유 없음."""
         r = detect_planar(frame(self.img), cfg(min_area_source_px2=361.5))
 
         self.assertEqual(self.by_area(r)[361.0].area_reject_reason, "area_below_min")
@@ -497,7 +489,7 @@ class MultipleAndShapeTest(unittest.TestCase):
     """여러 물체와 모양에 대한 처리를 확인한다."""
 
     def test_two_objects_kept_without_selection(self):
-        """물체 두 개는 둘 다 적격 후보로 남고 하나를 고르지 않는다(`selected_index` None, 색인 0·1)."""
+        """물체 두 개는 둘 다 적격 후보로 남고 하나를 고르지 않는다(`selected_index` None)."""
         img = fill(canvas(120, 80, 255), 10, 10, 29, 29, 0)
         fill(img, 60, 20, 99, 59, 0)
 
@@ -539,7 +531,7 @@ class BorderTest(unittest.TestCase):
         self.assertFalse(c.eligible)
 
     def test_margin_boundary(self):
-        """변에서 여백 2화소 안(경계 포함)이면 접촉, 3화소 떨어지면 접촉이 아니다(왼쪽·오른쪽·아래)."""
+        """변에서 여백 2화소 안(경계 포함)이면 접촉, 3화소 떨어지면 접촉이 아니다."""
         img = fill(canvas(100, 80, 255), 2, 20, 21, 39, 0)    # x_min = 2 = m
 
         self.assertEqual(detect_planar(frame(img), cfg()).candidates[0].border_sides, ("left",))
@@ -567,7 +559,7 @@ class BorderTest(unittest.TestCase):
         self.assertFalse(c.eligible)
 
     def test_both_edges_preserved(self):
-        """원본 변과 같은 ROI 변·원본 안쪽 ROI 변에 함께 닿으면 두 사유를 정해진 순서로 모두 남긴다."""
+        """원본 변과 같은 ROI 변·안쪽 ROI 변에 함께 닿으면 두 사유를 정해진 순서로 남긴다."""
         # ROI (10, 0, 80, 80): 위 변은 원본 위 변과 같고, 왼쪽 변은 원본 안쪽이다.
         img = fill(canvas(100, 80, 255), 10, 0, 29, 19, 0)
         c = detect_planar(frame(img), cfg(roi=[10, 0, 80, 80])).candidates[0]
@@ -591,10 +583,10 @@ class BorderTest(unittest.TestCase):
 
 
 class RestoreTest(unittest.TestCase):
-    """ROI·리사이즈 처리 좌표를 원본 화소로 복원하는지 확인한다(A 상세설계 §5.1)."""
+    """ROI·리사이즈 처리 좌표를 원본 화소로 복원하는지 확인한다."""
 
     def test_roi_and_anisotropic_resize(self):
-        """ROI 뒤 가로·세로 배율이 다른 축소에서도 바운딩 박스·넓이가 손 계산한 원본 값으로 복원되고, 점은 (N, 2) float32다."""
+        """ROI 뒤 비등방 축소에서도 바운딩 박스·넓이가 원본 값으로 복원되고 점은 (N, 2) float32다."""
         # 원본 200×100, ROI (40, 20, 120, 60), 리사이즈 (60, 20) → sx = 2, sy = 3, 오프셋 (40, 20).
         # ROI 안 x 20..59(40화소, 2의 배수 정렬), y 15..44(30화소, 3의 배수 정렬)를 검게 칠하면
         # INTER_AREA 정수배 축소는 블록 평균이라 처리 영상 x 10..29, y 5..14가 정확히 검다.
@@ -609,7 +601,7 @@ class RestoreTest(unittest.TestCase):
 
         c = r.candidates[0]
 
-        # 처리 꼭짓점 (10,5)-(29,14) → 원본 x = 2u + 40, y = 3v + 20 (단순 스케일 잠정 규약)
+        # 처리 꼭짓점 (10,5)-(29,14) → 원본 x = 2u + 40, y = 3v + 20(단순 스케일 규약)
         self.assertEqual(c.bbox_source, (60.0, 35.0, 98.0, 62.0))
         self.assertEqual(c.area_source_px2, 1026.0)   # (98-60)*(62-35) = 19*9 처리 넓이 × 6
         self.assertEqual(c.points_source.dtype, np.float32)
@@ -646,7 +638,7 @@ class ResultContractTest(unittest.TestCase):
         self.config = cfg()
 
     def test_metadata_and_fixed_fields(self):
-        """결과에 프레임 식별·시각·설정 식별자가 그대로 옮겨지고, 표시용이라 `valid`는 False·계산용 필드는 None이다."""
+        """결과에 프레임 식별·시각·설정 식별자가 옮겨지고 `valid`는 False·계산용 필드는 None이다."""
         r = detect_planar(frame(self.img), self.config)
 
         self.assertIsInstance(r, PlanarResult)

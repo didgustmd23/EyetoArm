@@ -1,7 +1,4 @@
-"""#196 수정 시험(학습·시험 도구·스크립트): #193 A4-1~A4-4.
-
-근거: `_workspace/196_reviewer_instruction_a_fixes_from_193.md`, `_workspace/193_builder2_full_source_review.md`(fd1a7942).
-"""
+"""학습·시험 도구·스크립트 수정 시험: 기록 덮어쓰기 거부, 거대 정수 설정, 중계기 비객체 줄, 사용 예 경로."""
 from __future__ import annotations
 
 import asyncio
@@ -33,7 +30,7 @@ def load_cli():
 
 
 class DefaultLogOverwriteTest(unittest.TestCase):
-    """A4-1: 기본 저장 입력 경로도 기존 --log를 덮어쓰지 않고 종료 2."""
+    """기본 저장 입력 경로도 기존 --log를 덮어쓰지 않고 종료 2."""
 
     def test_existing_log_refused(self):
         """이미 있는 기록 파일이면 종료 2이고 내용은 그대로다. 새 경로면 기존대로 0."""
@@ -57,7 +54,7 @@ class DefaultLogOverwriteTest(unittest.TestCase):
 
 
 class HugeIntegerConfigTest(unittest.TestCase):
-    """A4-2: training 설정 숫자 검사의 거대 정수는 ConfigError(유효하지 않은 기록은 False)."""
+    """training 설정 숫자 검사의 거대 정수는 ConfigError(유효하지 않은 기록은 False)."""
 
     def test_config_validators(self):
         """_pos_num·_unit은 10**400에 ConfigError, _finite는 False를 돌려준다(OverflowError 없음)."""
@@ -108,7 +105,7 @@ async def _relay_round(server_line: bytes, client_line: bytes, *, rule=None):
 
 
 class RelayNonObjectTest(unittest.TestCase):
-    """A4-3: 중계기는 객체가 아닌 JSON 줄에서 죽지 않고, 펌프 예외는 사건으로 남긴다."""
+    """중계기는 객체가 아닌 JSON 줄에서 죽지 않고, 펌프 예외는 사건으로 남긴다."""
 
     def test_non_object_json_passes_both_ways(self):
         """[1]·5 같은 줄도 그대로 양방향으로 지나가고 펌프 실패 사건이 없다."""
@@ -132,7 +129,7 @@ class RelayNonObjectTest(unittest.TestCase):
 
 
 class UsageExampleTest(unittest.TestCase):
-    """A4-4: run_pipeline.py 사용 예의 설정 경로가 실제로 있다."""
+    """run_pipeline.py 사용 예의 설정 경로가 실제로 있다."""
 
     def test_docstring_config_paths_exist(self):
         """모듈 설명에 적힌 config/vision/*.json 경로가 모두 저장소에 있다."""

@@ -1,7 +1,6 @@
-"""`vision/live_observation_events.LiveObservationEventWriter`(#172 r1 F2) 단위시험: 단일 쓰기 소유자, 쓰기 실패 보존·보고·fail-stop, 종료 상한.
+"""`LiveObservationEventWriter` 단위시험: 단일 쓰기 소유자, 쓰기 실패 보존·보고·fail-stop, 종료 상한.
 
-근거: `_workspace/171_builder2_live_a_to_b_plan.md` r3 §3.3, reviewer #172 r1 F2. 쓰기 오류는 파일을 닫아 주입하고,
-종료 경쟁은 쓰기 도중 정지시키는 장벽(Event)으로 재현한다. 상한 값은 결정 L-8 전 시험 후보다.
+쓰기 오류는 파일을 닫아 주입하고, 종료 경쟁은 쓰기 도중 멈추는 장벽(Event)으로 재현한다.
 """
 import json
 import tempfile
@@ -34,7 +33,7 @@ def lines(wr):
 
 class WriteFailureTest(unittest.TestCase):
     def test_f2_closed_file_error_preserves_and_fail_stops(self):
-        """F2 재현: 대기 2건 + 파일 닫힘 → _loop: error 기록, 2건 unwritten 보존(순서), state fail-stop, 입력 차단."""
+        """대기 2건 + 파일 닫힘 → error 기록, 2건 unwritten 보존(순서), fail-stop, 입력 차단."""
         st, wr = make()
         seqs = accept_n(st, 2)
         wr._fh.close()
@@ -89,8 +88,7 @@ class OwnershipAndCloseTest(unittest.TestCase):
         wr.close(1.0)
 
     def test_f2_close_timeout_does_not_race_live_writer(self):
-        """F2 장벽: 쓰기 도중 멈춘 스레드 → close(0.1)은 상한 안에 timed_out 반환, 호출자는 파일·대기열에 손대지 않음, fail-stop.
-        풀린 뒤 스레드가 스스로 파일을 닫는다."""
+        """쓰기 도중 멈춘 스레드: close(0.1)은 timed_out을 돌려주고 파일은 풀린 스레드가 닫는다."""
         st, wr = make()
         accept_n(st, 3)
         in_write, go = threading.Event(), threading.Event()

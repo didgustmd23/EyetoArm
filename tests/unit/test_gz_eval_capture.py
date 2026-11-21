@@ -109,7 +109,7 @@ def test_launch_group_closes_parent_log_handle(tmp_path):
 
 
 def test_pose_vector_request_covers_all_slots():
-    """자세 요청은 슬롯 18개를 모두 담고, 계획한 부품은 그 위치·쿼터니언, 나머지는 대기 위치로 보낸다. 명령은 `set_pose_vector` 서비스다."""
+    """자세 요청은 슬롯 18개를 모두 담고 계획 부품은 그 자세, 나머지는 대기 위치(`set_pose_vector`)."""
     parts = [{"slot": "NUT_0", "xyz": [0.5, -0.2, 0.1005], "rpy": [0.0, 0.0, 1.5707963]}]
     req = cap.pose_vector_request(parts)
 
@@ -128,7 +128,7 @@ def test_pose_vector_request_covers_all_slots():
 
 
 def _seg(h=60, w=80, panoptic=False):
-    """분할 카메라 영상 흉내. 너트·볼트 라벨 영역과 계획에 없는 라벨 99를 그린 의미 분할(3채널 같음) 또는 파놉틱(3번째 채널) 영상."""
+    """분할 카메라 영상 흉내: 너트·볼트·계획 밖 라벨 99를 그린 의미 분할 또는 파놉틱 영상."""
     lab = np.zeros((h, w), np.uint8)
     lab[10:20, 10:40] = 13   # NUT_0 (짧은 변 10)
     lab[30:36, 50:75] = 7    # BOLT_B_0 (짧은 변 6)
@@ -152,10 +152,7 @@ PARTS = [
 
 @pytest.mark.parametrize("panoptic", [False, True])
 def test_labels_for_sample_polygons_and_manifest(panoptic, tmp_path):
-    """보이는 부품만 YOLO 다각형 라벨과 짧은 변·넓이 기록을 받고, 안 보이는 부품은 보이지 않음, 계획 밖 라벨은 따로 나온다.
-
-    만든 라벨은 `eval_size_recall.py`가 그대로 읽는다.
-    """
+    """보이는 부품만 YOLO 다각형 라벨·짧은 변·넓이를 받고, 계획 밖 라벨은 따로 나온다."""
     lines, infos, mode, unknown = cap.labels_for_sample(_seg(panoptic=panoptic), PARTS)
 
     assert mode == ("panoptic" if panoptic else "semantic") and unknown == [99]

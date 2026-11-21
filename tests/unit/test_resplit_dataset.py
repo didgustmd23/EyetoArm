@@ -1,7 +1,5 @@
-"""scripts/resplit_dataset.py 단위 시험 (A 상세설계 §12 데이터 분리 행, 사용자 확정 2026-11-12).
-
-합성 영상과 작은 COCO 주석으로 정답을 아는 입력을 만든다.
-"""
+"""`scripts/resplit_dataset.py` 단위 시험.
+합성 영상과 작은 COCO 주석으로 정답을 아는 입력을 만든다."""
 import hashlib
 import importlib.util
 import json
@@ -23,7 +21,7 @@ SIZE = 96
 
 
 def _pattern(seed):
-    """시드로 정한 8×8 무작위 회색 무늬를 SIZE×SIZE로 키운 BGR 영상(시드가 다르면 서로 닮지 않음)."""
+    """시드로 정한 8×8 무작위 회색 무늬를 SIZE×SIZE로 키운 BGR 영상."""
     rng = np.random.RandomState(seed)
     small = rng.randint(0, 256, (8, 8), dtype=np.uint8)
     img = cv2.resize(small, (SIZE, SIZE), interpolation=cv2.INTER_NEAREST)
@@ -36,14 +34,8 @@ def _name(stem, h):
 
 
 def _make_raw(root: Path):
-    """줄기 20개를 만든다.
-
-    정답:
-    - scene_a(train 원본 폴더, 사본 3장: 원본·좌우 뒤집기·90° 회전)
-    - scene_b(valid 폴더)는 scene_a와 거의 같은 영상(잡음 조금) → 같은 묶음이어야 함
-    - scene_c(test 폴더)는 scene_a의 좌우 뒤집기 + 잡음 → dihedral이면 같은 묶음
-    - 나머지 17개는 서로 다른 무늬
-    """
+    """줄기 20개를 만든다. scene_a는 사본 3장, scene_b는 scene_a + 잡음(같은 묶음),
+    scene_c는 scene_a 좌우 뒤집기 + 잡음(dihedral이면 같은 묶음), 나머지 17개는 서로 다른 무늬."""
     layout = {"train": [], "valid": [], "test": []}
     base_a = _pattern(1)
     rng = np.random.RandomState(99)
@@ -126,7 +118,7 @@ def _split_of(lists):
 
 
 def test_stem_and_family_rules():
-    """파일명에서 줄기를 떼고, 줄기의 숫자를 #로 바꾼 계열 키와 숫자 목록을 뽑는다(세 파일명 형식)."""
+    """파일명에서 줄기와, 숫자를 #로 바꾼 계열 키·숫자 목록을 뽑는다(세 파일명 형식)."""
     assert rd.stem_of("051_png_jpg.rf.43a3decdae13a68bec0369fd9fdf2932.jpg") == "051_png_jpg"
     assert rd.family_key("051_png_jpg") == ("#", (51,))
     assert rd.family_key("M6_frame_33_jpg") == ("M#_frame_#", (6, 33))
@@ -134,7 +126,7 @@ def test_stem_and_family_rules():
 
 
 def test_same_stem_copies_in_one_split(raw, tmp_path):
-    """같은 줄기의 사본은 모두 한 분할에만 들어가고, train 줄기는 사본을 빠짐없이 넣는다."""
+    """같은 줄기의 사본은 한 분할에만 들어가고 train 줄기는 사본을 빠짐없이 넣는다."""
     res = _run(raw, tmp_path / "out")
 
     for stem, splits in _split_of(res["lists"]).items():
@@ -149,7 +141,7 @@ def test_same_stem_copies_in_one_split(raw, tmp_path):
 
 
 def test_similar_images_grouped_together(raw, tmp_path):
-    """거의 같은 영상(잡음)과 좌우 뒤집힌 영상은 회전·뒤집기 고려 시 한 묶음·한 분할이 된다. 고려하지 않아도 잡음 사본은 묶인다."""
+    """잡음 사본과 좌우 뒤집힌 영상은 회전·뒤집기 고려 시 한 묶음·한 분할이 된다."""
     res = _run(raw, tmp_path / "out", dihedral=True)
     where = _split_of(res["lists"])
 
@@ -160,7 +152,7 @@ def test_similar_images_grouped_together(raw, tmp_path):
 
     assert group_of["scene_a_jpg"] == group_of["scene_b_jpg"] == group_of["scene_c_jpg"]
 
-    # 뒤집기를 고려하지 않으면 scene_c는 scene_a 원본과 직접 닮지 않았지만 scene_a의 뒤집힌 사본과 닮아 묶인다
+    # 뒤집기를 고려하지 않아도 scene_c는 scene_a의 뒤집힌 사본과 닮아 묶인다
     res_plain = _run(raw, tmp_path / "out_plain", dihedral=False)
     names = [s.stem for s in res_plain["stems"]]
 
@@ -170,7 +162,7 @@ def test_similar_images_grouped_together(raw, tmp_path):
 
 
 def test_valid_test_one_image_per_stem(raw, tmp_path):
-    """valid·test는 줄기마다 한 장만 넣고 비어 있지 않으며, 매니페스트의 영상 수와 줄기 수가 같다."""
+    """valid·test는 줄기마다 한 장만 넣고 비어 있지 않으며 매니페스트 영상 수 = 줄기 수다."""
     res = _run(raw, tmp_path / "out")
 
     for s in ("valid", "test"):
@@ -202,7 +194,7 @@ def test_raw_files_unchanged(raw, tmp_path):
 
 
 def test_no_cross_split_pair_above_threshold(raw, tmp_path):
-    """회전·뒤집기 고려 여부와 관계없이 서로 다른 분할 사이에 상관 0.95 이상인 영상 쌍이 없다."""
+    """회전·뒤집기 고려와 관계없이 분할 사이에 상관 0.95 이상인 영상 쌍이 없다."""
     thr = 0.95
 
     for dihedral in (True, False):
@@ -214,7 +206,7 @@ def test_no_cross_split_pair_above_threshold(raw, tmp_path):
 
 
 def test_manifest_records_sources(raw, tmp_path):
-    """매니페스트에 원본 주석 해시·시드·Stretch 주의가 기록되고, 목록은 정렬된 실제 원본 경로다."""
+    """매니페스트에 원본 주석 해시·시드·Stretch 주의가 기록되고 목록은 정렬된 원본 경로다."""
     res = _run(raw, tmp_path / "out")
     m = json.loads((tmp_path / "out" / "manifest.json").read_text(encoding="utf-8"))
 
@@ -236,7 +228,7 @@ def test_missing_annotation_raises(tmp_path):
 
 
 def test_adjacency_join_needs_family_rank_and_similarity():
-    """이웃 번호 결합은 같은 계열·번호 차이 `adj_k` 이내·상관 `adj_min_sim` 이상을 모두 만족할 때만 묶는다."""
+    """이웃 번호 결합은 같은 계열·번호 차이 `adj_k` 이내·상관 `adj_min_sim` 이상일 때만 묶는다."""
     # 줄기 3개(같은 계열 s#): s001–s002 상관 0.9(임계 0.95 미만), s001–s010 상관 0
     rng = np.random.RandomState(3)
     base = rng.randn(1024)
@@ -272,7 +264,7 @@ def test_adjacency_join_needs_family_rank_and_similarity():
 
 
 def test_annotation_short_px_rotated_rectangle():
-    """30° 돌린 30×10 px 다각형의 최소 외접 사각형 짧은 변은 10 px이고, RLE 주석은 None이다."""
+    """30° 돌린 30×10 px 다각형의 최소 외접 사각형 짧은 변은 10 px, RLE 주석은 None이다."""
     # 30×10 px 직사각형을 30° 돌린 다각형 → 최소 외접 사각형 짧은 변 10 px
     c, s = np.cos(np.pi / 6), np.sin(np.pi / 6)
     pts = [(-15, -5), (15, -5), (15, 5), (-15, 5)]
@@ -297,7 +289,7 @@ def _size_stems(n, small_idx):
 
 @pytest.mark.parametrize("seed", range(5))
 def test_size_balance_puts_small_objects_into_eval(seed):
-    """크기 균형 가중치를 주면 작은 너트 줄기 4개가 train 2·valid 1·test 1로 나뉘고, 줄기 비율 12/4/4는 그대로다(시드 0~4)."""
+    """크기 균형 가중치를 주면 작은 너트 줄기 4개가 2/1/1로 나뉘고 줄기 비율은 그대로다."""
     # 줄기 20개(각 한 묶음, 너트 1개). 작은 너트(8 px) 4개. 목표 60/20/20.
     stems = _size_stems(20, {0, 1, 2, 3})
     groups = [[i] for i in range(20)]
@@ -314,7 +306,7 @@ def test_size_balance_puts_small_objects_into_eval(seed):
 
 
 def test_size_balance_zero_weight_matches_v1_cost():
-    """크기 가중치가 0이면 작은 물체 유무가 달라도 배정이 같다(v1 비용과 같음)."""
+    """크기 가중치가 0이면 작은 물체 유무가 달라도 배정이 같다."""
     # w_size=0이면 크기 정보가 배정에 영향을 주지 않는다
     stems_a = _size_stems(20, {0, 1, 2, 3})
     stems_b = _size_stems(20, set())

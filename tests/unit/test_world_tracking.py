@@ -1,9 +1,6 @@
-"""#217 작업 좌표(W) 추적 시험: 추적기·입력 생성·추적 스레드(W1~W13, W15~W18, W10b).
+"""작업 좌표(W) 추적 시험: 추적기·입력 생성·추적 스레드.
 
-근거: 계획 `_workspace/217_builder2_world_tracking_plan_r0.md`·`_r1.md`(reviewer PASS, 사용자 승인 2026-11-20).
-- 합성 장면은 numpy로 만든다: 볼트 W 끝점(정답을 아는 입력)을 시험 카메라(`look_at`)로 픽셀에 투영해 AI 인스턴스 끝점으로 넣고,
-  `world_inputs`가 B와 같은 투영으로 W에 되올린다. 정답 위치는 단언에서만 쓴다(추적기 입력 아님).
-- #156 반례(픽셀 박스·점수만으로 신원이 옮겨 간 장면)는 같은 모양을 W(mm) 입력으로 옮긴 사례로 둔다(W5).
+합성 장면은 정답을 아는 볼트 W 끝점을 시험 카메라로 투영해 넣고, 정답 위치는 단언에서만 쓴다.
 """
 from __future__ import annotations
 
@@ -130,7 +127,7 @@ class ConfigTest(unittest.TestCase):
 
 
 class InputsTest(unittest.TestCase):
-    """W9: 입력 생성(투영·대상·사유)."""
+    """입력 생성(투영·대상·사유)."""
 
     def test_projection_matches_truth_and_reasons(self):
         """볼트 끝점 → W 중점이 정답 위치와 0.01 mm 안, 너트·끝점 없음·비대상·잘림 처리."""
@@ -162,7 +159,7 @@ class InputsTest(unittest.TestCase):
 
 
 def bolt_px_at(T, x_m, y_m, length_m, z_m, angle_deg=90.0):
-    """높이 z_m에 누운 W 볼트(중심·길이·축 각도) → 픽셀 끝점 (2, 2)(#250 P1 시험: 종류마다 축 높이가 다름)."""
+    """높이 z_m에 누운 W 볼트(중심·길이·축 각도) → 픽셀 끝점 (2, 2)."""
     a = math.radians(angle_deg)
     h = length_m / 2
     pts = np.array([[x_m - h * math.cos(a), y_m - h * math.sin(a), z_m], [x_m + h * math.cos(a), y_m + h * math.sin(a), z_m]])
@@ -170,15 +167,15 @@ def bolt_px_at(T, x_m, y_m, length_m, z_m, angle_deg=90.0):
     return w_to_image(pts, K, DIST, T)
 
 
-# B-12 예상 규격(#245 계획 r0 §2.2): BOLT_A M3×20 23 mm 축 높이 102 mm, BOLT_B M6×40 46 mm 105 mm. 마스크 기본 = B 「bolt」(BOLT_A 키)
+# B 규격: BOLT_A M3×20 23 mm 축 높이 102 mm, BOLT_B M6×40 46 mm 105 mm. 마스크 기본 = B 「bolt」
 SPLIT = BoltPlanes(default_z_m=0.102, specs=(("BOLT_A", 0.102, 0.023), ("BOLT_B", 0.105, 0.046)))
 
 
 class BoltPlanesTest(unittest.TestCase):
-    """#250 A-3 P1: W 투영 높이를 B 규격 종류별로 고른다."""
+    """W 투영 높이를 B 규격 종류별로 고른다."""
 
     def test_endpoint_bolts_use_their_spec_height(self):
-        """M3×20(102 mm 높이)·M6×40(105 mm)이 같이 있으면 각자 자기 종류 높이로 올라가 W 중심이 정답과 0.01 mm 안, 길이 23·46 mm."""
+        """M3×20·M6×40이 같이 있으면 각자 종류 높이로 올라가 W 중심이 정답과 0.01 mm 안, 길이 23·46 mm."""
         T = cam((0.0, 0.0, 0.5))
         insts = [instance(0, axis_endpoints_px=bolt_px_at(T, 0.50, 0.03, 0.023, 0.102)),
                  instance(1, axis_endpoints_px=bolt_px_at(T, 0.55, -0.04, 0.046, 0.105, 30.0))]
@@ -189,7 +186,7 @@ class BoltPlanesTest(unittest.TestCase):
         self.assertAlmostEqual(inp[0].length_mm, 23.0, places=2)
         self.assertAlmostEqual(inp[1].length_mm, 46.0, places=2)
 
-        # 대조: 높이 하나(105 mm)로 올리면 M3×20 중심이 1 mm 넘게 밀린다(P1이 고치는 차이)
+        # 대조: 높이 하나(105 mm)로 올리면 M3×20 중심이 1 mm 넘게 밀린다
         one = world_inputs(seg_result(insts[:1], crop_wh=(1280, 720)), K=K, dist=DIST, T_W_C=T, plane_z_m=0.105)[0]
         self.assertGreater(math.dist(one.center_mm, (500.0, 30.0)), 1.0)
 
@@ -206,7 +203,7 @@ class BoltPlanesTest(unittest.TestCase):
         self.assertEqual([x.plane_spec for x in a], [None, None])
 
     def test_mask_input_uses_default_height(self):
-        """끝점 없는 볼트의 마스크 입력(#226)은 길이가 없어 기본 높이(B 「bolt」)로 올린다."""
+        """끝점 없는 볼트의 마스크 입력은 길이가 없어 기본 높이(B 「bolt」)로 올린다."""
         T = cam((0.0, 0.0, 0.5))
         poly = np.array([[600.0, 340.0], [640.0, 340.0], [640.0, 352.0], [600.0, 352.0]])
         inst = instance(0, axis_reason="AXIS_HEAD_AMBIGUOUS", polygon=poly, box_xyxy=(600.0, 340.0, 640.0, 352.0), area_px=480.0)
@@ -224,7 +221,7 @@ class BoltPlanesTest(unittest.TestCase):
 
 
 class TrackerTest(unittest.TestCase):
-    """W1~W7·W10b·W13."""
+    """추적기 시나리오."""
 
     def make(self, **over):
         """추적기(새 발급기)."""
@@ -238,7 +235,7 @@ class TrackerTest(unittest.TestCase):
         return [self.tr.update(key(start + i, generation), (start + i) * DT_MS, f) for i, f in enumerate(frames)]
 
     def test_w1_camera_moves_world_fixed(self):
-        """W1: 카메라(팔)만 크게 움직이고 볼트 W 위치는 고정 → 번호 유지, 점프 의심 없음(픽셀은 100 px 넘게 이동)."""
+        """카메라만 크게 움직이고 볼트 W 위치는 고정 → 번호 유지, 점프 의심 없음."""
         self.make()
         out, px = [], []
 
@@ -268,7 +265,7 @@ class TrackerTest(unittest.TestCase):
         self.assertGreater(len({s for s in seen[2:] if s is not None}) + seen[2:].count(None), 1)
 
     def test_w2_belt_motion_both_directions(self):
-        """W2: 벨트 +Y·−Y 일정 속도(0.2 m/s, 2.2 m/s) → 번호 유지, 추정 Y 속도가 실제와 5 % 안."""
+        """벨트 +Y·−Y 일정 속도 → 번호 유지, 추정 Y 속도가 실제와 5 % 안."""
         for v_mps in (0.2, -0.2, 2.2):
             with self.subTest(v=v_mps):
                 self.make()
@@ -281,7 +278,7 @@ class TrackerTest(unittest.TestCase):
                 self.assertAlmostEqual(self.tr.last_belt_vy, v_mps, delta=abs(v_mps) * 0.05)
 
     def test_w3_duplicate_merge_and_parallel_pair(self):
-        """W3: 같은 볼트 이중 검출(끝점 1 mm) → 합쳐 번호 1개, 나란히 붙은 두 볼트(6 mm) → 합치지 않고 번호 2개."""
+        """같은 볼트 이중 검출은 번호 1개로 합치고, 나란히 붙은 두 볼트(6 mm)는 번호 2개."""
         self.make()
         dup = [[winp(0, 500.0, 0.0, conf=0.9), winp(1, 501.0, 0.5, conf=0.6)] for _ in range(6)]
         out = self.run_frames(dup)
@@ -296,7 +293,7 @@ class TrackerTest(unittest.TestCase):
         self.assertTrue(all(a.reason != "duplicate_merged" for f in out for a in f.assignments))
 
     def test_w4_close_pair_no_swap(self):
-        """W4: 가까운 두 볼트(같은 크기·방향)가 같이 움직임 → 번호가 서로 바뀌는 일 0(모호면 None)."""
+        """가까운 두 볼트가 같이 움직여도 번호가 서로 바뀌는 일 0(모호면 None)."""
         for gap in (6.0, 12.0, 25.0):
             with self.subTest(gap=gap):
                 self.make()
@@ -312,7 +309,7 @@ class TrackerTest(unittest.TestCase):
                 self.assertTrue(all(len(v) == 1 for v in owner.values()), owner)
 
     def test_w5_156_counterexamples_in_world(self):
-        """W5: #156 반례 모양(늦은 등장 dx·점수 반전·예측 경로 가로채기·중복)을 W로 옮기면 신원 이동 0."""
+        """픽셀 반례 모양(늦은 등장·점수 반전·경로 가로채기·중복)을 W로 옮기면 신원 이동 0."""
         def late(dx, flip):
             frames = []
 
@@ -345,7 +342,7 @@ class TrackerTest(unittest.TestCase):
                 self.assertTrue(all(len(v) == 1 for v in owner.values()), (name, owner))
 
     def test_w7_world_jump(self):
-        """W7: 확정 트랙 둘이 W에서 같은 방향으로 40 mm 함께 튐 → world_jump_suspected·전 종료(이전 번호 안 붙음)."""
+        """확정 트랙 둘이 W에서 함께 40 mm 튐 → world_jump_suspected·전 종료(이전 번호 안 붙음)."""
         self.make()
         out = self.run_frames([[winp(0, 500.0, 0.0), winp(1, 560.0, 30.0)] for _ in range(4)])
         before = set(ids_of(out[-1]).values())
@@ -354,7 +351,7 @@ class TrackerTest(unittest.TestCase):
         self.assertFalse(set(ids_of(jump).values()) & before)
 
     def test_w10b_max_belt_speed_is_gate_only(self):
-        """W10b(Q4): max_belt_speed_mps만 바꾸면 예측 위치는 같고(게이트만 다름), 느린 벨트 장면 결과도 같다."""
+        """max_belt_speed_mps만 바꾸면 예측 위치는 같고(게이트만 다름) 느린 벨트 결과도 같다."""
         frames = [[winp(0, 500.0, 13.2 * k)] for k in range(10)]
         results = []
 
@@ -368,7 +365,7 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(results[1], results[2])
 
     def test_belt_stop_signal_predicts_zero(self):
-        """W11(자리): 정지 신호(belt_running=False)면 예측 속도 0·공통 속도 0."""
+        """정지 신호(belt_running=False)면 예측 속도 0·공통 속도 0."""
         self.make()
         self.run_frames([[winp(0, 500.0, 13.2 * k)] for k in range(5)])
         t = self.tr._tracks[0]
@@ -376,7 +373,7 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(self.tr._belt_vy(False), 0.0)
 
     def test_w13_reset_and_generation(self):
-        """W13: reset·세대 변경 → 전 종료, 이전 번호 재사용 0(발급기 단조)."""
+        """reset·세대 변경 → 전 종료, 이전 번호 재사용 0(발급기 단조)."""
         self.make()
         a = self.run_frames([[winp(0, 500.0, 0.0)] for _ in range(4)])
         first = ids_of(a[-1])[0]
@@ -390,7 +387,7 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(self.tr.update(key(20, generation=0), 20 * DT_MS, [winp(0, 500.0, 0.0)]).updated, False)
 
     def test_w8_pixel_tracker_unchanged(self):
-        """W8: PartTracker는 WORLD 모드를 받지 않는다(픽셀 동작 무변), WorldTracker 결과의 mode는 WORLD."""
+        """PartTracker는 WORLD 모드를 받지 않고, WorldTracker 결과의 mode는 WORLD."""
         with self.assertRaises(TrackingContractError):
             PartTracker(PartTrackIdIssuer(), mode=TrackMode.WORLD)
 
@@ -398,7 +395,7 @@ class TrackerTest(unittest.TestCase):
         self.assertIs(self.run_frames([[winp(0, 500.0, 0.0)]])[0].mode, TrackMode.WORLD)
 
 
-# ---------------------------------------------------------------------- 추적 스레드(W6·W12·W15~W18)
+# ---------------------------------------------------------------------- 추적 스레드
 
 class FakeLookup:
     """촬영 stamp TF 대역: 상태·지연 주입, 호출 스레드 기록."""
@@ -441,7 +438,7 @@ def live_cfg(**over):
 
 
 class LiveBase(unittest.TestCase):
-    """추적 스레드 시험 도우미(시험 메서드 없음, #226 시험이 재사용)."""
+    """추적 스레드 시험 도우미(시험 메서드 없음, 다른 시험이 재사용)."""
 
     def make(self, lookup=None, **over):
         """스레드 시작(정리 등록)."""
@@ -459,7 +456,7 @@ class LiveBase(unittest.TestCase):
         return self.lw
 
     def _close_quietly(self):
-        """정리: 비정상 종료 시험은 close가 RuntimeError를 내므로 여기서는 삼킨다(시험 본문이 이미 단언함)."""
+        """정리: 비정상 종료 시험의 close RuntimeError는 본문이 이미 단언했으므로 삼킨다."""
         try:
             self.lw.close(2.0)
         except RuntimeError:
@@ -492,11 +489,11 @@ class LiveThreadTest(LiveBase):
         self.assertIsNotNone(ids_of(got[-1])[0])
         self.assertEqual(self.lookup.threads, {"eyetoarm-live-world-tracking"})
         recs = self.records()
-        self.assertEqual([r["kind"] for r in recs], ["frame"] * 5 + ["closed"])   # #226 D3: 닫힐 때 종료 사건 1줄
+        self.assertEqual([r["kind"] for r in recs], ["frame"] * 5 + ["closed"])   # 닫힐 때 종료 사건 1줄
         self.assertIn("center_mm", recs[-2]["tracks"][0])
 
     def test_w6_tf_missing_not_updated(self):
-        """W6: TF 없음·늦음 → 갱신 안 함(사유 결과), 추적기 갱신 0(픽셀·최신 TF 대체 없음)."""
+        """TF 없음·늦음 → 갱신 안 함(사유 결과), 추적기 갱신 0(픽셀·최신 TF 대체 없음)."""
         for status in ("unavailable", "late", "stamp_mismatch"):
             with self.subTest(status=status):
                 lw = self.make(FakeLookup(status=status))
@@ -506,7 +503,7 @@ class LiveThreadTest(LiveBase):
                 lw.close(2.0)
 
     def test_w12_queue_full_and_handoff_timeout(self):
-        """W12: 넣기는 기다리지 않음, 가득이면 새 것을 버림(dropped_full), 넘김 상한 초과는 None(track_pending)."""
+        """넣기는 기다리지 않음, 가득이면 새 것을 버림(dropped_full), 넘김 상한 초과는 None."""
         lw = self.make(FakeLookup(sleep_s=0.2), queue_capacity=2, handoff_wait_s=0.01)
         t0 = time.monotonic()
         results = [self.offer(i) for i in range(6)]
@@ -518,7 +515,7 @@ class LiveThreadTest(LiveBase):
         self.assertEqual(s["counts"]["handoff_pending"], 1)
 
     def test_w13_request_reset(self):
-        """W13: 초기화 요청 → 다음 항목 전에 전 종료, 이후 번호는 새로 발급(재사용 0)."""
+        """초기화 요청 → 다음 항목 전에 전 종료, 이후 번호는 새로 발급(재사용 0)."""
         lw = self.make()
 
         for i in range(4):
@@ -537,7 +534,7 @@ class LiveThreadTest(LiveBase):
         self.assertEqual(lw._tracker.stats()["resets"].get("run_end:x"), 1)
 
     def test_w15_w16_lag_reset_and_cooldown(self):
-        """W15·W16: 추적 스레드가 느리면 밀림 연속 뒤 초기화 1회(최신 1개만 남김), 쿨다운 안에서는 다시 하지 않음."""
+        """추적 스레드가 느리면 밀림 연속 뒤 초기화 1회(최신 1개만 남김), 쿨다운 안에서는 안 함."""
         lw = self.make(FakeLookup(sleep_s=0.03), queue_capacity=40, lag_limit_ms=50.0, lag_persist_n=3,
                        lag_cooldown_ms=60_000.0)
 
@@ -560,7 +557,7 @@ class LiveThreadTest(LiveBase):
         self.assertEqual(c["offered"], c["processed"] + c["dropped_full"] + c["stale_skipped"] + c["queue_left"])
 
     def test_w17_metrics_present(self):
-        """W17: 요약 지연 지표가 모두 있고 계수 합이 맞다."""
+        """요약 지연 지표가 모두 있고 계수 합이 맞다."""
         lw = self.make()
 
         for i in range(5):
@@ -578,7 +575,7 @@ class LiveThreadTest(LiveBase):
         self.assertEqual(c["offered"], c["processed"] + c["dropped_full"] + c["stale_skipped"] + c["queue_left"])
 
     def test_w18_normal_speed_no_reset(self):
-        """W18: 정상 속도면 초기화 0, 넘김 대기 실패 0."""
+        """정상 속도면 초기화 0, 넘김 대기 실패 0."""
         lw = self.make()
 
         for i in range(25):

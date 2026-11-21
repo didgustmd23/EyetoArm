@@ -1,10 +1,7 @@
-"""A-6 1차 인스턴스 추적 순수 상태기(#151 S1) 시험 — 발급기·TrackFrame·연결·모호성·경계 입력·유한 자원·M1/M2 메커니즘.
+"""1차 인스턴스 추적 순수 상태기 시험: 발급기·TrackFrame·연결·모호성·경계 입력·유한 자원·M1/M2.
 
-근거: `_workspace/150_builder2_part_track_id_plan.md` r2 §2·§3(ID 규약·모드)·§3.5(발급기)·§3.6(M1/M2 보장 범위)·§4(갱신 규칙)·§6·§7 S1,
-reviewer 구현 명세 #151 §1(D1~D11)·§2. 가짜 검출 입력만 쓴다(ROS·GPU·모델 없음).
-
-**이 시험은 메커니즘 시험이다.** 통과 수를 추적 성능·신원 정확도로 해석하지 않는다. M2 휴리스틱의 미탐·오탐 사례는 「보장하지 않음」을
-기대값으로 고정한 것이다.
+가짜 검출 입력만 쓴다. 메커니즘 시험이며 통과 수를 추적 성능·신원 정확도로 해석하지 않는다.
+M2 휴리스틱의 미탐·오탐 사례는 「보장하지 않음」을 기대값으로 고정한 것이다.
 """
 import dataclasses
 import gc
@@ -64,7 +61,7 @@ class Base(unittest.TestCase):
 
 
 class IssuerTest(Base):
-    """발급기(§3.5, D11)."""
+    """발급기."""
 
     def test_monotonic_positive_and_namespace(self):
         """번호는 1부터 단조 증가, namespace는 지정값 그대로, 기본 namespace는 발급기마다 다르다."""
@@ -87,7 +84,7 @@ class IssuerTest(Base):
                     PartTrackIdIssuer(namespace=bad)
 
     def test_tracker_requires_issuer(self):
-        """D11: 발급기 없이 추적기를 만들면 계약 오류(몰래 만들거나 꺼짐으로 바꾸지 않음)."""
+        """발급기 없이 추적기를 만들면 계약 오류(몰래 만들거나 꺼짐으로 바꾸지 않음)."""
         for bad in (None, object(), "ns"):
             with self.subTest(bad=bad):
                 with self.assertRaises(TrackingContractError):
@@ -263,7 +260,7 @@ class AmbiguityTest(Base):
 
 
 class CleanHitTest(Base):
-    """S1 r1 F1: 확정 근거는 잘리지 않은 **연속** hit뿐이다(잘림 hit는 유지만 하고 연속을 끊는다)."""
+    """확정 근거는 잘리지 않은 **연속** hit뿐이다(잘림 hit는 유지만 하고 연속을 끊는다)."""
 
     def m1(self):
         """M1 추적기(정지 신호 True)."""
@@ -309,7 +306,7 @@ class CleanHitTest(Base):
 
 
 class EpochTest(Base):
-    """S1 r1 F2: 트랙이 있던 전체 종료마다 새 epoch, 트랙이 없는 반복 종료는 epoch를 올리지 않는다."""
+    """트랙이 있던 전체 종료마다 새 epoch, 트랙이 없는 반복 종료는 epoch를 올리지 않는다."""
 
     def confirm(self, tracker, **kw):
         """한 물체를 확정."""
@@ -443,7 +440,7 @@ class CameraModeTest(Base):
 
 
 class UpdateRuleTest(Base):
-    """두 번 갱신 금지·세대·범위(§4.1)."""
+    """두 번 갱신 금지·세대·범위."""
 
     def test_same_frame_reprocess_not_updated(self):
         """같은 프레임(같은 시각) 재입력은 갱신하지 않고 전부 untracked(not_updated: stale_frame), 상태 무변."""
@@ -487,7 +484,7 @@ class UpdateRuleTest(Base):
                 epoch = self.tracker.tracker_epoch
 
     def test_explicit_reset_and_disable(self):
-        """reset(사유): 전 트랙 종료·epoch 증가·사유 계수. disable: 이후 모든 프레임 untracked(tracking_disabled), 이전 번호가 남지 않음."""
+        """reset: 전 트랙 종료·epoch 증가·사유 계수. disable: 이후 untracked, 이전 번호 없음."""
         for k in range(3):
             self.step([det(0, 100 + 10 * k, 50)])
 
@@ -504,7 +501,7 @@ class UpdateRuleTest(Base):
 
 
 class IssuerSharingTest(Base):
-    """발급기 공유·재생성(P3)."""
+    """발급기 공유·재생성."""
 
     def run_confirmed(self, tracker, n=1, y=50):
         """n개 물체를 그 추적기로 확정하고 번호 집합을 돌려준다."""
@@ -582,7 +579,7 @@ class InputValidationTest(Base):
 
 
 class ResourceTest(Base):
-    """유한 자원·참조(§6)."""
+    """유한 자원·참조."""
 
     def test_capacity(self):
         """active+lost 상한 초과: 새 후보는 untracked(track_capacity), 상한 유지."""
@@ -626,7 +623,7 @@ class ResourceTest(Base):
 
 
 class FromAiTest(Base):
-    """AiSegResult → 후보 변환(D8): 원래 검출·거부를 바꾸지 않는다."""
+    """AiSegResult → 후보 변환: 원래 검출·거부를 바꾸지 않는다."""
 
     def test_candidate_rules_and_untracked_reasons(self):
         """in_scope·기하 정상만 후보. 비대상·저점수·기하 거부는 untracked 사유, 잘림은 후보(clipped)."""

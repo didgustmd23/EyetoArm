@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
-"""검수 train 후보(#137 r2) + 기존 v2 val/test로 학습용 데이터 구성(clean_train_r1)을 만든다.
+"""검수 train 후보와 기존 v2 val/test로 학습용 데이터 구성(clean_train_r1)을 만든다.
 
-- train: #137 r2 최종 목록(final_usable_list.csv) 1420장만 연결한다. 영상은 raw 원본, 라벨은 bolt_nut_v2 train 라벨에 링크한다.
-- val/test: bolt_nut_v2의 val/test 영상·라벨을 그대로 링크한다(재분할·라벨 수정 없음, 기존 미보정 평가 분할).
-- 분할 목록(data/splits/clean_train_r1/)은 resplit_v2와 같은 형식(data/raw 기준 상대 경로)이다. valid.txt·test.txt는
-  resplit_v2 파일과 내용이 같아야 한다.
-- 원본(raw)·v2·조사 근거 파일은 읽기만 한다. 출력 폴더가 이미 있으면 덮어쓰지 않고 종료 2로 끝난다.
-- 줄기('.rf.' 앞)·파일 sha256이 분할을 가로지르면 재분할하지 않고 manifest와 종료 코드 3으로 보고한다.
-
+원본은 읽기만 하고, 출력 폴더가 이미 있으면 덮어쓰지 않는다. 분할 누수가 있으면 생성하지 않는다.
 사용(저장소 루트): python3 scripts/prepare_clean_train_r1.py [--check-only]
-종료 코드: 0 생성 완료(또는 --check-only 검사 통과), 2 입력·출력 오류, 3 분할 누수 발견(생성하지 않음).
+종료 코드: 0 생성 완료(또는 검사 통과), 2 입력·출력 오류, 3 분할 누수 발견.
 """
 from __future__ import annotations
 
@@ -65,7 +59,7 @@ def raw_rel(v2_split: str, name: str) -> str:
 
 
 def excluded_images() -> dict:
-    """사용 목록에 들어가면 안 되는 영상: 원장 후보 중 통과 아닌 행(강등·보류), 비후보, 비-desk 앵커 중 사용가능 아닌 것."""
+    """사용 목록에 들어가면 안 되는 영상(통과 아닌 후보 행, 비후보, 사용가능 아닌 비-desk 앵커)."""
     out = {}
 
     for r in csv.DictReader(open(p(LEDGER_CSV), encoding="utf-8")):

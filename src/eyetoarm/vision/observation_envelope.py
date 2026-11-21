@@ -1,24 +1,7 @@
-"""A→B 입력 봉투(`ObservationEnvelope`, #168): 프레임·관측·촬영 메타·촬영 시각 TF·상관 키를 한 묶음으로, 버전을 명시해 넘긴다.
+"""A→B 입력 봉투(`ObservationEnvelope`): 프레임·관측·촬영 메타·촬영 시각 TF·상관 키를 버전을 명시해 한 묶음으로 넘긴다.
 
-근거: `_workspace/168_a_to_b_real_path_implementation_spec.md` 「전달 자료의 확장성」, A-8 끝점 계약(`PlanarObservation.axis_endpoints_px`),
-`transforms/b_stage.py`(`BStage.consume(frame, obs)`, `correlation_keys`, TF 50 ms).
-
-규칙
-- 봉투 형식 이름은 `OBSERVATION_ENVELOPE_VERSION`이다. 다른 버전은 받지 않는다(`ObservationEnvelopeError`).
-- 필수 필드: 원본 `FramePacket`(영상 포함), `PlanarObservation`, `CaptureInfo`(촬영 시각·광학 프레임·보정 번호·CameraInfo 해상도),
-  `CaptureTf` 또는 None(그 촬영 시각 TF가 없으면 None, B는 TF_UNAVAILABLE), 상관 키(`correlation_keys`로 계산해 고정).
-  끝점은 관측 안에 그대로 둔다(봉투가 복사·변형하지 않음).
-- 생성 때 서로 묶인 값을 모두 대조한다: 관측 ↔ 프레임 식별자·보정 번호, 프레임 ↔ 촬영 정보(시각·광학 프레임·크기·보정 번호),
-  카메라 프로파일 ↔ 촬영 정보, TF ↔ 촬영 시각·광학 프레임, 4×4 강체. 어긋나면 `ObservationEnvelopeError`(조용히 고치지 않음).
-- 확장 필드(`extensions`): 이름 있는 선택 항목이다.
-  - `SUPPORTED_EXTENSIONS`의 이름은 형식·좌표 기준·프레임/작업 결합을 검사해 `extensions`에 정규화해 담는다. 잘못된 형식은 `ObservationEnvelopeError`.
-  - 모르는 이름은 **내용을 JSON 정규 문자열로 그대로 보존**해 `unsupported`에 담는다(JSON으로 표현할 수 없으면 `ObservationEnvelopeError`).
-    의미를 해석하지 않으며 핵심 입력으로 승격하지 않는다. 볼트 끝점 경로는 그대로 평가된다.
-  - 봉투 전체(확장·미지원 포함)는 B 입구 어댑터(`transforms/observation_envelope_adapter.ObservationEnvelopeAdapter`)까지 간다. 어댑터는 확장을 받아
-    결과에 함께 돌려주지만 **B 계산(`BStage.consume`)에는 frame·관측만 쓴다**(의미·정확도·소유권 합의 뒤 소비).
-  - 지금 A는 확장 필드를 만들지 않는다(생산은 담당·계약이 정해진 항목부터, 명세).
-- 직렬화: `to_record()`는 JSON 안전한 기록(영상은 지문·모양만, 확장 값 포함)이다. pickle·ROS 메시지 직렬화를 쓰지 않는다.
-- ROS·Qt를 import하지 않는다.
+생성 때 서로 묶인 값을 모두 대조하고 어긋나면 `ObservationEnvelopeError`(조용히 고치지 않음). 모르는 확장은 JSON 정규
+문자열로 보존만 하고 해석하지 않는다. pickle·ROS 직렬화를 쓰지 않고 ROS·Qt를 import하지 않는다.
 """
 from __future__ import annotations
 
@@ -37,7 +20,7 @@ from eyetoarm.transforms.b_stage import correlation_keys
 
 OBSERVATION_ENVELOPE_VERSION = "eyetoarm.b_input/1"
 
-# 확장 필드 정의(이름 → 설명). 계약 전 후보이며 지금 A가 생산하지 않는다. B는 소비하지 않는다
+# 확장 필드 정의(이름 → 설명). A가 생산하지 않고 B가 소비하지 않는 후보다
 SUPPORTED_EXTENSIONS = MappingProxyType({
     "ai_instances": "AI 인스턴스 목록(index·class_name·confidence·rejected·polygon_px RAW): 다중 검출·polygon 후보",
     "tracking": "추적 정보(part_track_id 정수 또는 None): A-6 실험 표시 필드, 중복 집기 방지 보증 아님",
@@ -48,7 +31,7 @@ class ObservationEnvelopeError(ValueError):
     """봉투 필수 필드·버전·결합·확장 형식 오류. B를 부르지 않고 기록한다."""
 
 
-# `CaptureInfo`·`CaptureTf`는 #189에서 공통형(`common/types`)으로 옮겼다. 같은 클래스를 이 모듈에서도 그대로 내보낸다
+# 공통형 `CaptureInfo`·`CaptureTf`를 이 모듈에서도 그대로 내보낸다
 
 
 @dataclass(frozen=True)
@@ -96,7 +79,7 @@ def _jsonable(value):
 
 
 def _wrapped(check, *args):
-    """공통형 검사 함수(`ValueError`)를 같은 메시지의 `ObservationEnvelopeError`로 바꿔 부른다(#189: 검사 규칙은 한 곳)."""
+    """공통형 검사 함수의 `ValueError`를 같은 메시지의 `ObservationEnvelopeError`로 바꿔 부른다."""
     try:
         return check(*args)
     except ObservationEnvelopeError:
@@ -111,12 +94,12 @@ def _int(value, where: str) -> int:
 
 
 def _real(value, where: str) -> float:
-    """유한 실수 하나(#168 F3). bool·문자열·복소수·None·그 밖의 형은 거부, float 변환 넘침(거대 정수)·비유한도 ObservationEnvelopeError."""
+    """유한 실수 하나. bool·문자열·복소수·None·넘침·비유한은 ObservationEnvelopeError."""
     return _wrapped(_common.real_number, value, where)
 
 
 def _real_array(value, where: str) -> np.ndarray:
-    """실수 배열(float64 새 복사본). ndarray는 정수·실수 dtype만, 목록·튜플은 원소마다 검사한다(조용한 형 변환 없음)."""
+    """실수 배열(float64 새 복사본). 조용한 형 변환 없이 dtype·원소를 검사한다."""
     return _wrapped(_common.real_array, value, where)
 
 
@@ -179,7 +162,7 @@ def _check_binding(value: dict, obs: PlanarObservation, capture: CaptureInfo, wh
 
 
 def _ext_ai_instances(value, obs, capture, frame) -> dict:
-    """`ai_instances`: {binding, pixel_basis, items:[{index, class_name, confidence, rejected, polygon_px|None}]}."""
+    """`ai_instances` 확장 검사(binding·pixel_basis·items 목록, 항목 polygon_px는 None 허용)."""
     if not isinstance(value, dict) or set(value) != {"binding", "pixel_basis", "items"}:
         raise ObservationEnvelopeError("ai_instances must have binding/pixel_basis/items")
 

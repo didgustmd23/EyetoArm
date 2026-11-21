@@ -1,15 +1,7 @@
-"""detect 영상 W 번호 표시 보완(#242): 같은 작업의 W 결과가 아직 없을 때 직전 W 결과의 확정 번호를 위치로 짝지어 **화면에만** 그린다.
+"""detect 영상 W 번호 표시 보완: 같은 작업의 W 결과가 아직 없을 때 직전 W 결과의 확정 번호를 위치로 짝지어 화면에만 그린다.
 
-근거: 지시 `_workspace/242_reviewer_instruction_w_display_prev.md`(A 결정 「권장으로 수정」, #240 F1: 같은 작업 조회 성공 0.8~3.8 %).
-
-- **화면 전용:** 여기서 만든 표시용 `TrackFrame`은 `annotate`에서만 쓴다. C 목표·B 중복 방지·`require_track_id` 판정은 지금처럼
-  그 프레임의 W 결과(`LiveWorldTracking.wait`)만 쓴다. 기다림을 넣지 않고 W 추적 판정·밀림 계수도 바꾸지 않는다.
-- **직전 결과(`PrevSnapshot`):** 추적 스레드가 갱신한(`updated`) W 결과마다 **확정 번호 인스턴스의 표시용 박스(원본 픽셀)**를 함께 둔다
-  (추적 판정에는 쓰지 않음). 추적기 재설정(요청·밀림)을 처리하면 지운다.
-- **쓸 조건:** 같은 실행·소스·검출 설정·촬영 세대·코어 세대, 처리 안 된 재설정 요청 없음, `0 < 이번 촬영 시각 − 직전 촬영 시각 ≤ max_age_ms`.
-- **짝짓기(인스턴스 순서가 아니라 위치):** 직전 확정 박스 × 이번 대상 인스턴스(`in_scope`, 같은 클래스) IoU. 서로 1위이고, IoU ≥ `min_iou`,
-  양쪽 모두 2위와의 차 ≥ `ambiguity_margin`일 때만 1:1로 붙인다. 겹침 없음·모호·조건 불만족은 번호를 그리지 않는다.
-- ROS·Qt를 import하지 않는다.
+C 목표·B 중복 방지 판정은 그 프레임의 W 결과만 쓰며, 기다림을 넣지 않는다. 짝짓기는 박스 IoU가 서로 1위이고
+`min_iou`·`ambiguity_margin`을 넘을 때만 1:1로 붙인다. ROS·Qt를 import하지 않는다.
 """
 from __future__ import annotations
 
@@ -80,7 +72,7 @@ class PrevSnapshot:
 
 @dataclass(frozen=True)
 class PrevDisplay:
-    """직전 결과로 만든 표시 전용 판정. `tracks`는 **이번 작업** 인스턴스와 1:1(`mode=WORLD`), 짝 없는 인스턴스는 untracked."""
+    """직전 결과로 만든 표시 전용 판정. `tracks`는 이번 작업 인스턴스와 1:1, 짝 없는 인스턴스는 untracked."""
 
     tracks: TrackFrame
     prev_image_seq: int
@@ -89,7 +81,7 @@ class PrevDisplay:
 
 
 def snapshot(tracks: TrackFrame, display) -> PrevSnapshot | None:
-    """추적 스레드: 갱신한 W 결과 + 그 프레임 AI 표시 결과 → 표시용 사본(확정 번호만). 갱신 안 한 결과는 None."""
+    """추적 스레드: 갱신한 W 결과 + 그 프레임 AI 표시 결과 → 표시용 사본(확정 번호만). 미갱신은 None."""
     if not tracks.updated:
         return None
 
@@ -126,10 +118,9 @@ def _second(values: list[float], best: int) -> float:
 
 def match_prev(prev: PrevSnapshot | None, context, display, config: DisplayPrevConfig, *,
                reset_pending: bool) -> tuple[PrevDisplay | None, str]:
-    """직전 사본을 이번 작업(`context`: frame·generation·job_seq·detector_config_id, `display`: AI 결과)에 짝짓는다.
+    """직전 사본을 이번 작업(`context`, AI 결과 `display`)에 짝짓는다. (표시 판정 | None, 사유).
 
-    (표시 판정 | None, 사유). 사유: `prev` | `no_prev` | `reset_pending` | `scope_changed` | `generation_changed` | `not_older` |
-    `too_old` | `no_confirmed` | `no_match`.
+    같은 실행·소스·설정·세대이고 `0 < 촬영 시각 차 ≤ max_age_ms`일 때만 쓴다.
     """
     if prev is None:
         return None, "no_prev"

@@ -1,7 +1,4 @@
-"""#251 A-1 시험 handoff 격리: 시험 기본 연결부는 송신하지 않고, 실제 연결부 확인은 빈 포트로만 한다.
-
-근거: #249 D-1·D-8(전체 pytest가 운영 47093으로 detect 380장). C 파일 `c_handoff_probe.py`는 바꾸지 않는다.
-"""
+"""시험 handoff 격리: 시험 기본 연결부는 송신하지 않고, 실제 연결부 확인은 빈 포트로만 한다."""
 from __future__ import annotations
 
 import importlib.util

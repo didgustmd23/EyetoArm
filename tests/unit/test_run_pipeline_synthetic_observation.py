@@ -1,11 +1,7 @@
-"""`run_pipeline.py` 저장 입력 시험 B 연결(#166, synthetic/test-only) 시험.
+"""`run_pipeline.py` 저장 입력 시험 B 연결(synthetic/test-only) 시험.
 
-근거: `_workspace/166_a_b_pipeline_connection_spec.md` §6 필수 시험 1~9, B 협업 요청 §8.2 A-7·A-8, A 상세설계 D13.
-
-- 모든 시험은 CLI `main()`을 부른다(실제 저장 이미지 → 실행기 `run()` → 코어 → `b_gate` → `BStage.consume`). B를 직접 부르지 않는다.
-- fixture 끝점·너트 윗면 테두리는 알려진 기하(총길이 46 mm 볼트, r 5 mm 너트 윗면)를 고정 카메라 자세로 투영한 **합성 값**이다.
-  실제 RGB 검출·끝점 추출·mm 정확도의 증거가 아니다. ROS·Qt·GPU·모델을 쓰지 않는다.
-- `b_gate` 경유 증거: 실행기 모듈의 `b_gate`를 감싸 호출·통과 수를 센다. C 송신 증거: `make_c_handoff`·`SortPartClient`를 감시한다.
+모든 시험은 CLI `main()`부터 돌고 B를 직접 부르지 않는다. fixture 끝점·너트 테두리는 알려진 기하를
+고정 자세로 투영한 합성 값이라 실제 검출·mm 정확도의 증거가 아니다. ROS·Qt·GPU·모델 없음.
 """
 import copy
 import hashlib
@@ -42,7 +38,7 @@ AI_CFG = ROOT / "config" / "vision" / "ai_s1_01_live.json"
 # 시험 카메라·자세: test_b_transforms와 같은 값(1280×720, 수평 화각 1 rad, 고정 자세)
 CAM = from_fov(1280, 720, 1.0, "link_cam_optical_frame")
 T_W_C = look_at((0.30, -0.08, 0.40), (0.56, -0.07, 0.10))
-BOLT_Z, NUT_Z = 0.105, 0.1057   # B 선택 2026-11-17: 볼트 축 105.0 mm, 너트 윗면 105.7 mm
+BOLT_Z, NUT_Z = 0.105, 0.1057   # B 규격: 볼트 축 105.0 mm, 너트 윗면 105.7 mm
 RUN_ID = "b166-test-run"
 OPENCV_ID = load_config(OPENCV_CFG).config_sha256
 AI_ID = load_ai_config(AI_CFG).config_sha256
@@ -243,10 +239,10 @@ class SyntheticObservationBase(unittest.TestCase):
 
 
 class DefaultRegressionTest(SyntheticObservationBase):
-    """§6-1 기본 회귀: opt-in 없으면 BStage를 만들지 않고 B 호출 0, 표시용 무효 관측 그대로."""
+    """기본 회귀: opt-in 없으면 BStage를 만들지 않고 B 호출 0, 표시용 무효 관측 그대로."""
 
     def test_default_run_builds_no_bstage_and_keeps_invalid_observations(self):
-        """opt-in 없는 저장 입력 실행은 종료 0, BStage.from_config 0회, b_gate 통과 0, 관측은 CALIBRATION_MISMATCH 무효다."""
+        """opt-in 없으면 종료 0, BStage.from_config 0회, b_gate 통과 0, 관측은 CALIBRATION_MISMATCH 무효."""
         c = self.case(2)
 
         with mock.patch.object(b_stage_mod.BStage, "from_config", side_effect=AssertionError("no BStage")) as fc:
@@ -272,7 +268,7 @@ class DefaultRegressionTest(SyntheticObservationBase):
 
 
 class BoltSuccessTest(SyntheticObservationBase):
-    """§6-2 시험 성공 경로: 합성 볼트 끝점 하나 → run() → b_gate → B 정확히 1회."""
+    """시험 성공 경로: 합성 볼트 끝점 하나 → run() → b_gate → B 정확히 1회."""
 
     def test_bolt_reaches_b_once_through_gate_with_same_keys(self):
         """유효 볼트 레코드 하나가 b_gate를 통과해 B가 정확히 한 번 불리고, 출력 상관 키가 입력과 같으며 결과는 BOLT_B·46 mm다."""
@@ -308,7 +304,7 @@ class BoltSuccessTest(SyntheticObservationBase):
 
 
 class NutPathTest(SyntheticObservationBase):
-    """§6-3 너트 경로: top_face 윗면 바깥 테두리 fixture가 윤곽 경로로 B에 도달(볼트와 별도)."""
+    """너트 경로: top_face 윗면 바깥 테두리 fixture가 윤곽 경로로 B에 도달(볼트와 별도)."""
 
     def test_nut_top_face_reaches_b_contour_path(self):
         """AI 설정(모델 불러오지 않음)의 너트 top_face 레코드는 b_gate를 지나 B NUT·유효로 계산된다."""
@@ -334,7 +330,7 @@ class NutPathTest(SyntheticObservationBase):
 
 
 class InvalidAndMismatchTest(SyntheticObservationBase):
-    """§6-4 무효·불일치: B 호출 0, 오류·거부 이유 기록, b_gate를 우회하지 않음."""
+    """무효·불일치: B 호출 0, 오류·거부 이유 기록, b_gate를 우회하지 않음."""
 
     def run_case(self, records=None, *, n=1, fixture_over=None, extra=(), detector="opencv", mutate=None):
         """fixture를 만들어 실행하고 (코드, stderr, Case)를 돌려준다."""
@@ -359,7 +355,7 @@ class InvalidAndMismatchTest(SyntheticObservationBase):
         self.assertEqual([(p["valid"], p["reason"]) for p in c.processes()], [(False, "NO_OBJECT")])
 
     def test_runtime_mismatches_fail_without_b(self):
-        """관측 식별자(run_id·source_id·detector_config_id·calibration_id)·오래된 세대·작업 순번 불일치는 코어가 거부해 B 0, 종료 1이다."""
+        """관측 식별자·오래된 세대·작업 순번 불일치는 코어가 거부해 B 0, 종료 1이다."""
         cases = {"run_id": {"run_id": "other-run"}, "source_id": {"source_id": "other"},
                  "detector_config_id": {"detector_config_id": "0" * 64},
                  "calibration_id": {"calibration_id": "cal-000000000000"},
@@ -456,7 +452,7 @@ class InvalidAndMismatchTest(SyntheticObservationBase):
 
 
 class TfPathTest(SyntheticObservationBase):
-    """§6-5 TF 경로: 고정 자세만 StaticTfLookup, 촬영 시각 TF 정확 일치, 없음·다른 시각·50 ms 초과는 B SKIP."""
+    """TF 경로: 고정 자세만 StaticTfLookup, 촬영 시각 TF 정확 일치, 없음·다른 시각·50 ms 초과는 B SKIP."""
 
     def test_fixed_camera_uses_static_lookup(self):
         """고정 카메라 fixture는 StaticTfLookup으로 조회하고 B 결과가 유효하다."""
@@ -530,7 +526,7 @@ class TfPathTest(SyntheticObservationBase):
 
 
 class ComputeBudgetTest(SyntheticObservationBase):
-    """§6-6 B 계산 제한: 정상 20 ms 이내, 초과는 B_TIMEOUT SKIP."""
+    """B 계산 제한: 정상 20 ms 이내, 초과는 B_TIMEOUT SKIP."""
 
     def test_normal_compute_within_budget(self):
         """정상 계산의 B compute_ms는 20 ms 이하이고 목표는 PICK_PLACE다."""
@@ -559,10 +555,10 @@ class ComputeBudgetTest(SyntheticObservationBase):
 
 
 class LiveForbiddenTest(SyntheticObservationBase):
-    """§6-7 실시간 금지: --ros-link와 시험 B 옵션 조합은 argparse 오류(2), B 0."""
+    """실시간 금지: --ros-link와 시험 B 옵션 조합은 argparse 오류(2), B 0."""
 
     def test_ros_link_with_synthetic_fixture_is_argument_error(self):
-        """`--ros-link --synthetic-a-to-b-fixture ... --synthetic-a-to-b-out ...`은 rclpy 확인 전에도 종료 2이고 BStage를 만들지 않는다."""
+        """`--ros-link`와 시험 B 옵션 조합은 rclpy 확인 전에도 종료 2, BStage를 만들지 않는다."""
         c = self.case()
         path = c.write(c.fixture([record(0, bolt_obs(0))]))
 
@@ -587,7 +583,7 @@ class LiveForbiddenTest(SyntheticObservationBase):
 
 
 class NoCOutputTest(SyntheticObservationBase):
-    """§6-8 C 미연결: on_output None, C/ROS action 송신 0, rclpy를 불러오지 않음."""
+    """C 미연결: on_output None, C/ROS action 송신 0, rclpy를 불러오지 않음."""
 
     def test_on_output_none_and_no_c_or_ros(self):
         """시험 B 실행에서 stage.on_output은 None이고 C 송신 감시 호출 0, 이 실행이 rclpy를 새로 import하지 않는다."""
@@ -613,12 +609,12 @@ class NoCOutputTest(SyntheticObservationBase):
 
 
 class ContinuityTest(SyntheticObservationBase):
-    """§6-9 연속성·무결성: 반복 실행 결과 고정, 출력 덮어쓰기 거부, 시험 표시."""
+    """연속성·무결성: 반복 실행 결과 고정, 출력 덮어쓰기 거부, 시험 표시."""
 
     STABLE = ("run_id", "capture_generation", "generation", "job_seq", "detector_config_id", "kind", "source_id")
 
     def test_repeat_runs_same_and_outputs_not_overwritten(self):
-        """같은 fixture·입력 2회는 프레임 순서·B 판정·지문이 같고, 같은 출력 경로 재실행은 2로 거부되며 기존 파일은 그대로다."""
+        """같은 입력 2회는 순서·B 판정·지문이 같고, 같은 출력 경로 재실행은 2로 거부, 파일은 그대로다."""
         c = self.case(2)
         path = c.write(c.fixture([record(0, bolt_obs(0)), record(1, invalid_obs(1))]))
         runs = []

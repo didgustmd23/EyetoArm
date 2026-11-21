@@ -1,10 +1,7 @@
-"""`run_pipeline.py --ros-link --live-observation-out/--live-observation-config`(#173 실시간 A→B 기록 전용 시험) CLI 시험.
+"""`run_pipeline.py --ros-link --live-observation-out/--live-observation-config` CLI 시험(실시간 A→B 기록).
 
-근거: reviewer 착수 명세(2026-11-18), `vision/live_observation_link.py`, `_workspace/173_builder2_reset_new_run_report.md`.
-- 진입점 `main()`부터 실제 `BStage`까지 돈다: 주입한 `LiveLinkSource`(가짜 수신 연결) → 실행기 → `AiSegDetector`(가짜 모델, 실제
-  convert·M1) → 코어 → `live_observation_sink.offer` → 전용 디스패처 → 주입 TF → 봉투 → B 입구 어댑터 → `BStage.consume` → 주석·기록.
-- 실제 ROS·Gazebo는 쓰지 않는다. 운영값은 `config/vision/live_observation_test.json`(status=test_only) 시험 설정이다.
-- C 송신 감시: `make_c_handoff`·`SortPartClient` 호출 0. 결과는 배선 확인이며 정확도가 아니다.
+주입 `LiveLinkSource`(가짜 수신)부터 실제 `BStage.consume`·기록까지 돌며 ROS·Gazebo는 쓰지 않는다.
+C 송신 경로 호출은 0이어야 하고, 결과는 배선 확인이지 정확도가 아니다.
 """
 import importlib.util
 import io
@@ -97,7 +94,7 @@ class Scenario:
     def __init__(self, n, *, masks=None, during=None, sync=True):
         """n장, masks[i]() 마스크 목록, during[i](scenario) 검출 중 동작.
 
-        `sync`: 검출마다 먼저 연결부의 열기 시도·디스패처가 쉴 때까지 기다린다(결정적 순서). 지연 장벽 시험은 False.
+        `sync`: 검출마다 열기 시도·디스패처가 쉴 때까지 기다린다(결정적 순서). 지연 장벽 시험은 False.
         """
         self.n = n
         self.masks = masks or {}
@@ -171,7 +168,7 @@ class Base(unittest.TestCase):
         self.mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.mod)
 
-        # #251 A-1: 기본 C 연결부는 송신 없는 대역(운영 47093으로 detect를 보내지 않음). 실제 연결부 시험은 test_handoff_isolation
+        # 기본 C 연결부는 송신 없는 대역(운영 포트로 detect를 보내지 않음)
         isolate_cli(self.mod)
         self.consume_calls, self.c_calls = [], []
         real_consume = b_stage_mod.BStage.consume
@@ -246,12 +243,12 @@ class NormalPathTest(Base):
     """정상 좌표·같은 프레임 주석."""
 
     def test_accepts_with_exact_stamp_tf_and_same_frame_annotation(self):
-        """3장: 첫 장으로 열리고, 각 수락 기록은 그 프레임의 image_seq·촬영 stamp·TF stamp가 같고 주석 PNG가 같은 크기다."""
+        """3장: 첫 장으로 열리고, 각 수락 기록은 같은 프레임의 image_seq·stamp·TF stamp를 갖는다."""
         sc = Scenario(3)
         code, err, out = self.run_cli(sc)
         self.assertEqual(code, 0, err)
         self.assertIn("LIVE A->B RECORD-ONLY TEST", err)
-        self.assertNotIn("MainThread", self.tf.threads)                   # r1 F1: A 제어 흐름은 TF를 조회하지 않음
+        self.assertNotIn("MainThread", self.tf.threads)                   # A 제어 흐름은 TF를 조회하지 않음
 
         acc = [r for r in self.records(out) if r["kind"] == "accept"]
         self.assertGreaterEqual(len(acc), 1)
@@ -267,11 +264,12 @@ class NormalPathTest(Base):
             png = (Path(out) / r["annotation"]).read_bytes()
             self.assertEqual(cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR).shape, (H, W, 3))
 
-        self.assertEqual([r["input"]["ros_stamp_ns"] for r in acc], [sc.stamp(1), sc.stamp(2)])   # 마지막까지 마무리
+        # 마지막 프레임까지 마무리한다
+        self.assertEqual([r["input"]["ros_stamp_ns"] for r in acc], [sc.stamp(1), sc.stamp(2)])
         skipped = {r["ros_stamp_ns"]: r["reason"] for r in self.skipped(out)}
         self.assertEqual(skipped, {sc.stamp(0): "not_ready"})            # 열기에 쓴 첫 프레임은 계산하지 않음
 
-        # r1 F2: 수락 기록의 B 좌표·각도·판정 사유가 실제 BStage 결과와 같다
+        # 수락 기록의 B 좌표·각도·판정 사유가 실제 BStage 결과와 같다
         from eyetoarm.vision.live_observation_events import _plain
 
         for r in acc:
@@ -281,10 +279,10 @@ class NormalPathTest(Base):
             self.assertEqual((r["goal_kind"], r["b_valid"]), (real.goal.get("kind"), real.result.valid))
 
         s = self.summary(out)
-        # #233 r1: 실시간 A→B 실행은 C 연결부(detect)를 항상 출구로 가진다(C 목표·D·로봇 출력은 없음)
+        # 실시간 A→B 실행은 C 연결부(detect)를 항상 출구로 가진다(C 목표·D·로봇 출력은 없음)
         self.assertEqual((s["record_only"], s["cleanup_confirmed"], s["reset_detected"], s["drained_before_end"]),
                          (False, True, False, True))
-        self.assertEqual(s["outputs"], [f"c_handoff_detect({self.mod._handoff_address()})"])   # #251: 설정된 주소
+        self.assertEqual(s["outputs"], [f"c_handoff_detect({self.mod._handoff_address()})"])
         self.assertEqual(self.tf.closed, 1)
         self.assertTrue(all(c[2] in {sc.stamp(i) for i in range(3)} for c in self.tf.calls))
 
@@ -328,7 +326,7 @@ class FailurePathTest(Base):
         self.assert_skipped_no_compute(out, sc.stamp(2), {"invalid_observation"})
 
     def test_calibration_change_discards_in_flight(self):
-        """검출 중 CameraInfo 변경(보정 번호 바뀜) → 그 프레임은 세대 폐기·보정 불일치로 건너뛰고 B 없음."""
+        """검출 중 CameraInfo 변경 → 그 프레임은 세대 폐기·보정 불일치로 건너뛰고 B 없음."""
         def change(s):
             s.src.handle_camera_info(info_msg(fx=310.0, width=W, height=H, frame_id=FRAME_ID))
 
@@ -358,7 +356,7 @@ class ResetAndRestartTest(Base):
         """프레임 1 수락 뒤 리셋 → 실행 정지(종료 3, reset_detected), 수락 철회 기록, 정리 확인, 이후 수락 0."""
         sc = Scenario(5, during=self.rewind_at(2))
         code, err, out = self.run_cli(sc, max_frames=5)
-        self.assertEqual(code, 3, err)   # #251 A-4: 되감기 종료는 3(정상 0과 구분)
+        self.assertEqual(code, 3, err)   # 되감기 종료는 3(정상 0과 구분)
         self.assertIn("reason=reset_detected", err)
         self.assertIn("new run requires an explicit restart", err)
         recs = self.records(out)
@@ -373,7 +371,7 @@ class ResetAndRestartTest(Base):
         self.assertLess(sc.detections, 5)                     # 리셋 뒤 계속 처리하지 않음
 
     def test_reset_exit_code_3_in_summary_and_problem_wins(self):
-        """#251 A-4: 되감기 종료는 요약 exit_code도 3. 정리 문제(TF 닫기 실패)가 함께 있으면 1이 우선."""
+        """되감기 종료는 요약 exit_code도 3이고, 정리 문제(TF 닫기 실패)가 함께 있으면 1이 우선."""
         code, err, out = self.run_cli(Scenario(5, during=self.rewind_at(2)), max_frames=5, out=self.out("r3"))
         self.assertEqual((code, self.summary(out)["exit_code"], self.summary(out)["reset_detected"]), (3, 3, True), err)
         self.assertEqual(self.mod.EXIT_RESET_DETECTED, 3)
@@ -387,7 +385,7 @@ class ResetAndRestartTest(Base):
     def test_explicit_new_run_after_cleanup(self):
         """리셋으로 끝난 뒤 다시 실행하면 새 run_id·새 출력으로 처음부터 열린다(이전 결과 없음)."""
         code1, err1, out1 = self.run_cli(Scenario(5, during=self.rewind_at(2)), out=self.out("a"))
-        self.assertEqual(code1, 3, err1)   # #251 A-4: 되감기 종료는 3
+        self.assertEqual(code1, 3, err1)   # 되감기 종료는 3
         code2, err2, out2 = self.run_cli(Scenario(2), out=self.out("b"))
         self.assertEqual(code2, 0, err2)
         s1, s2 = self.summary(out1), self.summary(out2)
@@ -397,7 +395,7 @@ class ResetAndRestartTest(Base):
         self.assertTrue(all(r["input"]["run_id"] == s2["run_id"] for r in acc2))
 
     def test_new_run_refused_until_cleanup_confirmed(self):
-        """TF 닫기 실패 → 종료 1·정리 미확인 → 다음 실행 거부(1, 부품 생성 전) → 재정리 뒤 실행 성공."""
+        """TF 닫기 실패 → 종료 1·정리 미확인 → 다음 실행 거부 → 재정리 뒤 실행 성공."""
         code1, err1, _ = self.run_cli(Scenario(2), tf=FakeTf(fail_close=1), out=self.out("a"))
         self.assertEqual(code1, 1)
         self.assertIn("cleanup not confirmed", err1)
@@ -415,10 +413,10 @@ class ResetAndRestartTest(Base):
 
 
 class ControlFlowAndFailureTest(Base):
-    """r1 F1·F3: A 제어 흐름 밖의 TF·디스크 쓰기, 시작 실패 정리, 쓰기·상태 실패의 종료 코드."""
+    """A 제어 흐름 밖의 TF·디스크 쓰기, 시작 실패 정리, 쓰기·상태 실패의 종료 코드."""
 
     def test_tf_barrier_does_not_block_a_control_flow(self):
-        """첫 열기 TF 조회를 장벽으로 막아도 A는 다음 프레임 검출·CameraInfo 경계 반영을 계속한다. TF·건너뜀 쓰기는 MainThread 밖."""
+        """첫 TF 조회를 막아도 A는 검출·경계 반영을 계속하고, TF·건너뜀 쓰기는 MainThread 밖이다."""
         gate = threading.Event()
         seen = {}
 
@@ -499,7 +497,7 @@ class ControlFlowAndFailureTest(Base):
         s = self.summary(out)
         self.assertIsNotNone(s["skip_write_error"])
         self.assertTrue(any(p.startswith("skip writer error") for p in s["problems"]))
-        self.assertEqual(s["state_failed"], "skip_writer_error")       # r2: 쓰기 실패는 상태 fail-stop
+        self.assertEqual(s["state_failed"], "skip_writer_error")       # 쓰기 실패는 상태 fail-stop
         q = s["skip_queue"]
         self.assertEqual(q["total"], q["written"] + q["dropped"] + q["unwritten"])
         self.assertGreaterEqual(q["dropped"] + q["unwritten"], 1)
@@ -540,7 +538,7 @@ class BlockingFile:
 
 
 class SkipQueueBoundTest(Base):
-    """r2: 건너뜀 기록 대기 상한·포화·종료 코드·먼저 온 기록 보존·누락 계수(쓰기 장벽)."""
+    """건너뜀 기록 대기 상한·포화·종료 코드·먼저 온 기록 보존·누락 계수(쓰기 장벽)."""
 
     def config_with(self, capacity):
         """대기 상한만 바꾼 시험 설정."""
@@ -551,8 +549,9 @@ class SkipQueueBoundTest(Base):
         return p
 
     def test_overflow_under_write_barrier(self):
-        """쓰기가 멈춘 동안 상한 3에 이르면 4번째에서 포화 → 상태 fail-stop·실행 정지·종료 1. 먼저 온 3건만 순서대로 쓰이고,
-        포화 전 수락(2건)은 남고 포화 뒤 수락 0. 계수: 전체 = 씀 + 누락. 제어 흐름은 막히지 않는다."""
+        """쓰기가 멈춘 채 상한 3을 넘으면 포화 → 상태 fail-stop·종료 1, 먼저 온 3건만 쓰인다.
+
+        포화 전 수락(2건)은 남고 포화 뒤 수락 0, 전체 = 씀 + 누락, 제어 흐름은 막히지 않는다."""
         gate = threading.Event()
         snap = {}
         invalid = {i: (lambda: [rect_mask()]) for i in range(3, 12)}
@@ -607,10 +606,10 @@ class SkipQueueBoundTest(Base):
 
 
 class D13AndArgsTest(Base):
-    """D13 기본 거부·인자 조합·저장 경로 회귀."""
+    """B 기본 거부·인자 조합·저장 경로 회귀."""
 
     def test_default_ros_link_has_no_b(self):
-        """옵션 없는 --ros-link(AI)는 B를 부르지 않는다(D13 그대로)."""
+        """옵션 없는 --ros-link(AI)는 B를 부르지 않는다."""
         sc = Scenario(2)
         made = []
         err = io.StringIO()
@@ -657,7 +656,7 @@ class D13AndArgsTest(Base):
             ["--ros-link", "--detector", "opencv", "--detect-config", str(ROOT / "config/vision/opencv_planar.json"),
              "--log", str(Path(self.tmp.name) / "y.jsonl"), "--live-observation-out", self.out(),
              "--live-observation-config", str(CONFIG)],
-            # #215: --tracking 허용(단계 T). #244: 단계 L도 허용 — 이 사례는 실시간 기본 W인데 W 설정이 없어 2(#239)
+            # --tracking·단계 L은 허용되지만, 실시간 기본 W인데 W 설정이 없어 2
             ["--ros-link", *base, "--tracking", "--b-input", "list", "--live-observation-out", self.out(),
              "--live-observation-config", str(CONFIG)],
             ["--ros-link", *base, "--live-observation-out", self.out(), "--live-observation-config", str(bad_cfg)],

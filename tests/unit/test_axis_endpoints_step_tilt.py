@@ -1,10 +1,6 @@
-"""`vision.axis_endpoints.extract_m1`의 머리 계단 정의(#177 C1)와 기울기 sin 잘림 진단(#177 T1) 단위시험.
-
-근거: `_workspace/177_reviewer_instruction_m1_c1_t1.md`, 원인 분석 `_workspace/176_builder2_m1_axis_order_report.md` §2~§5.
-- C1: 계단 = 머리 쪽 첫 넓은 단면부터 끊김 없이 이어진 넓은 구간의 끝 + 1(고립된 넓은 단면 무시). 문턱·`max_head_step_frac`는 그대로.
-- T1: sinα를 1로 자르면 `tilt_clamped=True`, 총길이·종류 None, 판정은 `AXIS_VIEW_OBLIQUE` 그대로.
-- 실기록 자료: `tests/unit/data/m1_live175_bolt_polygon.json`(#175 실시간 S1-08 볼트 윤곽, 출처는 파일 안 `source`).
-"""
+"""`vision.axis_endpoints.extract_m1`의 머리 계단 정의와 기울기 sin 잘림 진단 단위시험.
+계단 = 머리 쪽 첫 넓은 단면부터 이어진 넓은 구간의 끝 + 1(고립된 넓은 단면 무시).
+sinα를 1로 자르면 `tilt_clamped=True`, 총길이·종류 None, 판정은 `AXIS_VIEW_OBLIQUE`."""
 import json
 import math
 from pathlib import Path
@@ -20,7 +16,7 @@ DATA = Path(__file__).resolve().parent / "data" / "m1_live175_bolt_polygon.json"
 
 
 def flat_bolt(*, bump_at=None, head_r=10, ramp=0, head_len=20, shaft_end=160):
-    """가로로 누운 합성 볼트(머리 왼쪽): 머리 지름 2·head_r, 축 폭 12 px. bump_at 열에 폭 18 px 고립 단면, ramp px 길이의 뾰족한 머리 앞."""
+    """머리 왼쪽 합성 볼트(축 폭 12 px). bump_at 열에 폭 18 px 고립 단면, ramp는 뾰족한 머리 앞."""
     m = np.zeros((240, 320), np.uint8)
     y, x0 = 120, 40
 
@@ -39,7 +35,7 @@ def flat_bolt(*, bump_at=None, head_r=10, ramp=0, head_len=20, shaft_end=160):
 
 
 def old_step_frac(mask):
-    """#177 이전 정의(문턱 이상 **마지막** 단면 + 1)의 계단 비율. 이 축 정렬 합성 볼트(머리 왼쪽)에서만 쓴다."""
+    """문턱 이상 마지막 단면 + 1로 잡은 계단 비율(축 정렬 합성 볼트 전용 비교값)."""
     xs = np.nonzero(mask.any(axis=0))[0]
     widths = mask[:, xs].sum(axis=0).astype(float)
     n = len(widths)
@@ -53,7 +49,7 @@ def old_step_frac(mask):
 
 
 def test_c1_isolated_wide_section_near_tip_is_ignored():
-    """축 끝 쪽 고립된 넓은 단면 하나는 계단이 아니다: 이전 정의라면 0.7을 넘지만 C1에서는 머리 끝에서 계단을 잡아 유효."""
+    """축 끝 쪽 고립된 넓은 단면은 계단이 아니어서 머리 끝에서 계단을 잡아 유효다."""
     mask = flat_bolt(bump_at=130)
 
     est = extract_m1(mask)
@@ -64,7 +60,7 @@ def test_c1_isolated_wide_section_near_tip_is_ignored():
 
 
 def test_c1_long_contiguous_wide_part_still_order_inconsistent():
-    """머리 쪽부터 이어진 넓은 구간이 0.7을 넘으면(역순·가림 의심) C1에서도 AXIS_ORDER_INCONSISTENT."""
+    """머리 쪽부터 이어진 넓은 구간이 0.7을 넘으면 AXIS_ORDER_INCONSISTENT."""
     mask = flat_bolt(head_len=100)
 
     est = extract_m1(mask)
@@ -74,7 +70,7 @@ def test_c1_long_contiguous_wide_part_still_order_inconsistent():
 
 
 def test_c1_head_no_wider_than_shaft_still_order_inconsistent():
-    """머리 띠 폭 중앙값이 축 폭 이하이면(머리 없음) 계단 정의와 무관하게 AXIS_ORDER_INCONSISTENT."""
+    """머리 띠 폭 중앙값이 축 폭 이하이면 AXIS_ORDER_INCONSISTENT."""
     mask = flat_bolt(head_r=10, ramp=18)
 
     est = extract_m1(mask)
@@ -83,7 +79,7 @@ def test_c1_head_no_wider_than_shaft_still_order_inconsistent():
 
 
 def test_c1_live175_polygon_becomes_valid_with_head_first():
-    """#175 실시간 윤곽(이전 0.857로 실패)은 C1에서 유효이고 행 0이 머리 끝(오른쪽), 같은 장면 오프라인 정답과 6 px 안."""
+    """실시간 볼트 윤곽은 유효이고 행 0이 머리 끝(오른쪽), 오프라인 정답과 6 px 안이다."""
     doc = json.loads(DATA.read_text(encoding="utf-8"))
     mask = rasterize_polygon(np.asarray(doc["polygon"], float), np.zeros(2), tuple(doc["frame_wh"]))
     ref = np.asarray(doc["reference_endpoints_px"], float)
@@ -98,7 +94,7 @@ def test_c1_live175_polygon_becomes_valid_with_head_first():
 
 
 def test_t1_clamped_tilt_has_no_length_or_class():
-    """머리 앞 부족 면적이 반지름을 넘어 sinα를 1로 자르면 tilt_clamped=True, 사유 AXIS_VIEW_OBLIQUE. 총길이·종류 진단은 없다(#245 E1)."""
+    """sinα를 1로 자르면 tilt_clamped=True, AXIS_VIEW_OBLIQUE이고 총길이·종류 진단은 없다."""
     mask = flat_bolt(ramp=5)
 
     est = extract_m1(mask)
@@ -112,7 +108,7 @@ def test_t1_clamped_tilt_has_no_length_or_class():
 
 
 def test_t1_unclamped_tilt_keeps_finite_values():
-    """잘리지 않으면 tilt_clamped=False이고 기울기·머리 진단은 유한, 크기(mm) 진단은 없다(#245 E1)."""
+    """잘리지 않으면 tilt_clamped=False, 기울기·머리 진단은 유한, 크기(mm) 진단은 없다."""
     mask = flat_bolt(ramp=3)
 
     est = extract_m1(mask)
@@ -125,7 +121,7 @@ def test_t1_unclamped_tilt_keeps_finite_values():
 
 
 def test_t1_none_values_are_dropped_by_record_diag():
-    """기록용 진단 선택(`ai_convert._diag`)은 추출기에 없는 총길이·종류 키(#245 E1)를 깨지지 않고 빼고, 유한 수는 남긴다."""
+    """기록용 진단 선택(`ai_convert._diag`)은 없는 키를 빼고 유한 수는 남긴다."""
     from eyetoarm.vision.ai_convert import _diag
 
     est = extract_m1(flat_bolt(ramp=5))

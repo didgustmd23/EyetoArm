@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
-"""COCO 분할 주석 + 재분할 목록 → ultralytics YOLO 분할 형식(파일럿용 2클래스).
+"""COCO 분할 주석과 재분할 목록을 ultralytics YOLO 분할 형식(2클래스)으로 바꾼다.
 
-- 입력: `data/raw/{train,valid,test}/_annotations.coco.json`,
-  분할 목록 `data/splits/resplit_v2/{train,valid,test}.txt`
-- 출력: `data/derived/bolt_nut_v2/{images,labels}/{train,val,test}/`, `dataset.yaml`
-  - 영상은 심볼릭 링크(복사·수정하지 않음). 원본 파일명 그대로.
-  - 라벨 한 줄: `<클래스> x1 y1 x2 y2 ...` (영상 폭·높이로 나눈 [0,1] 좌표)
-- 클래스(파일럿용 2클래스, 클래스 구성은 B와 미결): `Bolt`→0 `bolt`, `Nut`→1 `nut`.
-  범주 `bolt-nut`(상위 범주)은 무시하고 건수만 보고한다.
-- 다중 다각형 주석: 면적이 가장 큰 다각형 하나만 쓰고 나머지 개수를 보고한다.
-- `dataset.yaml`에는 `path`를 쓰지 않는다(절대 경로 금지). ultralytics 8.4는 `path`가 없으면 yaml 파일이
-  있는 폴더를 데이터 루트로 쓰고, `path: .`은 실행 위치(CWD) 기준으로 풀리므로 쓰지 않는다.
-
-의존성: 표준 라이브러리, NumPy. 같은 입력이면 같은 출력.
+영상은 심볼릭 링크로 두고, `dataset.yaml`에는 `path`를 쓰지 않는다(yaml 폴더가 데이터 루트).
 """
 from __future__ import annotations
 
@@ -38,7 +27,7 @@ def polygon_area(poly: np.ndarray) -> float:
 
 
 def annotation_to_line(ann: dict, width: int, height: int, cls: int, stats: dict):
-    """COCO 주석 하나를 YOLO 분할 라벨 한 줄로 바꾼다. 쓸 다각형이 없으면 None이고, 건너뛴 사유를 `stats`에 센다."""
+    """COCO 주석 하나를 YOLO 분할 라벨 한 줄로 바꾼다. 쓸 다각형이 없으면 None."""
     seg = ann.get("segmentation")
 
     if not isinstance(seg, list):
@@ -83,7 +72,7 @@ def load_coco(raw_root: Path) -> dict:
 
 
 def convert(raw_root: Path, list_dir: Path, out_root: Path) -> dict:
-    """분할 목록의 영상마다 링크·라벨을 만들고 dataset.yaml·convert_stats.json을 쓴다. 통계 dict를 돌려준다.
+    """분할 목록의 영상마다 링크·라벨을 만들고 dataset.yaml·convert_stats.json을 쓴다.
 
     목록 항목이 주석에 없으면 KeyError, 한 분할에 같은 파일명이 두 번 나오면 ValueError.
     """

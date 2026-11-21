@@ -1,22 +1,7 @@
-"""AI 분할 검출 설정(`AiSegConfig`) — 검증·정규화·안정 설정 ID·model_id·엄격 JSON 읽기(YOLO 연결 T1).
+"""AI 분할 검출 설정(`AiSegConfig`)의 검증·정규화, 설정 ID·`model_id` 계산, 엄격한 JSON 읽기.
 
-근거: 계획 `docs/superpowers/plans/2026-11-15-yolo-pipeline.md` r2 §4.1·§4.8, A 상세설계 §5.4(결과에 영향을 주는 검출 설정:
-검출 방식(OpenCV/AI), AI 모델·가중치·대상 클래스·신뢰도 기준·입력 크기·추론 장치), §7.1(모델 설정 기록 항목·AI 의존성 선택적 구성).
-
-- 순수 Python이다. torch·ultralytics를 import하지 않고 가중치 파일도 읽지 않는다(파일 확인·해시 대조는 준비 단계).
-- 생성자가 모든 값을 검증·정규화한다. 잘못된 값은 ValueError. `config_sha256`은 정규 JSON(키 정렬·구분자 고정·
-  `weights_path` 제외·`method` 포함)의 sha256이다. 같은 가중치 파일이 다른 경로에 있어도 같은 설정이다.
-- `method` 키가 정규형에 있으므로 `PlanarConfig`(정규형에 method 없음)와 설정 ID 공간이 겹치지 않는다.
-- 필드 이름·범위는 계획의 **A 내부 제안**이다. `conf_threshold` 등 값은 운영 확정값이 아니며 설정 파일로 조절한다.
-- 1단계(표시용)는 `retina_masks=True`만 받는다. 마스크가 predict에 넘긴 crop 해상도로 나오므로 A는 ROI 오프셋만 더한다.
-- `axis_extractor`(#168, 선택 키, 기본 None=꺼짐): 볼트 축 두 끝점 추출기 opt-in. 값은 `"m1"`(`vision/axis_endpoints.extract_m1`)과
-  `"m2"`(`extract_m2`, #225 = #223 정책 P7)이다. **None이면 정규 JSON에 넣지 않는다**(기존 설정 파일·설정 ID가 그대로다). 켠 설정은 다른 설정 ID가 된다.
-  켠 관측의 `valid=True`는 추출기 형식 조건 통과 뜻이며 정확도·운영 승인이 아니다(#167 K0 사용자 결정).
-- `axis_view_bias`(#207, 선택 키, 기본 None=꺼짐): 시선 기반 끝점 보정(C1, `vision/view_bias`) 설정
-  `{"model": "C1", "k_mm": 양수, "plane_z_m": 실수, "valid_for_model_id": 문자열}`. `axis_extractor`가 켜져 있어야(m1·m2) 하고
-  `valid_for_model_id`가 이 설정의 `model_id`와 같아야 한다(가중치가 바뀌면 다시 맞춰야 하는 값, #206). None이면 정규 JSON에 넣지 않는다.
-  근거·계수: `_workspace/206_builder2_view_bias_report.md`. 보정은 B 입력 끝점에만 적용한다(detect 기록·주석 = 원 끝점,
-  B center = 보정 반영).
+torch·ultralytics를 import하지 않고 가중치 파일도 읽지 않는다. 설정 ID는 `weights_path`를 뺀 정규 JSON의
+sha256이며, 선택 키(`axis_extractor`·`axis_view_bias`)는 None이면 정규 JSON에 넣지 않는다.
 """
 from __future__ import annotations
 
@@ -31,21 +16,21 @@ from numbers import Integral, Real
 FORMAT_VERSION = 1
 METHOD = "ai"
 
-# 사용자 확정 비교 후보 3개(A 상세설계 §7.1, 2026-11-12). 라벨이며 실제 확인은 로드 때 task·names로 한다
+# 라벨일 뿐이며 실제 모델 확인은 로드 때 task·names로 한다
 MODEL_FAMILIES = ("yolov8n-seg", "yolo11n-seg", "yolo26n-seg")
 
-# 전체 문자열 검사는 fullmatch로 한다(`$`는 끝 개행 앞에서도 맞으므로 쓰지 않음, r1 F2)
+# fullmatch로 검사한다(`$`는 끝 개행 앞에서도 맞으므로 쓰지 않음)
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _DEVICE_RE = re.compile(r"cpu|[0-9]+")
 _CLASS_KEY_RE = re.compile(r"0|[1-9][0-9]*")
 _IMGSZ_STEP, _IMGSZ_MIN, _IMGSZ_MAX = 32, 32, 4096
 _MAX_DET_MAX = 1000
 
-# 볼트 축 끝점 추출기 선택 값(#168). None = 꺼짐
+# 볼트 축 끝점 추출기 선택 값. None = 꺼짐
 AXIS_EXTRACTORS = ("m1", "m2")
 _OPTIONAL_KEYS = frozenset({"axis_extractor", "axis_view_bias"})
 
-# 시선 기반 끝점 보정(#207). 모형은 C1(δ = k·s) 하나, k 상한은 안전 범위(#206 k ≈ 1.39 mm)
+# 시선 기반 끝점 보정 모형은 C1(δ = k·s) 하나, k 상한은 안전 범위
 VIEW_BIAS_MODELS = ("C1",)
 _VIEW_BIAS_KEYS = frozenset({"model", "k_mm", "plane_z_m", "valid_for_model_id"})
 _VIEW_BIAS_K_MAX_MM = 10.0
@@ -120,7 +105,7 @@ def _normalize_class_map(v) -> tuple[tuple[int, str], ...]:
 
 
 def _roi(v) -> tuple[int, int, int, int] | None:
-    """[x, y, w, h] 정수(x·y ≥ 0, w·h > 0) 또는 None. 프레임 해상도와의 대조는 작업 때(pixel_map.validate_roi)."""
+    """[x, y, w, h] 정수(x·y ≥ 0, w·h > 0) 또는 None. 프레임 해상도 대조는 작업 때 한다."""
     if v is None:
         return None
 
@@ -137,7 +122,7 @@ def _roi(v) -> tuple[int, int, int, int] | None:
 
 @dataclass(frozen=True)
 class ViewBiasConfig:
-    """시선 기반 끝점 보정 설정(#207). 생성 때 형식·범위를 검사한다. 모델 ID 대조는 `AiSegConfig`가 한다."""
+    """시선 기반 끝점 보정 설정. 생성 때 형식·범위를 검사하고, 모델 ID 대조는 `AiSegConfig`가 한다."""
 
     model: str
     k_mm: float
@@ -182,11 +167,9 @@ def parse_view_bias(v) -> ViewBiasConfig | None:
 
 @dataclass(frozen=True)
 class AiSegConfig:
-    """검증한 AI 분할 검출 설정의 변경 불가 스냅샷(계획 §4.1). 직접 생성해도 검증을 우회하지 않는다.
+    """검증한 AI 분할 검출 설정의 변경 불가 스냅샷. 직접 생성해도 검증을 우회하지 않는다.
 
-    - `class_map`은 (모델 클래스 번호, 이름) 번호 순 튜플, `target_classes`는 이름 정렬 튜플로 보관한다.
-    - `weights_path`는 기록용이며 설정 ID에 넣지 않는다. 가중치 동일성은 `weights_sha256`으로 판단한다.
-    - `model_id` = 「모델 계열@가중치 sha256 앞 16자」(계획 §4.1 제안). 가짜 ID를 만들지 않는다.
+    `weights_path`는 기록용이라 설정 ID에 넣지 않고, 가중치 동일성은 `weights_sha256`으로 판단한다.
     """
 
     format_version: int
@@ -228,7 +211,7 @@ class AiSegConfig:
         if not isinstance(self.weights_sha256, str) or not _SHA256_RE.fullmatch(self.weights_sha256):
             raise ValueError(f"weights_sha256 must be 64 lowercase hex characters: {self.weights_sha256!r}")
 
-        # 클래스: 번호·이름 정규화, 대상은 class_map 이름의 중복 없는 비어 있지 않은 부분집합
+        # 대상은 class_map 이름의 중복 없는 비어 있지 않은 부분집합
         class_map = _normalize_class_map(self.class_map)
         put("class_map", class_map)
         names = {name for _, name in class_map}
@@ -289,12 +272,10 @@ class AiSegConfig:
 
             put(name, int(value))
 
-        # 끝점 추출기 opt-in(#168): None 또는 AXIS_EXTRACTORS 중 하나
         if self.axis_extractor is not None and self.axis_extractor not in AXIS_EXTRACTORS:
             raise ValueError(f"axis_extractor must be null or one of {AXIS_EXTRACTORS}: {self.axis_extractor!r}")
 
-        # 시선 기반 끝점 보정(#207): 끝점 추출을 켠 설정에만, 맞춘 가중치에만 쓴다. k는 M1 끝점으로 맞춘 값이므로
-        # M2에 쓸 때는 #225 재확인 결과를 따른다(설정 파일 몫, 여기서는 막지 않는다)
+        # 끝점 보정은 끝점 추출을 켠 설정과 맞춘 가중치에만 쓴다. M2 적용 여부는 설정 파일 몫이라 막지 않는다
         bias = parse_view_bias(self.axis_view_bias)
         put("axis_view_bias", bias)
 
@@ -329,7 +310,7 @@ class AiSegConfig:
             if key == "weights_path":
                 continue
 
-            # 선택 키는 None이면 넣지 않는다(기존 설정 ID 보존, #168)
+            # 선택 키는 None이면 넣지 않는다(기존 설정 ID 보존)
             if key in _OPTIONAL_KEYS and getattr(self, key) is None:
                 continue
 

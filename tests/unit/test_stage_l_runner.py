@@ -1,7 +1,6 @@
-"""#189 단계 L 생성·실행기·기록 시험: 원 인덱스·자격 함수 공유·프레임 차단·0/1/복수/혼합·시작 거부·단계 T 기록 바이트 동일.
+"""단계 L 생성·실행기·기록 시험: 원 인덱스·자격 함수 공유·프레임 차단·0/1/복수/혼합·시작 거부·단계 T 기록 바이트 동일.
 
-근거: 계획 `_workspace/189_builder2_stage_L_plan.md` r0 §3·§5·§6·§7·§8(L-8, L-10~L-19, L-21~L-23),
-reviewer #189 계획 검토(b_list_gate = b_gate 공통 조건 + 프로필 적용 + 후보 비어 있지 않음, 보정 불일치 빈 목록, 단계 T 바이트 비교).
+`b_list_gate` = `b_gate` 공통 조건 + 프로필 적용 + 후보 비어 있지 않음, 보정 불일치는 빈 목록.
 """
 from __future__ import annotations
 
@@ -77,7 +76,8 @@ class GenerationTest(unittest.TestCase):
         self.assertEqual(fo.instance_indices, (3, 4))
         self.assertEqual((rec["list_candidate_count"], rec["list_indices"]), (2, [3, 4]))
         self.assertEqual(sum(1 for i in rec["ai_instances"] if i.get("axis_candidate_reason")), 4)
-        self.assertEqual((out.observation.valid, out.observation.reason), (False, "MULTIPLE_OBJECTS"))   # 단계 T 관측 무변
+        # 단계 T 관측 무변
+        self.assertEqual((out.observation.valid, out.observation.reason), (False, "MULTIPLE_OBJECTS"))
         self.assertFalse(b_gate(p, out))
         self.assertTrue(b_list_gate(p, out))
 
@@ -177,7 +177,7 @@ class GateTest(unittest.TestCase):
         job = p.start_next()
         result = convert(raw(SCENARIOS["R4_two_valid"][0], (W, H)), job.frame, cfg)
         before = p.current_generation()
-        # 프로필·설정·소스는 그대로 두고 처리 모드만 바꿔 세대만 올린다(관문이 세대 조건으로 닫히는지 본다)
+        # 처리 모드만 바꿔 세대만 올린다(관문이 세대 조건으로 닫히는지 본다)
         p.change_settings(settings(mode="planar_other", detector_config=cfg,
                                    profile=profile(width=W, height=H, calibration_id=CAL)),
                           cause=GenerationCause.MODE_CHANGED)

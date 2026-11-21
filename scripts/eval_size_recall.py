@@ -1,17 +1,8 @@
 #!/usr/bin/env python3
-"""YOLO 분할 모델의 클래스별·크기 구간별 재현율 평가(파일럿, A 상세설계 §6.1 기준 2·§12 AI 비교 후보).
+"""YOLO 분할 모델의 클래스별·크기 구간별 재현율 평가(파일럿).
 
-- 정답: `data/derived/<데이터>/labels/<split>/*.txt`(YOLO 분할, coco_to_yolo_seg.py 출력)
-- 크기: 정답 다각형의 최소 외접 사각형(minAreaRect) **짧은 변**(평가 영상 화소 기준).
-  기본 구간 <10 · 10~12 · 12~15 · 15~25 · ≥25 px. A 상세설계 §6.1 기준 2(너트 짧은 변 12 px)와 같은 정의.
-- 매칭: 같은 클래스에서 마스크 IoU ≥ `--iou`(기본 0.5)인 쌍을 신뢰도 높은 예측부터 일대일로 잡는다.
-- 신뢰도 임계값 `--conf`(기본 0.25).
-- `--scale s`(< 1): 영상을 s배로 줄여 같은 크기의 회색(114) 캔버스 가운데에 놓고 정답도 같이 변환한다.
-  작은 물체 표본을 늘리는 대략 추정용이다(Gazebo 영상 대체가 아님). 크기 구간은 캔버스 화소 기준이며,
-  모델 입력 화소는 캔버스 화소 × imgsz / 캔버스 긴 변이다.
-- `--map`: ultralytics `val`로 해당 분할의 mAP50(박스·마스크)도 출력한다.
-
-매칭·구간 함수는 ultralytics 없이 시험할 수 있다(ultralytics는 main에서만 import).
+크기는 정답 다각형 minAreaRect의 짧은 변(px), 매칭은 같은 클래스·마스크 IoU ≥ `--iou` 쌍을
+신뢰도 높은 예측부터 일대일로 잡는다. ultralytics는 `main`에서만 import한다(순수 함수 시험용).
 """
 from __future__ import annotations
 
@@ -123,7 +114,7 @@ def scale_to_canvas(img: np.ndarray, polys_px: list, scale: float):
 
 
 def read_yolo_labels(path: Path, w: int, h: int):
-    """YOLO 분할 라벨을 (클래스 목록, 화소 다각형 목록)으로 읽는다. 파일이 없으면 빈 목록, 점 3개 미만 줄은 건너뛴다."""
+    """YOLO 분할 라벨을 (클래스 목록, 화소 다각형 목록)으로 읽는다. 파일이 없으면 빈 목록."""
     cls, polys = [], []
 
     if path.is_file():

@@ -1,9 +1,6 @@
-"""#226 W 추적 입력 보완(W+M)과 D2·D3 시험.
+"""W 추적 입력 보완(W+M)·리셋 기록·진단 조회 상한 시험.
 
-근거: 지시 `_workspace/226_reviewer_instruction_w_mask_input_impl.md`(사용자 승인), #224 W+M 규칙(`_workspace/224_seq/fusion_tracker.py`
-머리말: 마스크 W 평균, 길이·각도 검사 생략, 마스크가 낀 이중 검출은 중심 3 mm 또는 포함률 ≥ 0.85, 끝점 입력 먼저).
-- 합성 장면은 numpy로 만든다: 볼트 W 끝점(정답을 아는 입력)을 시험 카메라로 픽셀에 투영하고, 볼트 다각형은 끝점 둘레 띠로 만든다.
-- 정답 위치는 단언에서만 쓴다.
+합성 장면은 정답을 아는 볼트 W 끝점을 시험 카메라로 투영해 만들고, 정답 위치는 단언에서만 쓴다.
 """
 from __future__ import annotations
 
@@ -62,7 +59,7 @@ class MaskInputTest(unittest.TestCase):
     """입력 생성·짝짓기."""
 
     def test_mask_input_built_only_for_no_endpoint_bolts(self):
-        """끝점 없는 볼트 → kind=mask(중심이 정답 근처, 길이·각도 없음), 끝점 볼트 → endpoint(마스크 붙음), 끔이면 no_endpoints."""
+        """끝점 없는 볼트 → kind=mask(길이·각도 없음), 끝점 볼트 → endpoint, 끔이면 no_endpoints."""
         ins = [bolt_inst(0, 0.50, 0.00), bolt_inst(1, 0.55, 0.05, endpoints=False)]
         on = inputs(ins)
         self.assertEqual([(i.kind, i.candidate) for i in on], [("endpoint", True), ("mask", True)])
@@ -85,7 +82,7 @@ class MaskInputTest(unittest.TestCase):
         self.assertEqual(out[-1].assignments[0].reason, "mask_input")
 
     def test_mixed_endpoint_and_mask_keep_same_id(self):
-        """같은 볼트가 프레임마다 끝점·마스크로 번갈아 들어와도 같은 번호(길이·각도 검사 생략, 마스크 hit는 길이 무변)."""
+        """같은 볼트가 끝점·마스크로 번갈아 들어와도 같은 번호(마스크 hit는 길이 무변)."""
         tr = tracker()
         pattern = [True, False, False, True, False, True, True, False, False, False]
         out = [tr.update(key(i), i * DT_MS, inputs([bolt_inst(0, 0.50, 0.0132 * i * 0.0, endpoints=e)]))
@@ -118,14 +115,14 @@ class MaskInputTest(unittest.TestCase):
 
 
 class OffEqualsW217Test(unittest.TestCase):
-    """끔이면 #217과 같다."""
+    """끔이면 끝점 전용 추적과 같다."""
 
     def test_off_same_as_endpoint_only_inputs(self):
-        """끔 + world_inputs(끔) 결과 = 켬 추적기에 끝점 입력만 넣은 결과(끝점 전용 규칙 동일), 끝점 볼트끼리 합치기도 같음."""
+        """끔 결과 = 켬 추적기에 끝점 입력만 넣은 결과이고, 끝점 볼트끼리 합치기도 같다."""
         frames = []
 
         for i in range(10):
-            ins = [bolt_inst(0, 0.50, 0.0), bolt_inst(1, 0.5005, 0.0005, conf=0.6),   # 이중 검출(끝점 0.7 mm)
+            ins = [bolt_inst(0, 0.50, 0.0), bolt_inst(1, 0.5005, 0.0005, conf=0.6),  # 이중 검출(0.7 mm)
                    bolt_inst(2, 0.56, 0.06, endpoints=(i % 3 == 0))]
             frames.append(ins)
 
@@ -139,7 +136,7 @@ class OffEqualsW217Test(unittest.TestCase):
 
 
 class DuplicateWithMaskTest(unittest.TestCase):
-    """마스크가 낀 이중 검출 합치기(#224 규칙)."""
+    """마스크가 낀 이중 검출 합치기."""
 
     def test_endpoint_kept_over_mask_duplicate(self):
         """같은 볼트의 끝점 입력 + 끝점 없는 중복(점수 더 높음) → 끝점 입력이 남고 마스크는 duplicate_merged."""
@@ -159,7 +156,7 @@ class DuplicateWithMaskTest(unittest.TestCase):
     def test_contained_mask_duplicate_merged(self):
         """마스크 포함률 ≥ 0.85인 중복(중심 3 mm 밖)도 합침."""
         a = bolt_inst(0, 0.50, 0.0, endpoints=False, conf=0.9, length_m=0.040)
-        b = bolt_inst(1, 0.50, 0.004, endpoints=False, conf=0.5, length_m=0.030)   # 짧은 쪽이 긴 쪽에 거의 포함
+        b = bolt_inst(1, 0.50, 0.004, endpoints=False, conf=0.5, length_m=0.030)  # 짧은 쪽이 거의 포함됨
         ina = inputs([a, b])
         self.assertGreater(math.dist(ina[0].center_mm, ina[1].center_mm), 3.0)
         self.assertGreaterEqual(containment(ina[0].mask, ina[1].mask), 0.85)
@@ -168,10 +165,10 @@ class DuplicateWithMaskTest(unittest.TestCase):
 
 
 class BRuleUnchangedTest(unittest.TestCase):
-    """마스크로 확정된 트랙이라도 B 규칙(#215 확정·선택 인스턴스)은 그대로."""
+    """마스크로 확정된 트랙이라도 B 규칙(확정·선택 인스턴스)은 그대로."""
 
     def test_mask_confirmed_but_unselected_gives_no_b_id(self):
-        """마스크 입력으로 확정된 인스턴스라도 관측 선택이 없으면(끝점 없음 → 무효 관측) 번호를 싣지 않는다."""
+        """마스크로 확정된 인스턴스라도 관측 선택이 없으면(무효 관측) 번호를 싣지 않는다."""
         tr = tracker()
 
         for i in range(5):
@@ -184,7 +181,7 @@ class BRuleUnchangedTest(unittest.TestCase):
 
 
 class LiveRecordTest(LiveBase):
-    """추적 스레드 기록: 입력 종류(W+M)·D3 리셋·종료 사건."""
+    """추적 스레드 기록: 입력 종류(W+M)·리셋·종료 사건."""
 
     def test_input_kind_recorded_and_mask_tracks(self):
         """world_tracks 배정마다 input(endpoint|mask|none), 끝점 없는 볼트도 확정 번호."""
@@ -201,7 +198,7 @@ class LiveRecordTest(LiveBase):
         self.assertIsNotNone(frames[-1]["tracks"][0]["part_track_id"])
 
     def test_d3_reset_and_closed_events(self):
-        """D3: 초기화 처리 때 reset 줄, 닫힐 때 처리 못 한 요청을 처리하고 closed 줄 1개(pending_reset_applied 참)."""
+        """초기화 때 reset 줄, 닫힐 때 남은 요청을 처리하고 closed 줄 1개(pending_reset_applied 참)."""
         lw = self.make()
         self.offer(0)
         lw.wait(ctx_of(0))
@@ -219,7 +216,7 @@ class LiveRecordTest(LiveBase):
 
 
 class ConfigTest(unittest.TestCase):
-    """설정 키(W+M·D2)."""
+    """설정 키(W+M·진단 조회 상한)."""
 
     def test_new_keys_required(self):
         """mask_fallback·mask_dup_contain·conveyor_probe_timeout_s는 필수(기본값 없음), 형·범위 검사."""
@@ -241,7 +238,7 @@ class ConfigTest(unittest.TestCase):
 
 
 class D2ProbeTimeoutTest(unittest.TestCase):
-    """D2: 진단 조회 상한은 설정값으로 기본 조회기에 넘어간다(조회값은 요약 진단에만)."""
+    """진단 조회 상한은 설정값으로 기본 조회기에 넘어간다(조회값은 요약 진단에만)."""
 
     def test_default_probe_gets_config_timeout(self):
         """기본 조회기를 가로채 상한 인자가 설정값(5.0)인지, 실패 status가 요약 진단에만 남는지."""
@@ -268,7 +265,7 @@ class D2ProbeTimeoutTest(unittest.TestCase):
             sc.link = lambda: t.controller.current
             from test_live_sort_part import SORT_CONFIG
 
-            # #239: 추적 켬 송신은 require_track_id가 필수라 추적용 시험 설정(같은 폴더의 새 파일)을 쓴다
+            # 추적 켬 송신은 require_track_id가 필수라 추적용 시험 설정(같은 폴더의 새 파일)을 쓴다
             SORT_CONFIG = SORT_CONFIG.with_name("live_observation_sort_part_track_test.json")
             from test_run_pipeline_capture_observation import model_with
             from test_run_pipeline_live_observation import FakeTf

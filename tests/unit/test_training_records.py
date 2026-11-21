@@ -1,8 +1,4 @@
-"""학습기 I1 — 시작 전 manifest·SHA256SUMS(`eyetoarm.training.records`) 시험.
-
-근거: 학습기 설계 r2 §4(시작 전 `run_manifest` status starting: 해석된 공통 설정·후보·초기 가중치·fingerprint 결과·명령줄·
-git·버전), §6(SHA256SUMS는 자기 자신·OWNER.lock 제외, 갱신 때 이전 판 보존·원자 교체).
-"""
+"""학습기 시작 전 manifest·SHA256SUMS(`eyetoarm.training.records`) 시험."""
 import hashlib
 import json
 import os
@@ -38,7 +34,7 @@ class RecordsTest(unittest.TestCase):
         self.d = self.tmp.name
 
     def test_start_manifest_contents(self):
-        """시작 전 manifest는 status starting, config_id, 공통 학습 값, 후보·공식 초기 가중치 sha256, fingerprint 결과, 명령줄, git, 버전을 담고 JSON으로 직렬화된다."""
+        """시작 전 manifest는 status starting과 설정·후보·가중치·fingerprint·명령줄·git·버전을 담고 JSON 직렬화된다."""
         cfg = load_training_config(os.path.join(ROOT, "config/training/s1_common.json"),
                                    os.path.join(ROOT, "config/training/s1_candidates.json"))
         cand = cfg.candidates[0]
@@ -55,7 +51,7 @@ class RecordsTest(unittest.TestCase):
         json.dumps(m, allow_nan=False)
 
     def test_sha256sums_excludes_and_preserves(self):
-        """SHA256SUMS는 하위 파일 전부(자기 자신·OWNER.lock·이전 판 제외)의 sha256이고, 다시 쓰면 이전 판을 SHA256SUMS.<태그>로 보존한다."""
+        """SHA256SUMS는 자기 자신·OWNER.lock·이전 판을 뺀 하위 파일 sha256이고 다시 쓰면 이전 판을 보존한다."""
         os.makedirs(os.path.join(self.d, "e"))
         _write(os.path.join(self.d, "e", "a.txt"), b"a", "wb")
         _write(os.path.join(self.d, "OWNER.lock"), "{}", "w")

@@ -1,8 +1,6 @@
-"""실행기 A→C 연결부 선택 연결(#142 Task 3 `handoff_sink`) 시험 — 전달 위치·순서·fail-stop·종료 정리·기본 None 회귀.
+"""실행기 A→C 연결부(`handoff_sink`) 시험: 전달 위치·순서·fail-stop·종료 정리·기본 None 회귀.
 
-근거: `_workspace/142_builder2_a_c_handoff_contract.md` r3 §2.4(제출 조건·withheld CLEAR)·§2.9(비교 경계)·§3(실패 전파·check 지점·
-handoff_unsent)·§4(보존식)·§5(전달 순서)·§9(Task 3 시험), 검토 `_workspace/codex-reviews/2026-11-17-a-c-handoff-task2-review-r2.md`
-「Task3 인계」. 가짜 저장 소스·가짜 실시간 소스·실제 `LiveLinkSource`(가짜 수신 연결)만 쓴다. ROS·YOLO·창·C 코드 없음.
+가짜 저장·실시간 소스와 실제 `LiveLinkSource`(가짜 수신 연결)만 쓴다. ROS·YOLO·창·C 코드 없음.
 """
 import io
 import threading
@@ -118,9 +116,9 @@ class Runner:
         return ai_observation(job), ai_display(job)
 
     def check_mirror(self):
-        """계약 §4-5: 코어 현재 관측이 없으면 거울도 None, 거울이 있으면 코어 현재 관측의 작업과 같다.
+        """코어 현재 관측이 없으면 거울도 None, 있으면 같은 작업이다(어긋남은 `mirror_errors`에 남김).
 
-        worker 스레드에서 불릴 수 있으므로 단언 대신 어긋남을 `mirror_errors`에 남긴다(시험 본문이 확인).
+        worker 스레드에서 불릴 수 있어 단언하지 않는다.
         """
         if self.h is None or self.pipeline is None:
             return
@@ -205,7 +203,7 @@ class NormalFlowTest(unittest.TestCase):
     """정상 완료·무검출·비교 경계 거울·RUN_END."""
 
     def test_results_in_order_and_run_end(self):
-        """저장 3장: RUN_START → RESULT×3 → INPUT_STATUS(END_OF_STREAM) → RUN_END(exit 0). 각 비교 경계에서 거울 = 공개된 현재 관측, 연결부는 실행 뒤에도 OPEN."""
+        """저장 3장: RUN_START → RESULT×3 → INPUT_STATUS(EOS) → RUN_END, 경계마다 거울 = 현재 관측."""
         r = Runner(self)
         res, recs, err = r.run(stored_factory(3, r.holder))
         msgs = drain(r.h)
@@ -245,14 +243,14 @@ class NormalFlowTest(unittest.TestCase):
         self.assertEqual(len(r.detect_calls), 20)
         self.assertEqual(s.view_pending, 0)                # RUN_END가 해제
         self.assertEqual((s.views_put, s.views_replaced), (20, 19))
-        self.assertEqual(s.pending, 23)                    # RUN_START + RESULT×20 + INPUT_STATUS(EOS) + RUN_END
+        self.assertEqual(s.pending, 23)                    # RUN_START + RESULT×20 + EOS + RUN_END
 
 
 class WithheldTest(unittest.TestCase):
-    """§2.4-2: 코어 complete 뒤 수신 epoch가 현재가 아니면 RESULT 대신 CLEAR(result_withheld)."""
+    """코어 complete 뒤 수신 epoch가 현재가 아니면 RESULT 대신 CLEAR(result_withheld)."""
 
     def test_withheld_clear(self):
-        """job1: 지점 C 확인은 True, 공개 판정 frame_current는 False → CLEAR, 이전 RESULT는 현재가 아님, 코어 관측 유무는 단언하지 않음."""
+        """job1: 지점 C 확인은 True, 공개 판정 frame_current는 False → CLEAR."""
         r = Runner(self)
         box = {}
 
@@ -280,10 +278,10 @@ class WithheldTest(unittest.TestCase):
 
 
 class EventFlowTest(unittest.TestCase):
-    """사건 전달 순서·정확히 1회(§5)."""
+    """사건 전달 순서·정확히 1회."""
 
     def test_inference_error_invalidation(self):
-        """검출 예외(job1): RESULT(job0) → INVALIDATION(INFERENCE_ERROR job1) → INPUT_STATUS(EOS) → RUN_END(1)."""
+        """검출 예외: RESULT(job0) → INVALIDATION(INFERENCE_ERROR) → INPUT_STATUS(EOS) → RUN_END(1)."""
         def boom(runner):
             """검출 실패."""
             raise RuntimeError("boom")
@@ -300,7 +298,7 @@ class EventFlowTest(unittest.TestCase):
         r.assert_event_balance(res)
 
     def test_detect_timeout_and_late_result(self):
-        """시간 초과: INVALIDATION(JOB_ABORTED detect_timeout) 1건, 유예 안 늦은 결과(duplicate)는 RESULT로 오지 않는다."""
+        """시간 초과: INVALIDATION(JOB_ABORTED detect_timeout) 1건, 늦은 결과는 RESULT로 오지 않는다."""
         r = Runner(self, hooks={0: lambda runner: time.sleep(0.15)})
         res, _, err = r.run(stored_factory(1, r.holder), config=watch(0.05, 0.05, grace=1.0, interval=0.01))
         msgs = drain(r.h)
@@ -311,7 +309,7 @@ class EventFlowTest(unittest.TestCase):
         r.assert_event_balance(res)
 
     def test_model_prepare_failure_frameless(self):
-        """모델 준비 실패: RUN_START → INVALIDATION(MODEL_LOAD_FAILED, ids None) → RUN_END(1, model_load_failed). 프레임 없음."""
+        """모델 준비 실패: RUN_START → INVALIDATION(MODEL_LOAD_FAILED) → RUN_END(1). 프레임 없음."""
         def prepare():
             """준비 실패."""
             raise ModelPrepareError(InvalidationKind.MODEL_LOAD_FAILED, "weights missing")
@@ -330,7 +328,7 @@ class EventFlowTest(unittest.TestCase):
         r.assert_event_balance(res)
 
     def test_close_abort_event_sent_once(self):
-        """검출 대기 중 예외로 활성 작업이 남으면 코어 close의 JOB_ABORTED(closed) 사건을 마지막 sync에서 정확히 1회 넘긴 뒤 RUN_END."""
+        """검출 대기 중 예외면 코어 close의 JOB_ABORTED(closed)를 정확히 1회 넘긴 뒤 RUN_END."""
         r = Runner(self, hooks={0: lambda runner: time.sleep(0.1)})
         def should_stop():
             """검출 대기 회차에서 예외."""
@@ -368,7 +366,7 @@ class LiveBoundaryTest(unittest.TestCase):
             return live.run()
 
     def test_frame_timeout_during_detection(self):
-        """검출 중 수신 중단: INPUT_STATUS(FRAME_TIMEOUT) → INVALIDATION(JOB_ABORTED input_boundary), RESULT 없음."""
+        """검출 중 수신 중단: INPUT_STATUS(FRAME_TIMEOUT) → INVALIDATION(input_boundary), RESULT 없음."""
         h = AToCHandoff()
         live = DisplayLive(with_sink=False, feed=lambda s, c: s.handle_image(image_msg(1)),
                            hooks={0: lambda lv: setattr(lv.clock, "now", lv.clock.now + 2 * S)})
@@ -406,8 +404,10 @@ class LiveBoundaryTest(unittest.TestCase):
 
 
 class HandoffLive(DisplayLive):
-    """실제 LiveLinkSource(가짜 수신) + 연결부. `source.input_applied`를 시험 안에서 감싸 입력 반영·사건 sync가 끝난 경계(§2.9 ①)의
-    연결부·코어 상태를 기록한다(제품 공개 hook 없음). 실행기는 sync_records 뒤 input_applied를 부르므로 그 순간이 비교 경계다."""
+    """실제 LiveLinkSource(가짜 수신) + 연결부. `input_applied`를 감싸 비교 경계의 상태를 기록한다.
+
+    실행기는 sync_records 뒤 input_applied를 부르므로 그 순간이 비교 경계다.
+    """
 
     def __init__(self, h, **kw):
         """연결부 h를 받는다. display_sink는 쓰지 않는다."""
@@ -444,7 +444,7 @@ class HandoffLive(DisplayLive):
 
 
 class InputBoundaryHandoffTest(unittest.TestCase):
-    """U1(r2): 입력 반영 경계(§2.9 ①)에서 되감기·프로필 변경·수신 중단 뒤 연결부·코어가 함께 비었는지, 새 세대 RESULT 순서·식별자."""
+    """입력 반영 경계에서 되감기·프로필 변경·수신 중단 뒤 연결부·코어가 함께 비었는지와 새 RESULT."""
 
     def run_live(self, live):
         """HandoffLive를 실행한다(DisplayLive가 부르는 run에 handoff_sink를 더함)."""
@@ -485,7 +485,7 @@ class InputBoundaryHandoffTest(unittest.TestCase):
         self.assertEqual(res.handoff["run_end_sent"], True)
 
     def test_sim_time_rewind(self):
-        """되감기: job0 RESULT를 꺼낸 뒤 job1 검출 중 되감기 → 경계에서 모두 비고, job1은 재공개 없음, 새 영상 job2가 세대 1로 GENERATION_CHANGED 뒤에 온다."""
+        """되감기: 경계에서 모두 비고 job1은 재공개 없음, job2는 GENERATION_CHANGED 뒤 세대 1."""
         def feed(src, clock):
             """sim 10 s 시계·영상."""
             src.handle_clock(SimpleClock(10))
@@ -520,7 +520,7 @@ class InputBoundaryHandoffTest(unittest.TestCase):
         self.assert_end_balance(live, res)
 
     def test_profile_changed(self):
-        """프로필 변경: job1 검출 중 CameraInfo 변경 → 경계에서 모두 비고, 새 영상 RESULT는 세대 1·새 calibration_id·같은 검출 설정 ID."""
+        """프로필 변경: 경계에서 모두 비고 새 RESULT는 세대 1·새 calibration_id·같은 검출 설정 ID."""
         def hook0(lv):
             """job1용 다음 영상."""
             lv.src.handle_image(image_msg(2))
@@ -554,7 +554,7 @@ class InputBoundaryHandoffTest(unittest.TestCase):
         self.assert_end_balance(live, res)
 
     def test_frame_timeout_after_result(self):
-        """수신 중단: job0 RESULT를 꺼낸 뒤 job1 검출 중 끊김 → INPUT_STATUS 반영 경계에서 모두 비고, job1은 input_boundary 중단(재공개 없음)."""
+        """수신 중단: 경계에서 모두 비고 job1은 input_boundary 중단(재공개 없음)."""
         def hook0(lv):
             """job1용 다음 영상."""
             lv.src.handle_image(image_msg(2))
@@ -581,7 +581,7 @@ class InputBoundaryHandoffTest(unittest.TestCase):
 
 
 class FailStopTest(unittest.TestCase):
-    """§3 fail-stop: 수신 측 실패·넘침·notify 예외 → handoff_failed 종료 1, 유한 정리, RUN_END 미전달, unsent 확정."""
+    """fail-stop: 수신 측 실패·넘침·notify 예외 → handoff_failed 종료 1, 유한 정리, unsent 확정."""
 
     def assert_failed_cleanup(self, r, res, err, *, stop_reason="handoff_failed"):
         """종료 1·정지 사유·코어 닫힘·소스 close·RUN_END 없음·unsent 확정."""
@@ -629,7 +629,7 @@ class FailStopTest(unittest.TestCase):
         self.assertEqual(r.holder["source"].closes, 1)
 
     def test_overflow_keeps_original_error(self):
-        """모델 준비 실패 중 넘침(용량 1): 원래 정지 사유 model_load_failed 유지, handoff 실패도 errors에, unsent 1, 유한 정리."""
+        """모델 준비 실패 중 넘침: 정지 사유 model_load_failed 유지, handoff 실패도 errors에, unsent 1."""
         def prepare():
             """준비 실패."""
             raise ModelPrepareError(InvalidationKind.MODEL_LOAD_FAILED, "weights missing")
@@ -674,9 +674,9 @@ class FailStopTest(unittest.TestCase):
 
 
 class FinalStateTest(unittest.TestCase):
-    """T3-F1(r1): 종료 보고를 확정하는 시점(`_finish_handoff`)의 연결부 상태가 FAILED·CLOSED면 새 사건·예외 유무와 관계없이 종료 1.
+    """종료 보고 확정 시점(`_finish_handoff`)의 연결부가 FAILED·CLOSED면 종료 1.
 
-    관측 경계: 실행기가 마지막 sync·RUN_END 뒤 연결부 상태를 읽는 순간까지. 그 뒤 새로 생긴 외부 실패는 RunResult에 반영되지 않는다.
+    그 뒤 새로 생긴 외부 실패는 RunResult에 반영되지 않는다.
     """
 
     def run_with_close_hook(self, action):

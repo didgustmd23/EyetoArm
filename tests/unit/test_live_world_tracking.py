@@ -1,8 +1,7 @@
-"""#217 W 추적 CLI 시험(W8·W10·W12·W14): 실시간 기록 연결 + `--tracking --tracking-space world`.
+"""W 추적 CLI 시험: 실시간 기록 연결 + `--tracking --tracking-space world`.
 
-근거: 계획 `_workspace/217_builder2_world_tracking_plan_r0.md`·`_r1.md`, reviewer 보충 2(정답 격리: C `speed_mps` 조회값은 진단 기록만).
-- 기존 실시간 CLI 시험의 가짜 수신·가짜 모델(같은 볼트 마스크)·가짜 TF(고정 `T_W_C`)·#214 가짜 송신 런타임을 쓴다. 실제 ROS·Gazebo 없음.
-- B 계산은 실제 `BStage`다(W 번호 → 하위 형 관측 → B `_dedupe`).
+가짜 수신·모델·TF(고정 `T_W_C`)·송신 런타임과 실제 `BStage`를 쓴다. 실제 ROS·Gazebo 없음.
+C `speed_mps` 조회값은 진단 기록만(정답 격리).
 """
 from __future__ import annotations
 
@@ -31,7 +30,7 @@ class WorldCli(TrackCli):
                   out=None):
         """main 실행 → (종료 코드, stderr, 출력 폴더, 런타임)."""
         out = out or self.out()
-        config = config or sort_config(self.tmp.name)   # #239: 추적 켬 송신은 require_track_id 필수(false = 기존 동작)
+        config = config or sort_config(self.tmp.name)   # 추적 켬 송신은 require_track_id 필수
         log = str(Path(self.tmp.name) / f"{Path(out).name}.jsonl")
         rt = runtime or ReleasingRuntime()
         scenario.link = lambda: self.controller.current
@@ -59,10 +58,10 @@ class WorldCli(TrackCli):
 
 
 class WorldCliTest(WorldCli):
-    """W14·W10·W12."""
+    """W 번호의 B 전달·정답 격리·TF 조회 스레드."""
 
     def test_world_planes_from_b_specs_per_spec(self):
-        """#250 P1: W 투영 높이를 B 규격에서 읽는다. 지금 규격(모두 105 mm)은 「uniform」이고 기록 높이 0.105·종류 없음,
+        """W 투영 높이를 B 규격에서 읽는다. 모두 105 mm면 「uniform」·기록 높이 0.105·종류 없음,
         BOLT_A 102 mm 사본이면 시작 줄에 종류별 높이가 찍히고 기록 높이는 그 두 값 중 하나다."""
         code, err, out, _ = self.run_world(Scenario(6))
         self.assertEqual(code, 0, err)
@@ -84,7 +83,7 @@ class WorldCliTest(WorldCli):
         self.assertTrue(planes and planes <= {0.102, 0.105}, planes)
 
     def test_w14_world_ids_reach_b_and_dedupe(self):
-        """W14: W 번호가 하위 형 관측 → 실제 B goal로 가고, 결과 전 두 번째부터 ALREADY_SENT, 송신은 번호당 1회."""
+        """W 번호가 하위 형 관측 → 실제 B goal로 가고, 결과 전 두 번째부터 ALREADY_SENT, 송신은 번호당 1회."""
         code, err, out, rt = self.run_world(Scenario(10))
         self.assertEqual(code, 0, err)
         self.assertIn("tracking ON space=world", err)
@@ -107,7 +106,7 @@ class WorldCliTest(WorldCli):
         self.assertTrue(any(t["part_track_id"] is not None for r in recs for t in r.get("tracks", [])))
 
     def test_w14_no_runner_pixel_tracker(self):
-        """W8/W14: W 모드에서는 실행기 픽셀 추적기를 만들지 않는다(offer에 tracks 인자 없음, ai_tracks 없음)."""
+        """W 모드에서는 실행기 픽셀 추적기를 만들지 않는다(offer에 tracks 인자 없음, ai_tracks 없음)."""
         kwargs = []
         real = LiveObservationLink.offer
 
@@ -126,7 +125,7 @@ class WorldCliTest(WorldCli):
         self.assertFalse(any('"ai_tracks"' in line for line in log.read_text(encoding="utf-8").splitlines()))
 
     def test_w10_speed_probe_does_not_change_tracking(self):
-        """W10(정답 격리): C speed_mps 조회값을 0·0.2·99로 바꿔도 world_tracks 배정·번호와 B 목표가 같다. 진단 필드만 다르다."""
+        """정답 격리: C speed_mps 조회값을 0·0.2·99로 바꿔도 world_tracks 배정·번호와 B 목표가 같다. 진단 필드만 다르다."""
         outcomes = []
 
         for i, value in enumerate((0.0, 0.2, 99.0)):
@@ -146,7 +145,7 @@ class WorldCliTest(WorldCli):
         self.assertEqual([o[2] for o in outcomes], [0.0, 0.2, 99.0])
 
     def test_w10_tracker_has_no_probe_reference(self):
-        """W10: 추적기 모듈은 진단 조회기·speed_mps를 참조하지 않는다(코드에 이름 없음)."""
+        """추적기 모듈은 진단 조회기·speed_mps를 참조하지 않는다(코드에 이름 없음)."""
         for name in ("world_tracking.py", "live_world_tracking.py"):
             code = (ROOT / "src" / "eyetoarm" / "vision" / name).read_text(encoding="utf-8").split('"""', 2)[2]
             code = re.sub(r"#.*$", "", code, flags=re.M)   # 주석(설명 문구)은 빼고 코드만 본다
@@ -154,7 +153,7 @@ class WorldCliTest(WorldCli):
             self.assertIsNone(re.search(r"(?<!max_belt_)(?<!conveyor_)speed_mps", code))
 
     def test_w12_control_flow_does_no_tf(self):
-        """W12: 제어 흐름(MainThread)은 TF를 조회하지 않는다(추적 스레드·worker·열기 스레드만)."""
+        """제어 흐름(MainThread)은 TF를 조회하지 않는다(추적 스레드·worker·열기 스레드만)."""
         tf = FakeTf()
         self.run_world_with_tf(Scenario(5), tf)
         self.assertNotIn("MainThread", tf.threads)
@@ -184,7 +183,7 @@ class WorldCliTest(WorldCli):
 
 
 class WorldArgsTest(WorldCli):
-    """W8(조합)·설정 오류."""
+    """옵션 조합·설정 오류."""
 
     def test_argument_errors(self):
         """world인데 --tracking 없음·기록 연결 없음·설정 없음, pixel인데 설정 있음, conveyor_state 비null은 2."""
@@ -197,7 +196,8 @@ class WorldArgsTest(WorldCli):
         cases = [[*live, "--tracking-space", "world", "--world-tracker-config", str(WORLD_CONFIG)],
                  ["--ros-link", *base, "--tracking", "--tracking-space", "world", "--world-tracker-config", str(WORLD_CONFIG)],
                  [*live, "--tracking", "--tracking-space", "world"],
-                 [*live, "--tracking", *PIXEL, "--world-tracker-config", str(WORLD_CONFIG)],   # #239: 생략은 이제 W라 명시 pixel
+                 # 공간 생략은 W라 pixel을 명시
+                 [*live, "--tracking", *PIXEL, "--world-tracker-config", str(WORLD_CONFIG)],
                  [*live, "--tracking", "--tracking-space", "world", "--world-tracker-config", str(bad)]]
 
         for argv in cases:
@@ -214,7 +214,7 @@ class WorldArgsTest(WorldCli):
                 self.assertEqual(code, 2, err.getvalue())
 
     def test_pixel_explicit_unchanged(self):
-        """W8(#239 수정): --tracking-space pixel을 명시하면 #215 동작 그대로(world_tracks 없음, 실행기 추적 tracks 인자 있음)."""
+        """--tracking-space pixel 명시는 픽셀 추적 그대로(world_tracks 없음, 실행기 tracks 인자 있음)."""
         code, err, out, rt = self.run_world(Scenario(5), extra=("--tracking", *PIXEL, "--live-sort-part"))
         self.assertEqual(code, 0, err)
         self.assertFalse((Path(out) / "world_tracks.jsonl").exists())

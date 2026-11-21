@@ -1,10 +1,4 @@
-"""scripts/check_opencv.py 단위시험.
-
-세 묶음으로 나눈다.
-1. 순수 계산 도우미: 기대값을 손으로 계산해 검사 (OpenCV 불필요)
-2. 판정 연결: FAIL·UNVERIFIED가 올바른 종료 코드와 정상 실행 검증 결과로 이어지는지 (실패 주입)
-3. 현재 환경의 정상 동작: 실제 OpenCV로 필수 시험 6개와 이미지 저장이 동작하는지
-"""
+"""scripts/check_opencv.py 단위시험: 순수 계산 도우미, 판정 연결(실패 주입), 현재 환경 정상 동작."""
 import importlib.util
 import json
 import math
@@ -94,8 +88,8 @@ def _fail_pnp(*_a, **_k):
 # ── 1. 순수 계산 도우미 ─────────────────────────────────────────────────────────
 
 def test_marker_object_points_order_matches_ippe_square():
-    """마커 꼭짓점 순서가 좌상·우상·우하·좌하이고 Z=0, 단위 m다(IPPE_SQUARE 순서, A 상세설계 §8)."""
-    # A 상세설계 §8: 0 좌상 (-L/2,+L/2), 1 우상, 2 우하, 3 좌하, Z=0, 단위 m
+    """마커 꼭짓점 순서가 좌상·우상·우하·좌하이고 Z=0, 단위 m다(IPPE_SQUARE 순서)."""
+    # 0 좌상 (-L/2,+L/2), 1 우상, 2 우하, 3 좌하, Z=0, 단위 m
     np.testing.assert_allclose(
         oc.marker_object_points(0.08),
         [[-0.04, 0.04, 0], [0.04, 0.04, 0], [0.04, -0.04, 0], [-0.04, -0.04, 0]],

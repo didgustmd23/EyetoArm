@@ -1,8 +1,5 @@
-"""학습기 I3 — 평가 순수 로직 시험(torch·ultralytics 없이 가짜 모델).
-
-근거: 학습기 설계 r2 §6(평가 내용·cold 시간 순서·eval.json·요약 열·기록 실패), 구현 지시 I3(evaluate 재사용, cold 문제 복사 금지,
-정답은 평가 경로에만), A 상세설계 §7.1 「1단계 실험 기록」 표 열 순서.
-"""
+"""학습기 평가 순수 로직 시험(torch·ultralytics 없이 가짜 모델).
+정답은 평가 경로에만 쓰고 요약 열은 A 상세설계 「1단계 실험 기록」 표 순서를 따른다."""
 import json
 import math
 import os
@@ -75,7 +72,7 @@ class EvalConfigTest(unittest.TestCase):
     """평가 설정 검증."""
 
     def test_repository_config_loads(self):
-        """저장소의 s1_eval.json은 유효하고, 계획은 공개 test 640 → Gazebo 640·1280 순서(A §7.1 평가 조건)."""
+        """저장소 s1_eval.json은 유효하고 계획은 공개 test 640 → Gazebo 640·1280 순서다."""
         from eyetoarm.training.evaluation import load_eval_config
         c = load_eval_config(os.path.join(ROOT, "config", "training", "s1_eval.json"))
         self.assertEqual((c.conf, c.iou), (0.25, 0.5))
@@ -83,7 +80,7 @@ class EvalConfigTest(unittest.TestCase):
         self.assertEqual((c.timing["warmup_n"], c.timing["measure_n"]), (10, 200))
 
     def test_rejects_bad_values_and_unknown_keys(self):
-        """알 수 없는 키·conf 0·중복/32배수 아닌 크기·절대 경로·감소하는 구간은 ConfigError, 값이 바뀌면 eval_config_id가 바뀐다."""
+        """미지 키·conf 0·잘못된 크기·절대 경로·감소 구간은 ConfigError, 값이 바뀌면 eval_config_id도 바뀐다."""
         for bad in ({"extra": 1}, {"conf": 0}, {"timing": {"imgsz": [640, 640], "warmup_n": 1, "measure_n": 1}},
                     {"timing": {"imgsz": [650], "warmup_n": 1, "measure_n": 1}},
                     {"public": {"data_dir": "/abs", "split": "test", "imgsz": [640]}},
@@ -109,7 +106,7 @@ class PercentileTest(unittest.TestCase):
 
 
 class TimingOrderTest(unittest.TestCase):
-    """cold 측정 순서(r1 F3): 준비 → cold → 워밍업 → 본 측정, 단계마다 최대 메모리 초기화."""
+    """cold 측정 순서: 준비 → cold → 워밍업 → 본 측정, 단계마다 최대 메모리 초기화."""
 
     def test_order_and_counts(self):
         """생성 뒤 첫 predict가 cold이고, 단계 앞마다 reset, 호출 수 1 + 2 + 3, 기록 검사 통과."""
@@ -119,7 +116,8 @@ class TimingOrderTest(unittest.TestCase):
         self.assertEqual(hist[0], "construct")
         self.assertEqual(hist[1], "reset")                             # cold 단계 시작
         self.assertEqual(hist[2], ("predict", "i0"))                   # 첫 predict = cold
-        self.assertEqual([i for i, h in enumerate(hist) if h == "reset"], [1, 4, 9])   # predict 뒤마다 sync
+        # predict 뒤마다 sync
+        self.assertEqual([i for i, h in enumerate(hist) if h == "reset"], [1, 4, 9])
         self.assertEqual(out["phase_order"], list(PHASES))
         self.assertEqual((out["cold"]["n"], out["warmup"]["n"], out["measure"]["n"], out["predict_calls"]),
                          (1, 2, 3, 6))
@@ -133,7 +131,7 @@ class TimingOrderTest(unittest.TestCase):
         self.assertIn("predict called before cold call", validate_timing(out, imgsz=640, warmup_n=2, measure_n=3))
 
     def test_partial_or_wrong_records_are_rejected(self):
-        """단계 누락·호출 수 부족·순서 변경·크기 불일치·계수기 없음·fresh 아님·비유한 값은 각각 문제로 보고된다."""
+        """단계 누락·호출 수 부족·순서·크기·계수기·fresh·비유한 값 문제를 각각 보고한다."""
         good = timing([])
         cases = {"missing measure": lambda d: d.pop("measure"),
                  "short warmup": lambda d: d["warmup"]["call_ms"].pop(),
@@ -199,7 +197,7 @@ class AccuracyTest(unittest.TestCase):
         self.assertEqual(validate_accuracy(out, self.plan()), [])
 
     def test_partial_records_rejected(self):
-        """키 누락·per_gt 수 불일치·mAP 비유한·tp > n·계획 불일치·빈 predictions·fp 불일치·잘못된 by_size·per_gt 항목 형식은 거부."""
+        """키 누락·개수 불일치·비유한 mAP·계획 불일치·빈 predictions 등 잘못된 정확도 기록은 거부한다."""
         good, _ = self.make()
         cases = {"missing gz1280": lambda d: d.pop("gz1280"), "per_gt": lambda d: d["gz640"]["per_gt"].pop(),
                  "map nan": lambda d: d["test640"].update(map50_box=float("nan")),
@@ -249,14 +247,14 @@ class RecordSummaryTest(unittest.TestCase):
     """eval.json·요약."""
 
     def test_columns_match_a_design_table(self):
-        """요약 열은 A 상세설계 §7.1 「1단계 실험 기록」 표 머리 줄과 글자 그대로 같은 순서다(추적 문서에서 직접 읽음)."""
+        """요약 열은 A 상세설계 「1단계 실험 기록」 표 머리 줄과 글자 그대로 같은 순서다."""
         path = os.path.join(ROOT, "docs", "design", "A담당_비전_상세설계.md")
         with open(path, encoding="utf-8") as f:
             header = next(line for line in f if line.startswith("| 번호 | 모델·가중치"))
         self.assertEqual(tuple(c.strip() for c in header.strip().strip("|").split("|")), SUMMARY_COLUMNS)
 
     def test_record_and_summary_columns(self):
-        """정답별 매칭은 eval_per_gt로 분리되고 Gazebo에 세부 재현율이 붙으며, 요약 열은 A §7.1 표 순서다."""
+        """정답별 매칭은 eval_per_gt로 분리되고 Gazebo에 세부 재현율이 붙으며 요약 열은 표 순서다."""
         cfg = eval_config_from_dict(eval_doc())
         acc, _ = AccuracyTest.make(AccuracyTest())
         rec, per_gt = build_eval_record(exp_id="S1-01", weights={"sha256": "x"}, eval_cfg=cfg,
@@ -275,7 +273,8 @@ class RecordSummaryTest(unittest.TestCase):
         self.assertEqual(tuple(row), SUMMARY_COLUMNS)
         md = summary_markdown([row])
         self.assertEqual(md.splitlines()[0], "| " + " | ".join(SUMMARY_COLUMNS) + " |")
-        self.assertEqual(md.splitlines()[2].count("|"), len(SUMMARY_COLUMNS) + 1)   # 값 안의 |는 바꿔 칸이 밀리지 않음
+        # 값 안의 |는 바꿔 칸이 밀리지 않음
+        self.assertEqual(md.splitlines()[2].count("|"), len(SUMMARY_COLUMNS) + 1)
 
 
 if __name__ == "__main__":

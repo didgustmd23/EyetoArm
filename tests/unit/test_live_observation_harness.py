@@ -1,11 +1,6 @@
-"""#171 R7 결합 하네스: `LiveObservationState` + `LiveObservationDispatcher` + 실시간 봉투 + B 입구 어댑터 + 순번 기록기를 가짜 입력·TF·B로 직접 구동한다.
-
-근거: `_workspace/171_builder2_live_a_to_b_plan.md` r3 §3·§5.1 R7·§8.1·§8.2(T-a~T-f, T-h~T-j, T-n, T-q).
-- `run()`·`scripts/run_pipeline.py`를 거치지 않는다(진입점 우회 경로 없음). D13 회귀는 마지막 시험에서 `run()`이 실시간 + b_consumer를
-  여전히 거부하는지 확인한다.
-- 경합은 worker 훅에서 장벽(Event)으로 순서를 강제한다. 용량·상한 값은 결정 K4·L-3·L-8 전 시험 후보다.
-- 실제 BStage 결과 한 건(`RealBStageTest`)은 합성 카메라·자세로 B 계산·주석이 끝까지 도는지만 본다(정확도 무관).
-"""
+"""실시간 결합 하네스: 관측 상태·디스패처·봉투·B 입구 어댑터·순번 기록기를 가짜 입력·TF·B로 구동한다.
+`run()`을 거치지 않으며, 경합은 worker 훅의 장벽(Event)으로 순서를 강제한다.
+`RealBStageTest`는 합성 카메라·자세로 B 계산·주석이 끝까지 도는지만 본다(정확도 무관)."""
 import json
 import tempfile
 import threading
@@ -79,7 +74,7 @@ class Harness:
             self.writer = LiveObservationEventWriter(self.state, str(Path(self.tmp) / "out"), lag_warn_s=2.0)
 
     def check_unlocked(self, where):
-        """T-e: 잠금을 쥔 채 무거운 일을 하면 위반으로 적는다."""
+        """잠금을 쥔 채 무거운 일을 하면 위반으로 적는다."""
         if self.state.lock_held():
             self.violations.append(where)
 
@@ -148,7 +143,7 @@ def gate():
 
 class NormalPathTest(unittest.TestCase):
     def test_accept_written_in_order_with_k5_and_tf(self):
-        """정상: 제출 → TF → 봉투 → B → 수락 → 순번 기록. K5·TF 대기가 따로 기록되고 주석 PNG가 참조된다(T-i)."""
+        """정상: 제출 → TF → 봉투 → B → 수락 → 순번 기록, K5·TF 대기 기록과 주석 PNG 참조."""
         h = Harness()
         h.disp.start()
         self.assertTrue(h.submit(1))
@@ -156,7 +151,7 @@ class NormalPathTest(unittest.TestCase):
         rep = h.finish()
         self.assertEqual((rep.pending, rep.unwritten, rep.timed_out, rep.error), (0, 0, False, None))
         recs = h.records()
-        # 실행 종료도 무효화이므로 현재 수락 결과를 철회한다(계획 §3.3)
+        # 실행 종료도 무효화이므로 현재 수락 결과를 철회한다
         self.assertEqual([r["kind"] for r in recs], ["accept", "revoke", "invalidation", "run_end"])
         acc = recs[0]
         self.assertEqual((acc["tf_status"], acc["goal_kind"], acc["input"]["image_seq"]), ("ok", "PICK_PLACE", 1))
@@ -167,7 +162,7 @@ class NormalPathTest(unittest.TestCase):
         self.assertEqual(h.violations, [])
 
     def test_h_late_tf_not_used(self):
-        """T-h: TF 반환 60 ms(성공) → late, B는 TF 없이(SKIP TF_UNAVAILABLE) 계산, 주석 없음. 최신 대체 0."""
+        """TF 반환이 늦으면 late이고 B는 TF 없이 SKIP TF_UNAVAILABLE, 주석·최신 대체 없음."""
         h = Harness(tf_wait_s=0.06)
         h.disp.start()
         h.submit(1)
@@ -194,7 +189,7 @@ class InvalidationBoundaryTest(unittest.TestCase):
         return h
 
     def test_c_n1_invalid_before_begin_no_b_call(self):
-        """T-c·T-n(i): TF 대기 뒤·② 전 무효화 → BStage 호출 0, 기록에 accept 없음."""
+        """TF 대기 뒤·② 전 무효화면 BStage 호출 0, 기록에 accept 없음."""
         h = self.run_with_gate("after_tf")
         self.assertEqual(h.compute_calls, [])
         self.assertEqual(h.disp.counts.get("stale_after_tf"), 1)
@@ -206,7 +201,7 @@ class InvalidationBoundaryTest(unittest.TestCase):
         self.assertEqual((h.compute_calls, h.disp.counts.get("stale_before_b")), ([], 1))
 
     def test_n2_invalid_after_begin_before_entry_output_zero(self):
-        """T-n(ii): ② 전이 직후·BStage 진입 전 무효화 → 계산 중 분류, BStage는 불릴 수 있지만 수락 0."""
+        """② 전이 직후·BStage 진입 전 무효화는 계산 중 분류이고 수락 0."""
         h = self.run_with_gate("after_begin")
         self.assertEqual(h.compute_calls, [1])
         self.assertEqual(h.disp.counts.get("not_accepted"), 1)
@@ -214,18 +209,18 @@ class InvalidationBoundaryTest(unittest.TestCase):
         self.assertNotIn("accept", [r["kind"] for r in h.records()])
 
     def test_d_n3_invalid_during_compute_output_zero(self):
-        """T-d·T-n(iii): B 계산 중 무효화 → 수락 0."""
+        """B 계산 중 무효화면 수락 0."""
         h = self.run_with_gate("in_compute")
         self.assertEqual((h.compute_calls, h.disp.counts.get("not_accepted")), ([1], 1))
 
     def test_a_invalid_just_before_accept(self):
-        """T-a: ③ 잠금 직전 무효화 → 수락 거부. 무효화 뒤 '현재'로 쓰인 기록 0."""
+        """③ 잠금 직전 무효화면 수락 거부, 무효화 뒤 '현재'로 쓰인 기록 0."""
         h = self.run_with_gate("before_accept")
         kinds = [r["kind"] for r in h.records()]
         self.assertNotIn("accept", kinds)
 
     def test_a_b_accept_then_invalidate_revokes(self):
-        """T-a·T-b: 수락 뒤 무효화 → 같은 순번열에서 뒤에 revoke, is_current 거짓."""
+        """수락 뒤 무효화면 같은 순번열 뒤에 revoke, is_current 거짓."""
         h = Harness()
         h.disp.start()
         h.submit(1)
@@ -233,7 +228,7 @@ class InvalidationBoundaryTest(unittest.TestCase):
         h.state.on_rx_boundary(1, "reconnect")
         h.finish()
         recs = h.records()
-        # 경계 무효화(철회 포함) 뒤 종료 무효화가 한 번 더 남는다. 종료 때는 현재 수락이 없어 철회가 없다
+        # 경계 무효화(철회 포함) 뒤 종료 무효화가 남고, 종료 때는 현재 수락이 없어 철회가 없다
         self.assertEqual([r["kind"] for r in recs], ["accept", "revoke", "invalidation", "invalidation", "run_end"])
         self.assertEqual(recs[1]["revoked_event_seq"], recs[0]["event_seq"])
         self.assertFalse(h.state.is_current_accept(recs[0]["event_seq"]))
@@ -242,7 +237,7 @@ class InvalidationBoundaryTest(unittest.TestCase):
 
 class SlotAndProfileTest(unittest.TestCase):
     def test_f_new_frame_supersedes_pending_only(self):
-        """T-f: 계산 중 새 프레임 2장 → 대기 칸만 교체(superseded 1), 진행 중 작업과 최신 1장은 수락."""
+        """계산 중 새 프레임 2장은 대기 칸만 교체(superseded 1)하고 진행 중·최신 1장은 수락."""
         hook, arrived, release = gate()
         h = Harness(hooks={"in_compute": hook})
         h.disp.start()
@@ -258,7 +253,7 @@ class SlotAndProfileTest(unittest.TestCase):
         self.assertEqual([r["input"]["image_seq"] for r in h.records() if r["kind"] == "accept"], [1, 3])
 
     def test_j_profile_change_blocks_old_and_uses_new_camera(self):
-        """T-j: 보정 변경 → 이전 보정 항목 제출 거부·대기 항목 ①에서 버림, 새 카메라로 새 B 단계."""
+        """보정 변경 뒤 이전 보정 항목은 거부·버리고 새 카메라로 새 B 단계를 쓴다."""
         hook, arrived, release = gate()
         h = Harness(hooks={"after_take": hook})
         h.disp.start()
@@ -299,7 +294,7 @@ class SlotAndProfileTest(unittest.TestCase):
 
 class CapacityAndCloseTest(unittest.TestCase):
     def test_q_backpressure_and_close_drains(self):
-        """T-q: 쓰기 담당이 멈춘 동안 W=1 → 두 번째 수락은 거부(출력 0). 종료 뒤 기록기가 모두 비운다."""
+        """쓰기 담당이 멈춘 동안 W=1이면 두 번째 수락은 거부되고, 종료 뒤 기록기가 모두 비운다."""
         h = Harness(w=1)
         h.disp.start()
         h.submit(1)
@@ -312,7 +307,7 @@ class CapacityAndCloseTest(unittest.TestCase):
         self.assertEqual([r["input"]["image_seq"] for r in h.records() if r["kind"] == "accept"], [1])
 
     def test_q_reserved_overflow_fail_stop_in_harness(self):
-        """T-q: 예약 칸 넘침 → fail-stop, 이후 제출 거부, 기록 마지막은 failed."""
+        """예약 칸 넘침은 fail-stop, 이후 제출 거부, 기록 마지막은 failed."""
         h = Harness(r=1)
         h.disp.start()
         h.state.on_rx_boundary(1, "reconnect")   # invalidation(1칸)
@@ -340,7 +335,7 @@ class CapacityAndCloseTest(unittest.TestCase):
         self.assertNotIn("accept", [r["kind"] for r in h.records()])
 
     def test_e_lock_discipline(self):
-        """T-e: 여러 건 처리 동안 잠금 안 TF·봉투·B·렌더 호출 0."""
+        """여러 건 처리 동안 잠금 안 TF·봉투·B·렌더 호출 0."""
         h = Harness()
         h.disp.start()
         for i in range(1, 6):
@@ -352,7 +347,7 @@ class CapacityAndCloseTest(unittest.TestCase):
 
 class SubmitLatencyTest(unittest.TestCase):
     def test_submit_does_not_wait_for_worker(self):
-        """제어 흐름 submit은 worker가 계산 중(장벽에서 정지)이어도 기다리지 않는다: 200회 중앙값 < 1 ms(시험 후보 기준)."""
+        """submit은 worker가 계산 중이어도 기다리지 않는다(200회 중앙값 < 1 ms)."""
         hook, arrived, release = gate()
         h = Harness(hooks={"in_compute": hook})
         h.disp.start()
@@ -374,7 +369,7 @@ class SubmitLatencyTest(unittest.TestCase):
 
 class RealBStageTest(unittest.TestCase):
     def test_real_bstage_annotation(self):
-        """실제 BStage·render_center로 수락 → 같은 BOutput으로 주석 PNG(합성 값, 정확도 무관)."""
+        """실제 BStage·render_center로 수락 → 같은 BOutput으로 주석 PNG(합성 값)."""
         import cv2
         from eyetoarm.transforms.b_stage import BStage
         root = Path(__file__).resolve().parents[2]
@@ -423,7 +418,7 @@ class RealBStageTest(unittest.TestCase):
 
 class D13RegressionTest(unittest.TestCase):
     def test_run_still_rejects_live_observation_consumer(self):
-        """D13 유지: 실시간 소스 + b_consumer(디스패처 제출로 감싸도)는 run()이 b_consumer_not_allowed로 거부, 제출 0."""
+        """실시간 소스 + b_consumer는 run()이 b_consumer_not_allowed로 거부하고 제출 0."""
         from test_pipeline_runner_live import Live
         from test_ros_image_adapter import image_msg
         h = Harness(writer=False)

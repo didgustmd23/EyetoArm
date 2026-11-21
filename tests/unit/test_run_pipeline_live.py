@@ -1,8 +1,5 @@
-"""CLI `--ros-link` 시험(L4) — 인자 검증·rclpy 확인·소스 ID 기본값·신호 → 정지 요청.
-
-근거: 계획 `docs/superpowers/plans/2026-11-16-live-link-camera.md` r3 §3.8(CLI 신호)·§4.1 L4, 결정 D4(소스 ID `gz_link`, A 임시)·
-D6(run_pipeline 확장, A 임시). ROS를 쓰지 않는다: rclpy 확인과 소스 팩토리를 주입한다.
-"""
+"""CLI `--ros-link` 시험: 인자 검증·rclpy 확인·소스 ID 기본값·신호 → 정지 요청.
+ROS를 쓰지 않고 rclpy 확인과 소스 팩토리를 주입한다."""
 import importlib.util
 import io
 import json
@@ -24,7 +21,7 @@ PLANAR = os.path.join(ROOT, "config", "vision", "opencv_planar.json")
 
 
 def fake_factory(made):
-    """영상 하나를 넣어 두는 가짜 연결 실시간 소스 팩토리. 만든 (source_id, reliability, 소스)를 적는다."""
+    """영상 하나를 넣어 둔 가짜 실시간 소스 팩토리. 만든 (source_id, reliability, 소스)를 적는다."""
     def make(source_id, reliability):
         """CLI가 부르는 팩토리 생성기."""
         def factory(issuer, generation_provider):
@@ -81,7 +78,7 @@ class CliArgsTest(unittest.TestCase):
         self.assertEqual(code, 2)
 
     def test_ros_link_runs_with_default_source_id(self):
-        """주입한 실시간 소스로 1프레임 처리 후 0. 소스 ID 기본 gz_link, 신뢰성 기본 None(=reliable), 요약에 live 항목."""
+        """주입 소스로 1프레임 처리 후 0, 소스 ID 기본 gz_link, 신뢰성 기본 None, 요약에 live 항목."""
         made = []
 
         with tempfile.TemporaryDirectory() as d:
@@ -100,7 +97,7 @@ class CliArgsTest(unittest.TestCase):
         self.assertEqual(recs[-1]["kind"], "source_stats")
 
     def test_stored_default_source_id_unchanged(self):
-        """저장 입력의 소스 ID 기본값은 기존 stored0 그대로."""
+        """저장 입력의 소스 ID 기본값은 stored0이다."""
         args = cli.build_parser().parse_args(["--images", "a.png", "--detect-config", PLANAR, "--log", "x"])
         cli._check_source_args(args, None)
 

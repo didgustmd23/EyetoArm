@@ -1,4 +1,4 @@
-"""scripts/coco_to_yolo_seg.py 단위 시험 (A 상세설계 §7.1 AI 파일럿 학습 자료 변환)."""
+"""scripts/coco_to_yolo_seg.py 단위 시험(AI 파일럿 학습 자료 변환)."""
 import hashlib
 import importlib.util
 import json

@@ -1,6 +1,6 @@
-"""#171 R1 단위시험: 수신 슬롯 경계 훅(잠금 안 호출), CameraProfileInfo의 CameraProfile 보관, LiveLinkSource `frame_epoch`.
+"""수신 슬롯 경계 훅(잠금 안 호출), CameraProfileInfo의 CameraProfile 보관, LiveLinkSource `frame_epoch` 시험.
 
-근거: `_workspace/171_builder2_live_a_to_b_plan.md` r3 §0.1·§3.1-1·§5.1 R1. 훅이 없으면 기존 동작과 같다(기존 slot·adapter 시험이 회귀).
+훅이 없으면 기존 동작과 같다.
 """
 import dataclasses
 import types
@@ -56,7 +56,7 @@ class SlotHookTest(unittest.TestCase):
         self.assertEqual([i.epoch for i in slot.poll_inputs()], [1, 2])
 
     def test_hook_error_counted_not_raised(self):
-        """훅 예외는 수신을 멈추지 않고 boundary_hook_errors로 세며, 경계 뒤에 치명 알림 BOUNDARY_HOOK_FAILED를 넣는다(#180 #5)."""
+        """훅 예외는 수신을 멈추지 않고 세며, 경계 뒤에 치명 알림 BOUNDARY_HOOK_FAILED를 넣는다."""
         def bad(epoch, kind):
             raise RuntimeError("boom")
 
@@ -66,7 +66,7 @@ class SlotHookTest(unittest.TestCase):
         self.assertEqual([i.kind.value for i in slot.poll_inputs()], ["profile_changed", "boundary_hook_failed"])
 
     def test_hook_closes_live_observation_state(self):
-        """T-k 결합: 실제 슬롯 경계가 LiveObservationState를 즉시 닫는다(제어 흐름 반영 전)."""
+        """실제 슬롯 경계가 LiveObservationState를 즉시 닫는다(제어 흐름 반영 전)."""
         st = LiveObservationState(run_id="r", generation=0, calibration_id=None,
                         config=LiveObservationConfig(write_capacity=2, reserved_capacity=4))
         slot = self.make_slot(st.on_rx_boundary)

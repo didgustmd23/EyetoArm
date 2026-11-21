@@ -1,9 +1,7 @@
-"""데이터 fingerprint(학습기 설계 r2 §3). 파일을 읽기만 하고 바꾸지 않는다.
+"""데이터 fingerprint 계산·비교. 파일을 읽기만 하고 바꾸지 않는다.
 
-- 목록 파일(분할 목록·manifest)과 dataset.yaml: sha256·줄 수.
-- 분할(dataset.yaml의 train·val·test 폴더)마다: 영상·라벨 수, 이름(확장자 뺀 stem) 일치, 클래스 번호별 인스턴스 수,
-  (이름 + 파일 sha256)을 정렬 순서로 누적한 영상·라벨 해시. 심볼릭 링크는 가리키는 내용을 읽는다.
-- 클래스 이름은 dataset.yaml `names`의 순서를 따른다(현재 bolt·nut).
+목록 파일·dataset.yaml은 sha256·줄 수, 분할마다 영상·라벨 수·이름 일치·클래스별 인스턴스 수와
+(이름 + 파일 sha256) 누적 해시를 담는다. 심볼릭 링크는 가리키는 내용을 읽는다.
 """
 from __future__ import annotations
 

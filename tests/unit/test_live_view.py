@@ -1,7 +1,6 @@
-"""실시간 검출 확인 창 순수 부분(#138) — `DisplayBridge`(최신 1칸·버전·경계)와 `render_view`/`draw_detections`(그리기) 시험.
+"""실시간 검출 확인 창 순수 부분 — `DisplayBridge`(최신 1칸·버전·경계)와 `render_view`/`draw_detections` 시험.
 
-근거: reviewer 지시 138 §2(같은 프레임 쌍·원본 불변·ROI 이중 가산 금지·무검출·valid=False·경계 즉시 폐기)·§3(최신 1칸·그리기
-직전 버전 확인·producer 비대기)·§5(단위시험 목록). 창·ROS·GPU 없이 합성 영상과 시험용 표시 결과만 쓴다.
+창·ROS·GPU 없이 합성 영상과 시험용 표시 결과만 쓴다.
 """
 import gc
 import threading
@@ -168,7 +167,7 @@ class RenderTest(unittest.TestCase):
         self.assertIn("LAST IMAGE", " ".join(_lines(bridge)))
 
     def test_info_line_fields(self):
-        """정보 줄: run/source/image_seq/gen, 시각과 SIM_TIME, 검출 ms, conf, 표시용(valid=False). FPS·지연은 없다."""
+        """정보 줄: run/source/image_seq/gen, 시각·SIM_TIME, 검출 ms, conf, 표시용(valid=False). FPS·지연 없음."""
         bridge = DisplayBridge()
         bridge.on_outcome(completed(job(3, generation=2, job_seq=5), [big_instance()]), current=True)
         text = " ".join(_lines(bridge))

@@ -1,8 +1,4 @@
-"""학습기 I1 — 공식 가중치 확인·내려받기 보호(`eyetoarm.training.weights`) 시험. 네트워크를 쓰지 않는다(가짜 내려받기).
-
-근거: 학습기 설계 r2 §3(있으면 sha256·크기 대조·불일치 시 덮어쓰지 않음, 없을 때 `allow_download` 명시만, `.part`에 받고 해시가
-맞을 때만 이름 바꿈, provenance 기록, ultralytics 자동 내려받기 미사용).
-"""
+"""학습기 공식 가중치 확인·내려받기 보호(`eyetoarm.training.weights`) 시험. 네트워크는 쓰지 않는다."""
 import hashlib
 import json
 import os
@@ -137,7 +133,7 @@ class WeightsTest(unittest.TestCase):
 
 
 class FakeResponse:
-    """가짜 HTTP 응답 스트림(실제 네트워크 없음). chunks는 read마다 돌려줄 바이트, 예외면 그 자리에서 올린다."""
+    """가짜 HTTP 응답 스트림. chunks는 read마다 돌려줄 바이트, 예외면 그 자리에서 올린다."""
 
     def __init__(self, chunks, length=None, clock=None, step_s=0.0):
         """읽기마다 clock을 step_s만큼 진행한다."""
@@ -166,7 +162,7 @@ class FakeResponse:
 
 
 class StreamDownloadTest(unittest.TestCase):
-    """기본 내려받기 경로의 전송 중 상한(r1 F1). 실제 네트워크 없이 가짜 응답 스트림을 주입한다."""
+    """기본 내려받기 경로의 전송 중 상한. 가짜 응답 스트림을 주입한다."""
 
     def setUp(self):
         """임시 가중치 폴더."""
@@ -198,7 +194,7 @@ class StreamDownloadTest(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(self.dir)), ["provenance.json", "yolov8n-seg.pt"])
 
     def test_oversize_without_content_length_stops_early(self):
-        """Content-Length가 없어도 누적 바이트가 허용 크기를 넘는 즉시 중단·.part 삭제, 남은 조각은 읽지 않는다."""
+        """Content-Length가 없어도 누적 바이트가 허용 크기를 넘으면 즉시 중단·.part 삭제한다."""
         big = [b"x" * 100] * 1000
         resp = FakeResponse(big)
 
@@ -241,7 +237,7 @@ class StreamDownloadTest(unittest.TestCase):
 
 
 class ChildDownloadTest(unittest.TestCase):
-    """실제 네트워크 경로의 부모 소유 전체 기한(r2 F1 잔여). 네트워크 대신 자식 명령을 주입한다."""
+    """실제 네트워크 경로의 부모 소유 전체 기한. 네트워크 대신 자식 명령을 주입한다."""
 
     def setUp(self):
         """임시 폴더."""
@@ -250,7 +246,7 @@ class ChildDownloadTest(unittest.TestCase):
         self.dest = os.path.join(self.tmp.name, "w.pt.part")
 
     def test_stalled_child_killed_at_deadline(self):
-        """끝나지 않는 자식(잠자기)은 부모 전체 기한(0.5 s)에서 그룹 SIGKILL·회수 확인되고 WeightsError(child 정보 포함), 소요 < 기한+회수 한도."""
+        """끝나지 않는 자식은 부모 전체 기한에서 그룹 SIGKILL·회수되고 WeightsError, 소요는 한도 안."""
         t0 = time.monotonic()
 
         with self.assertRaises(WeightsError) as ctx:
@@ -278,7 +274,7 @@ class ChildDownloadTest(unittest.TestCase):
         self.assertEqual((info["rc"], info["reaped"], _read(self.dest, "rb")), (0, True, b"ok"))
 
     def test_default_prepare_path_uses_child(self):
-        """opener·downloader를 주지 않으면 prepare_weights는 자식 경로(download_with_deadline)를 후보 크기·전체 기한·개별 제한으로 부르고, 기한 오류면 .part를 지운다."""
+        """opener·downloader가 없으면 자식 경로를 후보 크기·기한·제한으로 부르고, 기한 오류면 .part 삭제."""
         calls = []
 
         def fake(url, dest, **kw):
@@ -298,7 +294,7 @@ class ChildDownloadTest(unittest.TestCase):
 
 
 class DownloadInterruptTest(unittest.TestCase):
-    """다운로드 중 정지 요청·예외에서 자식 핸들을 잃지 않는다(I2 확인점 3)."""
+    """다운로드 중 정지 요청·예외에서 자식 핸들을 잃지 않는다."""
 
     def setUp(self):
         """임시 폴더."""
@@ -307,7 +303,7 @@ class DownloadInterruptTest(unittest.TestCase):
         self.dest = os.path.join(self.tmp.name, "w.pt.part")
 
     def test_stop_flag_ends_long_download(self):
-        """긴 기한(60 s) 중 정지 요청(should_stop)이 오면 확인 간격 안에 자식을 그룹 kill·회수하고 WeightsError(원인 stop_requested)."""
+        """긴 기한 중 정지 요청이 오면 확인 간격 안에 자식을 그룹 kill·회수하고 WeightsError."""
         t0 = time.monotonic()
         state = {"n": 0}
 
@@ -326,7 +322,7 @@ class DownloadInterruptTest(unittest.TestCase):
         self.assertLess(time.monotonic() - t0, 3.0)
 
     def test_keyboard_interrupt_cleans_child_and_reraises(self):
-        """확인 함수에서 KeyboardInterrupt가 나도 자식을 정리한 뒤 원래 KeyboardInterrupt를 다시 올린다(자식 pid 사라짐)."""
+        """확인 함수에서 KeyboardInterrupt가 나도 자식을 정리한 뒤 원래 예외를 다시 올린다."""
         seen = {}
 
         def should_stop():

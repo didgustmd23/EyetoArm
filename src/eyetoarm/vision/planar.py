@@ -1,16 +1,7 @@
-"""OpenCV 전처리 설정 로더와 표시용(raw) 평면 윤곽 후보 추출 — A 내부 잠정안.
+"""OpenCV 전처리 설정 로더와 표시용(raw) 평면 윤곽 후보 추출(A 내부 잠정안).
 
-근거: A 상세설계 §5.1(공통 프레임)·§7(평면 검출 처리 1~3단계, 설정 식별자),
-`vision/pixel_map.py`(단순 스케일 복원 잠정 규약). 설정 필드·처리 순서·식별자 정규화는
-A 내부 잠정안이며, 이 모듈의 `PlanarConfig`·`detect_planar`가 그 정본이다.
-
-- 결과는 표시용이다. `eligible`은 영상 필터(면적 범위·경계 미접촉) 통과라는 뜻일 뿐이며
-  B 계산용 유효 판정·관측면·클래스·규격·보정 좌표가 아니다. 후보를 자동 선정하지 않는다.
-- 입력은 공통 `common.types.FramePacket`이다(A 확장 `inputs.base.FramePacket`도 받는다).
-- 이 모듈의 설정·결과 자료형(`PlanarConfig`·`PlanarCandidate`·`PlanarResult`)은 A 내부 표시용이다.
-  D API·B 계약이나 공통 `PlanarObservation`·`WorkPlanarResult`가 아니다.
-- 표본 경로·정답·라벨을 읽지 않는다. 모든 입력에 같은 설정을 적용한다.
-- Qt·ROS를 import하지 않는다.
+`eligible`은 영상 필터 통과 뜻일 뿐 B 계산용 유효 판정이 아니며 후보를 자동 선정하지 않는다.
+정답·라벨을 읽지 않고 모든 입력에 같은 설정을 적용한다. Qt·ROS를 import하지 않는다.
 """
 from __future__ import annotations
 
@@ -93,11 +84,9 @@ def _kernel(v, name: str) -> int:
 
 @dataclass(frozen=True)
 class PlanarConfig:
-    """검증한 전처리·필터 설정의 변경 불가 스냅샷(A 상세설계 §7 「소스별 설정」).
+    """검증한 전처리·필터 설정의 변경 불가 스냅샷. 직접 생성해도 검증을 우회하지 않는다(잘못된 값은 ValueError).
 
-    생성자가 모든 값을 검증하고 정규화한다(직접 생성해도 검증을 우회하지 않는다). 잘못된 값은 ValueError.
-    배열은 튜플, 실수 필드는 float로 보관한다. `config_sha256`은 정규화한 값에서 계산한다.
-    값을 바꾸려면 새 설정을 로드하거나 새로 생성한다.
+    `config_sha256`은 정규화한 값에서 계산한다.
     """
 
     format_version: int
@@ -250,13 +239,7 @@ def load_config(path: str | os.PathLike) -> PlanarConfig:
 class PlanarCandidate:
     """윤곽 하나(표시용). 좌표·면적·경계 상자는 원본 raw 픽셀이다.
 
-    - `index`: `cv2.findContours` 출력 순번(정렬하지 않음).
-    - `points_source`: 원본 raw 좌표 float32 (N, 2), 읽기 전용.
-    - `bbox_source`: (x_min, y_min, x_max, y_max) 원본 px.
-    - `border_sides`: 처리 영상 기준 접촉 변(left, top, right, bottom 순).
-    - `clip_reasons`: 접촉 변이 원본 변이면 `source_edge`, 원본 안쪽 ROI 변이면 `roi_edge`(이 순서).
-    - `area_reject_reason`: None, `area_below_min`, `area_above_max`.
-    - `eligible`: 면적 통과이고 경계 미접촉. B 유효 판정이 아니다.
+    `index`는 `cv2.findContours` 출력 순번(정렬 없음), `eligible`은 면적 통과·경계 미접촉이며 B 유효 판정이 아니다.
     """
 
     index: int
@@ -319,8 +302,7 @@ def _check_frame(frame: FramePacket) -> np.ndarray:
 def detect_planar(frame: FramePacket, config: PlanarConfig) -> PlanarResult:
     """아래 1)~10) 순서로 표시용 윤곽 후보를 추출한다. 입력 배열·메타데이터를 바꾸지 않는다.
 
-    잘못된 프레임·원본 밖 ROI는 ValueError, `PlanarConfig`가 아닌 설정은 TypeError다
-    (입력 사건이나 무검출로 바꾸지 않는다).
+    잘못된 프레임·원본 밖 ROI는 ValueError, `PlanarConfig`가 아닌 설정은 TypeError다.
     """
     if not isinstance(config, PlanarConfig):
         raise TypeError("config must be a PlanarConfig")

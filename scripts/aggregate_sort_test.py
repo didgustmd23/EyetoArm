@@ -1,17 +1,9 @@
 #!/usr/bin/env python3
-"""분류 시험 결과 취합·AI/OpenCV 비교 도구(#186, 계획서 §10.3, A 상세설계 §7.1·§9).
+"""분류 시험 결과 취합(aggregate)·AI/OpenCV 비교(compare)·가짜 입력 생성(fake) 도구.
 
-    PYTHONPATH=src python3 scripts/aggregate_sort_test.py aggregate --sequence seq.json --events events.jsonl \\
-        --meta run_meta.json --out-dir evaluation/results/sort/<eval_run_id>
-    PYTHONPATH=src python3 scripts/aggregate_sort_test.py compare --a opencv/summary.json --b ai/summary.json \\
-        --out-dir evaluation/results/sort/compare_<name>
-    PYTHONPATH=src python3 scripts/aggregate_sort_test.py fake --sequence seq.json --outcomes 3=isolated,5=b_skip \\
-        --method opencv --out-dir <dir>      # 가짜 입력(시험·시연용): events.jsonl·run_meta.json 생성
-
-- 실행 기록은 초안 JSONL 형식(`eyetoarm.sorteval.records`)이다. C·B 형식이 정해지면 어댑터를 바꾼다.
-- 출력: aggregate → summary.json·summary.md·per_supply.csv, compare → compare.json·compare.md. 이미 있으면 덮어쓰지 않는다.
-- 가짜 입력 결과는 표 머리에 FAKE_INPUT을 붙이고, 비교 표에도 전파한다.
-- 종료 코드: 0 = 성공, 1 = 입력 거부(검증 실패), 2 = 인자·파일 오류.
+사용: PYTHONPATH=src python3 scripts/aggregate_sort_test.py aggregate --sequence seq.json \\
+      --events events.jsonl --meta run_meta.json --out-dir evaluation/results/sort/<run_id>
+종료 코드: 0 성공, 1 입력 거부(검증 실패), 2 인자·파일 오류. 출력 파일은 덮어쓰지 않는다.
 """
 from __future__ import annotations
 

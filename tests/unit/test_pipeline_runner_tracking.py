@@ -1,8 +1,5 @@
-"""실행기 추적 선택 연결(#151 S2 `tracker`) 시험 — 갱신 지점·경계 reset·실패 격리·기본 None 회귀·CLI opt-in.
-
-근거: reviewer 구현 명세 #151 §1(D6·D10·D11)·§3, 계획 `_workspace/150_builder2_part_track_id_plan.md` r2 §4.1·§4.2. 가짜 저장 소스·가짜 실시간
-소스·실제 LiveLinkSource(가짜 수신)만 쓴다(ROS·YOLO·창 없음). 추적 성능·신원 정확도는 확인하지 않는다.
-"""
+"""실행기 추적 선택 연결 시험: 갱신 지점·경계 reset·실패 격리·기본 None 회귀·CLI opt-in.
+가짜 저장·실시간 소스와 가짜 수신 LiveLinkSource만 쓰고 추적 성능은 확인하지 않는다."""
 import io
 import os
 import sys
@@ -33,7 +30,7 @@ class RecTracker(PartTracker):
     """호출을 기록하는 추적기(시험 관측용). fail_at: 그 번째 update에서 예외."""
 
     def __init__(self, *a, fail_at=None, fail_reset=None, fail_disable=False, fail_stats=False, **kw):
-        """기록 목록 준비. fail_reset: 그 사유의 reset에서 예외, fail_disable·fail_stats: 그 호출에서 예외."""
+        """기록 목록 준비. fail_reset: 그 사유의 reset에서, fail_disable·fail_stats: 그 호출에서 예외."""
         super().__init__(*a, **kw)
         self.frames, self.resets, self.fail_at, self.calls = [], [], fail_at, 0
         self.fail_reset, self.fail_disable, self.fail_stats = fail_reset, fail_disable, fail_stats
@@ -108,8 +105,7 @@ class DefaultAndNormalTest(unittest.TestCase):
     """기본 None 회귀와 정상 갱신."""
 
     def test_default_off_same_records(self):
-        """tracker를 넘겨도(정상 실행) `ai_tracks` 줄(S3, 갱신마다 1줄)을 뺀 기록·계수·종료 코드가 넘기지 않은 실행과 같고,
-        넘기지 않으면 ai_tracks 줄이 없고 result.tracking은 None."""
+        """tracker를 넘겨도 `ai_tracks` 줄을 뺀 기록·계수·종료 코드가 같고, 안 넘기면 tracking은 None."""
         res0, recs0, _ = run_stored(stored_factory(4, {}))
         res1, recs1, err1 = run_stored(stored_factory(4, {}), trk=tracker())
 
@@ -134,7 +130,7 @@ class DefaultAndNormalTest(unittest.TestCase):
         self.assertTrue(all(f.updated for f in trk.frames))
 
     def test_run_start_and_end_reset(self):
-        """실행 시작·끝에서 reset(run_start·run_end). 같은 추적기를 다음 실행에 써도 이전 트랙이 이어지지 않는다."""
+        """실행 시작·끝에서 reset하며 같은 추적기를 다음 실행에 써도 이전 트랙이 이어지지 않는다."""
         trk = tracker()
         run_stored(stored_factory(3, {}), trk=trk)
         self.assertEqual((trk.resets[0], trk.resets[-1]), ("run_start", "run_end"))
@@ -197,7 +193,7 @@ class NotUpdatedTest(unittest.TestCase):
 
 
 class BoundaryTest(unittest.TestCase):
-    """입력 경계 reset(§4.2): 되감기·프로필·재접속 종료, FRAME_TIMEOUT 보류, 입력 오류 종료."""
+    """입력 경계 reset: 되감기·프로필·재접속 종료, FRAME_TIMEOUT 보류, 입력 오류 종료."""
 
     def run_live(self, live, trk):
         """DisplayLive에 tracker를 더해 실행."""
@@ -261,10 +257,10 @@ class BoundaryTest(unittest.TestCase):
 
 
 class FailureIsolationTest(unittest.TestCase):
-    """D10: 추적 예외 격리 vs 기록·연결부 실패 전파."""
+    """추적 예외 격리와 기록·연결부 실패 전파."""
 
     def test_tracking_exception_isolated(self):
-        """2번째 갱신에서 추적 예외: tracking_failed 기록 1줄·stderr, 추적 끔(이후 update·reset 호출 없음, S2 r1 latch), 종료 코드·코어 계수는 추적 없는 실행과 같음."""
+        """갱신 중 추적 예외는 tracking_failed 1줄·stderr 뒤 추적을 끄고 종료 코드·계수는 같다."""
         res0, _, _ = run_stored(stored_factory(4, {}))
         trk = tracker(fail_at=2)
         res, recs, err = run_stored(stored_factory(4, {}), trk=trk)
@@ -282,7 +278,7 @@ class FailureIsolationTest(unittest.TestCase):
         self.assertEqual(res.tracking["failed"], "RuntimeError: tracker boom")
 
     def test_recorder_failure_still_fail_stop(self):
-        """tracking_failed 기록이 실패하면 추적 예외로 삼키지 않고 기존 log_failure(종료 1)."""
+        """tracking_failed 기록이 실패하면 추적 예외로 삼키지 않고 log_failure(종료 1)다."""
         class BrokenLog(PipelineLog):
             """tracking_failed 쓰기 실패."""
 
@@ -296,7 +292,7 @@ class FailureIsolationTest(unittest.TestCase):
         self.assertEqual((res.exit_code, res.stop_reason), (1, "log_failure"), err)
 
     def test_handoff_failure_still_handoff_failed(self):
-        """추적을 켜도 연결부 넘침은 기존대로 handoff_failed(종료 1)."""
+        """추적을 켜도 연결부 넘침은 handoff_failed(종료 1)다."""
         res, _, err = run_stored(stored_factory(4, {}), trk=tracker(), handoff_sink=AToCHandoff(capacity=2))
 
         self.assertEqual((res.exit_code, res.stop_reason), (1, "handoff_failed"), err)
@@ -310,10 +306,10 @@ class FailureIsolationTest(unittest.TestCase):
 
 
 class FailureLatchTest(unittest.TestCase):
-    """S2 r1: 실행기 추적 실패 latch(F2)와 run_end reset 실패 진단(F1)."""
+    """추적 실패 latch와 run_end reset 실패 진단."""
 
     def test_disable_failure_still_stops_tracking(self):
-        """update 예외 뒤 disable도 실패해도 그 실행의 추적 갱신은 멈춘다(update 2회뿐), 진단 1줄·계수 불변."""
+        """update 예외 뒤 disable도 실패해도 추적 갱신은 멈추고 진단 1줄·계수 불변이다."""
         res0, _, _ = run_stored(stored_factory(4, {}))
         trk = tracker(fail_at=2, fail_disable=True)
         res, recs, err = run_stored(stored_factory(4, {}), trk=trk)
@@ -329,7 +325,7 @@ class FailureLatchTest(unittest.TestCase):
         self.assertNotIn("run_end", trk.resets)        # 실패 뒤 reset도 다시 시도하지 않음
 
     def test_run_end_reset_failure_diagnosed_once(self):
-        """run_end reset 실패: 추적 실패 규칙대로 errors·stderr·JSONL tracking_failed 1줄(작업 ids 없음), 종료 코드 0 유지."""
+        """run_end reset 실패는 errors·stderr·tracking_failed 1줄로 남고 종료 코드 0을 유지한다."""
         trk = tracker(fail_reset="run_end")
         res, recs, err = run_stored(stored_factory(2, {}), trk=trk)
 
@@ -342,7 +338,7 @@ class FailureLatchTest(unittest.TestCase):
         self.assertEqual(res.tracking["failed"], "RuntimeError: reset failure: run_end")
 
     def test_run_end_reset_failure_with_log_failure_keeps_cleanup(self):
-        """run_end reset 실패의 기록도 실패하면 기존 기록 실패 규칙(종료 1, 먼저 정해진 정지 사유 유지, 오류 진단)이고 코어 close·소스 close·연결부 정리는 그대로."""
+        """run_end reset 실패 기록도 실패하면 종료 1이고 코어·소스·연결부 정리는 그대로다."""
         class BrokenLog(PipelineLog):
             """tracking_failed 쓰기 실패."""
 
@@ -379,7 +375,7 @@ class CliTest(unittest.TestCase):
         self.addCleanup(sys.path.remove, os.path.join(root, "scripts"))
 
     def test_view_live_detection_tracking_flag(self):
-        """--tracking이면 runner에 M2 PartTracker(주입된 발급기)를 part_tracker로 넘기고, 없으면 넘기지 않는다."""
+        """--tracking이면 runner에 M2 PartTracker를 part_tracker로 넘기고, 없으면 넘기지 않는다."""
         from test_view_live_detection import FakeRunner, FakeWindow, ViewerMainTest
 
         base = ViewerMainTest("test_runner_wired_like_cli")
@@ -398,7 +394,7 @@ class CliTest(unittest.TestCase):
                     self.assertIs(trk.mode, TrackMode.HEURISTIC)
 
     def test_run_pipeline_tracking_requires_ai(self):
-        """run_pipeline --tracking: OpenCV 검출이면 argparse 오류(종료 2, 기존 인자 조합 규약), AI면 run에 part_tracker를 넘긴다."""
+        """run_pipeline --tracking은 OpenCV 검출이면 argparse 오류(종료 2), AI면 part_tracker를 넘긴다."""
         import run_pipeline
 
         with tempfile.TemporaryDirectory() as tmp:

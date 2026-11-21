@@ -1,20 +1,8 @@
-"""학습기 I3 — 평가 실행(`eval`)과 기존 결과 등록(`register-legacy`). torch·ultralytics를 import하지 않는다.
+"""학습기 평가 실행(`run_eval`)과 기존 결과 등록(`register_legacy`). torch·ultralytics를 import하지 않는다.
 
-**평가(`run_eval`, 설계 r2 §6):**
-- 대상: run_set의 완료 후보(새 실행 `status.json` completed + `run_manifest.best_sha256`, 또는 legacy `registration.json`
-  status completed)의 `best.pt`. 시작 전에 best.pt sha256이 기록과 같은지 확인한다(다르면 그 후보 평가 시작 안 함).
-- 후보마다 자식 3개를 **순서대로**: 시간(크기별 1개, 설정 순서) → 정확도(모델 하나로 공개 test·Gazebo 640·1280).
-  크기마다 새 자식이므로 각 크기의 첫 호출은 그 프로세스·그 모델의 첫 predict다. 정확도는 시간 측정이 끝난 뒤에 돈다.
-- 자식 수명·감시·정리·소유권은 학습과 같은 `_Batch.child_run`(Popen 전 토큰, eval_deadline_s, 유한 정리, 미확인이면 중단·lock 유지).
-- 각 자식 시작·끝에 GPU 사용 프로세스(nvidia-smi, 제한시간)·다른 세션 gz sim/ax_ws 수·MemAvailable을 기록한다(종료시키지 않음).
-- 자식 기록이 없거나 일부만 쓰였거나 검사(`validate_*`)에 실패하면 그 후보 평가는 failed이고 `eval.json`을 쓰지 않는다(요약 제외).
-  성공하면 `eval/eval_per_gt.json` → `eval/eval.json` 순으로 원자 기록한다. 기존 `eval.json`이 있으면 다시 평가하지 않는다(덮어쓰기 없음).
-- test·Gazebo 정답은 평가 기록에만 쓰인다. 학습·조기 종료·신뢰도·후보 설정을 바꾸지 않는다.
-
-**등록(`register_legacy`, 설계 r2 §8·확인점 3):** `legacy.verify_legacy`로 검증한 기록만 새 run_set에 쓴다. 원본은 읽기만 하고 등록 전후
-sha256을 비교한다. 콜백 기록(applied·progress)을 만들지 않는다. 쓰는 순서는 등록 기록 → run_set.json → SHA256SUMS → `REGISTERED.json`
-(게시 표지, 마지막)이다. 따라서 등록 직후 SHA256SUMS는 표지를 포함하지 않는다(의도된 시점 예외, I3 r1 L1). 표지 자체는 등록 기록 해시로
-결합되고, 이후 eval 종료 때 갱신되는 SHA256SUMS에 포함된다.
+평가는 완료 후보의 `best.pt` sha256을 확인한 뒤 자식 프로세스로 시간(크기별) → 정확도 순으로 돌고,
+검사를 통과할 때만 `eval.json`을 마지막에 원자 기록한다(덮어쓰기 없음). 정답은 평가 기록에만 쓰인다.
+등록은 검증한 기록만 쓰고 원본은 읽기만 하며, 게시 표지 `REGISTERED.json`을 마지막에 쓴다.
 """
 from __future__ import annotations
 
@@ -36,7 +24,7 @@ from eyetoarm.training.records import write_sha256sums
 from eyetoarm.training.runner import (RunResult, StopFlag, _Batch, _host_identity, _job_states, _read_json,
                                       count_other_sessions, read_mem_available_kib)
 
-REGISTERED = "REGISTERED.json"   # legacy 등록 묶음 게시 표지(I3 r1 F4)
+REGISTERED = "REGISTERED.json"  # legacy 등록 묶음 게시 표지
 GPU_APPS_CMD = ["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"]
 
 
@@ -67,7 +55,7 @@ def _target(repo_root: str, exp_dir: str) -> dict:
     """평가 대상 판정: 가중치 경로·기대 sha256·학습 정보(요약용). 완료가 아니면 status만."""
     reg = _read_json(os.path.join(exp_dir, "registration.json"))
     if reg is not None:
-        # 게시 계약(F4): 같은 묶음의 표지가 있고, 원본 무변이 확인됐고, 이 등록 기록의 해시가 표지와 같을 때만 소비한다
+        # 게시 계약: 같은 묶음의 표지가 있고, 원본 무변이 확인됐고, 등록 기록 해시가 표지와 같을 때만 소비
         mark = _read_json(os.path.join(os.path.dirname(exp_dir), REGISTERED)) or {}
         if (mark.get("batch_id") != reg.get("batch_id") or mark.get("sources_unchanged") is not True
                 or (mark.get("registrations") or {}).get(os.path.basename(exp_dir)) != canonical_sha(reg)):
@@ -138,7 +126,7 @@ class _EvalBatch(_Batch):
         jobs = [(f"timing{s}", "timing", s) for s in tm["imgsz"]] + [("accuracy", "accuracy", None)]
         outputs, loads, problems, status = {}, [], [], "failed"
         try:
-            inputs_start = eval_inputs_fingerprint(self.repo_root, self.eval_cfg)   # 실제 평가 입력(F3)
+            inputs_start = eval_inputs_fingerprint(self.repo_root, self.eval_cfg)  # 실제 평가 입력
         except (OSError, ValueError) as exc:
             inputs_start = None
             problems.append(f"evaluation inputs unreadable: {type(exc).__name__}: {exc}")
@@ -167,7 +155,7 @@ class _EvalBatch(_Batch):
             if run["rc"] != 0 or run["stop_reason"]:
                 problems.append(f"{job}: rc {run['rc']} stop_reason {run['stop_reason']}")
                 break
-            if run["watch_fail"] is not None:   # 필수 기록(감시 표본) 실패는 성공이 아니다(F2)
+            if run["watch_fail"] is not None:  # 필수 기록(감시 표본) 실패는 성공이 아니다
                 problems.append(f"{job}: watch record write failed: {run['watch_fail']}")
                 break
             try:
@@ -195,10 +183,10 @@ class _EvalBatch(_Batch):
                     timing={s: outputs[f"timing{s}"] for s in tm["imgsz"]}, accuracy=outputs["accuracy"],
                     plan=self.eval_cfg.accuracy_plan(), parts=parts, loads=loads)
                 record.update(train=target["train"], attempt=n)
-                summary_row(exp_id=cand.exp_id, train=record["train"], record=record)   # 요약에 쓸 수 있는지 미리 확인
+                summary_row(exp_id=cand.exp_id, train=record["train"], record=record)  # 요약 가능 확인
                 sha = canonical_sha(record)
-                # 게시 계약: per_gt → attempt status(evaluated, eval_sha256) → attempts end → eval.json(마지막).
-                # 앞의 필수 기록이 실패하면 eval.json을 쓰지 않는다. eval.json은 status의 해시와 맞을 때만 완료다(accepted_eval).
+                # 게시 계약: per_gt → attempt status → attempts end → eval.json(마지막). 앞 기록이 실패하면
+                # eval.json을 쓰지 않는다. eval.json은 status의 해시와 맞을 때만 완료다.
                 write_json_atomic(os.path.join(eval_dir, "eval_per_gt.json"), per_gt)
                 write_json_atomic(os.path.join(attempt_dir, "status.json"),
                                   {"status": "evaluated", "eval_sha256": sha, "problems": [], "loads": loads})
@@ -254,7 +242,7 @@ def run_eval(cfg: TrainingConfig, eval_cfg: EvalConfig, *, repo_root: str, run_s
                 rec, why = accepted_eval(os.path.join(exp_dir, "eval"))
                 if rec is not None:
                     entry["status"] = "already_evaluated"   # 덮어쓰지 않는다
-                else:   # 게시 계약에 맞지 않는 기존 기록: 덮어쓰지도 다시 평가하지도 않고 실패로 보고(F1)
+                else:  # 게시 계약에 맞지 않는 기존 기록: 덮어쓰지도 다시 평가하지도 않고 실패로 보고
                     entry.update(status="invalid_existing_eval", reason=why)
                     batch.result.errors.append(f"{cand.exp_id} existing eval.json invalid: {why}")
                 continue
@@ -278,7 +266,7 @@ def run_eval(cfg: TrainingConfig, eval_cfg: EvalConfig, *, repo_root: str, run_s
         batch.emergency_cleanup(exc)
         aborted = "cleanup_unconfirmed" if not batch.all_confirmed else "error"
 
-    # 요약: 게시 계약을 만족한 eval.json만, 설정 후보 순서대로. 실패는 원래 오류로 남기고 lock 정리로 넘어간다(F1)
+    # 요약: 게시 계약을 만족한 eval.json만, 설정 후보 순서대로. 실패는 남기고 lock 정리로 넘어간다
     try:
         rows = []
         for cand in cfg.candidates:
@@ -307,7 +295,7 @@ def run_eval(cfg: TrainingConfig, eval_cfg: EvalConfig, *, repo_root: str, run_s
 
 def register_legacy(cfg: TrainingConfig, *, repo_root: str, source_dir: str, run_set: str, inspect_fn, argv: list,
                     proc: ProcFS | None = None) -> RunResult:
-    """기존 S1 결과를 검증해 새 run_set에 등록한다(원본 무변·콜백 기록 미생성). rc 0 전부 completed·무변, 1 일부, 2 거부."""
+    """기존 S1 결과를 검증해 새 run_set에 등록한다(원본 무변). rc 0 전부 completed, 1 일부, 2 거부."""
     proc = proc or ProcFS()
     run_set_dir = os.path.join(repo_root, cfg.common.outputs_dir, run_set)
     result = RunResult(rc=0, run_set_dir=run_set_dir)
@@ -385,11 +373,11 @@ def register_legacy(cfg: TrainingConfig, *, repo_root: str, source_dir: str, run
                 "ended_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
             write_sha256sums(run_set_dir, tag=time.strftime("%Y%m%dT%H%M%S"))
             if unchanged:
-                # 게시 표지: 이 묶음의 최종 검증이 끝났다는 마지막 기록. eval은 이것과 등록 기록 해시가 맞을 때만 소비한다
+                # 게시 표지: 이 묶음의 최종 검증이 끝났다는 마지막 기록
                 write_json_atomic(os.path.join(run_set_dir, REGISTERED),
                                   {"batch_id": batch_id, "sources_unchanged": True, "registrations": digests,
                                    "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
-    except Exception as exc:   # 기록 실패 등: 원래 오류를 남기고 rc 1(쓴 등록 기록은 덮어쓰지 않고 표지 없이 남는다)
+    except Exception as exc:  # 기록 실패 등: 원래 오류를 남기고 rc 1(쓴 등록 기록은 표지 없이 남는다)
         result.errors.append(f"{type(exc).__name__}: {exc}")
         unchanged = False
     finally:

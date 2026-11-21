@@ -1,14 +1,7 @@
-"""로컬 모의 상대(#183 계획 r0 §2, reviewer Q3): **수정하지 않은** C `TcpServer`를 별도 스레드의 asyncio 루프에서 띄운다.
+"""로컬 모의 상대: 수정하지 않은 C `TcpServer`를 별도 스레드의 asyncio 루프에서 띄운다.
 
-- C 파일은 저장소 경로(`robot_ws/src/robot_server_package`)에서 실행 때만 import한다. 수정하지 않는다.
-- `TcpServer` 생성자는 포트 0을 받지 않는다(1~65535 검사). 그래서 D 선례(`tests/integration/test_d_gui_c_contract.py`)처럼
-  `asyncio.start_server(server._handle_client, "127.0.0.1", 0)`으로 받는다. **C 비공개 진입점 의존**이며 로컬 모의 상대에만
-  쓴다(C 협력 후보: 공개 포트 0 진입점).
-- 명령 로그는 임시 폴더의 빈 파일(초기화된 빈 로그, D 선례와 같음). 닫을 때 폴더를 지운다.
-- 가짜 `readiness_provider`(준비됨)·가짜 `move_executor`(지연·결과·취소 반응 조절, 호출 수). 로봇·ROS·Gazebo 없음. 고정 포트 47090을
-  쓰지 않는다.
-- 스레드 경계: 서버 루프는 이 객체의 스레드가 소유한다. 다른 스레드는 `set_executor`·`executions`(잠금)와
-  `run_coroutine_threadsafe`로만 접근한다.
+서버 루프는 이 객체의 스레드 소유이고, 다른 스레드는 `set_executor`·`executions`(잠금)와
+`run_coroutine_threadsafe`로만 접근한다.
 """
 from __future__ import annotations
 
@@ -154,7 +147,7 @@ class LocalPeer:
         return "127.0.0.1", self.port
 
     def close(self, timeout_s: float = 5.0) -> list[str]:
-        """끝까지 정리한다. 실패한 단계는 오류 문자열로 모아 돌려준다(reviewer 보완 4: 호출자가 실행 실패로 처리)."""
+        """끝까지 정리하고 실패한 단계의 오류 문자열 목록을 돌려준다(호출자가 실행 실패로 처리)."""
         errors: list[str] = []
 
         if self.loop is not None and self.loop.is_running():

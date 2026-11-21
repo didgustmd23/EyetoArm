@@ -1,11 +1,6 @@
-"""#207 시선 기반 끝점 보정(C1) 시험: 순수 함수, 설정 검사, 공통 지점(실시간 T·L, 저장 T·L)의 B 입력·기록.
+"""시선 기반 끝점 보정(C1) 시험: 순수 함수, 설정 검사, 공통 지점(실시간·저장 단계 T·L)의 B 입력·기록.
 
-근거: 지시 #207(reviewer, 사용자 「빌더2에게 공통 지점으로 작업지시」), 계획 `_workspace/207_builder2_view_bias_runtime_plan.md` r0과
-승인 조건(네 경로 모두 B가 보정 끝점을 받는 시험, TF 없는 B 소비는 사유 기록, 키 없음이면 기록 동일),
-수식 근거 `_workspace/206_builder2_view_bias_report.md` §1(δ = k·s, 두 끝점을 축 수직으로 카메라 쪽).
-
-- 순수 함수 시험의 카메라·볼트는 numpy로 만든 합성 장면이다(정답 = 작업면에서 직접 계산한 기대 이동).
-- 경로 시험은 기존 CLI 시험의 가짜 모델·합성 볼트 마스크·가짜 TF·가짜 목록 소비자를 그대로 쓴다(실제 ROS·Gazebo·B 목록 입구 없음).
+순수 함수는 numpy 합성 장면을 쓰고, 경로 시험은 가짜 모델·마스크·TF·목록 소비자를 쓴다(ROS·Gazebo 없음).
 """
 from __future__ import annotations
 
@@ -143,7 +138,7 @@ class CorrectEndpointsTest(unittest.TestCase):
         self.assertEqual((res.applied, res.reason), (False, "degenerate_axis"))
 
         T_down = look_at((0.5, 0.0, 0.5), (0.5, 0.0001, PLANE_Z))
-        T_down[0, 3], T_down[1, 3] = 0.5, 0.0                                       # 카메라 수평 위치 = 볼트 중점
+        T_down[0, 3], T_down[1, 3] = 0.5, 0.0  # 카메라 수평 위치 = 볼트 중점
         pts = np.array([[0.5, -0.02], [0.5, 0.02]])
         res = correct_endpoints(project(pts, T_down), KMAT, DIST0, T_down, plane_z_m=PLANE_Z, k_mm=K_MM)
         self.assertEqual((res.applied, res.reason), (False, "camera_above_point"))
@@ -230,7 +225,7 @@ class EnvelopeImmutabilityTest(unittest.TestCase):
         self.assertEqual((recs[0]["applied"], recs[0]["reason"]), (False, "no_tf"))
 
     def test_list_envelope_new_object_same_keys(self):
-        """봉투 2: 볼트 후보 끝점만 바뀌고 원 목록·후보는 그대로, 끝점 없는 후보(너트)는 같은 객체·기록 없음."""
+        """봉투 2: 볼트 후보 끝점만 바뀌고 원 목록·후보와 끝점 없는 후보(너트)는 그대로다."""
         from eyetoarm.common.types import FRAME_OBSERVATIONS_VERSION, FrameObservations, ObjectObservation, PixelBasis
         from eyetoarm.vision.list_envelope import make_list_envelope
 
@@ -308,7 +303,7 @@ class ViewBiasConfigTest(unittest.TestCase):
             parse_view_bias([1, 2])
 
     def test_repo_config_file_matches_s1_08(self):
-        """저장소 시험 설정 `ai_s1_08_axis_viewbias.json`은 기존 `ai_s1_08_axis.json` + 보정 키이며 S1-08 model_id에 묶인다."""
+        """`ai_s1_08_axis_viewbias.json`은 `ai_s1_08_axis.json` + 보정 키이며 S1-08 model_id에 묶인다."""
         base = load_ai_config(ROOT / "config/vision/ai_s1_08_axis.json")
         bias = load_ai_config(ROOT / "config/vision/ai_s1_08_axis_viewbias.json")
         strip = lambda cfg: {k: v for k, v in cfg.init_fields().items() if k != "axis_view_bias"}
@@ -343,7 +338,7 @@ class StoredStageTTest(CaptureBase):
         self.addCleanup(p.stop)
 
     def test_b_receives_corrected_endpoints(self):
-        """켬: B 관측 끝점 = 기록 `input.axis_endpoints_px`(보정) ≠ A 검출 기록(원) = `axis_endpoints_px_raw`, 요약 applied 1."""
+        """켬: B 관측 끝점 = 기록의 보정 끝점 ≠ A 검출 기록(원) = `axis_endpoints_px_raw`, applied 1."""
         c = self.case()
         ai = write_bias_config(c.ai, Path(self.tmp.name) / "ai_vb.json")
         code, err = self.cli(c, c.write_meta(c.meta()), ai=ai)
@@ -389,7 +384,7 @@ class StoredStageTTest(CaptureBase):
         self.assertEqual(c.summary()["view_bias"]["skipped_by_reason"], {"no_tf": 1})
 
     def test_plane_z_mismatch_refused_at_start(self):
-        """켬 + 보정 높이가 B part_specs 볼트 높이와 5 mm 넘게 다르면 시작 때 종료 2(B 호출 0, #250 P2)."""
+        """켬 + 보정 높이가 B 볼트 높이와 5 mm 넘게 다르면 시작 때 종료 2(B 호출 0)."""
         c = self.case()
         ai = write_bias_config(c.ai, Path(self.tmp.name) / "ai_vb.json", plane_z_m=PLANE_Z + 0.0051)
         code, err = self.cli(c, c.write_meta(c.meta()), ai=ai)
@@ -399,7 +394,7 @@ class StoredStageTTest(CaptureBase):
         self.assertEqual(self.b_obs, [])
 
     def test_plane_z_within_5mm_runs_and_prints_heights(self):
-        """켬 + 보정 높이가 B 볼트 높이와 5 mm 안(0.7 mm)이면 시작하고, 시작 줄에 종류별 높이·차를 찍는다(#250 P2)."""
+        """켬 + 보정 높이가 B 볼트 높이와 5 mm 안이면 시작하고, 시작 줄에 종류별 높이·차를 찍는다."""
         c = self.case()
         ai = write_bias_config(c.ai, Path(self.tmp.name) / "ai_vb.json", plane_z_m=PLANE_Z + 0.0007)
         code, err = self.cli(c, c.write_meta(c.meta()), ai=ai)
@@ -416,13 +411,13 @@ class StoredStageTTest(CaptureBase):
         self.assertIn("valid_for_model_id", err)
 
     def test_plane_check_reads_given_specs(self):
-        """시작 대조 함수(#250 P2): B 볼트 높이(bolt·BOLT_A·BOLT_B)가 보정 높이와 5 mm 안이면 통과하며 높이를 돌려주고, 넘으면 ValueError."""
+        """시작 대조: B 볼트 높이가 보정 높이와 5 mm 안이면 높이를 돌려주고, 넘으면 ValueError."""
         good = ViewBiasConfig("C1", K_MM, PLANE_Z, "m@x")
         self.assertEqual(self.mod._check_view_bias_plane(good), {"bolt": PLANE_Z, "BOLT_A": PLANE_Z, "BOLT_B": PLANE_Z})
         specs = json.loads(SPECS.read_text(encoding="utf-8"))
         p = Path(self.tmp.name) / "specs.json"
 
-        # B-12 예상 값: BOLT_A 102 mm·BOLT_B 105 mm(차 3 mm) → 통과, 종류별 높이를 그대로 돌려준다
+        # BOLT_A 102 mm·BOLT_B 105 mm(차 3 mm) → 통과, 종류별 높이를 그대로 돌려준다
         split = copy.deepcopy(specs)
         split["specs"]["BOLT_A"]["plane_z"] = 0.102
         p.write_text(json.dumps(split), encoding="utf-8")
@@ -444,7 +439,7 @@ class StoredStageLTest(StageLBase):
     """저장 녹화 + TF 메타 단계 L: 목록 소비자가 보정 끝점을 받는다."""
 
     def test_list_consumer_receives_corrected_endpoints(self):
-        """켬: 소비자 봉투 후보 끝점 = 원 끝점 + 보정, 기록 `view_bias`에 후보별 결과·원값, 요약 applied 2."""
+        """켬: 소비자 후보 끝점 = 원 끝점 + 보정, 기록 `view_bias`에 후보별 결과·원값, applied 2."""
         c = self.case(1)
         c.ai = write_bias_config(c.ai, Path(self.tmp.name) / "ai_vb.json")
         fake = StoredListConsumer()
@@ -499,7 +494,7 @@ class LiveStageTTest(LiveBase):
         self.addCleanup(p.stop)
 
     def test_live_t_corrected_and_recorded(self):
-        """켬: accept 기록 `input.axis_endpoints_px`(보정) = B 관측, `axis_endpoints_px_raw`·`view_bias` 있음, 요약 enabled."""
+        """켬: accept 기록의 보정 끝점 = B 관측, `axis_endpoints_px_raw`·`view_bias` 있음, enabled."""
         self.case.ai = write_bias_config(self.case.ai, Path(self.tmp.name) / "ai_vb.json")
         code, err, out = self.run_cli(Scenario(3))
         self.assertEqual(code, 0, err)

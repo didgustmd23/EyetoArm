@@ -1,17 +1,7 @@
-"""저장 입력 단계 L(#189) 목록 기록기: 실행기 `b_list_consumer` 자리에서 목록·봉투 v2를 만들어 목록 소비자에 넘기고 기록한다.
+"""저장 입력 단계 L 목록 기록기: 실행기 `b_list_consumer` 자리에서 목록·봉투 v2를 만들어 소비자에 넘기고 기록한다.
 
-근거: 계획 `_workspace/189_builder2_stage_L_plan.md` r0 §6·§7(reviewer 승인 hop 3), A 상세설계 §5.2 B-09 협의안.
-
-- `wrap(consume)`이 낸 함수는 실행기가 `b_list_gate`를 통과한 응답마다 `(context, display_result)`로 부른다.
-  녹화 메타로 촬영 정보·촬영 시각 TF를 만들고(`capture_from_meta`, 단계 T 기록기와 같은 함수) `frame_observations_from_ai` →
-  `make_list_envelope`(`eyetoarm.b_input/2`) → `consume(envelope)`을 부른다.
-- 목록·봉투 오류(`ValueError`: 메타 없음·대조 실패)는 소비자를 부르지 않고 `b_input_rejected`로 남긴다(실행 끝 판정에서 종료 1).
-- 소비자 예외·입력 영상 변경은 그대로 올린다(실행 실패).
-- 주석 영상은 만들지 않는다(B 목록 결과 형식 U-3 전, reviewer Q6).
-- 출력 폴더는 새로 만든다(있으면 FileExistsError). 파일은 덮어쓰지 않는다.
-- B `BStage.process_frame`은 아직 없다. 이 기록기는 시험 전용 가짜 소비자 또는 B가 만든 뒤의 소비자를 받는다.
-- 시선 기반 끝점 보정(#207, 선택 `view_bias`): 목록 봉투를 만든 직후 공통 지점 `vision/view_bias.apply_view_bias`로 후보 끝점을
-  보정한 봉투를 소비자에 넘긴다. 켰을 때만 `b_list_input.view_bias`(후보별 결과·원 끝점)와 요약을 남긴다.
+목록·봉투 오류(`ValueError`)는 소비자를 부르지 않고 `b_input_rejected`로 남기며, 소비자 예외·입력 영상 변경은
+그대로 올린다. 출력 폴더는 새로 만들고 파일을 덮어쓰지 않는다.
 """
 from __future__ import annotations
 
@@ -29,8 +19,7 @@ class CaptureListRecorder:
     """목록 소비 기록(`list_frames.jsonl`)·terminal 응답(`frames.jsonl`)·요약(`summary.json`)."""
 
     def __init__(self, out_dir: str, meta, *, consumer_kind: str, view_bias=None) -> None:
-        """출력 폴더를 새로 만든다(있으면 FileExistsError). `consumer_kind`는 요약에 남길 소비자 종류(예: 시험 전용 표시).
-        `view_bias`(#207)는 `ViewBiasConfig` 또는 None(꺼짐)."""
+        """출력 폴더를 새로 만든다(있으면 FileExistsError). `view_bias`는 `ViewBiasConfig` 또는 None(꺼짐)."""
         if not isinstance(consumer_kind, str) or not consumer_kind:
             raise ValueError(f"consumer_kind must be a non-empty string: {consumer_kind!r}")
 
@@ -49,7 +38,7 @@ class CaptureListRecorder:
 
     # ---- display_sink 규약(기록 뒤·B 지점 앞) ----
     def on_outcome(self, outcome, current, **_kw) -> None:
-        """terminal 응답 하나를 frames.jsonl에 남긴다(단계 T 관측의 유효·사유는 진단용, 목록 전달은 list_frames.jsonl)."""
+        """terminal 응답 하나를 frames.jsonl에 남긴다(단계 T 관측의 유효·사유는 진단용)."""
         ctx, obs = outcome.context, outcome.observation
         f = ctx.frame
         record = {"kind": "outcome", "image_seq": f.image_seq, "source_index": getattr(f, "source_index", None),
@@ -92,7 +81,7 @@ class CaptureListRecorder:
                 self._lists.write({"kind": "b_input_rejected", "input": keys, "error": str(exc)})
                 return None
 
-            # #207 공통 보정 지점(끔이면 같은 봉투)
+            # 공통 보정 지점(끔이면 같은 봉투)
             envelope, bias = apply_view_bias(envelope, None, self._view_bias)
             out = consume(envelope)
 

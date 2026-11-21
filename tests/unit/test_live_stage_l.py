@@ -1,11 +1,7 @@
-"""#201 실시간 기록 전용 경로의 단계 L(다중 볼트 목록) 연결 시험.
+"""실시간 기록 전용 경로의 단계 L(다중 볼트 목록) 연결 시험.
 
-근거: 지시 `_workspace/201_reviewer_instruction_live_stage_L.md`, 계획 `_workspace/201_builder2_live_stage_L_plan.md` r0과 그 검토
-(`_workspace/201_review/201_reviewer_plan_r0_review.md`: Q1 주입·Q2 봉투 버전 키·b_list_skip_reason 차단 조건·D13 고정).
-
-- 진입점 `main()`부터 돈다: 주입 `LiveLinkSource`(가짜 수신) → 실행기 → `AiSegDetector`(가짜 모델, 실제 convert·M1) → 코어 →
-  `b_list_skip_reason` → `offer` → 디스패처 → 주입 TF(촬영 stamp 1회) → 목록 봉투 2 → **가짜 목록 소비자(시험 전용, 실제 B 아님)**.
-- 실제 ROS·Gazebo는 쓰지 않는다. C 송신 감시는 `test_run_pipeline_live_observation.Base` 그대로다.
+`main()`부터 가짜 수신·가짜 모델·주입 TF로 돌려 목록 봉투가 가짜 목록 소비자(실제 B 아님)에 닿는지 본다.
+실제 ROS·Gazebo는 쓰지 않는다.
 """
 from __future__ import annotations
 
@@ -212,7 +208,7 @@ class FrameCurrencyTest(ListBase):
         sc = Scenario(5, masks={i: three_bolts for i in range(5)}, during={2: rewind})
         code, err, out = self.run_list(sc)
 
-        self.assertEqual(code, 3, err)   # #251 A-4: 되감기로 끝난 실행은 3(정상 0과 구분)
+        self.assertEqual(code, 3, err)   # 되감기로 끝난 실행은 3(정상 0과 구분)
         self.assertIn("reason=reset_detected", err)
         self.assertEqual(self.consumer.stamps(), [sc.stamp(1)])
         kinds = [r["kind"] for r in self.records(out)]
@@ -265,10 +261,7 @@ class StartRefusalAndD13Test(ListBase):
     """시작 거부(단계 T로 바꾸지 않음)·D13 유지."""
 
     def test_no_process_frame_refused(self):
-        """주입 없음 + 목록 입구 없는 B 단계 → 종료 1, 출력·기록·TF 없음, 단계 T로 돌지 않음.
-
-        실제 B에는 `process_frame`이 생겼으므로(d4fab37), 그 입구가 없는 가짜 B 단계형(`NoListBStage`)을 끼워 거부를 확인한다.
-        """
+        """주입 없음 + 목록 입구(`process_frame`) 없는 가짜 B 단계 → 종료 1, 출력·기록·TF 없음."""
         self.inject = False
         self.assertTrue(callable(getattr(b_stage_mod.BStage, "process_frame", None)))   # 실제 B에는 있음
 
@@ -318,7 +311,7 @@ class StartRefusalAndD13Test(ListBase):
         self.assertEqual(cm.exception.code, 2)
 
     def test_runner_live_consumers_still_refused(self):
-        """실행기: 실시간 b_consumer·b_list_consumer는 그대로 거부, list 판정에 sink 없음은 live_observation_contract."""
+        """실행기는 실시간 b_consumer·b_list_consumer를 거부, list 판정의 sink 없음은 live_observation_contract."""
         import test_pipeline_runner_live as live_mod
 
         # b_consumer는 Live 도우미 인자로, 나머지는 실행기 인자로 넣는다
@@ -366,10 +359,10 @@ class ListSkipReasonTest(unittest.TestCase):
 
 
 class StageTUnchangedTest(Base):
-    """기본(single) 경로: accept 기록 키·순서와 요약 키가 #201 전과 같다(봉투 버전은 `b_input.version`)."""
+    """기본(single) 경로: accept 기록 키·순서와 요약 키가 그대로다(봉투 버전은 `b_input.version`)."""
 
     def test_single_records_unchanged(self):
-        """단일 관측 accept 기록은 기존 키 그대로, 목록 키·요약 키 없음, 봉투 버전 eyetoarm.b_input/1."""
+        """단일 관측 accept 기록은 단일 관측 키 그대로, 목록 키·요약 키 없음, 봉투 버전 eyetoarm.b_input/1."""
         code, err, out = self.run_cli(Scenario(3))
 
         self.assertEqual(code, 0, err)

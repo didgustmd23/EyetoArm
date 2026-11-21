@@ -1,25 +1,8 @@
 #!/usr/bin/env python3
-"""Gazebo 평가 세트 수집(실행·캡처·라벨 생성).
+"""Gazebo 평가 세트를 수집한다(묶음마다 `gz sim` 실행, 표본마다 pose 변경 뒤 캡처·라벨 생성).
 
-**`--yes` 없이는 Gazebo를 띄우지 않는다.** 근거: A 상세설계 §7.1 「Gazebo 평가 세트」(A 제안).
-
-입력: `scripts/gz_eval_scene.py`가 만든 폴더(`plan.json`, `world_bXXXX.sdf`).
-출력: `data/derived/gz_eval_v1/`(Git 제외) — `eval_size_recall.py`가 읽는 YOLO 분할 형식
-  `images/test/*.png`, `labels/test/*.txt`, `dataset.yaml`(2클래스 bolt·nut), `manifest.jsonl`(표본별 세부 클래스·
-  월드 좌표·카메라 거리·영상 짧은 변 px·시드·Gazebo 버전).
-
-수집 방식(A 제안): 묶음(=월드 사본 하나, 카메라·조명 고정)마다 `gz sim`을 한 번 띄우고, 표본마다
-`/world/<world>/set_pose_vector` 서비스(`gz service` CLI)로 18개 슬롯 pose를 한 번에 바꾼 뒤,
-`ros_gz_bridge`로 받은 RGB·분할 라벨 영상 중 **pose 변경 뒤 시뮬레이션 시각 + settle** 이후 프레임을 저장한다.
-python `gz.transport13` 바인딩이 없어서 서비스는 CLI, 영상은 ROS 브리지(rclpy)로 받는다.
-
-안전 장치(다른 세션 보호, 실행 시 강제):
-- 고유 `GZ_PARTITION`(기본 `eyetoarm_gz_eval_<pid>`)과 `ROS_DOMAIN_ID`(기본 61)를 자식 프로세스와 이 프로세스에 설정.
-- `setsid`(start_new_session)로 띄우고 **자기 프로세스 그룹만** `os.killpg`로 종료. `pkill`·`killall`을 쓰지 않는다.
-- 시작 전 `MemAvailable`(기본 ≥ 6 GiB)과 GPU 사용 메모리(기본 ≤ 8000 MiB)를 확인해 기준 밖이면 시작 거부.
-- 다른 `gz sim` 프로세스가 있으면 경고만 출력하고 그대로 둔다.
-- 실행 중에는 표본마다 `MemAvailable`을 확인해 `--stop-mem-gib`(기본 2 GiB) 아래면 자기 그룹만 종료하고 멈춘다
-  (사용자 결정 2026-11-12: 실행 중 종료 조건은 메모리 하나).
+`--yes` 없이는 Gazebo를 띄우지 않는다. 고유 `GZ_PARTITION`·`ROS_DOMAIN_ID`를 쓰고, 자기 프로세스
+그룹만 종료하며(`pkill` 금지), 시작 전·실행 중 메모리가 기준 밖이면 멈춘다.
 """
 from __future__ import annotations
 
@@ -53,7 +36,7 @@ def default_partition(pid=None) -> str:
 
 
 def build_env(base: dict, partition: str, domain_id: int, resource_path: str) -> dict:
-    """`base` 사본에 GZ_PARTITION·ROS_DOMAIN_ID·GZ_SIM_RESOURCE_PATH를 넣어 돌려준다. 파티션이 비면 ValueError."""
+    """`base` 사본에 GZ_PARTITION·ROS_DOMAIN_ID·GZ_SIM_RESOURCE_PATH를 넣는다. 파티션이 비면 ValueError."""
     if not partition:
         raise ValueError("GZ_PARTITION이 비어 있음")
 
@@ -100,7 +83,7 @@ def check_resources(mem_avail_kib: int, gpu_used_mib, min_mem_gib=DEFAULT_MIN_ME
 
 
 def memory_low(mem_avail_kib: int, stop_mem_gib: float) -> bool:
-    """실행 중 종료 조건(사용자 결정: 메모리 하나)."""
+    """실행 중 종료 조건(메모리 하나)."""
     return mem_avail_kib < stop_mem_gib * 1024 * 1024
 
 
@@ -132,9 +115,9 @@ def other_gz_processes(ps_lines: list, own_pids: set) -> list:
 
 
 def launch_group(cmd: list, env: dict, log_path: Path) -> subprocess.Popen:
-    """새 세션(=새 프로세스 그룹)으로 실행. 반환된 Popen의 pid가 곧 PGID.
+    """새 세션(=새 프로세스 그룹)으로 실행한다. 반환된 Popen의 pid가 곧 PGID.
 
-    로그 파일은 자식이 복제한 디스크립터로 계속 쓰며, 부모 쪽 핸들은 Popen 직후(실패해도) 닫는다.
+    부모 쪽 로그 파일 핸들은 Popen 직후(실패해도) 닫는다.
     """
     with open(log_path, "w") as log:
         return subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -143,8 +126,7 @@ def launch_group(cmd: list, env: dict, log_path: Path) -> subprocess.Popen:
 def stop_group(proc: subprocess.Popen, grace_s=5.0) -> bool:
     """자기가 띄운 프로세스 그룹만 종료하고 True를 돌려준다.
 
-    이미 끝난 프로세스면 바로 True. PGID가 proc.pid와 다르거나 이 프로세스의 그룹이면
-    종료하지 않고 RuntimeError를 낸다. SIGTERM 뒤 `grace_s` 안에 끝나지 않으면 SIGKILL.
+    PGID가 proc.pid와 다르거나 이 프로세스의 그룹이면 RuntimeError. SIGTERM 뒤 `grace_s` 넘으면 SIGKILL.
     """
     if proc.poll() is not None:
         return True
@@ -170,7 +152,7 @@ def stop_group(proc: subprocess.Popen, grace_s=5.0) -> bool:
 
 # ---------------------------------------------------------------- 서비스 요청
 def pose_vector_request(parts: list) -> str:
-    """18개 슬롯 전부의 pose(protobuf 텍스트). 표본에 없는 슬롯은 카메라 뒤 바닥(PARK)에 줄지어 둔다."""
+    """18개 슬롯 전부의 pose(protobuf 텍스트). 표본에 없는 슬롯은 카메라 뒤 바닥(PARK)에 둔다."""
     placed = {p["slot"]: p for p in parts}
     items = []
 
@@ -281,7 +263,7 @@ def _gz_version(env) -> str:
 
 
 def preflight(min_mem_gib, max_gpu_used_mib) -> list:
-    """메모리·GPU를 확인해 시작 거부 사유 목록을 돌려준다. 다른 gz sim 프로세스는 stderr 경고만 한다."""
+    """메모리·GPU를 확인해 시작 거부 사유 목록을 돌려준다. 다른 gz sim 프로세스는 경고만 한다."""
     mem = parse_meminfo_available_kib(Path("/proc/meminfo").read_text())
 
     try:
@@ -303,8 +285,8 @@ def preflight(min_mem_gib, max_gpu_used_mib) -> list:
 def run(a) -> int:
     """계획의 묶음마다 Gazebo·브리지를 띄워 표본을 수집한다.
 
-    종료 코드: 0 완료, 2 사전 점검 거부, 3 /clock 수신 없음, 4 set_pose_vector 실패, 5 새 프레임 없음,
-    6 실행 중 메모리 부족. 어느 경우든 자기가 띄운 프로세스 그룹은 종료한다.
+    종료 코드: 0 완료, 2 사전 점검 거부, 3 /clock 없음, 4 set_pose_vector 실패, 5 새 프레임 없음,
+    6 실행 중 메모리 부족. 어느 경우든 자기 프로세스 그룹은 종료한다.
     """
     plan_dir, out = Path(a.plan_dir), Path(a.out)
     plans = json.loads((plan_dir / "plan.json").read_text(encoding="utf-8"))
@@ -329,11 +311,7 @@ def run(a) -> int:
     node = None
 
     def new_node(batch_no):
-        """묶음마다 구독 노드를 새로 만든다.
-
-        이전 묶음 브리지가 남긴 수신 큐의 메시지를 버리기 위해서다. 2026-11-13 수집에서 이전 /clock이
-        큐에서 늦게 처리돼 기준 시각이 높아지는 문제가 있었다.
-        """
+        """묶음마다 구독 노드를 새로 만들어 이전 묶음 브리지의 수신 큐 메시지를 버린다."""
         n = Node(f"gz_eval_capture_b{batch_no:04d}")
         n.create_subscription(Image, RGB_TOPIC, lambda m: latest.__setitem__("rgb", m), 2)
         n.create_subscription(Image, SEG_TOPIC, lambda m: latest.__setitem__("seg", m), 2)
@@ -368,9 +346,7 @@ def run(a) -> int:
                                "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock"], env,
                               out / "logs" / f"bridge_b{b['batch']:04d}.log")
 
-            # 묶음마다 수신 상태를 비운다(새 월드는 시뮬레이션 시각이 0부터 다시 시작한다).
-            # 비우지 않으면 이전 묶음의 /clock으로 시작 대기를 건너뛰고 기준 시각이 너무 높아진다
-            # (2026-11-13 수집 첫 시도에서 실패한 원인).
+            # 새 월드는 시각이 0부터 다시 시작하므로, 비우지 않으면 이전 /clock으로 기준 시각이 너무 높아진다.
             if node is not None:
                 node.destroy_node()
 
@@ -420,7 +396,7 @@ def run(a) -> int:
                     img = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR) if latest["rgb"].encoding == "rgb8" else rgb
                     cv2.imwrite(str(out / "images/test" / f"{sid}.png"), img)
 
-                    if a.save_seg:  # 확인용 원본 라벨 영상(무손실)
+                    if a.save_seg:
                         (out / "seg_raw").mkdir(exist_ok=True)
                         np.save(out / "seg_raw" / f"{sid}.npy", seg)
 

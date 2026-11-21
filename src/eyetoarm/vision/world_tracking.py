@@ -1,36 +1,7 @@
-"""작업 좌표(W) 기준 객체 추적(#217 1단계): 볼트 끝점을 촬영 시각 TF로 벨트 평면(W, mm)에 올려 짝짓는다.
+"""작업 좌표(W) 기준 객체 추적: 볼트 끝점(또는 마스크)을 촬영 시각 TF로 벨트 평면(W, mm)에 올려 짝짓는다.
 
-근거: 계획 `_workspace/217_builder2_world_tracking_plan_r0.md`·`_r1.md`(reviewer PASS, 사용자 승인 2026-11-20; Q2 보정 뒤 끝점, Q3 이중 검출
-3 mm, Q4 `max_belt_speed_mps`는 짝짓기 탐색 상한만, Q6 `TrackMode.WORLD`).
-
-**보장 범위.** 픽셀 추적(#151)과 같은 표시·실험 번호다(A-6). 분열·스왑을 없앤다는 보장이 아니다. W 위치는 B와 같은 투영
-(`transforms.planar_transform.pixels_to_w`, 볼트 평면 높이)이므로 TF·보정이 틀리면 W 위치도 틀린다.
-
-- **입력(`world_inputs`)**: AI 인스턴스 중 축 경로 볼트(`axis_evaluated`)이고 끝점이 있는 것만 후보다. 너트·비대상·점수 미달·기하
-  거부는 `untracked`(`not_bolt`·`not_in_scope`·`geometry_rejected`), 끝점 없음·추출기 무효는 `no_endpoints`. 잘린 볼트는 후보이되
-  `clipped`(트랙 유지에만 쓰고 연속 hit를 끊음). 겹침 당사자(`MULTIPLE_CANDIDATES`)도 끝점이 있으면 후보로 넣고 이중 검출 합치기가
-  정리한다. W 위치 = 두 끝점을 각각 W로 올린 뒤의 중점(mm, B 중심과 같음). 시야 보정(#207)을 주면 보정 뒤 끝점으로 올리고 보정 전
-  위치도 함께 남긴다. W 길이·축 각도(180° 주기)도 만든다.
-- **짝짓기**: 예측 = 위치 + Y 속도 × Δt(X 속도 0, 벨트는 ±Y 한 축). Y 속도는 트랙별 차분 지수 평균이고, 속도를 아직 모르는 트랙은
-  확정 트랙 Y 속도 중앙값(벨트 공통 추정, 없으면 0)으로 예측한다. 벨트 정지 신호(`belt_running=False`)면 예측 속도 0.
-  반경은 X `gate_x_mm`, Y `gate_y_mm`이고, 속도를 모르는 트랙만 Y 반경에 `max_belt_speed_mps × Δt`를 더한다(**탐색 상한이며 예측
-  위치에는 쓰지 않음**). 길이 비·축 각도 일관 검사, 모호(1·2위 비용 차 < 여유)면 번호 None·관련 트랙 종료, 탐욕 1:1 배정.
-- **이중 검출 합치기**: 같은 클래스이고 두 끝점 쌍이 모두 `dup_endpoint_mm` 안(순서 무관)이면 점수 높은 하나만 남긴다
-  (나란히 붙은 두 볼트처럼 중심만 가까운 경우는 합치지 않음).
-- **확정·만료**: 잘리지 않은 연속 hit `min_hits`면 번호 발급(발급기 공유, 재사용 없음). 마지막 hit 뒤 `max_gap_ms`면 은퇴.
-- **카메라 이동 의심은 두지 않는다**(W에서 팔 이동은 위치를 바꾸지 않는다). 대신 확정 트랙 `jump_min_tracks`개 이상이 같은 방향으로
-  `coherent_jump_mm` 넘게 함께 튀면 TF·보정 이상 의심(`world_jump_suspected`)으로 전 트랙 종료.
-- 시각·범위·세대 규칙은 픽셀 추적과 같다(같은·이른 시각은 `stale_frame`, 이전 세대는 `old_generation`, 범위·세대 변경은 전 종료).
-- **마스크 입력(#226 W+M, 설정 `mask_fallback`)**: 켜면 끝점이 없는 볼트(`no_endpoints`)도 다각형(3점 이상)을 채운 마스크 픽셀 전부를
-  촬영 시각 TF로 볼트 평면에 올린 평균을 W 위치로 넣는다(`kind="mask"`, 시야 보정 없음, 길이·각도 없음). 짝짓기에서 길이 비·축 각도 검사는
-  어느 쪽이든 값이 없으면 건너뛰고, 마스크 hit는 트랙의 길이·각도를 바꾸지 않는다. 이중 검출 합치기는 마스크 입력이 낀 쌍에 한해 「W 중심
-  거리 ≤ `dup_endpoint_mm` 또는 마스크 포함률(교집합/작은 면적) ≥ `mask_dup_contain`」을 쓰고, 남기는 순서는 끝점 입력 먼저·다음 점수 순이다
-  (#224 W+M 규칙 그대로). 마스크 입력은 **짝짓기에만** 쓴다: B 입력·번호 규칙(#215 확정·선택 인스턴스)은 바뀌지 않는다. 끄면 #217과 같다.
-- **종류별 투영 높이(#250 A-3 P1)**: `plane_z_m`에 `BoltPlanes`(B 규격의 볼트 종류별 기준 높이·총길이)를 주면, 끝점 볼트는 종류마다
-  그 높이로 두 끝점을 올려 W 길이가 그 종류 총길이에 가장 가까운 종류의 높이를 쓴다(종류는 이 고르기에만 쓰고 B 판정이 아니다).
-  종류 높이가 모두 같으면(지금 B 규격) 그 높이 하나라 결과가 실수 `plane_z_m`과 같다. 마스크 입력은 길이가 없어 기본 높이(B `class_plane_z`
-  「bolt」)를 쓴다. 시야 보정은 자기 설정 높이(`view_bias.plane_z_m`)로 보정량을 정하고, 보정 뒤 끝점은 고른 높이로 올린다.
-- 단일 소유(추적 스레드 하나). ROS·Qt를 import하지 않는다. 설정값은 모두 A 개발 임시값(시험 설정 파일, 기본값 없음).
+픽셀 추적과 같은 표시·실험 번호이며 분열·스왑을 없앤다는 보장이 아니다. W 위치는 B와 같은 투영이라 TF·보정이 틀리면
+같이 틀린다. 단일 소유(추적 스레드 하나)이며 설정값은 모두 개발 임시값이다. ROS·Qt를 import하지 않는다.
 """
 from __future__ import annotations
 
@@ -75,8 +46,8 @@ class WorldTrackerConfig:
     coherent_jump_mm: float
     jump_coherence_mm: float
     jump_search_mm: float
-    mask_fallback: bool         # #226 W+M: 끝점이 없는 볼트를 마스크 W 평균으로 짝짓기(끄면 #217)
-    mask_dup_contain: float     # #226 W+M: 마스크가 낀 이중 검출 합치기 포함률 기준(#224 값 0.85)
+    mask_fallback: bool         # 끝점이 없는 볼트를 마스크 W 평균으로 짝짓기
+    mask_dup_contain: float     # 마스크가 낀 이중 검출 합치기 포함률 기준
 
     def to_json(self) -> dict:
         """요약용 사전."""
@@ -137,17 +108,17 @@ class WorldInput:
     endpoints_mm: tuple[tuple[float, float], tuple[float, float]] | None = None
     length_mm: float | None = None
     angle_deg: float | None = None
-    kind: str = "endpoint"                                   # endpoint | mask | none(#226)
-    mask: tuple | None = field(default=None, compare=False)  # (x0, y0, bool 배열) 원본 픽셀, 이중 검출 포함률 판정용
-    plane_z_m: float | None = None                           # #250: W로 올린 높이(m). 후보가 아니면 None
-    plane_spec: str | None = None                            # #250: 높이를 고른 B 규격 이름(BoltPlanes 끝점 입력만, 그 밖 None)
+    kind: str = "endpoint"                                   # endpoint | mask | none
+    mask: tuple | None = field(default=None, compare=False)  # (x0, y0, bool 배열), 포함률 판정용
+    plane_z_m: float | None = None                           # W로 올린 높이(m). 후보가 아니면 None
+    plane_spec: str | None = None                            # 높이를 고른 B 규격 이름(끝점 입력만)
 
 
 @dataclass(frozen=True)
 class BoltPlanes:
-    """B 규격의 볼트 종류별 투영 높이(#250 A-3 P1). `specs` = ((이름, 기준 높이 m, 총길이 m), …), `default_z_m` = 마스크 입력용.
+    """B 규격의 볼트 종류별 투영 높이. `specs` = ((이름, 기준 높이 m, 총길이 m), …).
 
-    B 규격 파일을 고치지 않고 읽은 값을 그대로 담는다(진입점이 만든다). 값은 유한하고 높이·길이는 양수여야 한다.
+    `default_z_m`은 마스크 입력용이다. 종류는 높이 고르기에만 쓰며 B 판정이 아니다.
     """
 
     default_z_m: float
@@ -174,7 +145,7 @@ class BoltPlanes:
 
 
 def mask_of(polygon) -> tuple | None:
-    """다각형(원본 픽셀, 3점 이상) → (x0, y0, bool 배열). 정수 반올림 뒤 채움(#224 규칙). 없으면 None."""
+    """다각형(원본 픽셀, 3점 이상) → (x0, y0, bool 배열). 정수 반올림 뒤 채움. 없으면 None."""
     if polygon is None or len(polygon) < 3:
         return None
 
@@ -231,10 +202,9 @@ def _project(endpoints_px, K, dist, T_W_C, plane_z_m) -> np.ndarray | None:
 
 
 def _pick_plane(endpoints_px, K, dist, T_W_C, planes: BoltPlanes) -> tuple[float, str | None]:
-    """끝점 볼트의 투영 높이(#250 P1): 종류마다 그 높이로 올린 W 길이와 그 종류 총길이의 차가 가장 작은 종류의 높이.
+    """끝점 볼트의 투영 높이: 그 높이로 올린 W 길이가 종류 총길이에 가장 가까운 종류의 높이.
 
-    높이가 모두 같으면 기본 높이(이름 None). 어느 종류로도 투영이 안 되면 기본 높이(이름 None, 뒤의 투영이 실패를 낸다).
-    차가 같으면 `specs` 순서가 앞선 종류다.
+    높이가 모두 같거나 투영이 안 되면 기본 높이(이름 None). 차가 같으면 `specs` 순서가 앞선 종류다.
     """
     if planes.uniform:
         return planes.default_z_m, None
@@ -257,10 +227,10 @@ def _pick_plane(endpoints_px, K, dist, T_W_C, planes: BoltPlanes) -> tuple[float
 
 def world_inputs(result: AiSegResult, *, K, dist, T_W_C, plane_z_m: float | BoltPlanes, view_bias=None,
                  width: int | None = None, height: int | None = None, mask_fallback: bool = False) -> list[WorldInput]:
-    """AI 결과 + 촬영 시각 `T_W_C` → W 추적 입력(인스턴스 순서 그대로). `view_bias`는 `ViewBiasConfig`(#207) 또는 None.
+    """AI 결과 + 촬영 시각 `T_W_C` → W 추적 입력(인스턴스 순서 그대로). 후보는 끝점 있는 축 경로 볼트다.
 
-    `mask_fallback`(#226)이면 볼트 입력에 마스크(포함률용)를 붙이고, 끝점 없는 볼트를 마스크 W 평균 입력(`kind="mask"`)으로 넣는다.
-    `plane_z_m`이 `BoltPlanes`이면 끝점 볼트마다 종류별 높이를 고른다(#250 P1, 모듈 설명). 실수면 모든 볼트가 그 높이다(기존과 같음).
+    `mask_fallback`이면 끝점 없는 볼트를 마스크 W 평균 입력(`kind="mask"`)으로 넣는다.
+    `plane_z_m`이 `BoltPlanes`이면 끝점 볼트마다 종류별 높이를 고르고, 실수면 모든 볼트가 그 높이다.
     """
     if not isinstance(result, AiSegResult):
         raise TrackingContractError(f"world_inputs needs AiSegResult: {type(result).__name__}")
@@ -290,7 +260,7 @@ def world_inputs(result: AiSegResult, *, K, dist, T_W_C, plane_z_m: float | Bolt
         if inst.axis_endpoints_px is None:
             c = None if m is None else mask_center_w(m, K, dist, T_W_C, base_z)
 
-            if c is not None:   # #226 W+M: 끝점 없는 볼트 → 마스크 W 평균(짝짓기 전용). 길이가 없어 기본 높이
+            if c is not None:   # 마스크 W 평균(짝짓기 전용). 길이가 없어 기본 높이
                 out.append(WorldInput(**base, candidate=True, untracked_reason=None, clipped=bool(inst.clipped), center_mm=c,
                                       center_raw_mm=c, kind="mask", mask=m, plane_z_m=base_z))
             else:
@@ -482,11 +452,11 @@ class WorldTracker:
         return inputs
 
     def _merge_duplicates(self, cands: list[WorldInput]) -> tuple[list[WorldInput], list[int]]:
-        """같은 클래스·끝점 쌍 dup_endpoint_mm 안이면 점수 높은 하나만 남긴다. (남은 후보, 합쳐져 빠진 index)."""
+        """이중 검출이면 하나만 남긴다(중심만 가까운 이웃 볼트는 합치지 않음). (남은 후보, 빠진 index)."""
         if not self._config.dup_merge:
             return cands, []
 
-        # 남기는 순서: 끝점 입력 먼저(#226), 다음 점수 높은 순. 끝점 입력만 있으면 #217과 같다
+        # 남기는 순서: 끝점 입력 먼저, 다음 점수 높은 순
         order = sorted(cands, key=lambda c: (c.kind != "endpoint", -c.confidence, c.index))
         kept: list[WorldInput] = []
         dropped: list[int] = []
@@ -503,7 +473,7 @@ class WorldTracker:
         return sorted(kept, key=lambda c: c.index), dropped
 
     def _dup(self, a: WorldInput, b: WorldInput) -> bool:
-        """이중 검출 판정. 둘 다 끝점이면 끝점 쌍 규칙(#217), 마스크가 끼면 중심 거리 또는 마스크 포함률(#224)."""
+        """이중 검출 판정. 둘 다 끝점이면 끝점 쌍 규칙, 마스크가 끼면 중심 거리 또는 마스크 포함률."""
         if a.kind == "endpoint" and b.kind == "endpoint":
             return _same_bolt(a, b, self._config.dup_endpoint_mm)
 
@@ -533,9 +503,8 @@ class WorldTracker:
         return self._config.gate_y_mm + extra
 
     def _jump_suspected(self, cands, t_ms: int, belt_vy: float, belt_running) -> bool:
-        """확정 트랙 `jump_min_tracks`개 이상이 모두 예측 자리(반경 안)에 같은 클래스 후보가 없고, 크기 `coherent_jump_mm` 넘는 공통
-        이동 하나로 모든 트랙의 후보를 `jump_coherence_mm` 안에서 설명할 수 있으면 TF·보정 이상 의심. 가장 가까운 후보 대응을 쓰지 않는다
-        (이웃 볼트가 더 가까울 수 있음)."""
+        """확정 트랙들이 예측 자리를 잃고 하나의 큰 공통 이동으로 설명되면 TF·보정 이상 의심.
+        이웃 볼트가 더 가까울 수 있어 가장 가까운 후보 대응을 쓰지 않는다."""
         cfg = self._config
         confirmed = [t for t in self._tracks if t.part_track_id is not None]
 
@@ -587,7 +556,7 @@ class WorldTracker:
                     other_class_near.add(c.index)
                     continue
 
-                # 길이·각도 검사는 둘 다 값이 있을 때만(마스크 입력·마스크로 시작한 트랙은 없음, #226)
+                # 길이·각도 검사는 둘 다 값이 있을 때만(마스크 입력에는 없음)
                 if c.length_mm is not None and t.length is not None:
                     ratio = max(c.length_mm, t.length) / max(min(c.length_mm, t.length), 1e-9)
 
@@ -682,7 +651,7 @@ class WorldTracker:
 
         t.x, t.y, t.last_hit_ms = cx, cy, t_ms
 
-        if c.length_mm is not None:   # 마스크 hit는 길이·각도를 바꾸지 않는다(#226)
+        if c.length_mm is not None:   # 마스크 hit는 길이·각도를 바꾸지 않는다
             t.length, t.angle = c.length_mm, c.angle_deg
 
         t.seen += 1

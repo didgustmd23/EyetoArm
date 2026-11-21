@@ -1,12 +1,6 @@
-"""시험 전용 C 연결부 격리(#251 A-1): 단위·CLI 시험이 운영 기본 127.0.0.1:47093으로 detect 영상을 보내지 않게 한다.
+"""시험 전용 C 연결부 격리: 단위·CLI 시험이 운영 기본 127.0.0.1:47093으로 detect 영상을 보내지 않게 한다.
 
-근거: #249 D-1·D-8(전체 pytest가 실행 중인 C 중계기에 detect 380장을 보냄). C 파일 `c_handoff_probe.py`는 바꾸지 않고 시험 쪽에서 막는다.
-
-- `NullForwarder`: `_DisplayFrameForwarder` 자리. 받은 영상을 세기만 하고 소켓을 열지 않는다.
-- `IsolatedHandoffProbe`: 실제 `HandoffProbe`(소비 스레드·기록 그대로)에서 forwarder만 `NullForwarder`로 바꾼 것. 생성 때 만들어진 실제
-  forwarder 스레드는 바로 닫는다(그 스레드는 영상을 받기 전에는 접속하지 않음).
-- `isolate_cli(mod)`: 시험이 불러온 `run_pipeline` 모듈의 기본 연결부(`_default_live_handoff`, 실시간 기록 경로)와 기본 `--ros-link` 경로의
-  `HandoffProbe`를 위 가짜로 바꾼다. 실제 연결부를 일부러 확인하는 시험만 이 함수를 쓰지 않고 빈 포트로 격리한다.
+`NullForwarder`·`IsolatedHandoffProbe`·`isolate_cli(mod)`로 기본 연결부를 송신 없는 대역으로 바꾼다.
 """
 from __future__ import annotations
 
@@ -48,14 +42,14 @@ class IsolatedHandoffProbe(HandoffProbe):
 
 
 def isolated_live_handoff():
-    """`run_pipeline._default_live_handoff` 대역: (실제 `AToCHandoff`, `IsolatedHandoffProbe`). 시작은 호출자가 한다."""
+    """`run_pipeline._default_live_handoff` 대역(`AToCHandoff`, `IsolatedHandoffProbe`). 시작은 호출자."""
     probe = IsolatedHandoffProbe()
 
     return AToCHandoff(notify=probe.notify), probe
 
 
 def isolate_cli(mod) -> None:
-    """불러온 `run_pipeline` 모듈의 기본 C 연결부를 송신 없는 대역으로 바꾼다(그 모듈 객체에만, 다른 시험에 새지 않음)."""
+    """`run_pipeline` 모듈의 기본 C 연결부를 송신 없는 대역으로 바꾼다(그 모듈 객체에만)."""
     mod._default_live_handoff = isolated_live_handoff
     mod.HandoffProbe = IsolatedHandoffProbe
 

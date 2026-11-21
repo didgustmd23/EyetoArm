@@ -1,7 +1,5 @@
-"""common/types.py 공통 입력 자료형과 inputs/base.py A 확장의 호환 시험.
-
-근거: 공통 자료형 관리 초안 §3.1·§3.2·§3.6, 사용자 확정(2026-11-11: 공통 자료형은 초안 기준). 기대 필드 목록은 초안 표에서 옮긴 상수다.
-"""
+"""`common/types.py` 공통 입력 자료형과 `inputs/base.py` A 확장의 호환 시험.
+기대 필드 목록은 공통 자료형 관리 초안 표에서 옮긴 상수다."""
 import dataclasses
 import inspect
 import os
@@ -15,7 +13,7 @@ from eyetoarm.common import types as common
 from eyetoarm.inputs import base
 from eyetoarm.vision import planar
 
-# 초안 §3.2 표 순서(`width`, `height`는 한 행에 함께 적힌 두 필드)
+# 초안 표 순서(`width`, `height`는 한 행에 함께 적힌 두 필드)
 COMMON_FRAME_FIELDS = [
     ("image", "np.ndarray"),
     ("run_id", "str"),
@@ -32,7 +30,7 @@ COMMON_FRAME_FIELDS = [
     ("optical_frame", "str | None"),
     ("ros_stamp_ns", "int | None"),
 ]
-# 초안 §3.6 표
+# 초안 입력 사건 표
 COMMON_EVENT_FIELDS = [
     ("run_id", "str"),
     ("source_id", "str"),
@@ -68,15 +66,15 @@ def common_frame_kwargs(image):
 
 
 class CommonFrameTest(unittest.TestCase):
-    """공통 `FramePacket`이 초안 §3.2 표와 같은지 확인한다."""
+    """공통 `FramePacket`이 초안 표와 같은지 확인한다."""
 
     def test_fields_match_draft(self):
-        """공통 `FramePacket` 필드 이름·형·순서가 초안 §3.2 표 14개와 같다."""
+        """공통 `FramePacket` 필드 이름·형·순서가 초안 표 14개와 같다."""
         self.assertEqual(field_list(common.FramePacket), COMMON_FRAME_FIELDS)
         self.assertEqual(len(dataclasses.fields(common.FramePacket)), 14)
 
     def test_no_defaults_and_frozen(self):
-        """공통 `FramePacket`은 기본값이 없어 필드를 빠뜨리면 TypeError이고, 만든 뒤 값을 바꿀 수 없다."""
+        """공통 `FramePacket`은 기본값이 없어 필드를 빠뜨리면 TypeError이고 값을 바꿀 수 없다."""
         no_defaults(self, common.FramePacket)
         f = common.FramePacket(**common_frame_kwargs(np.zeros((2, 3, 3), np.uint8)))
 
@@ -94,10 +92,10 @@ class CommonFrameTest(unittest.TestCase):
 
 
 class CommonEventTest(unittest.TestCase):
-    """공통 `InputStatusEvent`가 초안 §3.6 표와 같은지 확인한다."""
+    """공통 `InputStatusEvent`가 초안 표와 같은지 확인한다."""
 
     def test_fields_match_draft(self):
-        """공통 입력 사건 필드가 초안 §3.6 표와 같고, 프레임 전용 필드·`source_ref`가 없다."""
+        """공통 입력 사건 필드가 초안 표와 같고 프레임 전용 필드·`source_ref`가 없다."""
         self.assertEqual(field_list(common.InputStatusEvent), COMMON_EVENT_FIELDS)
 
         names = {n for n, _ in COMMON_EVENT_FIELDS}
@@ -106,7 +104,7 @@ class CommonEventTest(unittest.TestCase):
             self.assertNotIn(absent, names)
 
     def test_no_defaults_frozen_detail_none(self):
-        """공통 입력 사건은 기본값이 없고 `detail`에 None을 받으며, 만든 뒤 값을 바꿀 수 없다."""
+        """공통 입력 사건은 기본값이 없고 `detail`에 None을 받으며 값을 바꿀 수 없다."""
         no_defaults(self, common.InputStatusEvent)
         e = common.InputStatusEvent(run_id="r", source_id="s", status=common.InputStatus.END_OF_STREAM,
                                     event_monotonic_ns=1, detail=None)
@@ -126,7 +124,7 @@ class EnumIdentityTest(unittest.TestCase):
         self.assertIs(base.InputStatus, common.InputStatus)
 
     def test_values_unchanged(self):
-        """열거형 값과 순서가 초안대로이고, 문자열과 비교할 수 있다(초안 §3.1)."""
+        """열거형 값과 순서가 초안대로이고 문자열과 비교할 수 있다."""
         self.assertEqual([m.value for m in common.TimestampBase],
                          ["PC_RECEIVE", "PHONE_CAPTURE", "SIM_TIME", "VIDEO_POS"])
         self.assertEqual([m.value for m in common.InputStatus],
@@ -138,7 +136,7 @@ class AExtensionTest(unittest.TestCase):
     """A 확장 자료형(`inputs.base`)이 공통 자료형을 상속하고 필드만 덧붙이는지 확인한다."""
 
     def test_frame_extends_common(self):
-        """A `FramePacket`은 공통 `FramePacket`의 하위 클래스이고, 공통 필드 뒤에 `source_ref`·`source_index`만 덧붙인다."""
+        """A `FramePacket`은 공통 하위 클래스이고 공통 필드 뒤에 `source_ref`·`source_index`만 붙인다."""
         self.assertTrue(issubclass(base.FramePacket, common.FramePacket))
         self.assertIsNot(base.FramePacket, common.FramePacket)
         self.assertEqual(field_list(base.FramePacket), COMMON_FRAME_FIELDS + A_FRAME_EXTRA)
@@ -149,7 +147,7 @@ class AExtensionTest(unittest.TestCase):
         self.assertEqual(params, [n for n, _ in COMMON_FRAME_FIELDS + A_FRAME_EXTRA])
 
     def test_frame_instance(self):
-        """A `FramePacket` 인스턴스는 공통 `FramePacket`이기도 하고, 만든 뒤 값을 바꿀 수 없다."""
+        """A `FramePacket` 인스턴스는 공통 `FramePacket`이기도 하고 값을 바꿀 수 없다."""
         f = base.FramePacket(**common_frame_kwargs(np.zeros((2, 3, 3), np.uint8)),
                              source_ref="a.jpg", source_index=0)
 
@@ -159,7 +157,7 @@ class AExtensionTest(unittest.TestCase):
             f.source_ref = "b.jpg"
 
     def test_event_extends_common(self):
-        """A 입력 사건은 공통 입력 사건 뒤에 `source_ref`만 덧붙이고, 위치 인자로 만들 수 있으며 값을 바꿀 수 없다."""
+        """A 입력 사건은 `source_ref`만 덧붙이고 위치 인자로 만들 수 있으며 값을 바꿀 수 없다."""
         self.assertTrue(issubclass(base.InputStatusEvent, common.InputStatusEvent))
         self.assertEqual(field_list(base.InputStatusEvent), COMMON_EVENT_FIELDS + A_EVENT_EXTRA)
 
@@ -187,7 +185,7 @@ class PlanarWithCommonFrameTest(unittest.TestCase):
     """평면 검출이 A 확장 없는 공통 `FramePacket`으로도 동작하는지 확인한다."""
 
     def setUp(self):
-        """흰 바탕 100×80에 검은 사각형 하나를 그리고, 어두운 물체를 고정 임계값으로 잡는 설정을 만든다."""
+        """흰 바탕 100×80에 검은 사각형을 그리고 고정 임계값으로 어두운 물체를 잡는 설정을 만든다."""
         self.img = np.full((80, 100, 3), 255, np.uint8)
         self.img[10:30, 20:40] = 0       # 화소 20..39 × 10..29, 넓이 19*19 = 361
         self.config = planar.PlanarConfig(
@@ -202,7 +200,7 @@ class PlanarWithCommonFrameTest(unittest.TestCase):
         self.assertIs(planar.FramePacket, common.FramePacket)
 
     def test_common_frame_without_a_fields(self):
-        """공통 `FramePacket`을 넣으면 실행 식별 값이 그대로 옮겨지고, 사각형 하나의 넓이·바운딩 박스가 그린 대로 나온다."""
+        """공통 `FramePacket`을 넣으면 실행 식별 값이 옮겨지고 넓이·바운딩 박스가 그린 대로다."""
         f = common.FramePacket(**common_frame_kwargs(self.img))
         r = planar.detect_planar(f, self.config)
 
@@ -212,7 +210,7 @@ class PlanarWithCommonFrameTest(unittest.TestCase):
         self.assertEqual(r.candidates[0].bbox_source, (20.0, 10.0, 39.0, 29.0))
 
     def test_a_frame_gives_same_result(self):
-        """같은 영상이면 공통 프레임과 A 프레임의 검출 결과(윤곽 수·바운딩 박스·설정 해시)가 같다."""
+        """같은 영상이면 공통 프레임과 A 프레임의 검출 결과가 같다."""
         rc = planar.detect_planar(common.FramePacket(**common_frame_kwargs(self.img)), self.config)
         ra = planar.detect_planar(base.FramePacket(**common_frame_kwargs(self.img),
                                                    source_ref="x", source_index=0), self.config)
@@ -226,7 +224,7 @@ class ImportIsolationTest(unittest.TestCase):
     """공통 자료형 import가 무거운 의존성을 끌어오지 않는지 확인한다."""
 
     def test_common_import_loads_no_qt_ros_cv2(self):
-        """새 프로세스에서 `common.types`·`inputs.base`만 import하면 cv2·Qt·ROS 모듈이 올라오지 않는다(코드 규약 §8)."""
+        """새 프로세스에서 `common.types`·`inputs.base`만 import하면 cv2·Qt·ROS가 올라오지 않는다."""
         code = (
             "import sys, eyetoarm.common.types, eyetoarm.inputs.base\n"
             "bad = [m for m in ('cv2', 'PySide6', 'PyQt5', 'PyQt6', 'rclpy', 'cv_bridge') if m in sys.modules]\n"

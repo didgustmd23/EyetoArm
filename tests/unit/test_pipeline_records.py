@@ -1,7 +1,6 @@
-"""작업 5 처리 기록 단위시험 — JSONL 1회 기록·원본 시각/시작 설정 보존·eval_run_id·로그 오류 분리·입력 상태 지속 시간.
+"""처리 기록 단위시험 — JSONL 1회 기록·원본 시각/시작 설정 보존·eval_run_id·로그 오류 분리·입력 상태 지속 시간.
 
-근거: 계획 r4 작업 5, A 상세설계 §9(처리 기록·입력 상태 로그·처리 건수·평가 실행 식별), §5.4,
-작업 4 합의(103 §4: duplicate 응답은 재기록하지 않음). 관측은 시험이 만든 가짜 detector 결과다.
+duplicate 응답은 재기록하지 않는다. 관측은 시험이 만든 가짜 detector 결과다.
 """
 import dataclasses
 import io
@@ -101,7 +100,7 @@ class LogTestBase(unittest.TestCase):
 
 
 class ProcessRecordTest(LogTestBase):
-    """처리 기록 내용(A §9 「처리 기록」)."""
+    """처리 기록 내용."""
 
     def test_records_keep_original_time_and_start_config(self):
         """세대 폐기 기록은 시작 당시 설정 ID·세대·원본 시각을 쓰고, 무효 완료 기록은 reason·후보 수·처리 시간을 옮기며 명령 ID는 None이다."""
@@ -188,7 +187,7 @@ class ProcessRecordTest(LogTestBase):
 
 
 class OnceOnlyTest(LogTestBase):
-    """최초 terminal·사건·폐기 1회 기록(계획 r4 작업 5 「1회 기록」)."""
+    """최초 terminal·사건·폐기 1회 기록."""
 
     def test_duplicate_outcome_is_not_rewritten(self):
         """같은 작업의 재통지(duplicate 응답)는 처리 기록·관측·사건으로 다시 쓰지 않는다."""
@@ -296,7 +295,7 @@ class LogFailureTest(LogTestBase):
         self.assertTrue(rec.broken)
 
     def test_uncertain_write_failure_stops_recording(self):
-        """flush 실패·짧은 쓰기는 기록 여부가 불확실하므로 기록기가 실패 상태가 되고, 같은 기록을 다시 쓰지 않아 중복·잘린 줄을 더 만들지 않는다(fail-stop)."""
+        """flush 실패·짧은 쓰기면 기록기가 실패 상태가 되고 다시 쓰지 않는다(fail-stop, 중복·잘린 줄 없음)."""
         for name, stream in (("flush", FlushFailStream()), ("short", ShortWriteStream())):
             with self.subTest(stream=name):
                 rec = JsonlRecorder(stream)
@@ -323,7 +322,7 @@ class LogFailureTest(LogTestBase):
                 self.assertEqual(log.missing(self.p)["process"], self.p.counters.completed)
 
     def test_event_failure_after_process_is_reported_not_hidden(self):
-        """process 줄은 쓰고 event 쓰기만 기록 전에 실패하면, 재시도·sync는 거부되고 missing이 사건 1건 누락을 보고하며 스트림에는 process 1줄만 남는다."""
+        """event 쓰기만 실패하면 재시도·sync는 거부, missing이 사건 1건 누락 보고, 스트림엔 process 1줄."""
         stream = FailOnNthWrite(2)
         log = PipelineLog(JsonlRecorder(stream))
         job = self.start(0)
@@ -353,14 +352,14 @@ class LogFailureTest(LogTestBase):
 
 
 class InputStateTest(unittest.TestCase):
-    """입력 상태 로그(A §9 「입력 상태 로그」)."""
+    """입력 상태 로그."""
 
     def event(self, status, t):
         """입력 사건."""
         return InputStatusEvent(run_id=RUN_ID, source_id="src0", status=status, event_monotonic_ns=t, detail=None)
 
     def test_input_state_duration_uses_monotonic_clock(self):
-        """지속 시간은 같은 PC 단조 시계(event_monotonic_ns·복귀 시각)의 차이이며, 같은 상태 반복은 한 구간, 상태 전환·정상 복귀·종료에서 확정한다."""
+        """지속 시간은 단조 시계 차이, 같은 상태 반복은 한 구간, 전환·정상 복귀·종료에서 확정한다."""
         tr = InputStateTracker(RUN_ID, "src0")
 
         self.assertEqual(tr.on_status(self.event(InputStatus.FRAME_TIMEOUT, 1_000)), [])

@@ -1,7 +1,5 @@
-"""#196 수정 시험(실시간 입력·기록 전용): #193 A1-1~A1-6.
-
-근거: `_workspace/196_reviewer_instruction_a_fixes_from_193.md`, `_workspace/193_builder2_full_source_review.md`(fd1a7942).
-"""
+"""실시간 입력·기록 수정 시험: 리셋 경계, TF 수신 실패, 대기 기록 상한, 입력 오류 집계,
+확인 창 valid 문구, 세션 생성 실패 정리."""
 from __future__ import annotations
 
 import tempfile
@@ -43,7 +41,7 @@ def image(slot, stamp_ns):
 
 
 def reset_in_gap(slot, t, *, clock_first: bool):
-    """이전 실행 → 영상 중단(GAP) 중 Gazebo 리셋 → 재개. clock_first면 새 /clock이 첫 새 영상보다 먼저 온다."""
+    """이전 실행 → 영상 중단 중 Gazebo 리셋 → 재개(clock_first면 새 /clock이 먼저 온다)."""
     slot.on_clock(OLD_NS)
     image(slot, OLD_NS)
     t[0] += GAP_NS
@@ -83,7 +81,7 @@ def open_link(link):
 
 
 class ResetInGapSlotTest(unittest.TestCase):
-    """A1-1 slot: 중단 뒤 재개 영상의 stamp 되감기는 재접속에 합치지 않고 리셋(SIM_TIME_REWIND)으로 처리한다."""
+    """slot: 중단 뒤 재개 영상의 stamp 되감기는 재접속이 아니라 리셋(SIM_TIME_REWIND)이다."""
 
     def test_image_first_makes_rewind_boundary(self):
         """재개 첫 영상이 /clock보다 먼저 와도 SIM_TIME_REWIND 경계가 생기고 되감기 필터가 켜진다."""
@@ -96,7 +94,7 @@ class ResetInGapSlotTest(unittest.TestCase):
         self.assertEqual(slot.stats()["rewind_merged_into_resume"], 0)
 
     def test_both_orders_same_reset_decision(self):
-        """영상 먼저·/clock 먼저 두 순서 모두 되감기 경계가 정확히 1번이고, 늦게 온 /clock은 경계를 더 만들지 않는다."""
+        """두 도착 순서 모두 되감기 경계가 1번이고 늦게 온 /clock은 경계를 더 만들지 않는다."""
         for clock_first in (False, True):
             with self.subTest(clock_first=clock_first):
                 slot, kinds, t = make_slot()
@@ -106,7 +104,7 @@ class ResetInGapSlotTest(unittest.TestCase):
                 self.assertEqual(set(kinds) - {"sim_time_rewind", "frame_timeout", "reconnect"}, set())
 
     def test_image_first_filter_drops_late_old_run_image(self):
-        """영상 먼저 순서에서도 되감기 필터가 켜져, 리셋 뒤 늦게 도착한 이전 실행 영상(큰 stamp)을 넘기지 않는다."""
+        """영상 먼저 순서에서도 리셋 뒤 늦게 도착한 이전 실행 영상을 넘기지 않는다."""
         slot, kinds, t = make_slot()
         reset_in_gap(slot, t, clock_first=False)
         t[0] += 10_000_000
@@ -114,7 +112,7 @@ class ResetInGapSlotTest(unittest.TestCase):
         self.assertEqual(image(slot, OLD_NS + 33_000_000), "stale_after_rewind")
 
     def test_plain_resume_without_rewind_unchanged(self):
-        """stamp가 줄지 않은 재개(일시 정지 뒤 재개)는 기존대로 FRAME_TIMEOUT → RECONNECT뿐이다."""
+        """stamp가 줄지 않은 재개는 FRAME_TIMEOUT → RECONNECT뿐이다."""
         slot, kinds, t = make_slot()
         slot.on_clock(OLD_NS)
         image(slot, OLD_NS)
@@ -125,10 +123,10 @@ class ResetInGapSlotTest(unittest.TestCase):
 
 
 class ResetInGapLinkTest(unittest.TestCase):
-    """A1-1 연결부: 두 순서 모두 실행 종료(reset_pending, 상태 닫힘), 같은 run_id로 다시 열리지 않는다."""
+    """연결부: 두 순서 모두 실행이 끝나고 같은 run_id로 다시 열리지 않는다."""
 
     def test_link_ends_run_in_both_orders(self):
-        """slot 경계 훅을 연결부에 꽂으면 영상 먼저·/clock 먼저 모두 reset_pending·closed이고 토큰이 다시 열리지 않는다."""
+        """slot 경계 훅을 꽂으면 두 순서 모두 reset_pending·closed이고 토큰이 다시 열리지 않는다."""
         for clock_first in (False, True):
             with self.subTest(clock_first=clock_first):
                 link = make_link()
@@ -136,7 +134,7 @@ class ResetInGapLinkTest(unittest.TestCase):
                 slot, kinds, t = make_slot(hook=lambda e, k, link=link: link.boundary_hook(e + 1, k))
                 reset_in_gap(slot, t, clock_first=clock_first)
 
-                # 실행기가 경계를 반영해도(되감기 뒤 다른 경계) 닫힌 실행은 다시 열리지 않는다
+                # 실행기가 다른 경계를 반영해도 닫힌 실행은 다시 열리지 않는다
                 link.state.on_applied(99, 5, "cal")
 
                 self.assertTrue(link.reset_pending)
@@ -192,7 +190,7 @@ def wait_until(pred, limit_s=2.0):
 
 
 class TfReceiverFailureTest(unittest.TestCase):
-    """A1-2: B TF 수신 스레드 사망은 콜백으로 알리고, 연결 상태를 실패로 올리며 정리 확인이 참이 되지 않는다."""
+    """B TF 수신 스레드 사망은 콜백으로 알리고 연결 상태를 실패로 올리며 정리 확인은 거짓이다."""
 
     def test_runtime_reports_crash_and_unexpected_return(self):
         """예외·예기치 않은 반환 모두 실패 콜백이 사유와 함께 한 번 불린다."""
@@ -234,7 +232,7 @@ class TfReceiverFailureTest(unittest.TestCase):
         self.assertIsNone(rt.spin_error)
 
     def test_exception_during_close_not_reported(self):
-        """정리(close) 중 executor가 예외로 끝나면 spin_error만 남고 실패 콜백은 불리지 않는다(영상 수신기와 같은 규칙, #196 r1 L1)."""
+        """정리 중 executor 예외는 spin_error만 남고 실패 콜백은 불리지 않는다."""
         stop = threading.Event()
 
         class RaiseOnShutdownExec(_CrashExec):
@@ -264,7 +262,7 @@ class TfReceiverFailureTest(unittest.TestCase):
         self.assertEqual(late, [])
 
     def test_link_fails_state_and_cleanup_not_confirmed(self):
-        """연결부에 꽂힌 TF가 죽으면 상태 실패 tf_receiver_failed, 끝낸 뒤 cleanup_confirmed 거짓·정리 오류에 사유."""
+        """연결부 TF가 죽으면 상태는 tf_receiver_failed, cleanup_confirmed 거짓, 정리 오류에 사유."""
         rt = LiveTfRuntime(None, modules=fake_modules(_CrashExec))
         link = make_link(tf=rt)
         rt.start()
@@ -281,10 +279,10 @@ class TfReceiverFailureTest(unittest.TestCase):
 
 
 class EnvelopeTfLookupBoundTest(unittest.TestCase):
-    """A1-3: EnvelopeTfLookup 대기 기록은 상한이 있고, 요약 최대값은 전체 실행 기준 그대로다."""
+    """EnvelopeTfLookup 대기 기록은 상한이 있고 요약 최대값은 전체 실행 기준이다."""
 
     def test_wait_history_bounded_and_max_kept(self):
-        """호출 수가 상한을 넘어도 wait_ms 길이는 상한 이하이고 max_wait_ms는 첫 호출의 큰 대기를 유지한다."""
+        """호출 수가 상한을 넘어도 wait_ms 길이는 상한 이하이고 max_wait_ms는 유지된다."""
         ticks = iter([0.0, 0.040] + [1.0, 1.0] * 5000)
         lk = EnvelopeTfLookup(clock=lambda: next(ticks))
 
@@ -297,10 +295,10 @@ class EnvelopeTfLookupBoundTest(unittest.TestCase):
 
 
 class InvalidInputCountTest(unittest.TestCase):
-    """A1-4: 잘못된 영상 헤더·/clock을 통계로 센다."""
+    """잘못된 영상 헤더·/clock을 통계로 센다."""
 
     def test_invalid_header_and_clock_counted(self):
-        """헤더 해석 실패는 invalid_header, 잘못된 /clock은 invalid_clock으로 slot 통계에 남는다."""
+        """헤더 해석 실패는 invalid_header, 잘못된 /clock은 invalid_clock으로 센다."""
         from eyetoarm.inputs.ros_image import LiveLinkSource, LiveSourceConfig
 
         src = LiveLinkSource(source_id="gz_link", issuer=SimpleNamespace(next_seq=lambda: 0),
@@ -316,10 +314,10 @@ class InvalidInputCountTest(unittest.TestCase):
 
 
 class LiveViewValidTextTest(unittest.TestCase):
-    """A1-5: 확인 창은 실제 관측 valid 값을 쓴다(로봇 목표 아님 문구 유지)."""
+    """확인 창은 실제 관측 valid 값을 쓴다(로봇 목표 아님 문구 유지)."""
 
     def test_valid_observation_text(self):
-        """valid=True 관측의 상태 문구·정보 줄은 valid=True이고, 로봇 목표가 아니라는 문구는 남는다. 무효 관측은 그대로 valid=False."""
+        """확인 창 문구가 관측 valid 값을 따르고 로봇 목표가 아니라는 문구는 남는다."""
         from eyetoarm.vision import live_view as lv
 
         frame = SimpleNamespace(run_id="r", source_id="s", image_seq=0, timestamp_ms=0, timestamp_base="SIM_TIME")
@@ -339,7 +337,7 @@ class LiveViewValidTextTest(unittest.TestCase):
 
 
 class SessionInitCleanupTest(unittest.TestCase):
-    """A1-6: LiveRunSession 생성 중 실패하면 이미 만든 slot도 닫는다."""
+    """LiveRunSession 생성 중 실패하면 이미 만든 slot도 닫는다."""
 
     def test_slot_closed_when_dispatcher_fails(self):
         """디스패처 생성이 실패하면 원래 예외가 오르고 slot·TF가 닫힌다."""

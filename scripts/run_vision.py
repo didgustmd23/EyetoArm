@@ -1,39 +1,7 @@
-"""저장 이미지 입력 재현 CLI — A 내부 실행 기록용.
+"""저장 이미지 입력을 재현해 stdout에 한 줄 JSON 기록(start/frame/observation/event/end)을 쓰는 CLI.
 
-    PYTHONPATH=src python3 scripts/run_vision.py --images <경로...> [--source-id stored0] [--max-frames N]
-    PYTHONPATH=src python3 scripts/run_vision.py --image-list <목록.txt> [--source-id stored0] [--max-frames N]
-    ... [--detect-config <설정.json> [--overlay-dir <새 폴더>]]
-
-기본은 입력 재현과 기록만 한다. `--detect-config`를 주면 성공 프레임마다 `vision.planar.detect_planar`로
-표시용(raw) 윤곽을 추출해 기록한다. GUI·ROS·TCP·로봇 명령·클래스·규격 판정은 없다.
-
-stdout에는 한 줄에 JSON 객체 하나를 쓴다(kind = start / frame / observation / event / end). 이 필드
-이름은 A 내부 실행 기록용 제안이며 공동 API나 TCP 규약이 아니다. 경고와 예상 밖 오류 설명은 stderr로 간다.
-
-검출 모드(`--detect-config`)
-- 설정은 시작 전에 한 번 읽어 검증한다. 검출 옵션이 없으면 설정을 읽지 않고 출력은 이전과 같다.
-- `frame` 바로 다음에 같은 프레임의 `observation`을 한 줄 쓴다. 입력 실패 `event`에는 만들지 않는다.
-- `observation`은 표시용이다: `display_only=true`, `valid=false`, `observed_face`·`calc_contour`·
-  `selected_index`는 null. 후보를 자동 선정하지 않고 면적 탈락·경계 접촉 후보도 모두 남긴다.
-  좌표·면적·경계 상자는 원본 raw 픽셀이다. `eligible`은 영상 필터 통과일 뿐 B 유효 판정이 아니다.
-- `start`에 `config_sha256`·`display_only`, `end`에 `observations`(observation 수)를 덧붙인다.
-  `frames`·`failures`·`reason`의 뜻은 같다. 후보 0개나 `valid=false`는 실패로 세지 않는다.
-- `--overlay-dir`은 `--detect-config`와 함께만 쓴다. 아직 없는 폴더여야 하며(부모는 있어야 함) 실행이
-  새로 만든다. 파일 이름은 `overlay_<image_seq 6자리>.png`이고 원본 경로·소스 ID를 쓰지 않는다.
-  원본 복사본에 후보를 그린다(통과=초록, 탈락·잘림=빨강, ROI=파랑, 위쪽에 범례·설정 해시·표시용 표기).
-
-- `timestamp_base`는 PC_RECEIVE이며, 파일 디코딩을 마친 PC 시각이지 촬영 시각이 아니다.
-  `timestamp_ms`를 물리 관측 시간·촬영 지연·로봇 목표 유효성의 근거로 쓰지 않는다.
-- 목록 파일은 UTF-8로 읽고, 줄 앞뒤 공백을 지우고, 빈 줄만 뺀다. 순서는 그대로다.
-  주석·glob·폴더 탐색은 없다. 상대 이미지 경로는 목록 파일 위치가 아니라 실행 cwd 기준이다.
-- `--max-frames`는 성공 프레임 수만 센다. 실패 항목은 세지 않는다.
-
-종료 코드
-- 0: 목록을 끝까지 처리했거나 `--max-frames`에 도달함. **모든 파일이 성공했다는 뜻이 아니다.**
-  개별 파일 실패와 빈 목록은 event/end 기록으로 구분한다.
-- 2: 옵션 오류, 양의 정수가 아닌 제한, 목록 파일 열기·UTF-8 읽기 실패, 검출 설정 열기·구문·계약
-  오류, 오버레이 폴더 조건 오류(이미 있음·부모 없음·만들 수 없음). 모두 start 출력과 소스 생성 전이다.
-- 1: 예상하지 못한 실행 오류, 검출 예외(예: 원본 밖 ROI), 오버레이 저장 실패(stderr에 설명, end 없음).
+사용: PYTHONPATH=src python3 scripts/run_vision.py --images <경로...> [--detect-config <설정.json>]
+종료 코드: 0 목록 끝·제한 도달, 1 실행 중 오류, 2 인자·경로·설정 오류(start 전).
 """
 from __future__ import annotations
 
@@ -51,7 +19,7 @@ from eyetoarm.inputs.stored_images import StoredImageSource
 from eyetoarm.vision.planar import PlanarConfig, PlanarResult, detect_planar, load_config
 
 TIME_NOTE = "PC_RECEIVE는 파일 디코딩 완료 시각이며 촬영 시각이 아님"
-# StoredImageSource가 쓰는 detail 문자열(stored_images.py)
+# StoredImageSource가 쓰는 detail 문자열
 _DETAIL_EMPTY = "empty list"
 _DETAIL_CLOSED = "closed"
 # 오버레이 색(BGR)
@@ -62,10 +30,7 @@ _LEGEND_BGR = (255, 0, 255)
 
 
 def _positive_int(text: str) -> int:
-    """`--max-frames` 값 변환기. 10진 양의 정수만 받는다.
-
-    "0"·"-1"·"1.5"·"x"는 `argparse.ArgumentTypeError`를 내고, argparse가 사용법과 함께 exit 2로 끝낸다.
-    """
+    """`--max-frames` 값 변환기. 10진 양의 정수만 받고, 아니면 `argparse.ArgumentTypeError`."""
     try:
         value = int(text, 10)
     except ValueError:
@@ -85,11 +50,7 @@ def _non_empty(text: str) -> str:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """CLI 옵션 해석기를 만든다.
-
-    - `--images`와 `--image-list` 중 정확히 하나가 필요하다.
-    - `--detect-config`·`--overlay-dir`은 선택이다. `--overlay-dir` 단독 사용 거부는 `main`이 검사한다.
-    """
+    """CLI 옵션 해석기를 만든다(`--images`·`--image-list` 중 정확히 하나)."""
     parser = argparse.ArgumentParser(
         prog="run_vision",
         description="저장 이미지 입력을 읽어 프레임·입력 사건을 JSON Lines로 출력합니다(A 내부 기록용).",
@@ -111,10 +72,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _read_list(path: str) -> list[str]:
-    """UTF-8 목록 파일을 읽어 경로 목록을 돌려준다.
+    """UTF-8 목록 파일을 읽어 경로 목록을 돌려준다(줄 앞뒤 공백 제거, 빈 줄만 뺌, 순서 유지).
 
-    줄 앞뒤 공백을 지우고 빈 줄만 뺀다. 순서는 파일 그대로다. 주석·glob·폴더 탐색은 하지 않는다.
-    열기·디코딩 오류(OSError, UnicodeDecodeError)는 호출자(`main`)가 exit 2로 바꾼다.
+    열기·디코딩 오류는 호출자(`main`)가 exit 2로 바꾼다.
     """
     with open(path, "r", encoding="utf-8") as f:
         lines = f.read().splitlines()
@@ -122,10 +82,7 @@ def _read_list(path: str) -> list[str]:
 
 
 def _frame_record(frame: FramePacket) -> dict:
-    """성공 프레임 하나를 `kind=frame` 기록(dict)으로 만든다. 영상 배열은 넣지 않는다.
-
-    키 구성은 검출 모드에서도 바뀌지 않는다.
-    """
+    """성공 프레임 하나를 `kind=frame` 기록(dict)으로 만든다. 영상 배열은 넣지 않는다."""
     return {
         "kind": "frame",
         "run_id": frame.run_id,
@@ -142,10 +99,7 @@ def _frame_record(frame: FramePacket) -> dict:
 
 
 def _event_record(event) -> dict:
-    """입력 사건(`InputStatusEvent` A 확장)을 `kind=event` 기록으로 만든다.
-
-    프레임이 없는 사건이므로 `image_seq`·`timestamp_ms`를 넣지 않는다. 상태는 enum 값 문자열이다.
-    """
+    """입력 사건을 `kind=event` 기록으로 만든다(`image_seq`·`timestamp_ms` 없음)."""
     return {
         "kind": "event",
         "run_id": event.run_id,
@@ -158,13 +112,7 @@ def _event_record(event) -> dict:
 
 
 def _observation_record(result: PlanarResult, overlay_path: str | None) -> dict:
-    """`detect_planar` 결과를 `kind=observation` 기록으로 만든다(검출 모드 전용, A 내부 표시용).
-
-    - 입력 식별자·원본 시각은 결과에 보존된 값을 그대로 옮긴다(같은 프레임의 `frame` 기록과 일치).
-    - 튜플·NumPy 값은 JSON 기본 타입(list·float·int)으로 바꾼다. 점은 원본 raw float 좌표 전체다.
-    - 면적 탈락·경계 접촉 후보도 모두 넣고, 후보를 고르지 않는다(`selected_index`는 null).
-    - `display_only`·`valid`·`observed_face`·`calc_contour`는 결과의 고정값을 그대로 쓴다.
-    """
+    """`detect_planar` 결과를 `kind=observation` 기록으로 만든다(표시용, 후보를 고르지 않음)."""
     return {
         "kind": "observation",
         "run_id": result.run_id,
@@ -204,11 +152,7 @@ def _observation_record(result: PlanarResult, overlay_path: str | None) -> dict:
 
 
 def _draw_overlay(image: np.ndarray, result: PlanarResult, config: PlanarConfig) -> np.ndarray:
-    """원본 복사본에 범례·ROI·후보를 그려 돌려준다. 원본 배열과 결과 좌표는 바꾸지 않는다.
-
-    그리는 순서는 범례(위쪽 3줄) → ROI 사각형(파랑) → 후보(eligible 초록, 탈락·잘림 빨강)이다.
-    점은 그릴 때만 `np.rint`로 정수화한다.
-    """
+    """원본 복사본에 범례·ROI·후보를 그려 돌려준다. 원본 배열과 결과 좌표는 바꾸지 않는다."""
     canvas = image.copy()
     legend = ("display_only valid=false", f"cfg {result.config_sha256[:12]}",
               "green=eligible red=rejected/clipped")
@@ -228,10 +172,9 @@ def _draw_overlay(image: np.ndarray, result: PlanarResult, config: PlanarConfig)
 
 
 def _save_overlay(directory: str, image_seq: int, canvas: np.ndarray) -> str:
-    """`overlay_<image_seq 6자리>.png`를 새로 만들고 경로를 돌려준다.
+    """`overlay_<image_seq 6자리>.png`를 새로 만들고(덮어쓰지 않음) 경로를 돌려준다.
 
-    파일 이름에 원본 경로·소스 ID를 쓰지 않는다. `open(..., "xb")`라 기존 파일을 덮어쓰지 않는다.
-    인코딩·쓰기 실패는 RuntimeError(`overlay ... failed`)로 올려 `main`이 exit 1로 끝내게 한다.
+    인코딩·쓰기 실패는 RuntimeError로 올려 `main`이 exit 1로 끝내게 한다.
     """
     path = os.path.join(directory, f"overlay_{int(image_seq):06d}.png")
     ok, buf = cv2.imencode(".png", canvas)
@@ -251,12 +194,7 @@ def _save_overlay(directory: str, image_seq: int, canvas: np.ndarray) -> str:
 def main(argv=None, *, source_factory=StoredImageSource, stdout=None, stderr=None) -> int:
     """CLI 진입점. 종료 코드를 돌려준다(0 정상 종료, 2 인자·경로·설정 오류, 1 실행 중 오류).
 
-    순서: 옵션 해석 → 목록 읽기 → (검출 모드) 설정 로드·오버레이 폴더 생성 → 소스 생성 → start →
-    프레임마다 frame(+observation) / 사건마다 event → end. 2로 끝나는 오류는 모두 start 출력 전이다.
-
-    - `source_factory`·`stdout`·`stderr`는 시험에서 가짜 소스·출력을 넣기 위한 주입 지점이다.
-    - 실행 중 예외는 성공으로 처리하지 않는다: stderr에 원인을 쓰고 end 없이 1을 돌려준다.
-    - 정상·예외 모두 `finally`에서 소스를 닫는다.
+    `source_factory`·`stdout`·`stderr`는 시험 주입 지점이다. 소스는 `finally`에서 닫는다.
     """
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr

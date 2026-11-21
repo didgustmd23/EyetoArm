@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""A 통신 시험 도구 진입점(#183, A 상세설계 §4 「통신 시험 도구」). D `TcpClient` 재사용, 로컬 모의 상대에서 S1~S4를 실행한다.
+"""A 통신 시험 도구 진입점. D `TcpClient`로 로컬 모의 상대(C `TcpServer`, 포트 0)에서 S1~S4를 실행한다.
 
-    PYTHONPATH=src python3 scripts/run_comm_test.py --peer local_mock --scenario all --n 100 --test-mode
+사용: PYTHONPATH=src python3 scripts/run_comm_test.py --peer local_mock --scenario all --test-mode
 
-- `--peer local_mock`만 지원한다. 수정하지 않은 C `TcpServer`를 포트 0으로 띄운다(고정 47090 사용 안 함).
-- `--peer c_server`(실제 C 서버)는 이번 범위 밖이라 rc 2로 거부한다(reviewer Q6).
-- `--test-mode`가 없으면 장애 주입이 필요한 케이스(S2·S3·S4b/c)는 실행하지 않고 건너뜀으로 기록한다(TCP §8.6).
-- 결과는 새 폴더 `--out-root/<run_id>/`: run_meta.json, commands.jsonl, events_*.jsonl(D EventLog), injector.jsonl,
-  summary.json, summary.md, SHA256SUMS.
-- 종료 코드: 0 = 모든 행 기대 일치·정리 성공, 1 = 불일치·정리 실패·콜백 오류, 2 = 인자 거부.
+`--test-mode`가 없으면 장애 주입 케이스는 건너뛴다. 종료 코드: 0 기대 일치, 1 불일치·정리 실패, 2 인자 거부.
 """
 from __future__ import annotations
 

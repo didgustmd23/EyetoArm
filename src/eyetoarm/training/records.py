@@ -1,12 +1,7 @@
-"""시작 전 manifest·SHA256SUMS(학습기 설계 r2 §4·§6).
+"""학습 시작 전 manifest(`start_manifest`)와 폴더 해시 목록(`write_sha256sums`).
 
-- `start_manifest`: 자식을 띄우기 **전에** 쓰는 `run_manifest`(status starting). 해석된 공통 설정·후보·공식 초기 가중치·
-  fingerprint 결과·명령줄·git·버전을 담는다. 이후 갱신은 같은 파일을 원자 교체한다(`layout.write_json_atomic`).
-- `write_sha256sums`: 폴더 아래 모든 파일의 sha256 목록. 자기 자신·이전 판(`SHA256SUMS.*`)·`OWNER.lock`·임시 파일은 제외한다.
-  다시 쓸 때 기존 판을 `SHA256SUMS.<tag>`로 보존하며(이미 있으면 FileExistsError), 새 판은 원자 교체로 쓴다.
-  **시점 예외(I3 r1 L1):** legacy 등록의 게시 표지 `REGISTERED.json`은 SHA256SUMS를 쓴 **뒤에** 마지막으로 쓴다(필수 기록이 실패하면
-  표지가 없어야 하므로). 그래서 등록 직후의 SHA256SUMS에는 표지가 없다. 표지의 무결성은 표지 안의 등록 기록 정규 해시로 묶이며,
-  그 뒤의 평가 묶음 종료 때 다시 쓰는 SHA256SUMS에는 표지도 포함된다.
+SHA256SUMS를 다시 쓸 때 기존 판은 `SHA256SUMS.<tag>`로 보존하고(있으면 FileExistsError) 새 판은 원자 교체한다.
+legacy 등록의 게시 표지 `REGISTERED.json`은 SHA256SUMS 뒤에 쓰므로 등록 직후 목록에는 표지가 없다.
 """
 from __future__ import annotations
 

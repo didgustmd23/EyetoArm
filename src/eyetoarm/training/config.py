@@ -1,12 +1,7 @@
-"""학습기 공통·후보 설정 검증(학습기 설계 r2 §2). 엄격 JSON, 후보별 학습 인자 거부, 저장소 상대 경로, config_id.
+"""학습기 공통·후보 설정 검증: 엄격 JSON, 후보별 학습 인자 거부, 저장소 상대 경로, config_id.
 
-- 공통 설정(`config/training/s1_common.json`)은 모든 후보에 같게 적용된다. 후보 설정(`s1_candidates.json`)은 출처·해시만 담고
-  학습 인자 키를 넣으면 ConfigError다(같은 조건 보장).
-- 경로는 저장소 루트 기준 상대 경로만 받는다(절대 경로·`..` 거부). 호출자가 루트를 붙여 해석한다.
-- `kind`는 `comparison`(비교 실험) 또는 `smoke`(검증용, `fraction` 허용)다. smoke 결과는 비교 묶음에 넣지 않는다.
-- 후보 파일의 `selection_mode`를 생략하면 3계열 비교 규칙, `"single"`이면 후보 정확히 1개다(#139). 모드는 config_id 스냅샷에 들어간다.
-- 감시 값 중 `mem_available_stop_kib`(2 GiB)는 기존 사용자 결정의 참조이고, 나머지 기한·유예 값은 조절 가능한 A 개발 임시값이다.
-- torch·ultralytics를 import하지 않는다.
+후보 설정은 출처·해시만 담고 학습 인자 키가 있으면 ConfigError다(같은 조건 보장).
+`kind`는 `comparison` 또는 `smoke`(`fraction` 허용, 비교 묶음 제외). torch·ultralytics를 import하지 않는다.
 """
 from __future__ import annotations
 
@@ -22,17 +17,17 @@ from typing import Any
 
 FORMAT_VERSION = 1
 KINDS = ("comparison", "smoke")
-FAMILIES = ("yolov8n-seg", "yolo11n-seg", "yolo26n-seg")   # 사용자 확정 비교 후보(A §7.1)
-# 계열 ↔ 공식 nano 분할 가중치 파일(r1 F2). 다른 크기·과제 모델은 공식 url이어도 받지 않는다
+FAMILIES = ("yolov8n-seg", "yolo11n-seg", "yolo26n-seg")  # 비교 후보 계열
+# 계열 ↔ 공식 nano 분할 가중치 파일. 다른 크기·과제 모델은 공식 url이어도 받지 않는다
 FAMILY_WEIGHTS = {"yolov8n-seg": "yolov8n-seg.pt", "yolo11n-seg": "yolo11n-seg.pt", "yolo26n-seg": "yolo26n-seg.pt"}
 TRAIN_KEYS = ("imgsz", "epochs", "seed", "deterministic", "batch", "device", "workers", "cache", "plots")
 SMOKE_ONLY_KEYS = ("fraction",)
-# 명시할 때만 ultralytics에 넘기는 선택 학습 키(#141). 생략하면 ultralytics 기본값이고 스냅샷·config_id도 그대로다
+# 명시할 때만 ultralytics에 넘기는 선택 학습 키. 생략하면 ultralytics 기본값, config_id 불변
 OPTIONAL_TRAIN_KEYS = ("hsv_v",)
 WATCH_KEYS = ("watch_interval_s", "mem_available_stop_kib", "kill_grace_s", "train_deadline_s", "eval_deadline_s",
               "reap_timeout_s", "monitor_cmd_timeout_s")
 REQUIRED_ENV = {"YOLO_AUTOINSTALL": "false", "YOLO_OFFLINE": "1"}
-# 후보 선택 모드(#139): 생략(_MODE_DEFAULT) = 3계열 비교 규칙, "single" = 후보 정확히 1개. 생략과 구분하려고 기본값은 객체로 둔다
+# 후보 선택 모드: 생략과 "single"을 구분하려고 기본값은 객체로 둔다
 _MODE_DEFAULT = object()
 SELECTION_MODES = (_MODE_DEFAULT, "single")
 OFFICIAL_URL = "https://github.com/ultralytics/assets/releases/download/"
@@ -76,7 +71,7 @@ def _pos_int(v, name: str, lo: int = 1, hi: int | None = None) -> int:
 
 
 def _pos_num(v, name: str) -> float:
-    """유한 양수. 거대 정수(float 변환 넘침)도 ConfigError(#196 A4-2)."""
+    """유한 양수. 거대 정수(float 변환 넘침)도 ConfigError."""
     f = _as_float(v)
     if f is None or not math.isfinite(f) or f <= 0:
         raise ConfigError(f"{name} must be a finite number > 0: {v!r}")
@@ -84,7 +79,7 @@ def _pos_num(v, name: str) -> float:
 
 
 def _as_float(v) -> float | None:
-    """bool이 아닌 실수를 float로. 변환할 수 없으면(거대 정수의 OverflowError 포함) None(#196 A4-2)."""
+    """bool이 아닌 실수를 float로. 변환할 수 없으면(거대 정수의 OverflowError 포함) None."""
     if isinstance(v, bool) or not isinstance(v, Real):
         return None
     try:
@@ -112,7 +107,7 @@ def _exact_keys(d, required, name: str, optional=()) -> None:
 
 @dataclass(frozen=True)
 class CommonConfig:
-    """검증한 공통 설정. dict·list 필드는 고정(MappingProxyType·tuple)되어 바꿀 수 없다(I2 확인점 4)."""
+    """검증한 공통 설정. dict·list 필드는 고정(MappingProxyType·tuple)되어 바꿀 수 없다."""
 
     kind: str
     train: dict
@@ -179,7 +174,7 @@ class TrainingConfig:
         return dict(json.loads(self.canonical)["common"]["train"])
 
     def verify(self) -> bool:
-        """스냅샷이 config_id와 맞고, 스냅샷을 다시 검증한 공통·후보 값이 지금 객체와 같은가."""
+        """스냅샷이 config_id와 맞고, 다시 검증한 공통·후보 값이 지금 객체와 같은가."""
         if hashlib.sha256(self.canonical.encode()).hexdigest() != self.config_id:
             return False
         doc = json.loads(self.canonical)
@@ -223,7 +218,7 @@ def common_from_dict(d) -> CommonConfig:
         train["fraction"] = f
     if "hsv_v" in t:
         # 밝기(V) 증강 폭: bool 제외 유한 실수, ultralytics 분수 키와 같은 [0, 1].
-        # 범위 비교를 isfinite보다 먼저 한다: 거대 정수(10**400)는 float 변환 없이 비교에서 걸러진다(r1 F1)
+        # 범위 비교를 isfinite보다 먼저 한다: 거대 정수(10**400)는 float 변환 없이 걸러진다
         v = t["hsv_v"]
         if isinstance(v, bool) or not isinstance(v, Real) or not 0 <= v <= 1 or not math.isfinite(v):
             raise ConfigError(f"hsv_v must be a finite number in [0, 1]: {v!r}")
@@ -261,8 +256,7 @@ def common_from_dict(d) -> CommonConfig:
 def candidates_from_dict(d) -> tuple[Candidate, ...]:
     """후보 설정 dict를 검증한다. exp_id 유일.
 
-    `selection_mode`를 생략하면 비교 규칙(3계열이 정확히 한 번씩)이고, `"single"`이면 후보가 정확히 1개여야 한다
-    (#139 reviewer 결정 B). 어느 모드든 후보마다 계열·공식 파일·출처·sha256 검증은 같다. 그 밖의 모드 값은 거부한다.
+    `selection_mode` 생략은 3계열이 정확히 한 번씩, `"single"`은 후보 정확히 1개. 그 밖의 값은 거부한다.
     """
     _exact_keys(d, ("format_version", "candidates"), "candidates file", optional=("selection_mode",))
     if not _is_int(d["format_version"]) or d["format_version"] != FORMAT_VERSION:

@@ -1,9 +1,7 @@
-"""실행기 실시간 소스 경로 시험(L3) — 결과 공개 전 입력 반영(지점 A·B·C), 세대 전이, 실시간 정책, 정리.
+"""실행기 실시간 소스 경로 시험: 결과 공개 전 입력 반영(지점 A·B·C), 세대 전이, 실시간 정책, 정리.
 
-근거: 계획 `docs/superpowers/plans/2026-11-16-live-link-camera.md` r3 §3.5(T-C1~C7)·§3.8, A 상세설계 §5.4(세대 증가·이전 결과
-무효), reviewer 구현 지시(입력 이상 시 이전 관측 재사용 방지, 종료·기록 실패·유한 정리, 감시 10/1 보존).
-실제 `LiveLinkSource`에 가짜 수신 연결을 붙이고, 검출 worker 안에서 수신 스레드 대신 `handle_*`를 불러 「검출 중 입력 사건」을 만든다.
-ROS·YOLO는 쓰지 않는다. 실행기는 데몬 스레드에서 유한 join 한다.
+실제 `LiveLinkSource`에 가짜 수신 연결을 붙이고 검출 worker 안에서 `handle_*`로 입력 사건을 만든다.
+ROS·YOLO는 쓰지 않고, 실행기는 데몬 스레드에서 유한 join 한다.
 """
 import io
 import threading
@@ -125,7 +123,7 @@ def index_of(records, pred):
 
 
 class PublishTest(unittest.TestCase):
-    """정상 공개와 지점 C(T-C1~C4)."""
+    """정상 공개와 지점 C."""
 
     def test_normal_frame_published(self):
         """새 영상 → 작업 완료(세대 0), 종료 0, source_stats 기록, 수신 중단 없음."""
@@ -141,7 +139,7 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(live.transport.closed, [live.source_cfg.close_limit_s])
 
     def test_c1_frame_timeout_during_detection_aborts_publication(self):
-        """T-C1: 검출 중 수신 중단 → 공개 전에 FRAME_TIMEOUT을 반영하고 작업은 JOB_ABORTED input_boundary, 관측 없음, 종료 0."""
+        """검출 중 수신 중단 → 공개 전에 FRAME_TIMEOUT을 반영하고 작업은 input_boundary 중단, 종료 0."""
         def hook(live):
             """수신이 2 s 끊긴 것으로 시계를 민다."""
             live.clock.now += 2 * S
@@ -161,7 +159,7 @@ class PublishTest(unittest.TestCase):
         self.assertTrue(any(r["kind"] == "event" and r["cause"].startswith("input_boundary") for r in recs))
 
     def test_point_b_applies_during_long_detection(self):
-        """지점 B: 검출이 길게 걸리는 동안에도 대기 회차마다 입력을 반영한다(수신 중단이 검출 시간만큼 늦게 기록되지 않음)."""
+        """지점 B: 검출이 길게 걸리는 동안에도 대기 회차마다 입력을 반영한다."""
         seen = {}
 
         def hook(live):
@@ -182,7 +180,7 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(res.input_boundary_aborts, 1, err)
 
     def test_c1_sync_path_same_rule(self):
-        """T-C1(감시 끔 동기 경로): 같은 규칙으로 input_boundary 중단."""
+        """감시 끔 동기 경로도 같은 규칙으로 input_boundary 중단."""
         live = Live(feed=lambda s, c: s.handle_image(image_msg(1)), cfg=SYNC,
                     hooks={0: lambda lv: setattr(lv.clock, "now", lv.clock.now + 2 * S)})
         live.should_stop = stop_after_jobs(live, 1)
@@ -191,7 +189,7 @@ class PublishTest(unittest.TestCase):
         self.assertEqual((res.exit_code, res.input_boundary_aborts), (0, 1), err)
 
     def test_c2_rewind_during_detection_discards_by_generation(self):
-        """T-C2: 검출 중 되감기(대기 중 지점 B 반영) → GENERATION_CHANGED가 처리 기록보다 먼저, 결과는 세대 폐기."""
+        """검출 중 되감기 → GENERATION_CHANGED가 처리 기록보다 먼저, 결과는 세대 폐기."""
         def feed(src, clock):
             """clock 10 s, 영상 9.9 s."""
             src.handle_clock(SimpleClock(10))
@@ -213,14 +211,14 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(res.input_boundary_aborts, 0)
 
     def test_c3_reconnect_during_detection(self):
-        """T-C3: 검출 중 발행자 GID 집합 교체({A}→{B}) → cause reconnect, 결과는 세대 폐기."""
+        """검출 중 발행자 GID 집합 교체({A}→{B}) → cause reconnect, 결과는 세대 폐기."""
         def feed(src, clock):
             """발행자 {A}, 영상 1개."""
             src.handle_publishers([b"A"], ["reliable"])
             src.handle_image(image_msg(1))
 
         def hook(live):
-            """끊김 없이 발행자 집합이 {B}로 바뀐다(R9)."""
+            """끊김 없이 발행자 집합이 {B}로 바뀐다."""
             live.src.handle_publishers([b"B"], ["reliable"])
 
         live = Live(feed=feed, hooks={0: hook})
@@ -232,7 +230,7 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(res.live_inputs, {"reconnect": 1})
 
     def test_c4_boundary_and_result_arrive_together(self):
-        """T-C4: 결과 반환 직전에 경계가 생겨 같은 회차에 함께 있으면, 결과 처리 전에 경계를 반영한다."""
+        """결과 반환 직전 경계가 같은 회차에 함께 있으면 결과 처리 전에 경계를 반영한다."""
         def feed(src, clock):
             """clock 10 s, 영상."""
             src.handle_clock(SimpleClock(10))
@@ -248,10 +246,10 @@ class PublishTest(unittest.TestCase):
 
 
 class ResumePolicyRunnerTest(unittest.TestCase):
-    """사용자 확정 대안 0(#124): 중단 뒤 첫 영상은 새 세대에서만 처리. #123 T2 순서·일시 정지 재개 재현."""
+    """중단 뒤 첫 영상은 새 세대에서만 처리한다(발행자 조회 순서·일시 정지 재개)."""
 
     def test_123_order_no_old_generation_completed(self):
-        """#123 순서: 수신 중단 → 새 발행자 영상이 먼저 → 뒤늦은 발행자 조회({B}). 중단 뒤 영상은 이전 세대 COMPLETED 0, 재접속 1회."""
+        """수신 중단 → 새 영상 → 뒤늦은 발행자 조회: 이전 세대 COMPLETED 0, 재접속 1회."""
         def hook(live):
             """검출 중 끊김(2 s) → 새 영상 → 뒤늦은 그래프 {B}."""
             live.clock.now += 2 * S
@@ -310,10 +308,10 @@ class SimpleClock:
 
 
 class LateAndAfterTest(unittest.TestCase):
-    """늦은 결과(T-C5)·판정 뒤 경계(T-C6)·이전 관측 무효."""
+    """늦은 결과·판정 뒤 경계·이전 관측 무효."""
 
     def test_c5_timeout_late_result_and_boundary(self):
-        """T-C5: 검출 시간 초과 뒤 유예 안에 늦은 결과 + 그 사이 되감기. 추가 terminal 없음, 다음 작업은 새 세대, 시간 초과로 종료 1."""
+        """시간 초과 뒤 유예 안 늦은 결과 + 되감기: 추가 terminal 없음, 다음 작업은 새 세대, 종료 1."""
         cfg = RunnerConfig(close_attempts=1, first_detect_timeout_s=0.05, detect_timeout_s=0.05, cancel_grace_s=1.0,
                            stop_check_interval_s=0.01)
 
@@ -338,7 +336,7 @@ class LateAndAfterTest(unittest.TestCase):
                          [(0, "ABORTED", 0), (1, "COMPLETED", 1)])
 
     def test_c6_boundary_after_decision_invalidates_next(self):
-        """T-C6: 공개 판정 직후 생긴 경계는 그 결과를 되돌리지 않고, 다음 반영 지점에서 현재 관측을 비운다(한계 확인)."""
+        """공개 판정 직후 경계는 그 결과를 되돌리지 않고, 다음 반영 지점에서 현재 관측을 비운다."""
         live = Live(feed=lambda s, c: s.handle_image(image_msg(1)))
         seen = []
 
@@ -363,7 +361,7 @@ class LateAndAfterTest(unittest.TestCase):
                         index_of(recs, lambda r: r["kind"] == "live_input"))
 
     def test_rewind_before_read_new_frame_new_generation(self):
-        """경계 직후 첫 영상은 STALE_CAPTURE로 버려지지 않고 새 세대로 처리된다(R3)."""
+        """경계 직후 첫 영상은 STALE_CAPTURE로 버려지지 않고 새 세대로 처리된다."""
         def feed(src, clock):
             """clock 되감기 뒤 새 영상."""
             src.handle_clock(SimpleClock(10))
@@ -383,7 +381,7 @@ class PolicyTest(unittest.TestCase):
     """실시간 정책·실패·정리."""
 
     def test_c7_stop_while_waiting_inputs(self):
-        """T-C7: 영상 없이 수신 중단이 생겨도 정지 요청으로 0. FRAME_TIMEOUT은 입력 오류가 아니다(A 임시 D5)."""
+        """영상 없이 수신 중단이 생겨도 정지 요청으로 0. FRAME_TIMEOUT은 입력 오류가 아니다."""
         calls = []
 
         def feed(src, clock):
@@ -431,7 +429,7 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual((res.exit_code, res.stop_reason), (1, "input_overflow"), err)
 
     def test_b_consumer_not_allowed(self):
-        """D13: 실시간 표시 단계는 B 소비 지점을 허용하지 않는다. 검출 없이 종료 1."""
+        """실시간 표시 단계는 B 소비 지점을 허용하지 않는다. 검출 없이 종료 1."""
         live = Live(feed=lambda s, c: s.handle_image(image_msg(1)), b_consumer=lambda f, o: None)
         res, recs, err = live.run()
 
@@ -446,7 +444,7 @@ class PolicyTest(unittest.TestCase):
         self.assertTrue(any(r["kind"] == "live_input" and r["input_kind"] == "start_failed" and "start failed" in r["detail"] for r in recs))
 
     def test_receiver_failure_before_first_frame(self):
-        """F1: 첫 영상 전 수신기 예외 → receiver_failed 종료 1(무한 대기·0 아님), 입력 오류 1, 원인 기록, 소스 정리 1회."""
+        """첫 영상 전 수신기 예외 → receiver_failed 종료 1, 입력 오류 1, 원인 기록, 소스 정리 1회."""
         transport = SpinTransport(FakeExecutor("raise"))
         live = Live(transport=transport)
         res, recs, err = live.run()
@@ -458,7 +456,7 @@ class PolicyTest(unittest.TestCase):
         self.assertIn("shutdown", transport._done)
 
     def test_receiver_failure_while_streaming(self):
-        """F1: 수신 중(검출 중) 수신기 예외 → 대기 회차가 반영해 receiver_failed 종료 1, 활성 작업은 정리로 끝남."""
+        """검출 중 수신기 예외 → 대기 회차가 반영해 receiver_failed 종료 1, 활성 작업은 정리로 끝남."""
         ex = FakeExecutor("raise_on")
         live = Live(feed=lambda s, c: s.handle_image(image_msg(1)), transport=SpinTransport(ex),
                     hooks={0: lambda lv: (ex.release.set(), time.sleep(0.2))})
