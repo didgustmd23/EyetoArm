@@ -56,7 +56,9 @@ class ParserTest(unittest.TestCase):
         channel, envelope, data = got[0]
         self.assertEqual(data, self.jpeg)
         self.assertEqual(set(envelope), {"source_id", "image_seq", "generation", "capture_generation", "job_seq",
-                                         "run_id", "detector_config_id", "calibration_id", "variant"})
+                                         "run_id", "detector_config_id", "calibration_id", "variant",
+                                         "source_run_id", "producer_run_id", "capture_stamp_ns", "timestamp_base",
+                                         "frame_id"})
         self.assertNotIn("stamp_sec", envelope)
         coalesced = EtvParser().feed(stream + stream)
         self.assertEqual(len(coalesced), 6)
@@ -106,6 +108,45 @@ class ParserTest(unittest.TestCase):
         for variant in ("raw", "detect", "center"):
             channel, envelope = parse_metadata(json.dumps(meta(variant=variant)).encode())
             self.assertEqual((channel, envelope["variant"]), ("link", variant))
+
+    def test_optional_identity_keys_are_checked_and_missing_ones_are_none(self):
+        given = dict(source_run_id="a-run", producer_run_id="b-run", capture_stamp_ns=12_000_000_345,
+                     timestamp_base="sim_time", frame_id="link_camera")
+        _channel, envelope = parse_metadata(json.dumps(meta(variant="center", **given)).encode())
+        self.assertEqual({key: envelope[key] for key in given}, given)
+        _channel, envelope = parse_metadata(json.dumps(meta()).encode())
+        self.assertEqual({key: envelope[key] for key in given}, dict.fromkeys(given))   # missing key: None
+        bads = [{key: None} for key in given]                                           # explicit null is an error
+        for bad in (*bads, dict(source_run_id=""), dict(producer_run_id=7), dict(frame_id="x" * 129),
+                    dict(timestamp_base=[]), dict(capture_stamp_ns=True), dict(capture_stamp_ns=-1),
+                    dict(capture_stamp_ns=1.5), dict(capture_stamp_ns="1")):
+            with self.subTest(bad=bad), self.assertRaises(relay_view.PacketError):
+                parse_metadata(json.dumps(meta(**bad)).encode())
+
+    def test_link_producer_tracking_survives_variant_reconnect_and_relay_run_resets(self):
+        receiver = relay_view.RelayViewReceiver("127.0.0.1", 9)   # never started: no socket is opened
+        key = ("link", "detect")
+
+        def accept(run, channel="link", relay_run="run-A"):
+            envelope = parse_metadata(json.dumps(meta(channel, run=relay_run, source_run_id=run,
+                                                      variant="detect" if channel == "link" else "raw")).encode())[1]
+            return receiver._accept_source_run((channel, envelope["variant"]), envelope)
+        try:
+            self.assertTrue(accept("a1"))
+            for reset in (receiver.reset_link, receiver._reset_confirmation):   # variant switch; reconnect / new relay run
+                with self.subTest(reset=reset.__name__):
+                    reset()
+                    self.assertEqual(receiver._link_source_run, "a1")
+            self.assertTrue(accept("a2", relay_run="run-B"))
+            self.assertFalse(accept("a1", relay_run="run-B"))        # late A1 is dropped, A2 stays current
+            self.assertTrue(accept("a2", relay_run="run-B"))
+            for index in range(relay_view.RETIRED_RUNS + 1):         # aux channels never touch link tracking
+                self.assertTrue(accept(f"aux-{index}", channel="fixed"))
+            self.assertEqual((receiver._link_source_run, list(receiver._retired_sources)), ("a2", ["a1"]))
+            self.assertNotIn(key, receiver._newest)
+        finally:
+            receiver.stop()
+            receiver.deleteLater()
 
     def test_decode_checks_size_before_allocation(self):
         self.assertIsNotNone(decode_jpeg(self.jpeg))

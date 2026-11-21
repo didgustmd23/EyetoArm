@@ -298,6 +298,48 @@ class RelayWindow(unittest.TestCase):
         self.feed(vpacket(505, "detect", "#c03030", job=44, **a))
         self.assertEqual(self.mode_of("link"), "live")
 
+    def test_producer_restart_low_sequence_and_new_generation_are_confirmed_through_the_receiver(self):
+        def detect(seq, run, color="#c03030", generation=3, capture=7):
+            value = {"channel": "link", "variant": "detect", "source_id": "gz_link", "image_seq": seq,
+                     "generation": generation, "calibration_id": None, "run_id": "run-A",
+                     "capture_generation": capture, "detector_config_id": "a-yolo-v9", "job_seq": seq,
+                     "source_run_id": run, "stamp_sec": 1, "stamp_nanosec": 2}   # C relay A handoff shape
+            return pack_packet(value, jpeg(color))
+        self.click("detect")
+        self.feed(detect(501, "a1"), detect(502, "a1"))
+        self.assertEqual(self.mode_of("link"), "live")
+        self.feed(detect(1, "a2", "#30c030", capture=0))                   # A restarted: low numbers, new run
+        self.assertEqual(self.mode_of("link"), "live")
+        frame = self.window.display.frame("link")
+        self.assertEqual((frame["image_seq"], frame["source_run_id"], self.link_color()), (1, "a2", "green"))
+        drops = self.view.stale_session_drops
+        self.send(detect(503, "a1"))                                       # late A1: dropped before decode/display
+        self.settle(lambda: self.view.stale_session_drops == drops + 1)
+        self.assertEqual(self.window.display.frame("link")["source_run_id"], "a2")
+        self.feed(detect(2, "a2", "#30c030", capture=0))
+        self.assertEqual((self.mode_of("link"), self.window.display.frame("link")["image_seq"]), ("live", 2))
+        self.feed(detect(3, "a2", "#3080c0", generation=4, capture=0))     # same run, new generation
+        self.assertEqual((self.mode_of("link"), self.link_color()), ("live", "blue"))
+        self.feed(detect(9, "a2", "#c03030", generation=3, capture=0))      # generation regress: refused
+        self.assertEqual((self.window.display.frame("link")["generation"], self.link_color()), (4, "blue"))
+        self.assertEqual((self.view.packet_errors, self.view.decode_errors, self.view.framing_errors), (0, 0, 0))
+        drops, count = self.view.stale_session_drops, self.view.frame_count
+        self.send(detect(1, "a3", "#30c030"), detect(504, "a2", "#c03030"))   # one write: late A2 right after A3
+        self.settle(lambda: self.view.frame_count == count + 1 and not self.view._flush_timer.isActive())
+        frame = self.window.display.frame("link")
+        self.assertEqual((frame["source_run_id"], frame["image_seq"], self.link_color()), ("a3", 1, "green"))
+        self.assertEqual((self.mode_of("link"), self.view.stale_session_drops), ("live", drops + 1))
+
+    def test_legacy_packets_without_source_run_keep_receiver_order(self):
+        self.send(packet("link", 5))
+        self.settle(lambda: self.view.frame_count == 1)
+        self.assertIsNone(self.window.display.frames[("link", "raw")]["source_run_id"])   # missing key arrives as None
+        self.feed(packet("link", 4))                                       # regress: not newer, nothing confirmed
+        self.assertIsNone(self.view.frame_age_ms())
+        self.assertIsNone(self.view._link_source_run)
+        self.feed(packet("link", 6))
+        self.assertEqual((self.mode_of("link"), self.window.display.frame("link")["image_seq"]), ("live", 6))
+
     def test_newest_per_turn_bad_jpeg_and_old_session_cannot_come_back(self):
         self.send(*(packet("link", seq) for seq in range(1, 6)))       # coalesced in one write
         self.settle(lambda: self.view.frame_count >= 1 and not self.view._flush_timer.isActive())
