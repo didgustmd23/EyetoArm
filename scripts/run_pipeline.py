@@ -120,6 +120,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "전용, --world-tracker-config 필수). 생략하면(#239) --live-observation-out은 world, 그 밖은 pixel")
     parser.add_argument("--world-tracker-config", dest="world_tracker_config", metavar="JSON", default=None,
                         help="--tracking-space world 전용: W 추적 시험 설정(status=test_only)")
+    parser.add_argument("--gripper-handoff", dest="gripper_handoff", action="store_true",
+                        help="--tracking-space world 전용, 기본 꺼짐: 그리퍼 깊이(/gripper_cam/depth_image)로 확정 W 트랙의 위치를 "
+                             "이어 갱신하고 화면 밖이면 번호를 유지한다. --world-tracker-config에 visibility·gripper 블록 필수 "
+                             "(예 config/vision/world_tracker_gripper_test.json). B 입력은 바뀌지 않는다")
     parser.add_argument("--live-sort-part", dest="live_sort_part", action="store_true",
                         help="--live-observation-out 전용(#214 D13 해제): 수락된 B 결과의 C 목표를 /sort_part로 송신. 단계 T, 또는 "
                              "단계 L(#233, B가 고른 1개만). 설정 sort_part 필수. robot_ws의 eyetoarm_interfaces 빌드·source 필요")
@@ -212,6 +216,9 @@ def _check_source_args(args, ros_available) -> None:
             build_parser().error("--tracking-space world requires --world-tracker-config")
     elif args.world_tracker_config is not None:
         build_parser().error("--world-tracker-config is for --tracking-space world only")
+
+    if getattr(args, "gripper_handoff", False) and args.tracking_space != "world":
+        build_parser().error("--gripper-handoff requires --tracking-space world (W tracking)")
 
     # C 목표 송신: 기록 전용 연결의 수락 결과만(단계 L은 B가 고른 1개)
     if args.live_sort_part:
@@ -306,6 +313,7 @@ class _StopSignals:
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PART_SPECS_PATH = REPO_ROOT / "config/calibration/part_specs.json"   # B 파일(읽기만)
+FRAMES_PATH = REPO_ROOT / "config/robot/frames.yaml"   # 좌표 기준(읽기만): 그리퍼 카메라 대조·벨트 사각형
 # 시야 보정 평면과 B 볼트 기준 높이의 허용 차(m). 평면 차가 보정량에 주는 영향은 작지만(5 mm면 약 1 %)
 # 넘으면 보정 설정을 B 규격에 맞게 다시 정해야 하므로 시작을 거부한다(2)
 VIEW_BIAS_PLANE_TOL_M = 0.005
@@ -392,7 +400,7 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
          live_source_factory=None, b_stage_hook=None, extension_source=None, live_tf_factory=None,
          live_run_controller=None, list_consumer_factory=None,
          live_sort_part_factory=None, live_conveyor_probe=None, live_handoff_factory=None,
-         center_publisher_factory=None) -> int:
+         center_publisher_factory=None, live_gripper_factory=None) -> int:
     """CLI 진입점. 종료 코드를 돌려준다.
 
     나머지 키워드 인자(`b_stage_hook`·`extension_source`·`ros_available`·`*_factory`·`live_run_controller`·
@@ -483,7 +491,8 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
                                      live_sort_part_factory=live_sort_part_factory,
                                      live_conveyor_probe=live_conveyor_probe,
                                      live_handoff_factory=live_handoff_factory,
-                                     center_publisher_factory=center_publisher_factory)
+                                     center_publisher_factory=center_publisher_factory,
+                                     live_gripper_factory=live_gripper_factory)
 
     if capture is not None and args.b_input == "list":
         return _run_capture_list(args, settings, runner_config, detector_kw, capture, err, b_stage_hook,
@@ -594,11 +603,47 @@ class _RosTfRuntime:
             self._shutdown = True
 
 
-def _new_world_tracker(config):
-    """W 추적기: 이 실행 전용 발급기(프로세스 수명 번호 규칙은 픽셀 추적과 같음)."""
+def _new_world_tracker(config, visibility=None, gripper=None):
+    """W 추적기: 이 실행 전용 발급기(프로세스 수명 번호 규칙은 픽셀 추적과 같음). 넘기기 설정이 없으면 지금과 같다."""
     from eyetoarm.vision.world_tracking import WorldTracker
 
-    return WorldTracker(PartTrackIdIssuer(), config=config)
+    if visibility is None and gripper is None:
+        return WorldTracker(PartTrackIdIssuer(), config=config)
+
+    return WorldTracker(PartTrackIdIssuer(), config=config, visibility=visibility,
+                        gripper_gate_mm=None if gripper is None else (gripper.gate_x_mm, gripper.gate_y_mm),
+                        gripper_late_ms=None if gripper is None else gripper.late_limit_ms)
+
+
+def _load_gripper_handoff(path: str):
+    """넘기기 설정(visibility·gripper 블록)과 frames.yaml 그리퍼 카메라 대조, 벨트 사각형 → (visibility, GripperLive)."""
+    import yaml
+
+    from eyetoarm.inputs.ros_gripper_depth import belt_roi_xy_m
+    from eyetoarm.vision.live_world_tracking import GripperLive, load_handoff_config
+
+    visibility, gripper = load_handoff_config(path)
+
+    if visibility is None or gripper is None:
+        raise ValueError("--gripper-handoff needs both visibility and gripper blocks in --world-tracker-config")
+
+    with open(FRAMES_PATH, encoding="utf-8") as f:
+        frames = yaml.safe_load(f)
+
+    cam = frames["cameras"]["gripper"]
+
+    if cam["optical_frame"] != gripper.optical_frame or cam["camera_info_topic"] != gripper.camera_info_topic:
+        raise ValueError(f"gripper config {gripper.optical_frame}/{gripper.camera_info_topic} != frames.yaml cameras.gripper "
+                         f"{cam['optical_frame']}/{cam['camera_info_topic']}")
+
+    return visibility, GripperLive(gripper, belt_roi_xy_m(frames))
+
+
+def _default_gripper_transport(config, sink):
+    """실제 그리퍼 깊이 수신(rclpy). 시험은 같은 모양(start·close·receiver.stats)의 대역을 준다."""
+    from eyetoarm.inputs.ros_gripper_depth import GripperDepthReceiver, GripperDepthTransport
+
+    return GripperDepthTransport(config, GripperDepthReceiver(config, sink))
 
 
 def _ros_conveyor_speed_probe(timeout_s: float) -> dict:
@@ -803,7 +848,7 @@ def _default_live_handoff():
 def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_stage_hook, live_source_factory,
                           live_tf_factory, controller, list_consumer_factory=None,
                           live_sort_part_factory=None, live_conveyor_probe=None, live_handoff_factory=None,
-                          center_publisher_factory=None) -> int:
+                          center_publisher_factory=None, live_gripper_factory=None) -> int:
     """실시간 A→B 기록 전용 시험. 리셋이면 실행을 멈추고 정리한다(자동 재시작 없음).
 
     경로: LiveLinkSource → 실행기 → AiSegDetector → 코어 → `live_observation_sink` → 디스패처 → TF → B → 기록기.
@@ -859,6 +904,8 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
     listed = args.b_input == "list"
     world_on = getattr(args, "tracking_space", "pixel") == "world"
     world_cfg = None
+    gripper_on = bool(getattr(args, "gripper_handoff", False))
+    handoff_cfg = (None, None)
 
     # W 추적 설정·볼트 평면 높이(B 규격 읽기만)는 출력·세션을 만들기 전에 확인한다
     if world_on:
@@ -869,6 +916,9 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
             world_cfg = load_world_tracking_config(args.world_tracker_config)
             # B 규격의 볼트 종류별 높이(읽기만). 모두 같으면 높이 하나
             world_plane_z = _bolt_planes(load_specs(PART_SPECS_PATH))
+
+            if gripper_on:
+                handoff_cfg = _load_gripper_handoff(args.world_tracker_config)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             err.write(f"run_pipeline: world tracking config error: {exc}\n")
             return 2
@@ -985,8 +1035,11 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
             b_input=args.b_input, list_consumer_factory=consumer_factory, **consumer_kind, run_outputs=run_outputs,
             view_bias=getattr(settings.detector_config, "axis_view_bias", None),
             sort_part_runtime=sort_rt, tracking=args.tracking,
-            **({} if not world_on else {"world_tracker": _new_world_tracker(world_cfg[0]), "world_config": world_cfg[1],
-                                        "world_plane_z_m": world_plane_z})))
+            **({} if not world_on else {"world_tracker": _new_world_tracker(world_cfg[0], handoff_cfg[0],
+                                                                            None if handoff_cfg[1] is None else handoff_cfg[1].config),
+                                        "world_config": world_cfg[1], "world_plane_z_m": world_plane_z,
+                                        **({} if not gripper_on else {"world_visibility": handoff_cfg[0],
+                                                                      "world_gripper": handoff_cfg[1]})})))
     except Exception as exc:
         # 세션이 만들어지지 않았다: 이 함수가 만든 TF만 정리한다(세션 등록 없음)
         err.write(f"run_pipeline: cannot start live observation run: {type(exc).__name__}: {exc}\n")
@@ -1072,6 +1125,14 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
     exit_code = 1
     failure = None
     handoff = handoff_probe = None
+    gripper_rx = None
+
+    if gripper_on:
+        v, g = handoff_cfg
+        err.write(f"run_pipeline: GRIPPER HANDOFF ON depth={g.config.depth_topic} frame={g.config.optical_frame} "
+                  f"rate<={g.config.max_rate_hz:g}Hz reorder_wait={g.config.reorder_wait_ms:g}ms late_limit={g.config.late_limit_ms}ms "
+                  f"hold_limit={v.hold_limit_ms}ms margin={v.margin_px:g}px gate={g.config.gate_x_mm:g}x{g.config.gate_y_mm:g}mm "
+                  "(confirmed W tracks only: position/time, no new ids, class kept, velocity unchanged; B input unchanged)\n")
 
     # 세션 등록 뒤 모든 단계는 이 try 안이다. 실패해도 세션·TF를 정리하고 1로 끝낸다
     try:
@@ -1089,6 +1150,11 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
         handoff_probe.start(handoff)
         link.start()
+
+        # 그리퍼 깊이 수신: 추적 스레드의 그리퍼 큐로만 넣는다(B 입력 무변)
+        if gripper_on:
+            gripper_rx = (live_gripper_factory or _default_gripper_transport)(handoff_cfg[1].config, link.world.offer_gripper)
+            gripper_rx.start()
         stream = open(args.log, "x", encoding="utf-8")
 
         with stream, _StopSignals() as signals:
@@ -1109,6 +1175,17 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         exit_code = 1
     finally:
         reset = link.reset_pending
+        gripper_problem = None
+
+        # 그리퍼 수신을 먼저 멈춘다(추적 스레드가 닫힌 뒤에는 넣어도 버려진다)
+        if gripper_rx is not None:
+            try:
+                gripper_rx.close(link_config.close_limit_s)
+            except Exception as gexc:
+                gripper_problem = f"gripper receiver close failed: {type(gexc).__name__}: {gexc}"
+
+            link.world.diagnostics["gripper_receiver"] = {**gripper_rx.receiver.stats(),
+                                                          "spin_error": getattr(gripper_rx, "spin_error", None)}
 
         # 정상 종료: 대기·처리 중인 마지막 항목을 상한 안에서 끝낸 뒤 닫는다(못 끝내면 닫을 때 무효화·기록)
         if not reset and result is not None:
@@ -1121,6 +1198,9 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
         if failure is not None:
             problems.append(f"failure: {failure}")
+
+        if gripper_problem is not None:
+            problems.append(gripper_problem)
 
         if not link.cleanup_confirmed:
             problems.append(f"cleanup not confirmed: {list(record.close_errors)}")

@@ -15,12 +15,21 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
+
+from types import SimpleNamespace
+
+from eyetoarm.transforms.planar_transform import w_to_image
+from eyetoarm.vision.arm_occlusion import occluded_fn, world_capsules
+from eyetoarm.vision.gripper_depth import GripperConfig, GripperConfigError, GripperDepthFrame, observe, parse_gripper, project_w
 from eyetoarm.vision.tracking import FrameKey, TrackFrame
-from eyetoarm.vision.world_tracking import BoltPlanes, WorldTracker, world_inputs
+from eyetoarm.vision.world_tracking import (BoltPlanes, GripperInput, VisibilityConfig, WorldTracker, WorldTrackerConfigError,
+                                            parse_visibility, world_inputs)
 from eyetoarm.vision.world_tracking_display import (DisplayPrevConfig, DisplayPrevConfigError, PrevSnapshot, match_prev,
                                                     parse_display_prev, snapshot)
 
 RESULT_KEEP = 64
+GRIPPER_KEEP = 8
 
 
 class LagConfigError(ValueError):
@@ -114,8 +123,8 @@ def load_world_tracking_config(path: str):
 
     keys = {"status", "tracker", "live", "conveyor_state"}
 
-    if not isinstance(doc, dict) or not keys <= set(doc) or set(doc) - keys - {"note"}:
-        raise LagConfigError(f"world tracking config must have {sorted(keys)} (+ optional note)")
+    if not isinstance(doc, dict) or not keys <= set(doc) or set(doc) - keys - {"note", "visibility", "gripper"}:
+        raise LagConfigError(f"world tracking config must have {sorted(keys)} (+ optional note, visibility, gripper)")
 
     if doc["status"] != "test_only":
         raise LagConfigError("world tracking config status must be 'test_only' (development values)")
@@ -128,7 +137,56 @@ def load_world_tracking_config(path: str):
     except WorldTrackerConfigError as exc:
         raise LagConfigError(str(exc)) from exc
 
+    load_handoff_config(path)   # 선택 블록도 같은 시점에 검사한다
+
     return tracker, parse_live_world(doc["live"]), hashlib.sha256(raw).hexdigest()
+
+
+def load_handoff_config(path: str) -> tuple[VisibilityConfig | None, GripperConfig | None]:
+    """같은 설정 파일의 선택 블록 `visibility`·`gripper` → (설정 | None, 설정 | None). 오류는 `LagConfigError`."""
+    try:
+        doc = json.loads(Path(path).read_bytes())
+    except ValueError as exc:
+        raise LagConfigError(f"world tracking config is not JSON: {exc}") from exc
+
+    try:
+        visibility = parse_visibility(doc["visibility"]) if "visibility" in doc else None
+        gripper = parse_gripper(doc["gripper"]) if "gripper" in doc else None
+    except (WorldTrackerConfigError, GripperConfigError) as exc:
+        raise LagConfigError(str(exc)) from exc
+
+    return visibility, gripper
+
+
+@dataclass(frozen=True)
+class GripperLive:
+    """추적 스레드의 그리퍼 입력 묶음: 설정·벨트 사각형(W m, 설정값)."""
+
+    config: GripperConfig
+    roi_xy_m: tuple[float, float, float, float]
+
+
+@dataclass(frozen=True)
+class GripperItem:
+    """그리퍼 입력 항목(관측 스레드 앞): 프레임·넣을 때의 재설정 회차·넣은 시각."""
+
+    frame: GripperDepthFrame
+    epoch: int
+    enqueued_ns: int
+
+
+@dataclass(frozen=True)
+class GripperResult:
+    """관측 스레드 결과(추적 스레드가 짝짓기만 함). `enqueued_ns`는 결과가 준비된 시각."""
+
+    frame: GripperDepthFrame
+    epoch: int
+    enqueued_ns: int
+    tf_status: str
+    T_W_C: object
+    in_view: tuple
+    obs: object
+    observe_ms: float
 
 
 @dataclass(frozen=True)
@@ -164,10 +222,11 @@ class LiveWorldTracking:
 
     def __init__(self, run_id: str, tracker: WorldTracker, config: LiveWorldConfig, *, tf_lookup: Callable,
                  plane_z_m: float | BoltPlanes,
-                 out_dir: str, view_bias=None, clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
+                 out_dir: str, view_bias=None, clock_ns: Callable[[], int] = time.monotonic_ns,
+                 visibility: VisibilityConfig | None = None, gripper: GripperLive | None = None) -> None:
         """새 기록 파일 `world_tracks.jsonl`을 연다. `tf_lookup(frame)`은 촬영 stamp 정확 조회다.
 
-        `plane_z_m`은 볼트 투영 높이 하나(m) 또는 종류별 높이 `BoltPlanes`다.
+        `plane_z_m`은 볼트 투영 높이 하나(m) 또는 종류별 높이 `BoltPlanes`다. `visibility`·`gripper`가 None이면 지금과 같다.
         """
         self.run_id = run_id
         self._tracker = tracker
@@ -202,6 +261,28 @@ class LiveWorldTracking:
         self._tf_wait_samples: collections.deque[float] = collections.deque(maxlen=4096)
         self.queue_len_max = 0
         self.diagnostics: dict = {}   # 진단 전용(C speed_mps 조회 등). 추적기에 전달하지 않는다
+        self._visibility = visibility
+        self._gripper = gripper
+        self._grip_in: collections.deque[GripperItem] = collections.deque()       # 관측 스레드 입력(조건변수 안)
+        self._grip_queue: collections.deque[GripperResult] = collections.deque()  # 관측 결과, 추적 스레드가 재정렬(조건변수 안)
+        self._snapshot: list = []                # 확정 트랙 예측 [(번호, x, y)] 사본(조건변수 안), 관측 스레드가 화면 판정에 씀
+        self._grip_thread: threading.Thread | None = None
+        self._observe = observe                  # 관측 함수(시험 주입용)
+        self._grip_epoch = 0                     # 재설정 회차(조건변수 안). 넣을 때와 다르면 버린다
+        self._link_generation: int | None = None   # 마지막 링크 항목 세대(추적 스레드)
+        self._last_gripper_ts: int | None = None   # 마지막 그리퍼 처리 시각(추적 스레드)
+        self.gripper_counts = {k: 0 for k in ("offered", "dropped_old", "processed", "old_epoch", "no_link_yet", "no_track_in_view",
+                                              "observed", "updated", "late", "stale_after_gripper")}
+        self._observe_ms: collections.deque[float] = collections.deque(maxlen=4096)
+        self._occl_ms: collections.deque[float] = collections.deque(maxlen=4096)   # 가림 판정 준비(TF 조회 포함) ms
+        self.occlusion_tf_fail = 0
+        self.gripper_reasons: dict[str, int] = {}
+        self._gripper_ms: collections.deque[float] = collections.deque(maxlen=4096)
+
+    @property
+    def handoff_on(self) -> bool:
+        """가시성 만료나 그리퍼 입력이 켜졌는가."""
+        return self._visibility is not None or self._gripper is not None
 
     # ------------------------------------------------------------------ 제어 흐름
 
@@ -220,6 +301,26 @@ class LiveWorldTracking:
                 return False
 
             self._queue.append(item)
+            self._cond.notify_all()
+
+        return True
+
+    def offer_gripper(self, frame: GripperDepthFrame) -> bool:
+        """그리퍼 깊이 프레임을 넣는다(수신 스레드). 꺼져 있으면 False. 가득이면 가장 오래된 것을 버린다."""
+        if self._gripper is None:
+            return False
+
+        with self._cond:
+            if self._stop:
+                return False
+
+            self.gripper_counts["offered"] += 1
+
+            if len(self._grip_in) >= GRIPPER_KEEP:
+                self._grip_in.popleft()
+                self.gripper_counts["dropped_old"] += 1
+
+            self._grip_in.append(GripperItem(frame, self._grip_epoch, self._clock_ns()))
             self._cond.notify_all()
 
         return True
@@ -294,9 +395,13 @@ class LiveWorldTracking:
     # ------------------------------------------------------------------ 수명
 
     def start(self) -> None:
-        """추적 스레드를 시작한다."""
+        """추적 스레드(그리퍼가 켜져 있으면 관측 스레드도)를 시작한다."""
         self._thread = threading.Thread(target=self._loop, name="eyetoarm-live-world-tracking", daemon=True)
         self._thread.start()
+
+        if self._gripper is not None:
+            self._grip_thread = threading.Thread(target=self._grip_loop, name="eyetoarm-gripper-observe", daemon=True)
+            self._grip_thread.start()
 
     @property
     def thread(self) -> threading.Thread | None:
@@ -309,11 +414,12 @@ class LiveWorldTracking:
             self._stop = True
             self._cond.notify_all()
 
-        if self._thread is not None:
-            self._thread.join(timeout=limit_s)
+        for th in (self._grip_thread, self._thread):
+            if th is not None:
+                th.join(timeout=limit_s)
 
-            if self._thread.is_alive():
-                return False
+                if th.is_alive():
+                    return False
 
         if not self._fh.closed:
             try:
@@ -341,7 +447,8 @@ class LiveWorldTracking:
     def _loop_body(self) -> None:
         while True:
             with self._cond:
-                while not self._queue and not self._stop and self._reset_reason is None:
+                while (not self._queue and not self._stop and self._reset_reason is None
+                       and not self._gripper_due(self._clock_ns())):
                     self._cond.wait(0.05)
 
                 if self._stop:
@@ -351,6 +458,7 @@ class LiveWorldTracking:
                 item = self._queue.popleft() if self._queue else None
                 now = self._clock_ns()
                 lag_reset = None
+                grips = self._take_gripper(item, now)
 
                 if item is not None:
                     lag_ms = (now - item.enqueued_ns) / 1e6
@@ -377,6 +485,10 @@ class LiveWorldTracking:
                                      "queue_len": skipped, "skipped": skipped}
                         self.lag_reset_log.append(lag_reset)
                         item = newest
+                        self._grip_queue.clear()
+                        self._grip_in.clear()
+                        self._grip_epoch += 1
+                        grips = []
 
             if reset is not None:
                 self._apply_reset(reset)
@@ -386,8 +498,40 @@ class LiveWorldTracking:
                 self._tracker.reset("lag")
                 self._write({"kind": "lag_reset", **lag_reset})
 
+            # stamp 순서: 링크보다 이른 그리퍼 → 링크 → 남은(대기 만료) 그리퍼
+            limit = getattr(item.frame, "ros_stamp_ns", None) if item is not None else None
+            before = [g for g in grips if limit is None or g.frame.ros_stamp_ns < limit]
+
+            for g in before:
+                self._process_gripper(g)
+
             if item is not None:
                 self._process(item, lag_ms if lag_reset is None else (now - item.enqueued_ns) / 1e6)
+
+            for g in grips[len(before):]:
+                self._process_gripper(g)
+
+    def _gripper_due(self, now_ns: int) -> bool:
+        """조건변수 안: 대기 상한을 넘긴 그리퍼 항목이 있는가."""
+        if not self._grip_queue:
+            return False
+
+        return (now_ns - self._grip_queue[0].enqueued_ns) / 1e6 >= self._gripper.config.reorder_wait_ms
+
+    def _take_gripper(self, item, now_ns: int) -> list[GripperItem]:
+        """조건변수 안: 링크 항목보다 이른 그리퍼 항목과 대기 상한을 넘긴 항목을 시각 순서로 꺼낸다."""
+        if not self._grip_queue:
+            return []
+
+        limit = getattr(item.frame, "ros_stamp_ns", None) if item is not None else None
+        wait_ns = self._gripper.config.reorder_wait_ms * 1e6
+        take = [g for g in self._grip_queue
+                if (limit is not None and g.frame.ros_stamp_ns < limit) or now_ns - g.enqueued_ns >= wait_ns]
+
+        for g in take:
+            self._grip_queue.remove(g)
+
+        return sorted(take, key=lambda g: g.frame.ros_stamp_ns)
 
     def _clear_display_prev(self) -> None:
         """추적 스레드: 재설정 전 결과를 표시에 쓰지 않게 직전 사본을 지운다."""
@@ -397,6 +541,7 @@ class LiveWorldTracking:
     def _apply_reset(self, reason: str) -> None:
         """추적 스레드: 전 트랙 종료 + 기록."""
         self._clear_display_prev()
+        self._bump_gripper_epoch()
         self._tracker.reset(reason)
         self.last_reset = reason
         self._write({"kind": "reset", "reason": reason, "t_mono_ns": self._clock_ns()})
@@ -433,7 +578,28 @@ class LiveWorldTracking:
             inputs = world_inputs(item.display, K=cam.K, dist=cam.dist, T_W_C=tf_result.tf.T_W_C, plane_z_m=self._plane_z,
                                   view_bias=self._view_bias, width=getattr(frame, "width", None),
                                   height=getattr(frame, "height", None), mask_fallback=self._tracker.config.mask_fallback)
-            track = self._tracker.update(key, int(frame.timestamp_ms), inputs)
+            ts = int(frame.timestamp_ms)
+
+            if self._visibility is None:
+                track = self._tracker.update(key, ts, inputs)
+            else:
+                occluded, occ_status = self._link_occluded(tf_result.tf.T_W_C, frame)
+                track = self._tracker.update(key, ts, inputs, visible=self._link_visible(cam, tf_result.tf.T_W_C, frame),
+                                             occluded=occluded)
+                rec["occlusion"] = occ_status
+                rec["occluded_ids"] = list(self._tracker.last_occluded)
+                rec["held"] = self._tracker.held_snapshot(ts)   # hold·가림 트랙 예측(재연결 분석용)
+
+            if self.handoff_on:
+                self._link_generation = key.generation
+                self._publish_snapshot(ts)
+
+                if track.event == "scope_changed":
+                    self._bump_gripper_epoch()
+
+                if (not track.updated and self._last_gripper_ts is not None and ts <= self._last_gripper_ts):
+                    self._gcount("stale_after_gripper")
+
             value = track
             self.counts["updated"] += int(track.updated)
             by_index = {i.index: i for i in inputs}
@@ -448,6 +614,9 @@ class LiveWorldTracking:
                                     "length_mm": _r1(by_index[a.instance_index].length_mm),
                                     "plane_z_m": by_index[a.instance_index].plane_z_m,   # W로 올린 높이
                                     "plane_spec": by_index[a.instance_index].plane_spec} for a in track.assignments]})
+
+            if self.handoff_on:
+                rec["camera"] = "link"
 
         # 갱신한 결과면 확정 번호의 표시용 박스 사본을 둔다(추적 판정·송신에는 쓰지 않음)
         snap = snapshot(value, item.display) if isinstance(value, TrackFrame) else None
@@ -465,6 +634,231 @@ class LiveWorldTracking:
             self._cond.notify_all()
 
         self._write(rec)
+        self._write_events()
+
+    # ------------------------------------------------------------------ 그리퍼(추적 스레드)
+
+    def _gcount(self, key: str, n: int = 1) -> None:
+        """그리퍼 계수(조건변수 안)."""
+        with self._cond:
+            self.gripper_counts[key] += n
+
+    def _greason(self, reason: str) -> None:
+        """그리퍼 무효 사유 계수(조건변수 안)."""
+        with self._cond:
+            self.gripper_reasons[reason] = self.gripper_reasons.get(reason, 0) + 1
+
+    def _bump_gripper_epoch(self) -> None:
+        """재설정: 그리퍼 큐를 비우고 회차를 올린다."""
+        with self._cond:
+            self._grip_queue.clear()
+            self._grip_in.clear()
+            self._grip_epoch += 1
+
+    def _plane_z_m(self) -> float:
+        """화면 판정에 쓰는 볼트 높이(m)."""
+        return self._plane_z.default_z_m if isinstance(self._plane_z, BoltPlanes) else self._plane_z
+
+    def _link_occluded(self, T_W_C, frame):
+        """링크 프레임 촬영 stamp의 팔 링크 TF로 가림 판정 함수를 만든다. TF가 하나라도 없으면 (None, 사유) = 가림 아님."""
+        t0 = time.perf_counter()
+        poses, status = {}, "ok"
+
+        for link in dict.fromkeys(o.link for o in self._visibility.occluders):
+            res = self._tf_lookup(SimpleNamespace(ros_stamp_ns=getattr(frame, "ros_stamp_ns", None), optical_frame=link))
+
+            if res.status != "ok":
+                status = f"tf_{res.status}:{link}"
+                break
+
+            poses[link] = res.tf.T_W_C
+
+        fn = None
+
+        if status == "ok":
+            caps = world_capsules(self._visibility.occluders, poses)
+            fn = occluded_fn(np.asarray(T_W_C)[:3, 3], caps, self._plane_z_m())
+        else:
+            self.occlusion_tf_fail += 1
+
+        self._occl_ms.append((time.perf_counter() - t0) * 1000.0)
+
+        return fn, status
+
+    def _link_visible(self, cam, T_W_C, frame):
+        """링크 화면 판정 함수: 예측 W(mm)를 볼트 평면에 놓고 투영해 화면(여백) 안·카메라 앞인지."""
+        margin = self._visibility.margin_px
+        width, height = getattr(frame, "width", None), getattr(frame, "height", None)
+        z_m = self._plane_z_m()
+
+        def visible(x_mm: float, y_mm: float) -> bool:
+            """링크 화면 안인가."""
+            p = np.array([[x_mm / 1000.0, y_mm / 1000.0, z_m]])
+            _, zc = project_w(p * 1000.0, T_W_C, cam.K)
+
+            if not zc[0] > 0 or width is None or height is None:
+                return bool(zc[0] > 0)
+
+            u, v = w_to_image(p, cam.K, cam.dist, T_W_C)[0]
+
+            return bool(-margin <= u < width + margin and -margin <= v < height + margin)
+
+        return visible
+
+    def _gripper_visible(self, frame: GripperDepthFrame, T_W_C):
+        """그리퍼 화면 판정 함수: 투영 화소가 화면 안이고 그 화소 깊이가 유효(near 이상)인지. 근접 무효는 화면 밖으로 본다."""
+        margin = self._visibility.margin_px if self._visibility is not None else 0.0
+        near = self._gripper.config.near_m
+        z_mm = self._plane_z_m() * 1000.0
+        depth = frame.depth_m
+
+        def visible(x_mm: float, y_mm: float) -> bool:
+            """그리퍼 화면 안인가."""
+            uv, zc = project_w([[x_mm, y_mm, z_mm]], T_W_C, frame.K)
+            u, v = uv[0]
+
+            if not zc[0] > 0 or not (-margin <= u < frame.width + margin and -margin <= v < frame.height + margin):
+                return False
+
+            ui, vi = min(max(int(u), 0), frame.width - 1), min(max(int(v), 0), frame.height - 1)
+            d = float(depth[vi, ui])
+
+            return math.isfinite(d) and d >= near
+
+        return visible
+
+    def _grip_loop(self) -> None:
+        """관측 스레드: 그리퍼 프레임마다 TF·화면 판정(트랙 사본)·깊이 관측을 계산해 결과 큐에 넣는다."""
+        try:
+            while True:
+                with self._cond:
+                    while not self._grip_in and not self._stop:
+                        self._cond.wait(0.05)
+
+                    if self._stop:
+                        return
+
+                    item = self._grip_in.popleft()
+                    snapshot = list(self._snapshot)
+
+                self._grip_result(item, snapshot)
+        except Exception as exc:   # 관측 스레드 최상단: 비정상 종료를 남기고 추적 스레드도 멈춘다
+            with self._cond:
+                self.crash = f"gripper observe thread: {type(exc).__name__}: {exc}"
+                self._stop = True
+                self._cond.notify_all()
+
+    def _grip_result(self, item: GripperItem, snapshot: list) -> None:
+        """관측 스레드: TF → 사본 트랙이 화면 안이면 관측 → 결과."""
+        t0 = time.perf_counter()
+        frame = item.frame
+        tf_result = self._tf_lookup(frame)
+        T, in_view, obs = None, (), None
+
+        if tf_result.status == "ok":
+            T = tf_result.tf.T_W_C
+            visible = self._gripper_visible(frame, T)
+            in_view = tuple(pid for pid, x, y in snapshot if visible(x, y))
+
+            if in_view:
+                obs = self._observe(frame, T, self._gripper.config, self._gripper.roi_xy_m)
+
+        result = GripperResult(frame, item.epoch, self._clock_ns(), tf_result.status, T, in_view, obs,
+                               (time.perf_counter() - t0) * 1000.0)
+
+        with self._cond:
+            if obs is not None:
+                self.gripper_counts["observed"] += 1
+
+            if len(self._grip_queue) >= GRIPPER_KEEP:
+                self._grip_queue.popleft()
+                self.gripper_counts["dropped_old"] += 1
+
+            self._grip_queue.append(result)
+            self._cond.notify_all()
+
+    def _publish_snapshot(self, timestamp_ms: int) -> None:
+        """추적 스레드: 관측 스레드의 화면 판정용 확정 트랙 예측 사본."""
+        if self._gripper is None:
+            return
+
+        snap = self._tracker.predicted_confirmed(timestamp_ms)
+
+        with self._cond:
+            self._snapshot = snap
+
+    def _process_gripper(self, g: GripperResult) -> None:
+        """추적 스레드: 관측 결과 하나를 확정 트랙과 짝짓고 기록한다(무거운 계산 없음)."""
+        t0 = time.perf_counter()
+        frame = g.frame
+        rec = {"kind": "gripper_frame", "ros_stamp_ns": frame.ros_stamp_ns, "timestamp_ms": frame.timestamp_ms,
+               "tf_status": g.tf_status, "observe_ms": round(g.observe_ms, 3)}
+
+        with self._cond:
+            current = self._grip_epoch
+            self.gripper_counts["processed"] += 1
+
+        if g.epoch != current:
+            self._gcount("old_epoch")
+            self._write({**rec, "result": "old_epoch"})
+            return
+
+        if self._link_generation is None:
+            self._gcount("no_link_yet")
+            self._write({**rec, "result": "no_link_yet"})
+            return
+
+        if g.tf_status != "ok":
+            reason = f"tf_{g.tf_status}"
+            self._greason(reason)
+            self._write({**rec, "result": reason})
+            return
+
+        rec["tracks_in_view"] = list(g.in_view)
+
+        if g.obs is None:
+            self._gcount("no_track_in_view")
+            self._tracker.note_camera("gripper", frame.timestamp_ms)
+            rec["result"] = "no_track_in_view"
+            self._write(rec)
+            return
+
+        obs = g.obs
+        rec.update(valid=obs.valid, reason=obs.reason, diag=obs.diag)
+
+        if not obs.valid:
+            self._greason(obs.reason)
+
+        comps = list(obs.components)
+        inputs = [GripperInput(index=c.index, center_mm=c.center_mm, length_mm=c.length_mm, angle_deg=c.angle_deg,
+                               clipped=c.clipped) for c in comps]
+        visible = self._gripper_visible(frame, g.T_W_C) if self._visibility is not None else None
+        up = self._tracker.update_gripper(self._link_generation, frame.timestamp_ms, inputs, visible=visible)
+        self._gcount("updated", int(up.updated))
+        self._gcount("late", int(up.updated and up.late))
+
+        if up.updated:
+            self._last_gripper_ts = max(self._last_gripper_ts or 0, frame.timestamp_ms)
+        rec.update(updated=up.updated, late=up.late, not_updated=up.reason,
+                   components=[{"index": c.index, "center_mm": _r(c.center_mm), "length_mm": _r1(c.length_mm),
+                                "angle_deg": _r1(c.angle_deg), "top_z_mm": _r1(c.top_z_mm), "n_px": c.n_px, "clipped": c.clipped,
+                                "part_track_id": a.part_track_id, "outcome": a.outcome}
+                               for c, a in zip(comps, up.assignments)])
+        ms = (time.perf_counter() - t0) * 1000.0
+        self._gripper_ms.append(ms)
+        self._observe_ms.append(g.observe_ms)
+        rec["proc_ms"] = round(ms, 3)
+        self._write(rec)
+        self._write_events()
+        self._publish_snapshot(frame.timestamp_ms)
+
+    def _write_events(self) -> None:
+        """추적기의 넘기기·만료 사건을 기록한다(켜졌을 때만)."""
+        if not self.handoff_on:
+            return
+
+        for e in self._tracker.drain_events():
+            self._write({"kind": "track_event", "event": e["kind"], **{k: v for k, v in e.items() if k != "kind"}})
 
     def _write(self, rec: dict) -> None:
         if self.write_error is not None:
@@ -505,10 +899,21 @@ class LiveWorldTracking:
             display = {**self.display_counts, "prev_miss": dict(sorted(self.display_prev_miss.items()))}
             counts["queue_left"] = len(self._queue)   # offered = processed + dropped + stale + left
 
+            handoff = None if not self.handoff_on else {
+                "visibility": None if self._visibility is None else self._visibility.to_json(),
+                "gripper": None if self._gripper is None else self._gripper.config.to_json(),
+                "gripper_counts": {**self.gripper_counts, "queue_left": len(self._grip_queue) + len(self._grip_in)},
+                "gripper_reasons": dict(sorted(self.gripper_reasons.items())),
+                "gripper_proc_ms_median": _pct(list(self._gripper_ms), 0.5),
+                "gripper_proc_ms_p95": _pct(list(self._gripper_ms), 0.95),
+                "observe_ms_median": _pct(list(self._observe_ms), 0.5), "observe_ms_p95": _pct(list(self._observe_ms), 0.95),
+                "occlusion_ms_median": _pct(list(self._occl_ms), 0.5), "occlusion_ms_p95": _pct(list(self._occl_ms), 0.95),
+                "occlusion_tf_fail": self.occlusion_tf_fail}
+
         return {"config": self.config.to_json(), "counts": counts, "not_updated": dict(sorted(self.not_updated.items())),
                 "lag": lag, "tracker": self._tracker.stats(), "diagnostics": dict(self.diagnostics),
                 "display_lookup": display,
-                "crash": self.crash, "write_error": self.write_error}
+                "crash": self.crash, "write_error": self.write_error, **({} if handoff is None else {"handoff": handoff})}
 
 
 def _r(p):
@@ -519,5 +924,5 @@ def _r1(v):
     return None if v is None else round(v, 2)
 
 
-__all__ = ["LagConfigError", "LiveWorldConfig", "LiveWorldTracking", "WorldTrackItem", "frame_key", "load_world_tracking_config",
-           "parse_live_world"]
+__all__ = ["GripperItem", "GripperLive", "LagConfigError", "LiveWorldConfig", "LiveWorldTracking", "WorldTrackItem", "frame_key",
+           "load_handoff_config", "load_world_tracking_config", "parse_live_world"]
