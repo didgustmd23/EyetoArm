@@ -1,6 +1,6 @@
 {
   "status": "test_only",
-  "note": "작업 좌표(W) 추적 시험 설정(#217). 모든 값은 A 개발 임시값이며 운영 채택값이 아니다. max_belt_speed_mps는 첫 연결 탐색 상한(게이트)이며 예측에 쓰지 않는다. conveyor_state는 C 토픽 이름·형식 확정 전이라 null(구독하지 않음). 벨트 속도 예측은 검출 W 위치 차분 추정만 쓴다(C speed_mps는 진단 기록만). ambiguity_margin 0.35는 #156 「예측 경로 가로채기」를 W로 옮긴 단위시험(W5)에서 0.2로는 신원이 옮겨 가 올린 값이다(정규화 비용 차, X·Y 반경 기준). mask_fallback(#226 W+M, 사용자 승인): 끝점 없는 볼트를 마스크 W 평균으로 짝짓기에만 씀(B 입력 무변). mask_dup_contain 0.85는 #224 값(#156 모사 「같은 부품 중복」 포함률 0.975와 「별개 두 부품」 0.70 사이). live.conveyor_probe_timeout_s(#226 D2): C speed_mps 진단 조회 상한 5 s(진단 전용, #221에서 1 s로 한 번 실패).",
+  "note": "작업 좌표(W) 추적 시험 설정(#217). 모든 값은 A 개발 임시값이며 운영 채택값이 아니다. max_belt_speed_mps는 첫 연결 탐색 상한(게이트)이며 예측에 쓰지 않는다. conveyor_state는 C 토픽 이름·형식 확정 전이라 null(구독하지 않음). 벨트 속도 예측은 검출 W 위치 차분 추정만 쓴다(C speed_mps는 진단 기록만). ambiguity_margin 0.35는 #156 「예측 경로 가로채기」를 W로 옮긴 단위시험(W5)에서 0.2로는 신원이 옮겨 가 올린 값이다(정규화 비용 차, X·Y 반경 기준). mask_fallback(#226 W+M, 사용자 승인): 끝점 없는 볼트를 마스크 W 평균으로 짝짓기에만 씀(B 입력 무변). mask_dup_contain 0.85는 #224 값(#156 모사 「같은 부품 중복」 포함률 0.975와 「별개 두 부품」 0.70 사이). live.conveyor_probe_timeout_s(#226 D2): C speed_mps 진단 조회 상한 5 s(진단 전용, #221에서 1 s로 한 번 실패). live.display_prev(#242, 화면 전용): detect 영상에서 같은 작업 W 결과가 아직 없을 때 직전 W 결과(같은 실행·세대, 재설정 이전 아님, 촬영 시각 차 ≤ max_age_ms 300)의 확정 번호를 박스 IoU 1:1(min_iou 0.3, 1·2위 차 ≥ ambiguity_margin 0.1)로 짝지어 그린다. 송신·B 중복 방지·require_track_id에는 쓰지 않는다.",
   "tracker": {
     "gate_x_mm": 10.0,
     "gate_y_mm": 15.0,
@@ -32,7 +32,12 @@
       "lag_persist_n": 5,
       "lag_cooldown_ms": 2000
     },
-    "conveyor_probe_timeout_s": 5.0
+    "conveyor_probe_timeout_s": 5.0,
+    "display_prev": {
+      "max_age_ms": 300,
+      "min_iou": 0.3,
+      "ambiguity_margin": 0.1
+    }
   },
   "conveyor_state": null
 }

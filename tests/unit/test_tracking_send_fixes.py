@@ -244,8 +244,10 @@ class PeekTest(LiveBase):
         self.assertIsNotNone(found)
         self.assertIsNone(missing)
         self.assertEqual((lw.counts["handoff_ok"], lw.counts["handoff_pending"], list(lw._handoff_window)), before)
-        self.assertEqual(lw.display_counts, {"found": 1, "pending": 1, "reason": 0})
-        self.assertEqual(lw.summary()["display_lookup"], {"found": 1, "pending": 1, "reason": 0})
+        # #242: prev 계수·pending 사유가 더해졌다(이 시험 설정은 display_prev 없음 → 사유 off)
+        self.assertEqual(lw.display_counts, {"found": 1, "prev": 0, "pending": 1, "reason": 0})
+        self.assertEqual(lw.summary()["display_lookup"], {"found": 1, "prev": 0, "pending": 1, "reason": 0,
+                                                          "prev_miss": {"off": 1}})
 
 
 class WorldAnnotateTest(TrackCli):
@@ -265,7 +267,7 @@ class WorldAnnotateTest(TrackCli):
     def test_found_draws_world_ids(self):
         """같은 작업의 W 결과가 있으면 번호 라벨 + (world) 실험 배너."""
         box = {}
-        h, view, wtracks = self.view(lambda ctx: box.get("v"))
+        h, view, wtracks = self.view(lambda ctx, display: box.get("v"))
         box["v"] = wtracks
         _, seen = put_texts(lambda: annotate(view))
         joined = " | ".join(seen)
@@ -277,7 +279,7 @@ class WorldAnnotateTest(TrackCli):
         """결과 없음은 pending 배너, 사유 문자열은 사유 배너. 번호 라벨은 없다."""
         for value, text in ((None, "ids pending"), ("tf_timeout", "ids unavailable (tf_timeout)")):
             with self.subTest(value=value):
-                h, view, _ = self.view(lambda ctx, v=value: v)
+                h, view, _ = self.view(lambda ctx, display, v=value: v)
                 _, seen = put_texts(lambda: annotate(view))
                 joined = " | ".join(seen)
 
@@ -289,7 +291,7 @@ class WorldAnnotateTest(TrackCli):
         c = Core()
         _, other = c.result(5)
         other = dataclasses.replace(other, mode=TrackMode.WORLD)
-        h, view, _ = self.view(lambda ctx: other)
+        h, view, _ = self.view(lambda ctx, display: other)
         _, seen = put_texts(lambda: annotate(view))
         joined = " | ".join(seen)
 
@@ -308,7 +310,7 @@ class WorldAnnotateTest(TrackCli):
         np.testing.assert_array_equal(annotate(plain), draw_detections(plain.frame.image, plain.display)[0])
 
         calls = []
-        h2, view, _ = self.view(lambda ctx: calls.append(ctx), tracks=True)
+        h2, view, _ = self.view(lambda ctx, display: calls.append(ctx), tracks=True)
         _, seen = put_texts(lambda: annotate(view))
 
         self.assertEqual(calls, [])
@@ -326,7 +328,7 @@ class WorldAnnotateTest(TrackCli):
         h.start_run(c.p)
 
         with self.assertRaises(HandoffContractError):
-            h.set_track_source(lambda ctx: None)
+            h.set_track_source(lambda ctx, display: None)
 
 
 class WorldHandoffWiringTest(WorldCli):
