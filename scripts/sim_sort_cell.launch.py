@@ -52,8 +52,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("world", default_value=str(SIM / "worlds" / "sort_cell.sdf")),
         DeclareLaunchArgument("gui", default_value="true"),
-        DeclareLaunchArgument("physics_engine", default_value="gz-physics-bullet-featherstone-plugin",
-                              description="Gazebo physics engine (Bullet Featherstone supports the gripper mimic joints)"),
+        DeclareLaunchArgument("physics_engine", default_value="gz-physics-dartsim-plugin",
+                              description="Gazebo physics engine"),
         DeclareLaunchArgument("link_camera_xyz", default_value="-0.3420864 -0.0601521 0.1400000",
                               description="upper_arm_link 기준 매립 시험 카메라 위치(m), 흰색 몸체 위쪽 옆면"),
         DeclareLaunchArgument("link_camera_rpy", default_value="1.5707963 0 -0.815927",
@@ -88,4 +88,7 @@ def generate_launch_description():
         spawner("joint_state_broadcaster"),
         spawner("joint_trajectory_controller"),
         spawner("gripper_controller"),
+        # Gazebo world reset recreates gz_ros2_control's controller_manager;
+        # this monitor respawns controllers when the services return.
+        Node(package="robot_server_package", executable="controller_recovery", output="screen"),
     ])
