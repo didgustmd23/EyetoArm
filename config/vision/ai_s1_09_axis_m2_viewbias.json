@@ -1,0 +1,42 @@
+{
+  "format_version": 1,
+  "method": "ai",
+  "model_family": "yolov8n-seg",
+  "weights_path": "models/vision/s1_09/best.pt",
+  "weights_sha256": "ac4176ee492dc97e6b0bd275240b0a18b9f967fb15475ca03fc075ea75037807",
+  "class_map": {
+    "0": "bolt",
+    "1": "nut"
+  },
+  "target_classes": [
+    "bolt",
+    "nut"
+  ],
+  "conf_threshold": 0.05,
+  "iou_threshold": 0.7,
+  "imgsz": 1280,
+  "max_det": 300,
+  "device": "0",
+  "half": false,
+  "retina_masks": true,
+  "roi": null,
+  "min_mask_area_px": 20,
+  "border_margin_px": 2,
+  "axis_extractor": "m2",
+  "axis_view_bias": {
+    "model": "C1",
+    "valid_for_model_id": "yolov8n-seg@ac4176ee492dc97e",
+    "by_spec": {
+      "BOLT_A": {
+        "label": "M3x20",
+        "k_mm": 0.63,
+        "fit_plane_z_m": 0.102
+      },
+      "BOLT_B": {
+        "label": "M6x40",
+        "k_mm": 0.48,
+        "fit_plane_z_m": 0.105
+      }
+    }
+  }
+}
