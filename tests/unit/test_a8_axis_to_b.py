@@ -32,8 +32,10 @@ _SPECS = load_specs(ROOT / "config/calibration/part_specs.json")
 BOLT_Z, NUT_Z = class_plane_z(_SPECS, "bolt"), class_plane_z(_SPECS, "nut")
 # 볼트 총길이도 B 규격에서 읽어 규격이 바뀌어도 단언이 따라가게 한다
 LEN_A, LEN_B = float(_SPECS["specs"]["BOLT_A"]["total_length"]), float(_SPECS["specs"]["BOLT_B"]["total_length"])
-# 집는 점 Pb = Pa에서 축 끝 쪽으로 머리 높이/2(B는 모든 볼트에 BOLT_A `head_height`를 씀)
-GRASP_OFFSET_M = float(_SPECS["specs"]["BOLT_A"].get("head_height", 0.006)) / 2.0
+# 볼트 종류별 기준 높이와 집는 점 Pb = Pa에서 축 끝 쪽으로 그 종류 머리 높이/2(B-12 B 규칙, work_result
+# `compute_bolt_from_endpoints`). 값은 B 규격 파일에서 읽어 규격이 바뀌어도 단언이 따라가게 한다
+SPEC_Z = {n: class_plane_z(_SPECS, "bolt", n) for n in ("BOLT_A", "BOLT_B")}
+GRASP_OFFSET_M = {n: float(_SPECS["specs"][n].get("head_height", 0.006)) / 2.0 for n in ("BOLT_A", "BOLT_B")}
 
 
 def _project(points_w, z):
@@ -43,13 +45,13 @@ def _project(points_w, z):
     return w_to_image(np.column_stack([pts, np.full(len(pts), z)]), CAM.K, CAM.dist, T_W_C)
 
 
-def bolt_endpoints(length, cx, cy, deg):
-    """총길이 `length` 볼트의 머리 끝·축 끝 픽셀과 축 단위벡터(Pa = (cx, cy))."""
+def bolt_endpoints(length, cx, cy, deg, z=None):
+    """총길이 `length` 볼트(높이 `z`, 기본 「bolt」 기준 높이)의 머리 끝·축 끝 픽셀과 축 단위벡터(Pa = (cx, cy))."""
     u = np.array([math.cos(math.radians(deg)), math.sin(math.radians(deg))])
     head = np.array([cx, cy]) - u * length / 2
     tip = np.array([cx, cy]) + u * length / 2
 
-    return _project([head, tip], BOLT_Z), u
+    return _project([head, tip], BOLT_Z if z is None else z), u
 
 
 def nut_top_rim(cx, cy, r=0.005, n=24):
@@ -148,8 +150,9 @@ class AxisToBStageTest(A8Base):
     """정상 경로: 시험용 볼트 두 점·너트 윗면 → A 코어 → `b_gate` → 실제 BStage."""
 
     def test_bolt_a_and_b_reach_bstage_with_pa_pb_and_keys(self):
-        """B 규격 총길이 볼트 두 점 관측이 B에 도달해 종류·길이·Pa·Pb·PICK_PLACE·연결 키가 맞다."""
-        (p46, u46), (p18, u18) = bolt_endpoints(LEN_B, 0.55, -0.05, 30.0), bolt_endpoints(LEN_A, 0.55, 0.05, 120.0)
+        """B 규격 총길이 볼트(그 종류 높이에 놓음) 두 점 관측이 B에 도달해 종류·높이·길이·Pa·Pb·PICK_PLACE·연결 키가 맞다."""
+        (p46, u46) = bolt_endpoints(LEN_B, 0.55, -0.05, 30.0, SPEC_Z["BOLT_B"])
+        (p18, u18) = bolt_endpoints(LEN_A, 0.55, 0.05, 120.0, SPEC_Z["BOLT_A"])
         seen = {}
 
         def make(points, key):
@@ -170,11 +173,11 @@ class AxisToBStageTest(A8Base):
             with self.subTest(spec=spec):
                 r, obs = out.result, seen[key]
                 self.assertTrue(r.valid, r.reason)
-                self.assertEqual((r.spec, r.method, r.plane_z_m), (spec, "axis_endpoints", BOLT_Z))
+                self.assertEqual((r.spec, r.method, r.plane_z_m), (spec, "axis_endpoints", SPEC_Z[spec]))
                 self.assertAlmostEqual(r.measured_length_m, length, places=4)
                 # Pa는 보고 위치, Pb는 Pa에서 축 끝 쪽으로 머리 높이/2
                 np.testing.assert_allclose(r.center_w_m, (cx, cy), atol=1e-4)
-                np.testing.assert_allclose(r.grasp_w_m, np.array([cx, cy]) + u * GRASP_OFFSET_M, atol=1e-4)
+                np.testing.assert_allclose(r.grasp_w_m, np.array([cx, cy]) + u * GRASP_OFFSET_M[spec], atol=1e-4)
                 self.assertEqual(out.goal["kind"], "PICK_PLACE")
 
                 # A 관측 → B → C·D 연결 키는 관측·프레임 식별자 그대로다

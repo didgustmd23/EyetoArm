@@ -211,13 +211,15 @@ class BoltPlanes:
     """B 규격의 볼트 종류별 투영 높이. `specs` = ((이름, 기준 높이 m, 총길이 m), …).
 
     `default_z_m`은 마스크 입력용이다. 종류는 높이 고르기에만 쓰며 B 판정이 아니다.
-    `tolerances_m`(종류별 길이 허용 m, `specs` 순서)을 주면 시야 보정과 같은 `bolt_spec.choose_spec`으로
-    허용 안 종류를 먼저 고르고, 없으면 가장 가까운 종류로 둔다(추적 유지, #270). None이면 가장 가까운 종류(#250).
+    `tolerances_m`(종류별 길이 허용 m)·`ranges_m`(종류별 (min, max) m 또는 None, B-12)은 `specs` 순서다. 둘 중 하나라도
+    주면 시야 보정과 같은 `bolt_spec.choose_spec`(B `_classify` 규칙: 범위가 있으면 범위, 없으면 허용)으로 판정 안
+    종류를 먼저 고르고, 없으면 가장 가까운 종류로 둔다(추적 유지, #270·#285). 둘 다 None이면 가장 가까운 종류(#250).
     """
 
     default_z_m: float
     specs: tuple[tuple[str, float, float], ...]
-    tolerances_m: tuple[float, ...] | None = None
+    tolerances_m: tuple[float | None, ...] | None = None
+    ranges_m: tuple[tuple[float, float] | None, ...] | None = None
 
     def __post_init__(self) -> None:
         """값 검사: 유한 양수, 이름은 빈 문자열이 아니고 겹치지 않음, 종류 1개 이상."""
@@ -233,20 +235,51 @@ class BoltPlanes:
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
                 raise WorldTrackerConfigError(f"BoltPlanes values must be finite positive numbers: {v!r}")
 
-        if self.tolerances_m is not None:
-            tol = tuple(self.tolerances_m)
+        for field_name in ("tolerances_m", "ranges_m"):
+            v = getattr(self, field_name)
 
-            if len(tol) != len(self.specs) or not all(
-                    not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 for v in tol):
-                raise WorldTrackerConfigError(f"BoltPlanes tolerances must be one finite number >= 0 per spec: {self.tolerances_m!r}")
+            if v is None:
+                continue
 
-            object.__setattr__(self, "tolerances_m", tol)
+            try:
+                v = tuple(v)
+            except TypeError as exc:
+                raise WorldTrackerConfigError(f"BoltPlanes {field_name} must be one entry per spec: {v!r}") from exc
+
+            if len(v) != len(self.specs):
+                raise WorldTrackerConfigError(f"BoltPlanes {field_name} must be one entry per spec: {v!r}")
+
+            object.__setattr__(self, field_name, v)
+
+        if self.uses_spec_rule:
+            self.bolt_specs()   # 종류별 판정 값 검사(허용·범위, min ≤ 총길이 ≤ max)를 만들 때 한 번
+
+    @property
+    def uses_spec_rule(self) -> bool:
+        """허용·범위가 있어 `bolt_spec.choose_spec`으로 고르는가."""
+        return self.tolerances_m is not None or self.ranges_m is not None
 
     def bolt_specs(self):
-        """`tolerances_m`이 있을 때 `bolt_spec.BoltSpec` 튜플(라벨 = 이름)."""
+        """허용·범위가 있을 때 `bolt_spec.BoltSpec` 튜플(라벨 = 이름). 값이 맞지 않으면 WorldTrackerConfigError."""
         from eyetoarm.vision.bolt_spec import BoltSpec
 
-        return tuple(BoltSpec(n, n, z, L, t) for (n, z, L), t in zip(self.specs, self.tolerances_m))
+        n = len(self.specs)
+        tols = self.tolerances_m if self.tolerances_m is not None else (None,) * n
+        ranges = self.ranges_m if self.ranges_m is not None else (None,) * n
+        out = []
+
+        for (name, z, total), t, r in zip(self.specs, tols, ranges):
+            try:
+                if r is None:
+                    lo = hi = None
+                else:
+                    lo, hi = r
+
+                out.append(BoltSpec(name, name, z, total, t, lo, hi))
+            except (TypeError, ValueError) as exc:
+                raise WorldTrackerConfigError(f"BoltPlanes spec {name}: {exc}") from exc
+
+        return tuple(out)
 
     @property
     def uniform(self) -> bool:
@@ -319,7 +352,7 @@ def _pick_plane(endpoints_px, K, dist, T_W_C, planes: BoltPlanes) -> tuple[float
     if planes.uniform:
         return planes.default_z_m, None
 
-    if planes.tolerances_m is not None:   # 시야 보정과 같은 고르기(허용 안 먼저, 없으면 가장 가까운 종류)
+    if planes.uses_spec_rule:   # 시야 보정과 같은 고르기(판정 안 먼저, 없으면 가장 가까운 종류)
         from eyetoarm.vision.bolt_spec import select_spec
 
         choice = select_spec(endpoints_px, K, dist, T_W_C, planes.bolt_specs())
