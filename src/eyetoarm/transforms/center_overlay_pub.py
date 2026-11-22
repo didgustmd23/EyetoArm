@@ -11,6 +11,9 @@ ROS 토픽으로 낸다. C `display_relay`가 이 토픽을 받아 D에 링크 �
   영상 + 같은 사진 번호표(`source_id`·`image_seq`·`capture_generation`·`generation`·`job_seq`·`capture_stamp_ns`·
   `timestamp_base`·`calibration_id`, 값은 `/sort_part` 목표와 똑같음). 잡기·놓기 좌표는 넣지 않는다(목표로만).
   인터페이스 패키지가 없으면 이 토픽만 건너뛰고 `/b/center_overlay/image`는 그대로 낸다.
+- C 요청(2026-11-22): 같은 사진의 B 결과 숫자(규격·중심 mm·각도·픽셀 중심·유효/사유)를 `/b/results`
+  (`std_msgs/String`, JSON 한 줄)로도 낸다. 번호표는 CenterOverlay와 같아 C가 영상과 짝지을 수 있다.
+  D 「현재 측정」 칸 표시용. 집기 명령은 아니다(목표는 `/sort_part`로만).
 
 A 쪽 연결 (A 확인 뒤, run_pipeline 실시간 목록 경로의 목록 소비자 자리 한 곳):
 
@@ -20,6 +23,7 @@ A 쪽 연결 (A 확인 뒤, run_pipeline 실시간 목록 경로의 목록 소�
 """
 from __future__ import annotations
 
+import json
 import threading
 from typing import Callable
 
@@ -27,6 +31,8 @@ import numpy as np
 
 TOPIC = "/b/center_overlay/image"
 OVERLAY_TOPIC = "/b/center_overlay"          # CenterOverlay (영상 + 같은 사진 번호표, C 요청 2026-11-20)
+RESULTS_TOPIC = "/b/results"                 # B 결과 숫자 JSON (std_msgs/String, C 요청 2026-11-22)
+RESULTS_VERSION = "eyetoarm.b_results/1"
 
 
 def overlay_keys(envelope) -> dict:
@@ -39,6 +45,21 @@ def overlay_keys(envelope) -> dict:
         "capture_generation": int(f.capture_generation), "generation": int(fo.generation), "job_seq": int(fo.job_seq),
         "capture_stamp_ns": int(f.ros_stamp_ns or 0), "timestamp_base": str(getattr(base, "value", base)),
         "calibration_id": str(getattr(getattr(fo, "capture", None), "calibration_id", None) or ""),
+    }
+
+
+def results_payload(rec: dict, keys: dict) -> dict:
+    """`process_frame` 반환값 + 번호표 → `/b/results` JSON 사전. 단위 mm·deg (B가 한 번만 변환, DB-01).
+
+    부품마다: 규격·클래스·유효/사유·중심 (X, Y) mm·각도·길이·픽셀 중심 (u, v)·추적 번호·선택 여부·목표 종류/사유.
+    """
+    fields = ("instance_index", "part_track_id", "spec", "class_name", "valid", "reason", "reason_owner",
+              "center_w_mm", "theta_deg", "theta_valid", "length_mm", "width_mm", "center_px",
+              "selected", "goal_kind", "goal_reason")
+    return {
+        "version": RESULTS_VERSION, **keys,
+        "candidate_count": rec.get("candidate_count"), "selected_instance_index": rec.get("selected_instance_index"),
+        "results": [{k: r.get(k) for k in fields} for r in rec.get("results", [])],
     }
 
 
@@ -79,7 +100,7 @@ class CenterOverlayPublisher:
     """
 
     def __init__(self, topic: str = TOPIC, node_name: str = "b_center_overlay", depth: int = 2,
-                 overlay_topic: str | None = OVERLAY_TOPIC) -> None:
+                 overlay_topic: str | None = OVERLAY_TOPIC, results_topic: str | None = RESULTS_TOPIC) -> None:
         import rclpy
         from rclpy.context import Context
         from rclpy.signals import SignalHandlerOptions
@@ -102,8 +123,17 @@ class CenterOverlayPublisher:
                 self._overlay_cls = CenterOverlay
                 self._overlay_pub = self._node.create_publisher(CenterOverlay, overlay_topic, depth)
 
+        self._results_pub, self._String = None, None
+
+        if results_topic:
+            from std_msgs.msg import String
+
+            self._String = String
+            self._results_pub = self._node.create_publisher(String, results_topic, depth)
+
         self._lock = threading.Lock()
         self.topic, self.overlay_topic = topic, overlay_topic if self._overlay_pub is not None else None
+        self.results_topic = results_topic if self._results_pub is not None else None
         self.published = 0
 
     def publish(self, image: np.ndarray, frame, keys: dict | None = None) -> None:
@@ -117,6 +147,17 @@ class CenterOverlayPublisher:
                 self._overlay_pub.publish(make_overlay_msg(msg, keys, self._overlay_cls))
 
             self.published += 1
+
+    def publish_results(self, payload: dict) -> None:
+        """B 결과 숫자 한 묶음(`results_payload`)을 JSON 한 줄로 발행. 토픽이 꺼져 있으면 아무것도 안 함."""
+        if self._results_pub is None:
+            return
+
+        msg = self._String()
+        msg.data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+
+        with self._lock:
+            self._results_pub.publish(msg)
 
     def subscriber_count(self) -> int:
         return self._pub.get_subscription_count()
@@ -142,8 +183,12 @@ def center_overlay_consumer(stage, publisher, *, guides: bool = True,
 
         try:
             frame = envelope.observations.frame
-            publisher.publish(stage.render_center(frame.image, stage.last_frame, guides=guides), frame,
-                              overlay_keys(envelope))
+            keys = overlay_keys(envelope)
+            publisher.publish(stage.render_center(frame.image, stage.last_frame, guides=guides), frame, keys)
+            send_results = getattr(publisher, "publish_results", None)
+
+            if send_results is not None:
+                send_results(results_payload(rec, keys))     # 같은 사진의 숫자 (C 요청 2026-11-22)
         except Exception as exc:  # noqa: BLE001 - 표시 실패가 B 계산·기록을 막지 않게
             consume.errors += 1
             if on_error is not None:
