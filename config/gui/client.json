@@ -2,7 +2,7 @@
   "_comment": "C TCP 서버와 D 클라이언트가 공유하는 설정. tcp 값은 TCP 패킷 정의서 §9 초기값이며 2주차 시험 뒤 C·D가 확정한다. reconnect_ms·target_validity_ms 는 클라이언트 구현 설정이다.",
   "ui_port": 8765,
   "tcp": {
-    "host": "127.0.0.1",
+    "host": "0.0.0.0",
     "port": 47090,
     "max_line_bytes": 4096,
     "record_retention": 1000,
