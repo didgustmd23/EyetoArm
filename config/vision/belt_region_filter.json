@@ -1,0 +1,8 @@
+{
+  "status": "test_only",
+  "note": "#288 벨트 밖(바닥·상자) 검출 제외 시험 설정. 벨트 사각형·top_z는 config/robot/frames.yaml belt를 읽는다(여기 두지 않음). 마스크 내부 픽셀을 고르게 솎은 표본(max_samples개)의 광선을 벨트 윗면 높이에서 자른 교점이 사각형(사방 margin_mm 넓힘) 안에 든 비율이 min_inside_fraction보다 작으면 OUTSIDE_BELT(범위 밖)로 거부. margin 10 mm는 벨트 먼 쪽 가장자리 볼트 윗면의 높이 밀림(약 9 mm) 흡수, 0.5는 가장자리 걸침 볼트를 절반 이상 안이면 남기려는 값. TF 실패면 제외하지 않음.",
+  "margin_mm": 10.0,
+  "min_inside_fraction": 0.5,
+  "max_samples": 64,
+  "world_frame": "world"
+}

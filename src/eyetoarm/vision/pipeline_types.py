@@ -186,6 +186,7 @@ class ProcessRecord:
     axis_valid_count: int | None = field(default=None, metadata={"omit_if_none": True})
     list_candidate_count: int | None = field(default=None, metadata={"omit_if_none": True})
     list_indices: tuple[int, ...] | None = field(default=None, metadata={"omit_if_none": True})
+    axis_duplicates_merged: int | None = field(default=None, metadata={"omit_if_none": True})   # #292 합친 중복 수(>0일 때만)
 
     def __post_init__(self) -> None:
         """명령 ID를 만들지 않는다는 계약과 eval_run_id 형식(None 또는 비어 있지 않은 문자열)을 검사한다."""

@@ -17,8 +17,9 @@ from eyetoarm.common.types import (FRAME_OBSERVATIONS_VERSION, OBSERVED_FACE_AXI
 from eyetoarm.vision.ai_config import AiSegConfig
 from eyetoarm.vision.axis_endpoints import MODEL_DERIVED, WINDOW_MARGIN_PX, extract_m1, extract_m2_window, mask_window
 from eyetoarm.vision.ai_result import (AXIS_EXTRACTION_ERROR, CONTOUR_CLIPPED, EMPTY_MASK, LOW_CONFIDENCE,
-                                       MULTIPLE_CANDIDATES, NON_TARGET_CLASS, SMALL_MASK, AiInstance, AiJobConfigError,
-                                       AiSegResult, RawSegOutput, axis_candidate_reason)
+                                       DUPLICATE_MASK, MULTIPLE_CANDIDATES, NON_TARGET_CLASS, SMALL_MASK, AiInstance,
+                                       AiJobConfigError, AiSegResult, RawSegOutput, axis_candidate_reason,
+                                       reject_in)
 from eyetoarm.vision.pipeline_types import JobContext, SourceProfile
 from eyetoarm.vision.pixel_map import validate_roi
 from eyetoarm.vision.planar import _check_frame
@@ -30,6 +31,10 @@ NO_OBJECT = "NO_OBJECT"
 # 나머지 축 경로 사유(CONTOUR_CLIPPED 등)는 물체별 자격 함수와 함께 ai_result에 있다
 MULTIPLE_OBJECTS = "MULTIPLE_OBJECTS"
 AXIS_OVERLAP_IOU = 0.5   # 볼트 마스크끼리 IoU ≥ 0.5면 겹침(명세 상수)
+# 같은 볼트 중복(#292): 겹침 묶음의 모든 쌍이 IoU ≥ 0.9이고 둘 다 끝점이 있으며 끝점 차 ≤ 3 px이면 거의 같은 마스크로 보고
+# conf가 가장 높은 하나만 남긴다(나머지 DUPLICATE_MASK). 길이가 다른 쌍·끝점 없는 짝은 겹침 무효 그대로
+AXIS_DUP_IOU = 0.9
+AXIS_DUP_EP_PX = 3.0
 
 # 기록에 남길 추출기 진단 키(수·문자열만)
 _DIAG_KEYS = ("pixels", "components", "holes", "width_ratio", "head_step_frac", "tilt_deg",
@@ -319,6 +324,7 @@ def convert(raw: RawSegOutput, frame: FramePacket, config: AiSegConfig, *,
     if config.axis_extractor is not None:
         bolts = [k for k, inst in enumerate(instances) if inst.axis_evaluated]
         best = {k: 0.0 for k in bolts}
+        pair_iou: dict[tuple[int, int], float] = {}   # (작은 index, 큰 index) → 마스크 IoU
         partners: dict[int, list[int]] = {k: [] for k in bolts}
         shapes = {k: rasters[k] if k in rasters else rasterize_polygon_window(instances[k].polygon, offset, crop_wh)
                   for k in bolts}
@@ -327,6 +333,7 @@ def convert(raw: RawSegOutput, frame: FramePacket, config: AiSegConfig, *,
             for b in bolts[a_pos + 1:]:
                 iou = _iou(shapes[a], shapes[b])
                 best[a], best[b] = max(best[a], iou), max(best[b], iou)
+                pair_iou[(a, b)] = iou
 
                 if overlaps(iou):
                     partners[a].append(b)
@@ -336,6 +343,8 @@ def convert(raw: RawSegOutput, frame: FramePacket, config: AiSegConfig, *,
             instances[k] = dataclasses.replace(instances[k], axis_max_iou=best[k],
                                                axis_overlap_with=tuple(sorted(partners[k])) or None)
 
+        instances = _merge_duplicates(instances, pair_iou)
+
     t1 = time.perf_counter_ns()
     post_ms = (t1 - t0) / 1e6
     process_ms = (t1 - started_ns) / 1e6 if started_ns is not None else raw.infer_ms + post_ms
@@ -343,6 +352,93 @@ def convert(raw: RawSegOutput, frame: FramePacket, config: AiSegConfig, *,
     return AiSegResult(instances=tuple(instances), model_id=config.model_id, config_sha256=config.config_sha256,
                        roi=config.roi, crop_wh=crop_wh, infer_ms=raw.infer_ms, post_ms=post_ms,
                        process_ms=max(process_ms, raw.infer_ms + post_ms))
+
+
+def endpoint_gap_px(ea, eb) -> float:
+    """두 끝점 쌍의 차(px): 순서 무관 최선 짝에서 두 끝 중 큰 차."""
+    (a0, a1), (b0, b1) = np.asarray(ea, np.float64), np.asarray(eb, np.float64)
+    same = max(float(np.hypot(*(a0 - b0))), float(np.hypot(*(a1 - b1))))
+    swap = max(float(np.hypot(*(a0 - b1))), float(np.hypot(*(a1 - b0))))
+
+    return min(same, swap)
+
+
+def duplicate_groups(instances, pair_iou: dict) -> list[tuple[int, list[dict]]]:
+    """겹침 묶음 중 같은 볼트 중복으로 합칠 묶음: [(남길 index, [빠질 인스턴스 근거])].
+
+    묶음 = `axis_overlap_with` 연결 성분. 묶음의 **모든 쌍**이 IoU ≥ `AXIS_DUP_IOU`, 둘 다 끝점 있음(잘림·추출기 사유
+    없음), 끝점 차 ≤ `AXIS_DUP_EP_PX`일 때만 합친다. 남길 것은 conf 최고(같으면 작은 index).
+    """
+    by_index = {inst.index: inst for inst in instances}
+    seen, out = set(), []
+
+    for inst in instances:
+        if not inst.axis_overlap_with or inst.index in seen:
+            continue
+
+        group, stack = set(), [inst.index]
+
+        while stack:   # 연결 성분
+            k = stack.pop()
+
+            if k in group:
+                continue
+
+            group.add(k)
+            stack.extend(by_index[k].axis_overlap_with or ())
+
+        seen |= group
+        members = sorted(group)
+
+        if not all(by_index[k].axis_endpoints_px is not None and not by_index[k].clipped for k in members):
+            continue
+
+        keep = min(members, key=lambda k: (-by_index[k].confidence, k))
+        ok, drops = True, []
+
+        for pos, a in enumerate(members):
+            for b in members[pos + 1:]:
+                iou = pair_iou.get((a, b), 0.0)
+                gap = endpoint_gap_px(by_index[a].axis_endpoints_px, by_index[b].axis_endpoints_px)
+
+                if iou < AXIS_DUP_IOU or gap > AXIS_DUP_EP_PX:
+                    ok = False
+                    break
+
+                if keep in (a, b):
+                    drops.append({"index": b if a == keep else a, "iou": round(iou, 4), "ep_px": round(gap, 3)})
+
+            if not ok:
+                break
+
+        if ok:
+            out.append((keep, sorted(drops, key=lambda d: d["index"])))
+
+    return out
+
+
+def _merge_duplicates(instances: list, pair_iou: dict) -> list:
+    """같은 볼트 중복 묶음에서 대표 하나만 남기고 나머지를 `DUPLICATE_MASK`로 거부한다(근거는 axis_diag)."""
+    groups = duplicate_groups(instances, pair_iou)
+
+    if not groups:
+        return instances
+
+    # convert가 만든 목록은 위치 = index다(아래 merged[k] 접근의 전제)
+    if any(inst.index != pos for pos, inst in enumerate(instances)):
+        raise ValueError("instances must be ordered by index (position == index)")
+    removed = {d["index"] for _, drops in groups for d in drops}
+    merged = list(reject_in(instances, removed, DUPLICATE_MASK))
+
+    for keep, drops in groups:
+        rep = merged[keep]
+        merged[keep] = dataclasses.replace(rep, axis_diag={**(rep.axis_diag or {}), "duplicates": drops})
+
+        for d in drops:
+            merged[d["index"]] = dataclasses.replace(merged[d["index"]], axis_diag={
+                "duplicate_of": keep, "iou": d["iou"], "ep_px": d["ep_px"]})
+
+    return merged
 
 
 def display_reason(result: AiSegResult, frame: FramePacket, profile: SourceProfile | None) -> str:
@@ -466,6 +562,6 @@ def frame_observations_from_ai(job: JobContext, result: AiSegResult, *, capture:
     return observations
 
 
-__all__ = ["AXIS_EXTRACTION_ERROR", "AXIS_OVERLAP_IOU", "MULTIPLE_CANDIDATES", "MULTIPLE_OBJECTS", "axis_selection", "convert", "overlaps",
+__all__ = ["AXIS_DUP_EP_PX", "AXIS_DUP_IOU", "AXIS_EXTRACTION_ERROR", "AXIS_OVERLAP_IOU", "duplicate_groups", "endpoint_gap_px", "MULTIPLE_CANDIDATES", "MULTIPLE_OBJECTS", "axis_selection", "convert", "overlaps",
            "crop_frame", "display_reason", "frame_observations_from_ai", "list_candidate_indices", "observation_from_ai",
            "rasterize_polygon"]

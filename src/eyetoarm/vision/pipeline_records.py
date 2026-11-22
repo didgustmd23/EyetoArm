@@ -13,8 +13,8 @@ from typing import Any
 
 from eyetoarm.common.types import CandidateInvalidationEvent, InputStatus, InputStatusEvent
 from eyetoarm.vision.ai_config import AiSegConfig
-from eyetoarm.vision.ai_convert import list_candidate_indices
-from eyetoarm.vision.ai_result import AiSegResult, axis_candidate_reason
+from eyetoarm.vision.ai_convert import AXIS_DUP_EP_PX, AXIS_DUP_IOU, list_candidate_indices
+from eyetoarm.vision.ai_result import DUPLICATE_MASK, AiSegResult, axis_candidate_reason
 from eyetoarm.vision.pipeline_types import (
     InputStateRecord,
     JobOutcome,
@@ -86,7 +86,15 @@ def process_record(outcome: JobOutcome, *, eval_run_id: str | None = None,
         infer_ms=ai.infer_ms if ai is not None else None,
         ai_instances=None if ai is None else tuple(_instance_summary(i) for i in ai.instances),
         axis_valid_count=ai.axis_valid_count if axis_on else None,
-        list_candidate_count=None if listed is None else len(listed), list_indices=listed)
+        list_candidate_count=None if listed is None else len(listed), list_indices=listed,
+        axis_duplicates_merged=_duplicates_merged(ai) if axis_on else None)
+
+
+def _duplicates_merged(ai) -> int | None:
+    """같은 볼트 중복으로 합쳐 빠진 인스턴스 수(0이면 None: 키를 쓰지 않아 기존 기록과 바이트 동일)."""
+    n = sum(1 for i in ai.instances if i.rejected == DUPLICATE_MASK)
+
+    return n or None
 
 
 def _instance_summary(inst) -> dict:
@@ -123,6 +131,10 @@ def _detector_block(cfg) -> dict:
              "iou_threshold": cfg.iou_threshold, "imgsz": cfg.imgsz, "max_det": cfg.max_det, "device": cfg.device,
              "half": cfg.half, "retina_masks": cfg.retina_masks, "roi": None if cfg.roi is None else list(cfg.roi),
              "min_mask_area_px": cfg.min_mask_area_px, "border_margin_px": cfg.border_margin_px}
+
+    # 같은 볼트 중복 합치기 문턱(#292, ai_convert 코드 상수라 설정 지문에 들지 않음). 축 경로 설정만 남긴다
+    if getattr(cfg, "axis_extractor", None):
+        block["axis_dup"] = {"iou": AXIS_DUP_IOU, "ep_px": AXIS_DUP_EP_PX}
 
     # 시선 기반 끝점 보정은 켠 설정만 남긴다
     if getattr(cfg, "axis_view_bias", None) is not None:
@@ -215,11 +227,12 @@ class PipelineLog:
 
     def __init__(self, recorder: JsonlRecorder, *, eval_run_id: str | None = None, log_geometry: bool = False,
                  b_input: str = B_INPUT_SINGLE, infer_process: bool = False,
-                 infer_process_source: str | None = None, arm_region_filter: dict | None = None) -> None:
+                 infer_process_source: str | None = None, arm_region_filter: dict | None = None,
+                 belt_region_filter: dict | None = None) -> None:
         """기록기, 평가 실행 ID(평가가 아니면 None), AI geometry 기록 여부, B 입력 단계, 추론 프로세스 사용 여부·출처를 받는다.
 
         출처는 None·"argument"·"default". 켬이거나 인자로 끈 경우에만 run_meta에 표시한다(기본 끔이면 바이트 동일).
-        `arm_region_filter`(팔 영역 제외 표시 사전)는 주어졌을 때만 run_meta에 넣는다.
+        `arm_region_filter`(팔 영역 제외)·`belt_region_filter`(벨트 밖 제외) 표시 사전은 주어졌을 때만 run_meta에 넣는다.
         """
         if not isinstance(log_geometry, bool):
             raise ValueError(f"log_geometry must be a bool: {log_geometry!r}")
@@ -236,6 +249,11 @@ class PipelineLog:
             raise ValueError(f"arm_region_filter must be a dict or None: {arm_region_filter!r}")
 
         self._arm_region = arm_region_filter
+
+        if belt_region_filter is not None and not isinstance(belt_region_filter, dict):
+            raise ValueError(f"belt_region_filter must be a dict or None: {belt_region_filter!r}")
+
+        self._belt_region = belt_region_filter
 
         if b_input not in B_INPUT_MODES:
             raise ValueError(f"b_input must be one of {B_INPUT_MODES}: {b_input!r}")
@@ -287,6 +305,9 @@ class PipelineLog:
 
         if self._arm_region is not None:
             meta["arm_region_filter"] = dict(self._arm_region)
+
+        if self._belt_region is not None:
+            meta["belt_region_filter"] = dict(self._belt_region)
 
         self._recorder.write("run_meta", meta)
 
