@@ -379,6 +379,7 @@ C→D는 raw 영상 3채널을 47092/ETV1/JPEG 시제품으로 전송해 테스�
 - **확인할 내용:** 토픽 이름, 메시지 형식(표준형 또는 `eyetoarm_interfaces` 새 메시지), 필드와 단위, 발행 주기(상태 변경 시 즉시 발행 여부), `header.stamp` 시각 기준(`SIM_TIME`), QoS(늦게 붙은 구독자가 현재 상태를 받도록 transient_local 제안), 시뮬레이션 재설정 때 동작.
 - **미회신 영향:** A는 W 위치 차분 추정만으로 진행합니다.
 - **근거:** C `conveyor_controller.py`, `config/robot/frames.yaml` `speed_mps`(C 설정값), B 협업 요청 C-5(벨트 속도는 C 설정값).
+- **C 회신 (2026-11-23):** `/conveyor/state` 토픽 발행부를 `conveyor_controller.py`에 추가했습니다. 메시지는 `geometry_msgs/msg/TwistStamped`이며, `header.stamp`는 노드의 ROS 시각(SIM_TIME 설정 시 시뮬레이션 시각), `frame_id`는 `world`입니다. `twist.linear.y`의 부호 있는 값(m/s)으로 속도와 방향을 나타내며, 정지 상태는 0으로 발행합니다. 시작 시 현재 상태를 발행하고, 시작·정지·오류 정지 및 시간 되감기 때 상태를 갱신합니다. QoS는 `RELIABLE`, `TRANSIENT_LOCAL`, depth 1입니다. 부품별 위치·자세·이름·개수는 포함하지 않습니다. 코드 반영은 완료했으며 ROS 빌드·실행에서 실제 발행은 아직 확인하지 않았습니다.
 
 ### C-12 분류 목표 실행·예측·만료 (0.13 추가)
 

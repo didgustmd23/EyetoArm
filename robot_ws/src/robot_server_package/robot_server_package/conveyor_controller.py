@@ -14,6 +14,8 @@ from dataclasses import dataclass
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from geometry_msgs.msg import TwistStamped
 from ros_gz_interfaces.msg import Entity
 from ros_gz_interfaces.srv import SetEntityPose
 from std_srvs.srv import SetBool
@@ -55,16 +57,25 @@ class ConveyorController(Node):
 
         # Poses match simulation/worlds/sort_cell.sdf. Quaternion is xyzw.
         self.parts = [
-            PartPose("part_00", 0.55, -0.30, 0.105, 0.0, 0.70710678, 0.0, 0.70710678),
+            # M3x20 part_00 settles at z=0.102 m in sort_cell.sdf; keeping
+            # the controller pose aligned prevents each update from lifting it.
+            PartPose("part_00", 0.55, -0.30, 0.102, 0.0, 0.70710678, 0.0, 0.70710678),
             PartPose("part_01", 0.55, -0.15, 0.105, 0.0, 0.70710678, 0.0, 0.70710678),
             PartPose("part_02", 0.55, 0.00, 0.1005, 0.0, 0.0, 0.0, 1.0),
         ]
         self._running = False
         self._batch_in_flight = False
         self._last_clock_ns: int | None = None
+        self._last_state_stamp_ns: int | None = None
+        state_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
+                               reliability=ReliabilityPolicy.RELIABLE,
+                               durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._state_pub = self.create_publisher(TwistStamped, "/conveyor/state", state_qos)
         self._pose_client = self.create_client(SetEntityPose, "/world/sort_cell/set_pose")
         self._run_service = self.create_service(SetBool, "~/set_running", self._set_running)
         self._timer = self.create_timer(1.0 / self.update_rate_hz, self._tick)
+        self._state_watchdog = self.create_wall_timer(0.1, self._check_state_clock)
+        self._publish_state()
         self.get_logger().info(
             "Kinematic conveyor ready (stopped). Set speed_mps explicitly, then call "
             "'/conveyor_controller/set_running' with data=true."
@@ -87,8 +98,28 @@ class ConveyorController(Node):
             f"kinematic movement started at {abs(self.speed_mps):.4f} m/s toward {direction}"
             if self._running else "kinematic movement stopped"
         )
+        self._publish_state()
         self.get_logger().info(response.message)
         return response
+
+    def _publish_state(self) -> None:
+        """Publish signed belt Y velocity stamped with the active ROS clock."""
+        now = self.get_clock().now()
+        msg = TwistStamped()
+        msg.header.stamp = now.to_msg()
+        msg.header.frame_id = "world"
+        # Signed Y velocity encodes direction; zero means stopped.
+        msg.twist.linear.y = self.speed_mps if self._running else 0.0
+        self._state_pub.publish(msg)
+        self._last_state_stamp_ns = now.nanoseconds
+
+    def _check_state_clock(self) -> None:
+        """Republish the retained state after a SIM_TIME rewind."""
+        now_ns = self.get_clock().now().nanoseconds
+        if self._last_state_stamp_ns is not None and now_ns < self._last_state_stamp_ns:
+            self._last_clock_ns = now_ns if self._running else None
+            self._publish_state()
+            self.get_logger().info("Simulation time rewind detected; conveyor state republished")
 
     def _tick(self) -> None:
         if not self._running or self._batch_in_flight:
@@ -103,12 +134,16 @@ class ConveyorController(Node):
             return
         if not self._pose_client.service_is_ready():
             self._running = False
+            self._last_clock_ns = None
+            self._publish_state()
             self.get_logger().error("Gazebo set_pose service disappeared; movement stopped")
             return
 
         next_y = [part.y + self.speed_mps * dt for part in self.parts]
         if any(y < self.min_y_m or y > self.max_y_m for y in next_y):
             self._running = False
+            self._last_clock_ns = None
+            self._publish_state()
             self.get_logger().info("A part reached the configured belt boundary; movement stopped")
             return
 
@@ -131,6 +166,8 @@ class ConveyorController(Node):
                 self._batch_in_flight = False
                 if failed:
                     self._running = False
+                    self._last_clock_ns = None
+                    self._publish_state()
                     self.get_logger().error(
                         "Gazebo rejected pose update for " + ", ".join(failed) + "; movement stopped"
                     )

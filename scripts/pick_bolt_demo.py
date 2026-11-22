@@ -31,13 +31,15 @@ JOINTS = ['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint',
 GRIPPER_JOINT = 'robotiq_85_left_knuckle_joint'
 TOOL_LINK = 'robotiq_85_base_link'
 GRIP_OPEN, GRIP_CLOSED = 0.0, 0.8     # 구동 관절(rad)
-FINGER_REACH = 0.0492                 # 손끝이 벨트에 닿지 않도록 3 mm 올린 접촉 높이 재시험값
+FINGER_REACH = 0.0533                  # B DART 시험에서 A/B 파지에 성공한 손끝 길이
 TIP_CLEARANCE = 0.0015                # 닫힌 손끝과 받침면 사이 여유(m)
-SHANK_RADIUS = 0.0015                 # M3 축 반지름(m)
-SHANK_LENGTH = {'part_00': 0.020}     # part_00: M3x20 축 길이(m)
+SHANK_RADIUS = {'part_00': 0.0015, 'part_01': 0.003}  # A=M3 축 반지름, B=M6 축 반지름(m)
+SHANK_LENGTH = {'part_00': 0.020, 'part_01': 0.040}   # A=M3x20, B=M6x40 축 길이(m)
 # part_00 모델 원점에서 축 끝 방향으로 Pb까지의 오프셋(m).
 # 월드 자세 (0.55, -0.30, 0.105), 축 방향 -X일 때 Pb=(0.544, -0.30, 0.105).
-GRASP_OFFSET_FROM_MODEL_ORIGIN = {'part_00': 0.006}
+GRASP_OFFSET_FROM_MODEL_ORIGIN = {'part_00': 0.006, 'part_01': 0.003}
+# A(M3) 데모 파지 시험 보정: 손끝이 축을 물도록 목표를 2 mm 낮춘다. B는 B 계산값 유지.
+GRASP_HEIGHT_OFFSET = {'part_00': -0.002, 'part_01': 0.0}
 APPROACH = 0.10                       # 잡기 전·놓은 뒤 위쪽 대기 높이(m)
 RELEASE_HEIGHT = 0.0                  # 놓을 때 잡은 높이 기준 추가 높이(m). 띄워서 놓으면 볼트가 굴러 벨트 밖으로 나간다
 RELEASE_STEP = 0.02                   # 놓을 때 그리퍼를 이만큼씩 천천히 연다(rad). 한 번에 열면 볼트가 튕겨 구른다
@@ -218,8 +220,9 @@ def main():
         raise RuntimeError('볼트가 누워 있지 않아 이 시연의 잡기 방식으로는 잡을 수 없다')
     flat /= np.linalg.norm(flat)
     center = position + axis * GRASP_OFFSET_FROM_MODEL_ORIGIN[args.part]  # 기존 Pb 유지
-    support = center[2] - SHANK_RADIUS                                     # 축 아래 받침면 높이
-    grasp_z = support + TIP_CLEARANCE + FINGER_REACH
+    # B 시험 서버와 같은 규칙: 축 중심 높이 - 해당 볼트 축 반지름 + 손끝 여유 + 손끝 길이.
+    support = center[2] - SHANK_RADIUS[args.part]                          # 축 아래 받침면 높이
+    grasp_z = support + TIP_CLEARANCE + FINGER_REACH + GRASP_HEIGHT_OFFSET[args.part]
     print(f'{args.part}: 위치 ({position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f}) m, '
           f'잡는 점 ({center[0]:.3f}, {center[1]:.3f}, {center[2]:.3f}) m', flush=True)
 

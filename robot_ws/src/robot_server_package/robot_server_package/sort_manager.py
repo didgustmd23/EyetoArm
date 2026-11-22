@@ -1,23 +1,38 @@
-"""C-side receiver for B's /sort_part action goals.
-
-This first integration step validates the ROS action identity, logs the received
-payload, and returns an explicit non-success result until robot execution is
-connected. It never reports a simulated receipt as a completed sort.
-"""
+"""Receive B's /sort_part goals with optional Gazebo execution."""
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
+import sqlite3
+from threading import Lock
 import uuid
 
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
-from rclpy.executors import ExternalShutdownException
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
+from std_srvs.srv import Trigger
 
 from eyetoarm_interfaces.action import SortPart
+from eyetoarm_interfaces.srv import GetSortRun
+from .gazebo_sort_executor import GazeboSortExecutor, SortCanceled, SortFailure
 
 
 ACTION_NAME = "/sort_part"
+
+
+def next_epoch(path: Path) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path, isolation_level=None) as database:
+        database.execute("BEGIN IMMEDIATE")
+        database.execute("CREATE TABLE IF NOT EXISTS sort_epoch (id INTEGER PRIMARY KEY, value INTEGER)")
+        database.execute("INSERT OR IGNORE INTO sort_epoch VALUES (1, 0)")
+        database.execute("UPDATE sort_epoch SET value = value + 1 WHERE id = 1")
+        epoch = database.execute("SELECT value FROM sort_epoch WHERE id = 1").fetchone()[0]
+        database.commit()
+    return epoch
 
 
 def _goal_summary(goal) -> str:
@@ -44,10 +59,18 @@ def _goal_summary(goal) -> str:
 
 
 class SortGoalReceiver(Node):
-    """Receive and inspect B goals without dispatching robot motion."""
+    """Validate goals and dispatch them to the configured executor."""
 
-    def __init__(self, action_name: str = ACTION_NAME) -> None:
+    def __init__(self, action_name: str = ACTION_NAME, backend=None, epoch_file=None) -> None:
         super().__init__("c_sort_goal_receiver")
+        self._backend = backend
+        self._execution_lock = Lock()
+        self._epoch_file = epoch_file
+        self._epoch = next_epoch(epoch_file) if epoch_file is not None else 0
+        self._job_id = ""
+        self._seen = set()
+        self._seen_lock = Lock()
+        self._recovery_required = False
         self._server = ActionServer(
             self,
             SortPart,
@@ -55,10 +78,40 @@ class SortGoalReceiver(Node):
             execute_callback=self._execute,
             goal_callback=self._goal_request,
             cancel_callback=self._cancel_request,
+            callback_group=ReentrantCallbackGroup(),
+            result_timeout=3600,
         )
+        if epoch_file is not None:
+            self.create_service(Trigger, "~/start_run", self._start_run)
+            self.create_service(GetSortRun, "~/get_run", self._get_run)
         self.get_logger().info(
-            f"B→C SortPart 수신 대기 {action_name}; 실행기는 연결되지 않아 목표를 수행하지 않습니다"
+            f"B→C SortPart {action_name}; mode={'gazebo' if backend is not None else 'receive-only'}"
         )
+
+    def _start_run(self, request, response):
+        if not self._execution_lock.acquire(blocking=False):
+            response.message = "BUSY"
+            return response
+        try:
+            if self._recovery_required:
+                response.message = "RECOVERY_REQUIRED"
+                return response
+            if self._job_id:
+                self._epoch = next_epoch(self._epoch_file)
+            self._job_id = str(uuid.uuid4())
+            with self._seen_lock:
+                self._seen.clear()
+            response.success = True
+            response.message = "RUN_STARTED"
+            return response
+        finally:
+            self._execution_lock.release()
+
+    def _get_run(self, request, response):
+        response.sort_job_id = self._job_id
+        response.run_epoch = self._epoch
+        response.active = bool(response.sort_job_id) and not self._recovery_required
+        return response
 
     def _goal_request(self, request) -> GoalResponse:
         if request.goal_kind not in ("PICK_PLACE", "PASS_THROUGH"):
@@ -101,27 +154,91 @@ class SortGoalReceiver(Node):
             )
             return result
 
+        if self._backend is None:
+            result.status, result.reason = "FAILED", "EXECUTION_NOT_CONFIGURED"
+        elif not self._execution_lock.acquire(blocking=False):
+            result.status, result.reason = "FAILED", "BUSY"
+        else:
+            def publish(stage):
+                goal_handle.publish_feedback(SortPart.Feedback(stage=stage))
+
+            try:
+                if self._recovery_required:
+                    raise SortFailure("RECOVERY_REQUIRED")
+                if self._epoch_file is not None:
+                    if not self._job_id or request.sort_job_id != self._job_id or request.run_epoch != self._epoch:
+                        raise SortFailure("SORT_RUN_MISMATCH")
+                    if request.timestamp_base != "SIM_TIME" or not 0 < request.capture_stamp_ns < request.valid_until_ns:
+                        raise SortFailure("INVALID_GOAL_TIME")
+                with self._seen_lock:
+                    if request.goal_id in self._seen:
+                        raise SortFailure("DUPLICATE_GOAL")
+                    self._seen.add(request.goal_id)
+                result.arrived_stamp_ns = self._backend.execute(
+                    request, publish, lambda: goal_handle.is_cancel_requested)
+                result.status = "SUCCEEDED"
+                goal_handle.succeed()
+                self.get_logger().info(f"B_GOAL_ARRIVED goal_id={request.goal_id} stamp={result.arrived_stamp_ns}")
+                return result
+            except SortCanceled:
+                result.status, result.reason = "CANCELED", "ROBOT_STOP_CONFIRMED"
+                goal_handle.canceled()
+                return result
+            except SortFailure as exc:
+                result.reason = str(exc)
+                result.status = "EXPIRED" if result.reason == "GOAL_EXPIRED" else "FAILED"
+                if result.reason == "STOP_UNCONFIRMED":
+                    self._recovery_required = True
+                    if goal_handle.is_cancel_requested:
+                        goal_handle.abort()
+                        return result
+            except Exception as exc:
+                self.get_logger().error(f"SortPart execution error: {type(exc).__name__}: {exc}")
+                result.status, result.reason = "FAILED", "EXECUTION_ERROR"
+            finally:
+                self._execution_lock.release()
         goal_handle.abort()
-        result.status = "FAILED"
-        result.reason = "EXECUTION_NOT_CONFIGURED"
-        self.get_logger().warning(
-            f"B_GOAL_RECEIVED_ONLY goal_id={request.goal_id}: execution backend is not connected"
-        )
+        self.get_logger().warning(f"SortPart goal={request.goal_id} status={result.status} reason={result.reason}")
         return result
 
 
 def main(args=None) -> int:
-    parser = argparse.ArgumentParser(description="Receive B SortPart goals without executing robot motion")
+    parser = argparse.ArgumentParser(description="Receive B SortPart goals")
     parser.add_argument("--action", default=ACTION_NAME)
+    parser.add_argument("--gazebo-project-root", type=Path,
+                        help="Enable sort_cell simulation execution using this EyetoArm checkout")
+    parser.add_argument("--run-state", type=Path,
+                        help="Enable managed sort runs and persist the execution epoch in this SQLite file")
+    parser.add_argument("--moving-belt", action="store_true",
+                        help="Enable Gazebo pose based moving target prediction in managed runs")
     parsed, ros_args = parser.parse_known_args(args)
+    if parsed.run_state and not parsed.gazebo_project_root:
+        parser.error("--run-state requires --gazebo-project-root")
+    if parsed.moving_belt and not parsed.run_state:
+        parser.error("--moving-belt requires --run-state")
     rclpy.init(args=ros_args)
-    node = SortGoalReceiver(parsed.action)
+    arm_node = None
+    node = None
+    executor = MultiThreadedExecutor(num_threads=2)
     try:
-        rclpy.spin(node)
+        backend = None
+        if parsed.gazebo_project_root is not None:
+            arm_node = Node("c_sort_gazebo_arm", parameter_overrides=[
+                Parameter("use_sim_time", value=True),
+            ])
+            backend = GazeboSortExecutor(arm_node, parsed.gazebo_project_root.resolve(),
+                                         moving=parsed.moving_belt)
+        node = SortGoalReceiver(parsed.action, backend, parsed.run_state)
+        executor.add_node(node)
+        executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        node.destroy_node()
+        executor.shutdown()
+        if node is not None:
+            node.destroy_node()
+        if arm_node is not None:
+            arm_node.destroy_node()
         rclpy.try_shutdown()
     return 0
 

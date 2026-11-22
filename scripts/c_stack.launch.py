@@ -9,7 +9,7 @@ from datetime import datetime
 import sys
 from pathlib import Path
 
-from ament_index_python.packages import get_package_prefix, get_package_share_directory
+from ament_index_python.packages import get_package_prefix
 from launch import LaunchDescription
 from launch.actions import (
     AppendEnvironmentVariable,
@@ -23,7 +23,8 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.substitutions import FindPackageShare
 
 ROOT = Path(__file__).resolve().parent.parent
 SIM_LAUNCH = ROOT / "scripts" / "sim_sort_cell.launch.py"
@@ -42,6 +43,7 @@ def _live_pipeline_actions(context, root, ai_config, live_config, ai_log, stamp)
 
     python = LaunchConfiguration("a_python").perform(context)
     cmd = [
+        python, str(root / "scripts" / "run_pipeline_supervisor.py"), "--",
         python, str(root / "scripts" / "run_pipeline.py"),
         "--ros-link", "--detector", "ai",
         "--ai-config", str(ai_config),
@@ -59,7 +61,13 @@ def generate_launch_description():
     ai_log = ROOT / "logs" / f"a_live_display_{stamp}.jsonl"
     gui = LaunchConfiguration("gui")
     start_moveit = LaunchConfiguration("start_moveit")
-    moveit_share = Path(get_package_share_directory("ur5e_moveit_config"))
+    moveit_gui = LaunchConfiguration("moveit_gui")
+    move_group_launch = PathJoinSubstitution([
+        FindPackageShare("ur5e_moveit_config"), "launch", "move_group.launch.py",
+    ])
+    moveit_rviz_launch = PathJoinSubstitution([
+        FindPackageShare("ur5e_moveit_config"), "launch", "moveit_rviz.launch.py",
+    ])
     c_executables = Path(get_package_prefix("robot_server_package")) / "lib" / "robot_server_package"
     python_site = Path("lib") / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
     ros_python = Path(get_package_prefix("rclpy")) / python_site
@@ -72,8 +80,10 @@ def generate_launch_description():
                               description="A의 AI 검출·C 영상 handoff 실행 여부"),
         DeclareLaunchArgument("start_b", default_value="true",
                               description="Enable B list processing and center publisher inside the A pipeline (requires start_a=true)"),
-        DeclareLaunchArgument("start_moveit", default_value="false",
-                              description="MoveGroup과 MoveIt RViz 실행 여부"),
+        DeclareLaunchArgument("start_moveit", default_value="true",
+                              description="MoveGroup 실행 여부"),
+        DeclareLaunchArgument("moveit_gui", default_value="false",
+                              description="MoveIt RViz GUI 실행 여부 (start_moveit:=true일 때만 적용)"),
         DeclareLaunchArgument("a_python", default_value=str(ROOT / ".venv" / "bin" / "python"),
                               description="A 파이프라인에 사용할 Python 실행 파일"),
 
@@ -92,11 +102,13 @@ def generate_launch_description():
 
         GroupAction(actions=[
             IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(str(moveit_share / "launch" / "move_group.launch.py")),
+                PythonLaunchDescriptionSource(move_group_launch),
             ),
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(str(moveit_share / "launch" / "moveit_rviz.launch.py")),
-            ),
+            GroupAction(actions=[
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource(moveit_rviz_launch),
+                ),
+            ], condition=IfCondition(moveit_gui)),
         ], condition=IfCondition(start_moveit)),
 
         # 이 두 entry point는 rclpy Node가 아니라 argparse 기반 프로세스이므로
