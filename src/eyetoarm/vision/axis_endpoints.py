@@ -31,6 +31,10 @@ class AxisModel:
 
 MODEL_DERIVED = AxisModel()
 
+# 창 여유: 프레임 경계가 아닌 창 가장자리를 0으로 두어, 창 가장자리 검사가 프레임 경계 검사와 같고 바깥 배경이
+# 창 둘레로 이어져 구멍·조각 판정이 전체 마스크와 같게 하는 최소 폭(8-연결 기준 1 px이면 충분)
+WINDOW_MARGIN_PX = 1
+
 
 @dataclass(frozen=True)
 class AxisEstimate:
@@ -250,12 +254,60 @@ def _band_widths(s: np.ndarray, t: np.ndarray, s_min: float, s_max: float, frac:
     return float(t[lo].max() - t[lo].min() + 1.0), float(t[hi].max() - t[hi].min() + 1.0)
 
 
-def _principal_frame(mask: np.ndarray, model: AxisModel, method: str):
+def mask_window(mask) -> tuple[np.ndarray, tuple[int, int]]:
+    """전체 bool 마스크에서 전경을 모두 담는 가장 작은 창(+여유)의 뷰와 원점 (x0, y0)을 돌려준다.
+
+    창은 전경 범위에서 사방으로 `WINDOW_MARGIN_PX`만큼 넓히고 프레임 안으로 자른다. 그래서 프레임 경계가 아닌
+    창 가장자리는 모두 0이다. 전경이 없으면 (0, 0)의 1×1 창(값 0)을 돌려준다. 복사하지 않는다.
+    """
+    mask = _check_mask(mask)
+    h, w = mask.shape
+    rows = np.flatnonzero(mask.any(axis=1))
+
+    if rows.size == 0:
+        return mask[:1, :1], (0, 0)
+
+    y0, y1 = max(int(rows[0]) - WINDOW_MARGIN_PX, 0), min(int(rows[-1]) + WINDOW_MARGIN_PX, h - 1)
+    cols = np.flatnonzero(mask[rows[0]:rows[-1] + 1].any(axis=0))
+    x0, x1 = max(int(cols[0]) - WINDOW_MARGIN_PX, 0), min(int(cols[-1]) + WINDOW_MARGIN_PX, w - 1)
+
+    return mask[y0:y1 + 1, x0:x1 + 1], (x0, y0)
+
+
+def _check_window(sub, origin_xy, frame_hw) -> tuple[np.ndarray, int, int, int, int]:
+    """창 입력 경계: 2차원 bool 창이 프레임 안에 있고, 프레임 경계가 아닌 가장자리는 모두 0이어야 한다.
+
+    창 밖 프레임 화소가 모두 0이라는 전제는 호출자가 지킨다(여기서는 확인할 수 없다). 위반은 ValueError.
+    """
+    sub = _check_mask(sub)
+    x0, y0 = origin_xy
+    h, w = frame_hw
+
+    if not all(isinstance(v, (int, np.integer)) and not isinstance(v, bool) for v in (x0, y0, h, w)):
+        raise ValueError(f"window origin and frame size must be integers: {origin_xy}, {frame_hw}")
+
+    x0, y0, h, w = int(x0), int(y0), int(h), int(w)
+    sh, sw = sub.shape
+
+    if sh == 0 or sw == 0 or x0 < 0 or y0 < 0 or x0 + sw > w or y0 + sh > h:
+        raise ValueError(f"window {sw}x{sh} at {(x0, y0)} does not fit frame {w}x{h}")
+
+    # 프레임 경계가 아닌 가장자리에 전경이 있으면 창 밖에도 전경이 있을 수 있어 테두리·위상 판정이 달라진다
+    inner_edges = ((y0 > 0, sub[0, :]), (y0 + sh < h, sub[-1, :]), (x0 > 0, sub[:, 0]), (x0 + sw < w, sub[:, -1]))
+
+    if any(inner and edge.any() for inner, edge in inner_edges):
+        raise ValueError("window edge that is not a frame edge must be empty (margin missing)")
+
+    return sub, x0, y0, h, w
+
+
+def _principal_frame(mask: np.ndarray, xs: np.ndarray, ys: np.ndarray, model: AxisModel, method: str):
     """M2 공통 단계: 화소 수·테두리·주축(머리 판정 없음). (frame 사전, None) 또는 (None, 무효 결과).
 
-    M1 `_axis_frame` 앞부분과 같지만 띠 모호 관문이 없다. M1을 바꾸지 않으려고 따로 둔다.
+    M1 `_axis_frame` 앞부분과 같지만 띠 모호 관문이 없다. M1을 바꾸지 않으려고 따로 둔다. `mask`는 창이고
+    `xs`·`ys`는 그 전경의 프레임 절대 좌표(행 우선 순서)다. 테두리 검사는 창 가장자리로 한다(`_check_window`
+    때문에 프레임 경계가 아닌 가장자리는 0이라 결과가 같다).
     """
-    ys, xs = np.nonzero(mask)
     count = int(xs.size)
     diag = {"pixels": count}
 
@@ -288,11 +340,34 @@ def _principal_frame(mask: np.ndarray, model: AxisModel, method: str):
 def extract_m2(mask, model: AxisModel = MODEL_DERIVED) -> AxisEstimate:
     """M2: M1과 같은 끝점 근사에 띠 폭·화소 질량 투표 머리 판별, 먼 쪽 중심선, 기울기 자르기를 쓴다.
 
-    순서 관문·기울기 초과는 거부하지 않으므로 선 볼트를 기울기로 거부하지 못한다.
+    순서 관문·기울기 초과는 거부하지 않으므로 선 볼트를 기울기로 거부하지 못한다. 계산은 전경 범위 창
+    (`mask_window`)에서 하며, 결과는 전체 마스크로 계산한 것과 같다.
     """
     mask = _check_mask(mask)
-    h, w = mask.shape
+    sub, origin = mask_window(mask)
+
+    return _extract_m2(sub, origin[0], origin[1], mask.shape[0], mask.shape[1], model)
+
+
+def extract_m2_window(sub, origin_xy: tuple[int, int], frame_hw: tuple[int, int],
+                      model: AxisModel = MODEL_DERIVED) -> AxisEstimate:
+    """`extract_m2`를 창 입력으로: 원점 `origin_xy`(x0, y0)에 놓인 창 `sub`, 프레임 크기 `frame_hw`(h, w).
+
+    창 밖 프레임 화소는 모두 0이어야 하고, 프레임 경계가 아닌 창 가장자리는 0이어야 한다(`mask_window`가 만드는
+    창이 그렇다). 끝점·진단·사유는 같은 전체 마스크를 `extract_m2`에 넣은 것과 같다. 입력 위반은 ValueError.
+    """
+    sub, x0, y0, h, w = _check_window(sub, origin_xy, frame_hw)
+
+    return _extract_m2(sub, x0, y0, h, w, model)
+
+
+def _extract_m2(mask: np.ndarray, x0: int, y0: int, h: int, w: int, model: AxisModel) -> AxisEstimate:
+    """M2 본체. `mask`는 원점 (x0, y0)의 창이고 (h, w)는 프레임 크기다.
+
+    화소 좌표를 프레임 절대 좌표로 바꿔 쓰므로, 좌표 배열(값·순서)이 전체 마스크 계산과 같아 결과도 비트까지 같다.
+    """
     ys, xs = np.nonzero(mask)
+    xs, ys = xs + x0, ys + y0
     pre = {"pixels": int(xs.size)}
 
     # 위상(조각·구멍)은 M1과 같은 순서·같은 사유
@@ -310,7 +385,7 @@ def extract_m2(mask, model: AxisModel = MODEL_DERIVED) -> AxisEstimate:
         if holes > 0:
             return _invalid("M2", "MASK_HOLE", pre)
 
-    f, bad = _principal_frame(mask, model, "M2")
+    f, bad = _principal_frame(mask, xs, ys, model, "M2")
 
     if bad is not None:
         return AxisEstimate("M2", False, None, bad.reason, {**pre, **bad.diag})
@@ -439,4 +514,5 @@ def extract_m2(mask, model: AxisModel = MODEL_DERIVED) -> AxisEstimate:
     return AxisEstimate("M2", True, _frozen(pts), None, diag)
 
 
-__all__ = ["AxisEstimate", "AxisModel", "MODEL_DERIVED", "extract_m0", "extract_m1", "extract_m2"]
+__all__ = ["AxisEstimate", "AxisModel", "MODEL_DERIVED", "WINDOW_MARGIN_PX", "extract_m0", "extract_m1", "extract_m2",
+           "extract_m2_window", "mask_window"]

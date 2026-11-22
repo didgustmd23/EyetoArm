@@ -15,7 +15,7 @@ from eyetoarm.common.types import FramePacket, PixelBasis, PlanarObservation
 from eyetoarm.common.types import (FRAME_OBSERVATIONS_VERSION, OBSERVED_FACE_AXIS, CaptureInfo, CaptureTf,
                                    FrameObservations, ObjectObservation, owned_axis_endpoints, raw_points_in_frame)
 from eyetoarm.vision.ai_config import AiSegConfig
-from eyetoarm.vision.axis_endpoints import MODEL_DERIVED, extract_m1, extract_m2
+from eyetoarm.vision.axis_endpoints import MODEL_DERIVED, WINDOW_MARGIN_PX, extract_m1, extract_m2_window, mask_window
 from eyetoarm.vision.ai_result import (AXIS_EXTRACTION_ERROR, CONTOUR_CLIPPED, EMPTY_MASK, LOW_CONFIDENCE,
                                        MULTIPLE_CANDIDATES, NON_TARGET_CLASS, SMALL_MASK, AiInstance, AiJobConfigError,
                                        AiSegResult, RawSegOutput, axis_candidate_reason)
@@ -74,13 +74,61 @@ def rasterize_polygon(polygon_px: np.ndarray, offset: np.ndarray, crop_wh: tuple
     return canvas.astype(bool)
 
 
+@dataclasses.dataclass(frozen=True)
+class _Window:
+    """crop 좌표 (x0, y0)에 놓인 bool 창. 창 밖 crop 화소는 모두 0이다(겹침 IoU·M2 입력용)."""
+
+    mask: np.ndarray
+    x0: int
+    y0: int
+
+
+def rasterize_polygon_window(polygon_px: np.ndarray, offset: np.ndarray, crop_wh: tuple[int, int]) -> _Window:
+    """`rasterize_polygon`과 같은 래스터를 꼭짓점 범위(+`WINDOW_MARGIN_PX`, crop 안으로 자름) 창에만 그린다.
+
+    채운 다각형은 꼭짓점 범위 밖에 화소를 두지 않으므로 창 밖 crop 화소는 0이고, 정수 평행 이동이라 창 안
+    화소는 전체 래스터와 같다. 꼭짓점은 정수 화소 중심이어야 하며 아니면 ValueError.
+    """
+    local = np.asarray(polygon_px, dtype=np.float64) - np.asarray(offset, dtype=np.float64)
+    points = np.rint(local)
+
+    if not np.array_equal(points, local):
+        raise ValueError("polygon vertices must be integer pixel centers for rasterization")
+
+    w, h = crop_wh
+    ints = points.astype(np.int64).reshape(-1, 2)
+    lo, hi = ints.min(axis=0) - WINDOW_MARGIN_PX, ints.max(axis=0) + WINDOW_MARGIN_PX
+    x0, y0 = min(max(int(lo[0]), 0), w - 1), min(max(int(lo[1]), 0), h - 1)
+    x1, y1 = max(min(int(hi[0]), w - 1), x0), max(min(int(hi[1]), h - 1), y0)
+    canvas = np.zeros((y1 - y0 + 1, x1 - x0 + 1), np.uint8)
+    shifted = (ints - np.array([x0, y0])).astype(np.int32).reshape(-1, 1, 2)
+    cv2.drawContours(canvas, [shifted], -1, 1, thickness=cv2.FILLED)
+
+    return _Window(canvas.astype(bool), x0, y0)
+
+
+def _m1_on_window(win: _Window, crop_wh: tuple[int, int]):
+    """M1은 전체 crop 마스크로 계산한다(이번 창 계산 범위 밖). 창을 crop 크기로 펼쳐 넣는다."""
+    w, h = crop_wh
+    full = np.zeros((h, w), bool)
+    sh, sw = win.mask.shape
+    full[win.y0:win.y0 + sh, win.x0:win.x0 + sw] = win.mask
+
+    return extract_m1(full)
+
+
+def _m2_on_window(win: _Window, crop_wh: tuple[int, int]):
+    """M2는 창 그대로 계산한다(결과는 전체 crop 마스크와 같음)."""
+    return extract_m2_window(win.mask, (win.x0, win.y0), (crop_wh[1], crop_wh[0]))
+
+
 def _extract_axis(inst: AiInstance, offset: np.ndarray, crop_wh: tuple[int, int], extractor: str = "m1"):
-    """비거부·비잘림 볼트 하나 → (래스터 마스크, 끝점, 사유, 진단). 없는 값은 None.
+    """비거부·비잘림 볼트 하나 → (래스터 창, 끝점, 사유, 진단). 없는 값은 None.
 
     위상(조각·구멍)을 먼저 판정하고, 추출기·래스터 예외는 AXIS_EXTRACTION_ERROR로 막는다.
     """
-    # 호출 때 모듈 이름으로 찾는다(시험의 mock.patch가 닿도록)
-    extract = {"m1": extract_m1, "m2": extract_m2}[extractor]
+    # 호출 때 모듈 이름으로 찾는다(시험의 mock.patch가 닿도록: M1은 extract_m1, M2는 extract_m2_window)
+    extract = {"m1": _m1_on_window, "m2": _m2_on_window}[extractor]
     topo = {"pixels": int(inst.area_px), "components": inst.component_count, "holes": inst.hole_count}
 
     if inst.area_px >= MODEL_DERIVED.min_pixels:
@@ -91,8 +139,8 @@ def _extract_axis(inst: AiInstance, offset: np.ndarray, crop_wh: tuple[int, int]
             return None, None, "MASK_HOLE", topo
 
     try:
-        mask = rasterize_polygon(inst.polygon, offset, crop_wh)
-        est = extract(mask)
+        mask = rasterize_polygon_window(inst.polygon, offset, crop_wh)
+        est = extract(mask, crop_wh)
     except Exception as exc:  # noqa: BLE001 - 관측 예외로 새지 않게
         return None, None, AXIS_EXTRACTION_ERROR, {"error": f"{type(exc).__name__}: {exc}"[:200]}
 
@@ -128,11 +176,24 @@ def overlaps(iou: float) -> bool:
     return iou >= AXIS_OVERLAP_IOU
 
 
-def _iou(a: np.ndarray, b: np.ndarray) -> float:
-    """두 bool 마스크의 IoU."""
-    union = np.count_nonzero(a | b)
+def _iou(a: _Window, b: _Window) -> float:
+    """두 창 마스크의 IoU(같은 crop 좌표계). 창 밖은 0이라 겹치는 사각형에서만 교집합을 센다.
 
-    return 0.0 if union == 0 else float(np.count_nonzero(a & b)) / union
+    합집합 = |a| + |b| − |a∩b|라 전체 crop 마스크로 센 정수와 같고, 나눗셈도 같다.
+    """
+    ah, aw = a.mask.shape
+    bh, bw = b.mask.shape
+    x0, y0 = max(a.x0, b.x0), max(a.y0, b.y0)
+    x1, y1 = min(a.x0 + aw, b.x0 + bw), min(a.y0 + ah, b.y0 + bh)
+    inter = 0
+
+    if x0 < x1 and y0 < y1:
+        inter = int(np.count_nonzero(a.mask[y0 - a.y0:y1 - a.y0, x0 - a.x0:x1 - a.x0]
+                                     & b.mask[y0 - b.y0:y1 - b.y0, x0 - b.x0:x1 - b.x0]))
+
+    union = int(np.count_nonzero(a.mask)) + int(np.count_nonzero(b.mask)) - inter
+
+    return 0.0 if union == 0 else float(inter) / union
 
 
 def crop_frame(frame: FramePacket, config: AiSegConfig) -> tuple[np.ndarray, tuple[int, int]]:
@@ -157,8 +218,14 @@ def crop_frame(frame: FramePacket, config: AiSegConfig) -> tuple[np.ndarray, tup
 
 
 def _geometry(mask: np.ndarray):
-    """이진 마스크의 (가장 큰 바깥 윤곽 또는 None, 바깥 윤곽 수, 구멍 수). 점 3개 미만·면적 0이면 윤곽 None."""
-    contours, hierarchy = cv2.findContours(mask.astype(np.uint8), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    """이진 마스크의 (가장 큰 바깥 윤곽 또는 None, 바깥 윤곽 수, 구멍 수). 점 3개 미만·면적 0이면 윤곽 None.
+
+    윤곽은 전경 범위 창(`mask_window`, 사방 여유 1 px)에서 찾고 창 원점을 더한다. 프레임 경계가 아닌 창
+    가장자리가 0이라 윤곽 점·순서·계층이 전체 마스크와 같다.
+    """
+    sub, (x0, y0) = mask_window(mask)
+    contours, hierarchy = cv2.findContours(sub.astype(np.uint8), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE,
+                                           offset=(x0, y0))
 
     if not contours:
         return None, 0, 0
@@ -200,7 +267,7 @@ def convert(raw: RawSegOutput, frame: FramePacket, config: AiSegConfig, *,
     targets = set(config.target_classes)
     offset = np.array([ox, oy], np.float32)
     instances = []
-    rasters: dict[int, np.ndarray] = {}   # 겹침 IoU용, 결과에 남기지 않음
+    rasters: dict[int, _Window] = {}   # 겹침 IoU용, 결과에 남기지 않음
 
     for i in range(raw.count):
         cls = int(raw.class_index[i])
@@ -253,7 +320,7 @@ def convert(raw: RawSegOutput, frame: FramePacket, config: AiSegConfig, *,
         bolts = [k for k, inst in enumerate(instances) if inst.axis_evaluated]
         best = {k: 0.0 for k in bolts}
         partners: dict[int, list[int]] = {k: [] for k in bolts}
-        shapes = {k: rasters[k] if k in rasters else rasterize_polygon(instances[k].polygon, offset, crop_wh)
+        shapes = {k: rasters[k] if k in rasters else rasterize_polygon_window(instances[k].polygon, offset, crop_wh)
                   for k in bolts}
 
         for a_pos, a in enumerate(bolts):
