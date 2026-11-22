@@ -1,4 +1,7 @@
-"""종류별 투영 높이·시야 보정(#270): 설정 형식, B 규격 종류 고르기, 시작 대조, 종류별 보정, W 추적 일관성."""
+"""종류별 투영 높이·시야 보정(#270·#285): 설정 형식, B 규격 종류 고르기, 시작 대조, 종류별 보정, W 추적 일관성.
+
+B 규격은 시험용 사본(`part_spec_copies`: B-12 전·후)을 주입한다. 저장소 B 파일은 「불러지고 검사를 통과」만 본다.
+"""
 from __future__ import annotations
 
 import copy
@@ -17,6 +20,7 @@ from eyetoarm.vision.bolt_spec import BoltSpec, bolt_specs_from, choose_spec, le
 from eyetoarm.vision.view_bias import (FIT_PLANE_TOL_M, ViewBiasPlan, apply_view_bias, build_view_bias_plan, check_runtime,
                                        correct_bolt, correct_endpoints)
 from eyetoarm.vision.world_tracking import BoltPlanes, WorldTrackerConfigError, world_inputs
+from part_spec_copies import post_b12, pre_b12
 from test_ai_config import AI_FIELDS
 from test_ai_result import instance, seg_result
 
@@ -29,15 +33,12 @@ DIST0 = np.zeros(5)
 T_OBLIQUE = look_at((0.0, 0.0, 0.5), (0.5, 0.0, 0.105))
 
 K_A, K_B = 0.62, 1.39        # 시험용 k(mm). 값 자체는 보정 계산 검증에만 쓴다
-Z_A, Z_B = 0.102, 0.105      # B-12 예상 BOLT_A(M3×20)·지금 BOLT_B(M6×40) 기준 높이
+Z_A, Z_B = 0.102, 0.105      # B-12 BOLT_A(M3×20)·BOLT_B(M6×40) 기준 높이
 
 
 def b12_specs() -> dict:
-    """저장소 B 규격 사본 + B-12 예상 BOLT_A(M3x20, 0.102 m, 23 ± 6 mm). B 파일은 바꾸지 않는다."""
-    d = copy.deepcopy(load_specs(SPECS_PATH))
-    d["specs"]["BOLT_A"].update(label="M3x20", plane_z=Z_A, total_length=0.023, length_tolerance=0.006)
-
-    return d
+    """B-12 뒤 규격 사본(BOLT_A M3x20 0.102 m, 길이 범위 17~27·39~52 mm). 저장소 B 파일에 기대지 않는다."""
+    return post_b12()
 
 
 def spec_cfg(**over) -> ViewBiasConfig:
@@ -120,11 +121,56 @@ class SpecSelectTest(unittest.TestCase):
     """B 규격 종류 고르기: B `_classify`와 같은 비교, 길이는 종류별 높이로."""
 
     def test_bolt_specs_from_repo_specs(self):
-        """저장소 B 규격에서 볼트 종류만 파일 순서로(너트 제외), 값은 B 파일 그대로."""
+        """저장소 B 규격(B가 바꿀 수 있는 파일)은 불러지고 검사를 통과하며 볼트 종류가 하나 이상이다."""
         specs = bolt_specs_from(load_specs(SPECS_PATH))
-        self.assertEqual([s.name for s in specs], ["BOLT_A", "BOLT_B"])
-        self.assertEqual((specs[1].label, specs[1].plane_z_m, specs[1].total_length_m, specs[1].length_tolerance_m),
-                         ("M6x40", 0.105, 0.046, 0.006))
+        self.assertTrue(specs)
+        self.assertTrue(all(s.accept_range_m()[0] <= s.total_length_m <= s.accept_range_m()[1] for s in specs))
+
+    def test_bolt_specs_from_copies(self):
+        """볼트 종류만 파일 순서로(너트 제외), 값은 규격 그대로: B-12 뒤는 범위, B-12 전은 허용만."""
+        post, pre = bolt_specs_from(b12_specs()), bolt_specs_from(pre_b12())
+        self.assertEqual([s.name for s in post], ["BOLT_A", "BOLT_B"])
+        self.assertEqual((post[0].label, post[0].plane_z_m, post[0].total_length_m, post[0].length_min_m, post[0].length_max_m),
+                         ("M3x20", 0.102, 0.023, 0.017, 0.027))
+        self.assertEqual(post[1].accept_range_m(), (0.039, 0.052))
+        self.assertTrue(post[0].ranged)
+        self.assertEqual((pre[0].label, pre[0].ranged, pre[0].length_tolerance_m), ("M6x12", False, 0.004))
+        self.assertEqual(pre[0].accept_range_m(), (0.018 - 0.004, 0.018 + 0.004))
+
+    def test_bolt_spec_range_checks(self):
+        """범위 검사: 한쪽만·음수·bool·비유한·min > 총길이·총길이 > max는 ValueError, 범위가 있으면 허용 없이도 된다."""
+        ok = BoltSpec("A", "a", 0.1, 0.023, None, 0.017, 0.027)
+        self.assertEqual((ok.length_tolerance_m, ok.accept_range_m()), (None, (0.017, 0.027)))
+
+        for args, msg in (((0.006, 0.017, None), "together"), ((0.006, None, 0.027), "together"),
+                          ((None, None, None), "needs length_tolerance"), ((0.006, -0.017, 0.027), "length_min_m"),
+                          ((0.006, True, 0.027), "length_min_m"), ((0.006, 0.017, float("inf")), "length_max_m"),
+                          ((0.006, 0.024, 0.027), "length_min <= total_length"), ((0.006, 0.017, 0.022), "length_min <= total_length")):
+            with self.subTest(args=args), self.assertRaisesRegex(ValueError, msg):
+                BoltSpec("A", "a", 0.1, 0.023, *args)
+
+        # 경계: min = 총길이 = max는 통과
+        BoltSpec("A", "a", 0.1, 0.023, None, 0.023, 0.023)
+
+    def test_bolt_specs_from_refuses_bad_range(self):
+        """규격 파일의 범위가 맞지 않으면 그 종류 이름과 함께 ValueError(시작 거부용)."""
+        d = b12_specs()
+        d["specs"]["BOLT_B"]["length_min"] = 0.050
+        with self.assertRaisesRegex(ValueError, "BOLT_B.*length_min <= total_length"):
+            bolt_specs_from(d)
+
+        d = b12_specs()
+        d["specs"]["BOLT_A"].pop("length_max")
+        with self.assertRaisesRegex(ValueError, "BOLT_A.*together"):
+            bolt_specs_from(d)
+
+        d = b12_specs()
+        d["specs"]["BOLT_A"]["length_min"] = "17mm"
+        with self.assertRaisesRegex(ValueError, "BOLT_A"):
+            bolt_specs_from(d)
+
+        with self.assertRaisesRegex(ValueError, "not an object"):
+            bolt_specs_from({**b12_specs(), "specs": {"BOLT_A": 0.023}})
 
     def test_bolt_specs_from_refuses_incomplete(self):
         """볼트 종류가 없거나 총길이가 빠지면 ValueError."""
@@ -148,16 +194,26 @@ class SpecSelectTest(unittest.TestCase):
         self.assertEqual(choose_spec([None, None], specs), type(out)(None, None, (("A", None), ("B", None))))
 
     def test_matches_b_classify_on_random_lengths(self):
-        """같은 길이를 주면 B `_classify`와 고른 종류가 같다(B-12 예상·지금 규격, 1만 개)."""
+        """같은 길이를 주면 B `_classify`와 고른 종류가 같다(B-12 뒤 범위·B-12 전 허용 규격, 각 1만 개 + 경계값)."""
         rng = random.Random(270)
 
-        for d in (b12_specs(), load_specs(SPECS_PATH)):
+        for name, d in (("post_b12", b12_specs()), ("pre_b12", pre_b12())):
             specs = bolt_specs_from(d)
+            edges = [v for s in specs for v in (*s.accept_range_m(), s.total_length_m)]
+            # 판정이 갈렸던 구간(#278: 27~29·39~40 mm)과 경계값을 함께 넣는다
+            lengths = [rng.uniform(0.005, 0.065) for _ in range(10000)] + edges + [0.028, 0.0397, 0.0399, 0.0401]
 
-            for _ in range(10000):
-                L = rng.uniform(0.005, 0.065)
+            for L in lengths:
                 b_spec, b_reason = _classify("bolt", L, 0.0, float("inf"), d)
-                self.assertEqual(choose_spec([L] * len(specs), specs).name, None if b_reason else b_spec, L)
+                self.assertEqual(choose_spec([L] * len(specs), specs).name, None if b_reason else b_spec, (name, L))
+
+    def test_range_rule_where_tolerance_rule_differed(self):
+        """B-12 뒤 규격: 28 mm는 BOLT_A 아님(허용이면 23±6 안), 39.7 mm는 BOLT_B(허용이면 46±6 밖)."""
+        specs = bolt_specs_from(b12_specs())
+        self.assertEqual(choose_spec([0.028, 0.028], specs).name, None)
+        self.assertEqual(choose_spec([0.0397, 0.0397], specs).name, "BOLT_B")
+        self.assertEqual(choose_spec([0.027, 0.027], specs).name, "BOLT_A")   # 경계 포함
+        self.assertEqual(choose_spec([0.039, 0.039], specs).name, "BOLT_B")
 
     def test_select_uses_each_spec_plane(self):
         """M3×20(23 mm, 0.102 m)·M6×40(46 mm, 0.105 m)는 자기 종류를 고르고, 길이는 그 종류 높이로 잰 값이다."""
@@ -186,12 +242,13 @@ class PlanBuildTest(unittest.TestCase):
         rec = plan.to_json()
         self.assertEqual(rec["part_specs_sha256"], "f" * 64)
         self.assertEqual(rec["specs"][0], {"name": "BOLT_A", "label": "M3x20", "plane_z_m": Z_A, "total_length_m": 0.023,
-                                           "length_tolerance_m": 0.006, "k_mm": K_A, "fit_plane_z_m": Z_A})
+                                           "length_tolerance_m": 0.006, "length_min_m": 0.017, "length_max_m": 0.027,
+                                           "k_mm": K_A, "fit_plane_z_m": Z_A})
 
-    def test_refuses_current_repo_specs(self):
-        """지금 저장소 규격(BOLT_A M6x12·0.105)에는 M3x20 설정이 붙지 않는다(라벨·평면 둘 다 사유)."""
+    def test_refuses_pre_b12_specs(self):
+        """B-12 전 규격(BOLT_A M6x12·0.105)에는 M3x20 설정이 붙지 않는다(라벨·평면 둘 다 사유)."""
         with self.assertRaisesRegex(ValueError, r"BOLT_A label 'M3x20' != B 'M6x12'.*fit_plane_z_m 102.0mm != B plane_z 105.0mm"):
-            build_view_bias_plan(spec_cfg(), load_specs(SPECS_PATH))
+            build_view_bias_plan(spec_cfg(), pre_b12())
 
     def test_fit_plane_tolerance_boundary(self):
         """k를 잰 평면 차 0.5 mm는 통과, 0.6 mm는 거부."""
@@ -301,15 +358,15 @@ class ApplyPlanTest(unittest.TestCase):
         L = length_at(ep, self.oe.CAM.K, self.oe.CAM.dist, env.tf.T_W_C, Z_B)
         d = b12_specs()
         # 이 봉투 볼트 길이를 BOLT_B 범위 한가운데로 두는 시험 규격(높이는 그대로)
-        d["specs"]["BOLT_B"].update(total_length=L, length_tolerance=0.001)
-        d["specs"]["BOLT_A"].update(total_length=L / 3, length_tolerance=0.001)
+        d["specs"]["BOLT_B"].update(total_length=L, length_min=L - 0.001, length_max=L + 0.001)
+        d["specs"]["BOLT_A"].update(total_length=L / 3, length_min=L / 3 - 0.001, length_max=L / 3 + 0.001)
         plan = build_view_bias_plan(spec_cfg(), d)
         new, recs = apply_view_bias(env, self.oe.CAM, plan)
 
         self.assertEqual((recs[0]["spec"], recs[0]["plane_z_m"]), ("BOLT_B", Z_B))
         self.assertEqual(recs[0]["applied"], not np.array_equal(new.observation.axis_endpoints_px, ep))
 
-        d["specs"]["BOLT_B"]["total_length"] = L * 2
+        d["specs"]["BOLT_B"].update(total_length=L * 2, length_min=L * 2 - 0.001, length_max=L * 2 + 0.001)
         same, recs = apply_view_bias(env, self.oe.CAM, build_view_bias_plan(spec_cfg(), d))
         self.assertIs(same, env)
         self.assertEqual((recs[0]["applied"], recs[0]["reason"], recs[0]["spec"]), (False, "no_spec", None))
@@ -326,12 +383,13 @@ class WorldConsistencyTest(unittest.TestCase):
     """W 추적이 시야 보정·B 입력과 같은 종류·높이를 쓴다."""
 
     def setUp(self):
-        """B-12 예상 규격의 계획과 허용 포함 `BoltPlanes`."""
+        """B-12 뒤 규격의 계획과 허용·범위 포함 `BoltPlanes`."""
         d = b12_specs()
         self.plan = build_view_bias_plan(spec_cfg(), d)
         specs = bolt_specs_from(d)
         self.planes = BoltPlanes(default_z_m=Z_A, specs=tuple((s.name, s.plane_z_m, s.total_length_m) for s in specs),
-                                 tolerances_m=tuple(s.length_tolerance_m for s in specs))
+                                 tolerances_m=tuple(s.length_tolerance_m for s in specs),
+                                 ranges_m=tuple((s.length_min_m, s.length_max_m) for s in specs))
 
     def inputs(self, px, view_bias):
         """끝점 볼트 하나 → W 입력."""
@@ -369,6 +427,19 @@ class WorldConsistencyTest(unittest.TestCase):
         for tol in ((0.006,), (0.006, -0.001), (0.006, True)):
             with self.subTest(tol=tol), self.assertRaises(WorldTrackerConfigError):
                 BoltPlanes(default_z_m=Z_A, specs=rows, tolerances_m=tol)
+
+    def test_ranges_must_match_specs(self):
+        """범위 수가 다르거나, 범위가 총길이를 안 품거나, 범위도 허용도 없으면 설정 오류. 맞으면 범위로 고른다."""
+        rows = (("BOLT_A", Z_A, 0.023), ("BOLT_B", Z_B, 0.046))
+
+        for kw in ({"ranges_m": ((0.017, 0.027),)}, {"ranges_m": ((0.017, 0.027), (0.047, 0.052))},
+                   {"ranges_m": ((0.017, 0.027), None)}, {"ranges_m": ((0.017,), (0.039, 0.052))}, {"ranges_m": 5}):
+            with self.subTest(kw=kw), self.assertRaises(WorldTrackerConfigError):
+                BoltPlanes(default_z_m=Z_A, specs=rows, **kw)
+
+        planes = BoltPlanes(default_z_m=Z_A, specs=rows, ranges_m=((0.017, 0.027), None), tolerances_m=(None, 0.006))
+        self.assertEqual([s.accept_range_m() for s in planes.bolt_specs()], [(0.017, 0.027), (0.040, 0.052)])
+        self.assertTrue(planes.uses_spec_rule)
 
 
 if __name__ == "__main__":

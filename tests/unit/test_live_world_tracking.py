@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 
 from eyetoarm.vision.live_observation_link import LiveObservationLink
+from part_spec_copies import post_b12, pre_b12, write_specs
 from test_live_sort_part import FakeRuntime
 from test_live_tracking_link import PIXEL, ReleasingRuntime, TrackCli, sort_config
 from test_run_pipeline_capture_observation import model_with
@@ -61,8 +62,10 @@ class WorldCliTest(WorldCli):
     """W 번호의 B 전달·정답 격리·TF 조회 스레드."""
 
     def test_world_planes_from_b_specs_per_spec(self):
-        """W 투영 높이를 B 규격에서 읽는다. 모두 105 mm면 「uniform」·기록 높이 0.105·종류 없음,
-        BOLT_A 102 mm 사본이면 시작 줄에 종류별 높이가 찍히고 기록 높이는 그 두 값 중 하나다."""
+        """W 투영 높이를 B 규격에서 읽는다(B-12 전·후 규격 사본 주입). B-12 전(모두 105 mm)이면 「uniform」·기록 높이
+        0.105·종류 없음, B-12 뒤(BOLT_A 102 mm)면 시작 줄에 종류별 높이가 찍히고 기록 높이는 그 두 값 중 하나다.
+        마스크 기본 높이는 B `class_plane_z(specs, "bolt")` = 최상위 plane_z(105 mm)."""
+        self.mod.PART_SPECS_PATH = write_specs(pre_b12(), Path(self.tmp.name) / "specs_pre_b12.json")
         code, err, out, _ = self.run_world(Scenario(6))
         self.assertEqual(code, 0, err)
         self.assertIn("bolt planes BOLT_A=105.0mm BOLT_B=105.0mm, mask 105.0mm (uniform)", err)
@@ -70,14 +73,10 @@ class WorldCliTest(WorldCli):
         self.assertTrue(tracks)
         self.assertEqual({(t["plane_z_m"], t["plane_spec"]) for t in tracks if t["input"] != "none"}, {(0.105, None)})
 
-        specs = json.loads((ROOT / "config/calibration/part_specs.json").read_text(encoding="utf-8"))
-        specs["specs"]["BOLT_A"]["plane_z"] = 0.102
-        p = Path(self.tmp.name) / "specs_split.json"
-        p.write_text(json.dumps(specs), encoding="utf-8")
-        self.mod.PART_SPECS_PATH = p
+        self.mod.PART_SPECS_PATH = write_specs(post_b12(), Path(self.tmp.name) / "specs_post_b12.json")
         code, err, out, _ = self.run_world(Scenario(6), out=self.out("split"))
         self.assertEqual(code, 0, err)
-        self.assertIn("bolt planes BOLT_A=102.0mm BOLT_B=105.0mm, mask 102.0mm (per spec by W length)", err)
+        self.assertIn("bolt planes BOLT_A=102.0mm BOLT_B=105.0mm, mask 105.0mm (per spec by W length)", err)
         planes = {t["plane_z_m"] for r in self.world_records(out) if r.get("kind") == "frame"
                   for t in r.get("tracks", []) if t["input"] == "endpoint"}
         self.assertTrue(planes and planes <= {0.102, 0.105}, planes)

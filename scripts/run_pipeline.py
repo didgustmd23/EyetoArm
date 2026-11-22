@@ -30,6 +30,7 @@ from eyetoarm.vision.tracking import PartTracker, PartTrackIdIssuer, TrackMode
 
 
 ARM_REGION_DEFAULT_REL = "config/vision/arm_region_filter.json"   # 팔 영역 제외 기본 설정(실시간 기록 연결 기본 켬)
+BELT_REGION_DEFAULT_REL = "config/vision/belt_region_filter.json"   # 벨트 밖 제외 기본 설정(실시간 기록 연결 기본 켬)
 
 
 def _positive_int(text: str) -> int:
@@ -140,6 +141,11 @@ def build_parser() -> argparse.ArgumentParser:
                              f"기본 파일 {ARM_REGION_DEFAULT_REL})")
     parser.add_argument("--no-arm-region-filter", dest="no_arm_region_filter", action="store_true",
                         help="--live-observation-out 전용: 팔·그리퍼 투영 영역 검출 제외를 끈다")
+    parser.add_argument("--belt-region-filter", dest="belt_region_filter", metavar="JSON", default=None,
+                        help="--live-observation-out 전용: 벨트 윗면 밖(바닥·상자) 검출 제외 설정(기본 켬, "
+                             f"기본 파일 {BELT_REGION_DEFAULT_REL}, 벨트 사각형은 config/robot/frames.yaml)")
+    parser.add_argument("--no-belt-region-filter", dest="no_belt_region_filter", action="store_true",
+                        help="--live-observation-out 전용: 벨트 밖 검출 제외를 끈다")
     parser.add_argument("--live-sort-part", dest="live_sort_part", action="store_true",
                         help="--live-observation-out 전용(#214 D13 해제): 수락된 B 결과의 C 목표를 /sort_part로 송신. 단계 T, 또는 "
                              "단계 L(#233, B가 고른 1개만). 설정 sort_part 필수. robot_ws의 eyetoarm_interfaces 빌드·source 필요")
@@ -301,6 +307,14 @@ def _check_source_args(args, ros_available) -> None:
         build_parser().error("--arm-region-filter/--no-arm-region-filter require --live-observation-out "
                              "(needs capture-time TF and camera)")
 
+    # 벨트 밖 제외도 같은 규칙(촬영 시각 TF·카메라가 있는 실시간 기록 연결에서만, 기본 켬)
+    if args.belt_region_filter is not None and args.no_belt_region_filter:
+        build_parser().error("--belt-region-filter and --no-belt-region-filter are mutually exclusive")
+
+    if (args.belt_region_filter is not None or args.no_belt_region_filter) and args.live_observation_out is None:
+        build_parser().error("--belt-region-filter/--no-belt-region-filter require --live-observation-out "
+                             "(needs capture-time TF and camera)")
+
     # C 목표 송신: 기록 전용 연결의 수락 결과만(단계 L은 B가 고른 1개)
     if args.live_sort_part:
         if args.live_observation_out is None:
@@ -394,6 +408,7 @@ class _StopSignals:
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ARM_REGION_DEFAULT = REPO_ROOT / ARM_REGION_DEFAULT_REL
+BELT_REGION_DEFAULT = REPO_ROOT / BELT_REGION_DEFAULT_REL
 PART_SPECS_PATH = REPO_ROOT / "config/calibration/part_specs.json"   # B 파일(읽기만)
 FRAMES_PATH = REPO_ROOT / "config/robot/frames.yaml"   # 좌표 기준(읽기만): 그리퍼 카메라 대조·벨트 사각형
 # 시야 보정 평면과 B 볼트 기준 높이의 허용 차(m). 평면 차가 보정량에 주는 영향은 작지만(5 mm면 약 1 %)
@@ -416,16 +431,21 @@ def _bolt_spec_heights(specs) -> dict[str, float]:
 
 
 def _bolt_planes(specs):
-    """W 추적 투영 높이: B 규격의 볼트 종류별 (기준 높이, 총길이), 마스크 입력용 기본은 「bolt」 높이."""
+    """W 추적 투영 높이: B 규격의 볼트 종류별 (기준 높이, 총길이, 판정 허용·범위), 마스크 입력용 기본은 「bolt」 높이.
+
+    종류 값은 `bolt_spec.bolt_specs_from`(시야 보정과 같은 해석·검사)으로 읽는다. 맞지 않으면 ValueError(시작 거부 2).
+    """
+    from eyetoarm.vision.bolt_spec import bolt_specs_from
     from eyetoarm.vision.world_tracking import BoltPlanes
 
     heights = _bolt_spec_heights(specs)
-    names = [name for name in heights if name != "bolt"]
-    rows = tuple((name, heights[name], float(specs["specs"][name]["total_length"])) for name in names)
-    # 길이 허용을 함께 넘겨 시야 보정과 같은 고르기(허용 안 먼저)를 쓴다(#270)
-    tols = tuple(float(specs["specs"][name]["length_tolerance"]) for name in names)
+    bolts = bolt_specs_from(specs)
+    rows = tuple((s.name, heights[s.name], s.total_length_m) for s in bolts)
+    # 길이 허용·범위를 함께 넘겨 시야 보정·B `_classify`와 같은 고르기(판정 안 먼저)를 쓴다(#270·#285)
+    tols = tuple(s.length_tolerance_m for s in bolts)
+    ranges = tuple((s.length_min_m, s.length_max_m) if s.ranged else None for s in bolts)
 
-    return BoltPlanes(default_z_m=heights["bolt"], specs=rows, tolerances_m=tols)
+    return BoltPlanes(default_z_m=heights["bolt"], specs=rows, tolerances_m=tols, ranges_m=ranges)
 
 
 def _check_view_bias_plane(bias, specs_path: Path | None = None) -> dict[str, float]:
@@ -639,8 +659,8 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
             else:
                 plan = _view_bias_runtime(config.axis_view_bias)
                 rows = " ".join(f"{s.name}({s.label})=plane {s.plane_z_m * 1000:.1f}mm k {plan.k_of(s.name):.3f}mm "
-                                f"len {(s.total_length_m - s.length_tolerance_m) * 1000:.1f}~"
-                                f"{(s.total_length_m + s.length_tolerance_m) * 1000:.1f}mm" for s in plan.specs)
+                                f"len {s.accept_range_m()[0] * 1000:.1f}~{s.accept_range_m()[1] * 1000:.1f}mm"
+                                f"{'(range)' if s.ranged else '(tol)'}" for s in plan.specs)
                 err.write(f"run_pipeline: axis_view_bias by spec: {rows} (spec by endpoint length at each spec plane)\n")
 
             if capture is None and args.live_observation_out is None:
@@ -1077,8 +1097,32 @@ def _load_arm_region(args, world_frame: str, injected_tf: bool):
                     "sha256": sha}
 
 
+def _load_belt_region(args, world_frame: str, injected_tf: bool):
+    """벨트 밖 제외 설정. (설정 | None, 표시 사전 | None). 켬 규칙은 `_load_arm_region`과 같다.
+
+    벨트 사각형·top_z는 frames.yaml(읽기만)에서 온다. 읽기·검사 오류는 ValueError·OSError.
+    """
+    if args.no_belt_region_filter:
+        return None, {"enabled": False, "source": "argument"}
+
+    if args.belt_region_filter is None and injected_tf:
+        return None, None
+
+    from eyetoarm.vision.belt_region import load_belt_region_config
+
+    path = args.belt_region_filter or str(BELT_REGION_DEFAULT)
+    config, sha, frames_sha = load_belt_region_config(path, str(FRAMES_PATH))
+
+    if config.world_frame != world_frame:
+        raise ValueError(f"belt region world_frame {config.world_frame!r} != live observation world_frame "
+                         f"{world_frame!r}")
+
+    return config, {"enabled": True, "source": "argument" if args.belt_region_filter else "default", "path": path,
+                    "sha256": sha, "frames_path": str(FRAMES_PATH), "frames_sha256": frames_sha}
+
+
 class _ArmRegionRecords:
-    """팔 영역 판정 기록(`arm_region.jsonl`, 제외·TF 실패·오류가 있는 프레임만). worker 스레드가 쓴다."""
+    """영역 판정 기록(팔 `arm_region.jsonl`·벨트 `belt_region.jsonl`, 제외·TF 실패·오류가 있는 프레임만). worker 스레드가 쓴다."""
 
     def __init__(self, path) -> None:
         """새 파일을 연다(있으면 FileExistsError)."""
@@ -1139,6 +1183,12 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         arm_config, arm_mark = _load_arm_region(args, link_config.world_frame, live_tf_factory is not None)
     except (OSError, ValueError) as exc:
         err.write(f"run_pipeline: arm region filter config error: {exc}\n")
+        return 2
+
+    try:
+        belt_config, belt_mark = _load_belt_region(args, link_config.world_frame, live_tf_factory is not None)
+    except (OSError, ValueError) as exc:
+        err.write(f"run_pipeline: belt region filter config error: {exc}\n")
         return 2
 
     sort_on = bool(getattr(args, "live_sort_part", False))
@@ -1325,6 +1375,7 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
               f"status=test_only{stage_l}; outputs={','.join(run_outputs)}; no D/robot output from A, no auto restart\n")
 
     arm_filter = arm_records = None   # 팔 영역 제외 감싸개·판정 기록(실행 try 안에서 만든다)
+    belt_filter = belt_records = None   # 벨트 밖 제외 감싸개·판정 기록(같음)
 
     if center_on:
         overlay = getattr(center_pub, "overlay_topic", None)
@@ -1350,9 +1401,10 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         retry_text = ("off" if retry is None else f"max_failures_per_track={retry.max_failures_per_track} "
                       f"point_block={retry.failed_point_block_mm}mm/{retry.failed_point_block_s}s"
                       + (" (stage L: point block only, no track ids)" if listed and not args.tracking else ""))
-        # 단계 L + 추적이면 송신 번호는 B가 후보 번호를 읽기 전까지 고른 후보의 A 번호
+        # 단계 L + 추적: B가 고른 후보의 A 번호를 목표에 싣는다(B-11, f0e604a). 목표 번호가 없을 때만 A 번호로 송신
         track_text = ((('world' if world_on else 'M2(heuristic)') if args.tracking else 'off')
-                      + (" (stage L: A candidate ids until B reads them)" if listed and args.tracking else ""))
+                      + (" (stage L: B goal carries the chosen A candidate id (B-11); A id only if the goal has none)"
+                         if listed and args.tracking else ""))
         err.write(f"run_pipeline: LIVE A->B->C SORT_PART ON action=/sort_part server_seen={str(seen).lower()} "
                   f"retry={retry_text} tracking={track_text} "
                   f"require_track_id={({True: 'true', False: 'false'}).get(link_config.sort_part.require_track_id, 'unset')} "
@@ -1427,6 +1479,29 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         elif arm_mark is not None:
             err.write("run_pipeline: arm region filter off (--no-arm-region-filter)\n")
 
+        # 벨트 밖 제외: 팔 필터 바깥(팔로 이미 제외된 인스턴스는 판정하지 않음). 같은 촬영 stamp TF·카메라
+        if belt_config is not None:
+            from eyetoarm.vision.ai_convert import observation_from_ai
+            from eyetoarm.vision.belt_region import BeltRegionFilter
+            from eyetoarm.vision.live_observation_envelope import LiveCaptureTfLookup
+
+            belt_records = _ArmRegionRecords(Path(args.live_observation_out) / "belt_region.jsonl")
+            belt_filter = BeltRegionFilter(
+                detector_kw["detector"],
+                tf_lookup=LiveCaptureTfLookup(link.tf.lookup, world_frame=link_config.world_frame,
+                                              wait_limit_s=link_config.tf_wait_limit_s),
+                camera_for=lambda frame: link._track_camera, config=belt_config, select=observation_from_ai,
+                on_decision=belt_records.write)
+            detector_kw = {**detector_kw, "detector": belt_filter}
+            x0, x1, y0, y1 = belt_config.rect_xy_m
+            err.write(f"run_pipeline: BELT REGION FILTER ON source={belt_mark['source']} config={belt_mark['path']} "
+                      f"sha256={belt_mark['sha256'][:12]} top_z={belt_config.top_z_m:.3f} "
+                      f"rect=x[{x0:.3f},{x1:.3f}] y[{y0:.3f},{y1:.3f}] margin={belt_config.margin_mm:g}mm "
+                      f"min_inside={belt_config.min_inside_fraction:g} (capture-stamp TF; TF failure keeps the detection; "
+                      "lifted parts above the belt pass, arm filter covers them)\n")
+        elif belt_mark is not None:
+            err.write("run_pipeline: belt region filter off (--no-belt-region-filter)\n")
+
         make = live_source_factory or _live_factory
         source_factory = make(args.source_id, args.ros_reliability, boundary_hook=link.boundary_hook)
 
@@ -1453,6 +1528,7 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
             log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
                               log_geometry=args.log_instance_geometry, infer_process=infer_proxy is not None,
                               infer_process_source=args.infer_process_source, arm_region_filter=arm_mark,
+                              belt_region_filter=belt_mark,
                               **log_kw)
             run_kw = {"live_observation_b_input": "list"} if listed else {}
             result = run(source_factory, settings, log, run_id=run_id, config=runner_config, stderr=err,
@@ -1510,6 +1586,15 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
             if arm_records.error is not None:
                 problems.append(f"arm region record error: {arm_records.error}")
+
+        belt_summary = belt_mark if belt_filter is None else {**belt_mark, **belt_filter.summary(),
+                                                              "records_written": belt_records.written}
+
+        if belt_records is not None:
+            belt_records.close()
+
+            if belt_records.error is not None:
+                problems.append(f"belt region record error: {belt_records.error}")
 
         if not link.cleanup_confirmed:
             problems.append(f"cleanup not confirmed: {list(record.close_errors)}")
@@ -1590,6 +1675,9 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
             if arm_summary is not None:
                 tracking_extra["arm_region_filter"] = arm_summary
+
+            if belt_summary is not None:
+                tracking_extra["belt_region_filter"] = belt_summary
             link.write_summary({"exit_code": exit_code, "reset_detected": reset, "problems": problems, **tracking_extra,
                                 "runner": None if result is None else {
                                     "exit_code": result.exit_code, "stop_reason": result.stop_reason,

@@ -18,6 +18,7 @@ from eyetoarm.transforms.planar_transform import look_at, pixels_to_w, w_to_imag
 from eyetoarm.transforms.work_result import compute_bolt_from_endpoints, load_specs
 from eyetoarm.vision.ai_config import AiSegConfig, ViewBiasConfig, load_ai_config, parse_view_bias
 from eyetoarm.vision.view_bias import apply_view_bias, correct_endpoints, summarize
+from part_spec_copies import post_b12, pre_b12, write_specs
 from test_ai_config import AI_FIELDS
 from test_live_stage_l import ListBase, three_bolts
 from test_run_pipeline_capture_observation import Base as CaptureBase
@@ -393,14 +394,29 @@ class StoredStageTTest(CaptureBase):
         self.assertIn("by more than 5 mm", err)
         self.assertEqual(self.b_obs, [])
 
-    def test_plane_z_within_5mm_runs_and_prints_heights(self):
-        """켬 + 보정 높이가 B 볼트 높이와 5 mm 안이면 시작하고, 시작 줄에 종류별 높이·차를 찍는다."""
+    def plane_start_line(self, specs: dict) -> str:
+        """보정 높이 105.7 mm 설정 + 주입한 B 규격 사본으로 한 번 실행한 stderr(시작해야 함)."""
+        from unittest import mock
+
         c = self.case()
         ai = write_bias_config(c.ai, Path(self.tmp.name) / "ai_vb.json", plane_z_m=PLANE_Z + 0.0007)
-        code, err = self.cli(c, c.write_meta(c.meta()), ai=ai)
+
+        with mock.patch.object(self.mod, "PART_SPECS_PATH", write_specs(specs, Path(self.tmp.name) / "specs.json")):
+            code, err = self.cli(c, c.write_meta(c.meta()), ai=ai)
+
         self.assertIn(code, (0, 1), err)
+
+        return err
+
+    def test_plane_z_within_5mm_runs_and_prints_heights(self):
+        """켬 + 보정 높이가 B 볼트 높이와 5 mm 안이면 시작하고, 시작 줄에 종류별 높이·차를 찍는다(B-12 전 규격 사본)."""
         self.assertIn("run_pipeline: axis_view_bias plane_z=105.7mm; B bolt heights bolt=105.0mm(-0.7) "
-                      "BOLT_A=105.0mm(-0.7) BOLT_B=105.0mm(-0.7) within ±5 mm", err)
+                      "BOLT_A=105.0mm(-0.7) BOLT_B=105.0mm(-0.7) within ±5 mm", self.plane_start_line(pre_b12()))
+
+    def test_plane_z_start_line_with_b12_heights(self):
+        """B-12 뒤 규격 사본: BOLT_A 102 mm(차 −3.7)도 5 mm 안이라 시작하고 종류별 높이가 찍힌다."""
+        self.assertIn("run_pipeline: axis_view_bias plane_z=105.7mm; B bolt heights bolt=105.0mm(-0.7) "
+                      "BOLT_A=102.0mm(-3.7) BOLT_B=105.0mm(-0.7) within ±5 mm", self.plane_start_line(post_b12()))
 
     def test_model_id_mismatch_refused_at_start(self):
         """켬 + model_id 불일치는 설정 오류 종료 2."""
@@ -413,15 +429,18 @@ class StoredStageTTest(CaptureBase):
     def test_plane_check_reads_given_specs(self):
         """시작 대조: B 볼트 높이가 보정 높이와 5 mm 안이면 높이를 돌려주고, 넘으면 ValueError."""
         good = ViewBiasConfig("C1", K_MM, PLANE_Z, "m@x")
-        self.assertEqual(self.mod._check_view_bias_plane(good), {"bolt": PLANE_Z, "BOLT_A": PLANE_Z, "BOLT_B": PLANE_Z})
-        specs = json.loads(SPECS.read_text(encoding="utf-8"))
-        p = Path(self.tmp.name) / "specs.json"
+        specs = pre_b12()   # B-12 전 규격 사본(높이 모두 105 mm)
+        p = write_specs(specs, Path(self.tmp.name) / "specs.json")
+        self.assertEqual(self.mod._check_view_bias_plane(good, p), {"bolt": PLANE_Z, "BOLT_A": PLANE_Z, "BOLT_B": PLANE_Z})
+        self.assertEqual(self.mod._check_view_bias_plane(good, write_specs(post_b12(), Path(self.tmp.name) / "post.json")),
+                         {"bolt": PLANE_Z, "BOLT_A": 0.102, "BOLT_B": PLANE_Z})
 
-        # BOLT_A 102 mm·BOLT_B 105 mm(차 3 mm) → 통과, 종류별 높이를 그대로 돌려준다
+        # BOLT_A 102 mm·BOLT_B 105 mm(차 3 mm) → 통과, 종류별 높이를 그대로 돌려준다.
+        # 종류를 모르는 「bolt」는 B `class_plane_z`가 최상위 plane_z(105 mm)를 쓴다(B-12 뒤 B 규칙)
         split = copy.deepcopy(specs)
         split["specs"]["BOLT_A"]["plane_z"] = 0.102
         p.write_text(json.dumps(split), encoding="utf-8")
-        self.assertEqual(self.mod._check_view_bias_plane(good, p), {"bolt": 0.102, "BOLT_A": 0.102, "BOLT_B": PLANE_Z})
+        self.assertEqual(self.mod._check_view_bias_plane(good, p), {"bolt": PLANE_Z, "BOLT_A": 0.102, "BOLT_B": PLANE_Z})
 
         # 경계: 5 mm 바로 안(4.999 mm)은 통과, 5 mm를 넘으면(5.1 mm) 그 종류 이름과 함께 거부
         edge = copy.deepcopy(specs)

@@ -128,7 +128,10 @@ class PixelStageLTest(TrackCli):
         return code, err, out, rt
 
     def test_candidate_ids_on_envelope(self):
-        """확정 뒤 후보마다 다른 양의 번호가 유지되고, 확정 전은 None + 상태, B 결과 번호는 None이다."""
+        """확정 뒤 후보마다 다른 양의 번호가 유지되고, 확정 전은 None + 상태다.
+
+        B-11(B가 후보의 A 번호를 결과에 실음, f0e604a) 뒤: B 결과의 번호 = 같은 후보(instance_index)의 A 번호.
+        """
         code, err, out, rt = self.run_l()
         self.assertEqual(code, 0, err)
 
@@ -140,14 +143,26 @@ class PixelStageLTest(TrackCli):
         self.assertTrue(all(len({t for _, t, _ in c}) == 3 for c in confirmed))
         self.assertEqual(len({tuple(t for _, t, _ in c) for c in confirmed}), 1)   # 같은 볼트 같은 번호 유지
         self.assertTrue(any(t is None and s for c in cands for _, t, s in c))     # 확정 전 프레임
-        self.assertTrue(all(res["part_track_id"] is None for r in recs for res in r["consumer_result"]["results"]))
-        self.assertIn("(stage L: A candidate ids until B reads them)", err)
+        carried = 0
+
+        for r in recs:
+            a_ids = {i: t for i, t, _ in candidate_ids(r)}
+
+            for res in r["consumer_result"]["results"]:
+                self.assertEqual(res["part_track_id"], a_ids[res["instance_index"]], (r["b_input"]["image_seq"], res))
+                carried += res["part_track_id"] is not None
+
+        self.assertGreater(carried, 0)   # 확정 번호가 실제로 B 결과에 실림
+        self.assertIn("(stage L: B goal carries the chosen A candidate id (B-11); A id only if the goal has none)", err)
 
         s = self.summary(out)["tracking_link"]["counts"]
         self.assertGreater(s["list_candidates_with_track"], 0)
 
     def test_send_uses_chosen_a_id(self):
-        """송신 기록 번호 = 고른 후보의 A 번호. require true면 번호 없는 볼트는 skip:no_track_id."""
+        """송신 기록 번호 = 고른 후보의 A 번호. require true면 번호 없는 볼트는 skip:no_track_id.
+
+        B-11 뒤: 목표 번호(B가 실은 값)가 고른 후보의 A 번호와 같고, 실효 번호 출처는 「goal」이다.
+        """
         code, err, out, rt = self.run_l()
         self.assertEqual(code, 0, err)
 
@@ -155,12 +170,19 @@ class PixelStageLTest(TrackCli):
         sent = [r for r in recs if r["event"] == "sent"]
         skips = [r for r in recs if r["event"] == "skip:no_track_id"]
 
-        self.assertTrue(sent and all(r["track_source"] == "a" and r["goal_part_track_id"] is None
-                                     and r["part_track_id"] == r["a_part_track_id"] is not None for r in sent))
+        self.assertTrue(sent)
+
+        for r in sent:
+            self.assertIsNotNone(r["a_part_track_id"], r)
+            self.assertEqual((r["track_source"], r["goal_part_track_id"], r["part_track_id"]),
+                             ("goal", r["a_part_track_id"], r["a_part_track_id"]), r)
+
         self.assertTrue(skips and all(r["a_part_track_id"] is None and r["track_state"] for r in skips))
         self.assertFalse(any(r["event"].startswith("release:") for r in recs))   # release 0
         self.assertFalse(any(r["event"] == "track_id_mismatch" for r in recs))
-        self.assertTrue(all(st._pending == {} for st in self.stages))
+        # B-11 뒤 B는 보낸 번호를 결과가 올 때까지 보관한다(가짜 런타임은 결과를 끝내지 않음): 보관 = 보낸 번호·goal_id
+        pending = {k: v for st in self.stages for k, v in st._pending.items()}
+        self.assertEqual(pending, {r["part_track_id"]: r["goal_id"] for r in sent})
 
     def test_track_keys_only_in_stage_l(self):
         """단계 L 전용 키는 단계 T 송신 기록에 없다(T 형식 그대로)."""
