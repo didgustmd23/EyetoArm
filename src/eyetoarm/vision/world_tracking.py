@@ -529,7 +529,8 @@ class WorldTracker:
         self._last_ts: int | None = None
         self.last_belt_vy: float | None = None   # mm/ms, 마지막 갱신의 벨트 공통 추정(없으면 None)
         self._stats = {"updates": 0, "not_updated": {}, "tentative_dropped": 0, "ids_retired": 0, "resets": {},
-                       "events": {}, "dup_merged": 0, "dup_merged_with_mask": 0}
+                       "events": {}, "dup_merged": 0, "dup_merged_with_mask": 0,
+                       "dup_merged_endpoint_contain": 0}
 
     @property
     def tracker_epoch(self) -> int:
@@ -547,7 +548,8 @@ class WorldTracker:
 
         return {"updates": s["updates"], "not_updated": dict(s["not_updated"]), "tentative_dropped": s["tentative_dropped"],
                 "ids_retired": s["ids_retired"], "resets": dict(s["resets"]), "events": dict(s["events"]),
-                "dup_merged": s["dup_merged"], "dup_merged_with_mask": s["dup_merged_with_mask"], "tracks": len(self._tracks), "issued": self._issuer.issued,
+                "dup_merged": s["dup_merged"], "dup_merged_with_mask": s["dup_merged_with_mask"],
+                "dup_merged_endpoint_contain": s["dup_merged_endpoint_contain"], "tracks": len(self._tracks), "issued": self._issuer.issued,
                 "tracker_epoch": self._epoch,
                 "belt_vy_mm_per_s": None if self.last_belt_vy is None else round(self.last_belt_vy * 1000.0, 3),
                 **({} if not self._extended else {"handoff": self._handoff_stats()})}
@@ -687,20 +689,34 @@ class WorldTracker:
         dropped: list[int] = []
 
         for c in order:
-            if any(k.class_name == c.class_name and self._dup(k, c) for k in kept):
-                dropped.append(c.index)
-                self._stats["dup_merged_with_mask"] += int(c.kind == "mask" or any(k.kind == "mask" for k in kept))
-            else:
+            hit = next((k for k in kept if k.class_name == c.class_name and self._dup(k, c)), None)
+
+            if hit is None:
                 kept.append(c)
+                continue
+
+            dropped.append(c.index)
+            self._stats["dup_merged_with_mask"] += int(c.kind == "mask" or any(k.kind == "mask" for k in kept))
+            # 끝점 쌍인데 끝점 규칙 밖이면 포함률로 합친 것(D13)
+            self._stats["dup_merged_endpoint_contain"] += int(
+                c.kind == hit.kind == "endpoint" and not _same_bolt(hit, c, self._config.dup_endpoint_mm))
 
         self._stats["dup_merged"] += len(dropped)
 
         return sorted(kept, key=lambda c: c.index), dropped
 
     def _dup(self, a: WorldInput, b: WorldInput) -> bool:
-        """이중 검출 판정. 둘 다 끝점이면 끝점 쌍 규칙, 마스크가 끼면 중심 거리 또는 마스크 포함률."""
+        """이중 검출 판정. 둘 다 끝점이면 끝점 쌍 규칙 또는 마스크 포함률, 마스크가 끼면 중심 거리 또는 마스크 포함률.
+
+        끝점 쌍의 포함률은 두 마스크가 다 있을 때만 쓴다(마스크가 없으면 끝점 규칙만). 같은 마스크를 나눠 가진
+        두 축 중 하나가 3~7 mm 더 길어 끝점 규칙에서 빠지던 중복(#274 D13)을 합친다.
+        """
         if a.kind == "endpoint" and b.kind == "endpoint":
-            return _same_bolt(a, b, self._config.dup_endpoint_mm)
+            if _same_bolt(a, b, self._config.dup_endpoint_mm):
+                return True
+
+            return a.mask is not None and b.mask is not None and \
+                containment(a.mask, b.mask) >= self._config.mask_dup_contain
 
         return (math.dist(a.center_mm, b.center_mm) <= self._config.dup_endpoint_mm
                 or containment(a.mask, b.mask) >= self._config.mask_dup_contain)

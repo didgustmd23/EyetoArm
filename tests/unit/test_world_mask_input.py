@@ -164,6 +164,96 @@ class DuplicateWithMaskTest(unittest.TestCase):
         self.assertEqual(f.assignments[1].reason, "duplicate_merged")
 
 
+def endpoint_gap_mm(a, b):
+    """두 끝점 입력의 끝점 차(순서 무관 최선 짝의 큰 쪽, mm)."""
+    (a0, a1), (b0, b1) = a.endpoints_mm, b.endpoints_mm
+
+    return min(max(math.dist(a0, b0), math.dist(a1, b1)), max(math.dist(a0, b1), math.dist(a1, b0)))
+
+
+def d13_pair(i0=0, i1=1, x_m=0.50, y_m=0.0, *, conf=(0.55, 0.06), extra_m=0.006, side_m=0.0):
+    """#274 D13 모사: 같은 볼트(M3×20) 위 두 축. 둘째는 한 끝만 extra_m 더 길고 옆으로 side_m 비껴 있다."""
+    a = bolt_inst(i0, x_m, y_m, conf=conf[0], length_m=0.020)
+    b = bolt_inst(i1, x_m + side_m, y_m + extra_m / 2, conf=conf[1], length_m=0.020 + extra_m)
+
+    return [a, b]
+
+
+class EndpointContainmentMergeTest(unittest.TestCase):
+    """#276 D13 수정 (a2): 끝점 쌍도 마스크 포함률(mask_dup_contain)로 같은 볼트를 합친다."""
+
+    def test_d13_pair_merged_by_containment(self):
+        """끝점 차 3~7 mm·포함률 ≥ 0.95인 끝점 쌍 → 합침, 점수 높은 쪽이 남고 포함률 계수 1."""
+        ina = inputs(d13_pair())
+        self.assertTrue(3.0 < endpoint_gap_mm(ina[0], ina[1]) < 7.0)
+        self.assertGreaterEqual(containment(ina[0].mask, ina[1].mask), 0.95)
+        tr = tracker()
+        f = tr.update(key(0), 0, ina)
+        self.assertEqual((f.assignments[0].reason, f.assignments[1].reason), (None, "duplicate_merged"))
+        self.assertEqual((tr.stats()["dup_merged"], tr.stats()["dup_merged_endpoint_contain"]), (1, 1))
+
+    def test_kept_is_higher_confidence_even_if_longer(self):
+        """남기는 순서는 기존 그대로(끝점 먼저·점수 높은 순): 긴 쪽의 점수가 높으면 긴 쪽이 남는다."""
+        f = tracker().update(key(0), 0, inputs(d13_pair(conf=(0.06, 0.55))))
+        self.assertEqual((f.assignments[0].reason, f.assignments[1].reason), ("duplicate_merged", None))
+
+    def test_confirmed_id_survives_d13_pair(self):
+        """확정 트랙 위에 D13 쌍이 나와도 번호 유지(모호·새 번호 없음)."""
+        tr = tracker()
+        ids = [tr.update(key(i), i * DT_MS, inputs([bolt_inst(0, 0.50, 0.0, conf=0.55, length_m=0.020)])).assignments[0].part_track_id
+               for i in range(4)]
+        f = tr.update(key(4), 4 * DT_MS, inputs(d13_pair()))
+        self.assertIsNotNone(ids[-1])
+        self.assertEqual((f.assignments[0].part_track_id, f.assignments[0].state, f.assignments[1].reason),
+                         (ids[-1], TrackState.CONFIRMED, "duplicate_merged"))
+        self.assertEqual(tr.stats()["ids_retired"], 0)
+
+    def test_without_masks_endpoint_rule_only(self):
+        """마스크가 없는 끝점 입력(mask_fallback 끔)은 끝점 규칙만: 같은 D13 쌍을 합치지 않고 확정 트랙은 모호로 끝난다(수정 전 동작)."""
+        tr = tracker(mask_fallback=False)
+
+        for i in range(4):
+            tr.update(key(i), i * DT_MS, inputs([bolt_inst(0, 0.50, 0.0, conf=0.55, length_m=0.020)], fallback=False))
+
+        ina = inputs(d13_pair(), fallback=False)
+        self.assertEqual([i.mask for i in ina], [None, None])
+        f = tr.update(key(4), 4 * DT_MS, ina)
+        self.assertEqual([a.state for a in f.assignments], [TrackState.AMBIGUOUS, TrackState.AMBIGUOUS])
+        self.assertEqual((tr.stats()["dup_merged"], tr.stats()["dup_merged_endpoint_contain"], tr.stats()["ids_retired"]), (0, 0, 1))
+
+    def test_side_by_side_endpoint_bolts_not_merged(self):
+        """나란히 붙은 두 M3(축 간격 6 mm, 끝점 차 > 3 mm, 포함률 < 0.85) → 합치지 않고 번호 2개."""
+        tr = tracker()
+
+        for i in range(5):
+            ina = inputs([bolt_inst(0, 0.50, 0.0, length_m=0.020), bolt_inst(1, 0.506, 0.0, length_m=0.020)])
+            f = tr.update(key(i), i * DT_MS, ina)
+
+        self.assertGreater(endpoint_gap_mm(ina[0], ina[1]), 3.0)
+        self.assertLess(containment(ina[0].mask, ina[1].mask), 0.85)
+        self.assertEqual(tr.stats()["dup_merged"], 0)
+        self.assertEqual(len({a.part_track_id for a in f.assignments} - {None}), 2)
+
+    def test_containment_threshold_boundary(self):
+        """경계: 포함률 = 문턱이면 합침(≥), 문턱이 그보다 아주 조금 크면 안 합침. 끝점 규칙 밖인 쌍으로 확인."""
+        pair = d13_pair(side_m=0.001)   # 옆으로 1 mm 비껴 포함률 < 1
+        ina = inputs(pair)
+        c = containment(ina[0].mask, ina[1].mask)
+        self.assertTrue(0.85 <= c < 1.0)
+        self.assertGreater(endpoint_gap_mm(ina[0], ina[1]), 3.0)
+        at = tracker(mask_dup_contain=c).update(key(0), 0, inputs(pair))
+        above = tracker(mask_dup_contain=c + 1e-9).update(key(0), 0, inputs(pair))
+        self.assertEqual(at.assignments[1].reason, "duplicate_merged")
+        self.assertNotEqual(above.assignments[1].reason, "duplicate_merged")
+
+    def test_endpoint_rule_still_merges_without_containment(self):
+        """기존 3 mm 끝점 규칙은 그대로: 포함률이 낮아도(마스크 없음 포함) 끝점이 3 mm 안이면 합침, 포함률 계수는 0."""
+        tr = tracker(mask_fallback=False)
+        f = tr.update(key(0), 0, inputs([bolt_inst(0, 0.50, 0.0), bolt_inst(1, 0.5005, 0.0005, conf=0.6)], fallback=False))
+        self.assertEqual(f.assignments[1].reason, "duplicate_merged")
+        self.assertEqual(tr.stats()["dup_merged_endpoint_contain"], 0)
+
+
 class BRuleUnchangedTest(unittest.TestCase):
     """마스크로 확정된 트랙이라도 B 규칙(확정·선택 인스턴스)은 그대로."""
 
