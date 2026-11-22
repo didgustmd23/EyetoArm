@@ -197,15 +197,20 @@ def filter_result(result: AiSegResult, *, K, dist, T_W_C, T_W_L_by_link: dict,
         if excluded:
             removed.add(inst.index)
 
+    return reject_instances(result, removed, ARM_REGION), decisions
+
+
+def reject_instances(result: AiSegResult, removed: set, code: str) -> AiSegResult:
+    """`removed` 번호의 인스턴스를 범위 밖 사유 `code`로 거부한 결과(없으면 그대로). 팔·벨트 영역 필터가 같이 쓴다."""
     if not removed:
-        return result, decisions
+        return result
 
     instances = []
 
     for inst in result.instances:
         if inst.index in removed:
             # 범위 밖 거부: 축 경로 필드를 비운다(축 후보·추적·목록에서 빠짐)
-            instances.append(dataclasses.replace(inst, rejected=ARM_REGION, axis_endpoints_px=None,
+            instances.append(dataclasses.replace(inst, rejected=code, axis_endpoints_px=None,
                                                  axis_reason=None, axis_max_iou=None, axis_diag=None,
                                                  axis_overlap_with=None))
         elif inst.axis_overlap_with and removed & set(inst.axis_overlap_with):
@@ -215,7 +220,7 @@ def filter_result(result: AiSegResult, *, K, dist, T_W_C, T_W_L_by_link: dict,
         else:
             instances.append(inst)
 
-    return dataclasses.replace(result, instances=tuple(instances)), decisions
+    return dataclasses.replace(result, instances=tuple(instances))
 
 
 class ArmRegionFilter:
@@ -344,4 +349,4 @@ class ArmRegionFilter:
 
 
 __all__ = ["ArmRegionConfig", "ArmRegionConfigError", "ArmRegionFilter", "arm_fraction", "filter_result",
-           "load_arm_region_config", "parse_arm_region", "sample_points", "segment_distances"]
+           "load_arm_region_config", "parse_arm_region", "reject_instances", "sample_points", "segment_distances"]
