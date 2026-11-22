@@ -293,7 +293,8 @@ class BStage:
             valid=True, reason=None, class_name=c.class_name, pixel_basis=c.pixel_basis,
             axis_endpoints_px=c.axis_endpoints_px, calc_contour=c.calc_contour,
             calibration_id=fo.capture.calibration_id, source_id=f.source_id, image_seq=f.image_seq,
-            part_track_id=None, run_id=f.run_id, capture_generation=f.capture_generation,
+            part_track_id=getattr(c, "part_track_id", None),   # A 확정 추적 번호(없으면 None, B-11 2026-11-22)
+            run_id=f.run_id, capture_generation=f.capture_generation,
             generation=fo.generation, job_seq=fo.job_seq, detector_config_id=fo.detector_config_id)
 
     @staticmethod
