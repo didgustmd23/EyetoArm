@@ -3,6 +3,7 @@
 import copy
 import math
 import time
+from collections import deque
 
 from PySide6.QtCore import QObject, Signal
 
@@ -29,6 +30,8 @@ class DisplayModel(QObject):
         self.link_source_id = None
         self.generations = {}
         self.active_configs = {}
+        self.source_runs = {}                       # 링크 소스별 현재 생산자 실행. 서버 변경(reset_session)에서만 버린다
+        self.retired_source_runs = deque(maxlen=32)  # 지나간 생산자 실행. 늦은 프레임을 버린다(relay 와 같은 상한)
         self.mode = "raw"
         self.reason = "결과 미수신"
 
@@ -58,6 +61,8 @@ class DisplayModel(QObject):
     def reset_session(self, reason):
         """다른 서버로 옮길 때만 부른다. 이전 서버의 run_id·순서·결과 기록을 모두 버린다(같은 주소 재접속은 부르지 않는다)."""
         self.run_id = self.link_source_id = None
+        self.source_runs.clear()
+        self.retired_source_runs.clear()
         self._clear_session(reason)
 
     def reset_source(self, source_id, reason):
@@ -65,6 +70,11 @@ class DisplayModel(QObject):
 
         raw·detect·center 는 같은 source_id 에 서로 다른 순번·세대·설정을 쓰므로, 전환 뒤 새 종류가 이전 기록에 막히지 않게 한다.
         다른 소스와 세션(run_id)은 그대로다."""
+        self._forget_source(source_id)
+        self.reason = reason
+        self.changed.emit()
+
+    def _forget_source(self, source_id):
         for table in (self.generations, self.active_configs, self.high_water, self.result_keys,
                       self.invalid_jobs, self.latest_jobs, self.origins):
             table.pop(source_id, None)
@@ -73,8 +83,6 @@ class DisplayModel(QObject):
         self.frame_marks = {k: v for k, v in self.frame_marks.items() if v["source_id"] != source_id}
         if self.result and self.result["source_id"] == source_id:
             self.result = None
-        self.reason = reason
-        self.changed.emit()
 
     def _clear_session(self, reason):
         self.generations.clear()
@@ -129,7 +137,8 @@ class DisplayModel(QObject):
         self.changed.emit()
         return True
 
-    def ingest_frame(self, channel, image, *, source_id, image_seq, generation, calibration_id, run_id, capture_generation, detector_config_id, job_seq, variant="raw", confirmed=True):
+    def ingest_frame(self, channel, image, *, source_id, image_seq, generation, calibration_id, run_id, capture_generation, detector_config_id, job_seq, variant="raw", confirmed=True,
+                     source_run_id=None, producer_run_id=None, capture_stamp_ns=None, timestamp_base=None, frame_id=None):
         """confirmed=False: 연결 직후 캐시일 수 있는 첫 프레임. 보관·표시는 하되 신선(fresh)·결과 일치에는 넣지 않는다."""
         if not self.connected or channel not in ("link", "gripper", "fixed") or image is None or image.isNull():
             return False
@@ -143,6 +152,20 @@ class DisplayModel(QObject):
             return False
         if channel == "link" and variant not in ("raw", "detect", "center"):
             return False
+        if any(x is not None and (not isinstance(x, str) or not x) for x in (source_run_id, producer_run_id, timestamp_base, frame_id)):
+            return False
+        if capture_stamp_ns is not None and (type(capture_stamp_ns) is not int or capture_stamp_ns < 0):
+            return False
+        if channel == "link" and source_run_id is not None:
+            # 생산자 재시작(A1→A2): 이전 실행의 링크 영상·순번·세대를 버리고, 늦게 온 이전 실행 프레임은 받지 않는다
+            if source_run_id in self.retired_source_runs:
+                return False
+            current = self.source_runs.get(source_id)
+            if current is not None and current != source_run_id:
+                self.retired_source_runs.append(current)
+                self._forget_source(source_id)
+                self.reason = "새 생산자 실행 결과 대기"
+            self.source_runs[source_id] = source_run_id
         if (channel == "link" and variant != "raw" and self.generations.get(source_id) == generation and
                 (source_id in self.blocked_sources or job_seq <= self.invalid_jobs.get(source_id, -1))):
             return False
@@ -166,7 +189,9 @@ class DisplayModel(QObject):
         self.frames[key] = dict(image=image.copy(), source_id=source_id, image_seq=image_seq,
                                 generation=generation, calibration_id=calibration_id, run_id=run_id,
                                 capture_generation=capture_generation, detector_config_id=detector_config_id,
-                                job_seq=job_seq, received=received, confirmed=confirmed is True)
+                                job_seq=job_seq, received=received, confirmed=confirmed is True,
+                                source_run_id=source_run_id, producer_run_id=producer_run_id,
+                                capture_stamp_ns=capture_stamp_ns, timestamp_base=timestamp_base, frame_id=frame_id)
         self.frame_marks[key] = {k: v for k, v in self.frames[key].items() if k != "image"}
         self.changed.emit()
         return True

@@ -38,6 +38,8 @@ class HandoffIngress:
     def __init__(self, relay, host, port):
         self.relay = relay
         self._stop = threading.Event()
+        self._client_lock = threading.Lock()
+        self._active_client = None
         self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._listener.bind((host, port))
@@ -53,12 +55,24 @@ class HandoffIngress:
                 continue
             except OSError:
                 return
+            with self._client_lock:
+                old, self._active_client = self._active_client, client
+            if old is not None:
+                try:
+                    old.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                old.close()
             print(f"[C 영상] A handoff 접속 {address}", flush=True)
             threading.Thread(target=self._receive, args=(client,), daemon=True).start()
 
     def _receive(self, client):
+        source_run_id = None
         try:
             while not self._stop.is_set():
+                with self._client_lock:
+                    if self._active_client is not client:
+                        return
                 header = recv_exact(client, HEADER.size)
                 if header is None:
                     return
@@ -81,7 +95,12 @@ class HandoffIngress:
                         or not isinstance(metadata.get("detector_config_id"), str)
                         or not metadata["detector_config_id"] or "calibration_id" not in metadata):
                     raise ValueError("A handoff only accepts link/detect JPEG frames")
-                metadata["source_run_id"] = metadata["run_id"]
+                source_run_id = metadata["run_id"]
+                changed = self.relay.update_detect_source(
+                    source_run_id, metadata["generation"], metadata["capture_generation"])
+                if changed:
+                    print("[C 영상] A detect 이전 캐시 무효화: 실행 또는 세대 변경", flush=True)
+                metadata["source_run_id"] = source_run_id
                 metadata["run_id"] = self.relay.run_id
                 self.relay.note_handoff_received()
                 # A의 단방향 handoff는 계속 들어오므로, 선택되지 않은 detect는 표시 캐시에 넣지 않는다.
@@ -93,6 +112,12 @@ class HandoffIngress:
             if not self._stop.is_set():
                 print(f"[C 영상] A handoff 패킷 거부: {exc}", flush=True)
         finally:
+            with self._client_lock:
+                was_active = self._active_client is client
+                if was_active:
+                    self._active_client = None
+            if was_active:
+                self.relay.invalidate_detect_source(source_run_id)
             try:
                 client.close()
             except OSError:
@@ -122,6 +147,8 @@ class LatestFrameServer:
         self._stop = threading.Event()
         self._selected_link_variant = "raw"
         self.run_id = run_id or str(uuid.uuid4())
+        self._detect_source = None
+        self._center_source = None
         self._rx_count = {name: 0 for name in CAMERAS}
         self._center_rx_count = 0
         self._handoff_rx_count = 0
@@ -146,6 +173,71 @@ class LatestFrameServer:
         with self._lock:
             self._latest[key] = packet
             self._revision[key] = self._revision.get(key, 0) + 1
+
+    def clear_cached_frame(self, channel, variant):
+        """Forget a frame so a later selection or D connection cannot replay it."""
+        key = (channel, variant)
+        with self._lock:
+            existed = self._latest.pop(key, None) is not None
+            if existed:
+                self._revision[key] = self._revision.get(key, 0) + 1
+        return existed
+
+    def update_detect_source(self, source_run_id, generation, capture_generation):
+        """Invalidate A detect cache when its producer run or simulation epoch changes."""
+        identity = (source_run_id, generation, capture_generation)
+        with self._lock:
+            previous = self._detect_source
+            if previous == identity:
+                return False
+            self._detect_source = identity
+            if previous is not None:
+                key = ("link", "detect")
+                if self._latest.pop(key, None) is not None:
+                    self._revision[key] = self._revision.get(key, 0) + 1
+            return previous is not None
+
+    def invalidate_detect_source(self, source_run_id=None):
+        """Clear A detect cache when its active producer disconnects."""
+        with self._lock:
+            if self._detect_source is None:
+                return False
+            if source_run_id is not None and self._detect_source[0] != source_run_id:
+                return False
+            self._detect_source = None
+            key = ("link", "detect")
+            existed = self._latest.pop(key, None) is not None
+            if existed:
+                self._revision[key] = self._revision.get(key, 0) + 1
+            return existed
+
+    def update_center_source(self, producer_run_id, generation, capture_generation):
+        """Invalidate B center cache when B starts a new run or source epoch."""
+        identity = (producer_run_id, generation, capture_generation)
+        with self._lock:
+            previous = self._center_source
+            if previous == identity:
+                return False
+            self._center_source = identity
+            if previous is not None:
+                key = ("link", "center")
+                if self._latest.pop(key, None) is not None:
+                    self._revision[key] = self._revision.get(key, 0) + 1
+            return previous is not None
+
+    def invalidate_center_source(self, producer_run_id=None):
+        """Clear B center cache only for the matching producer run."""
+        with self._lock:
+            if self._center_source is None:
+                return False
+            if producer_run_id is not None and self._center_source[0] != producer_run_id:
+                return False
+            self._center_source = None
+            key = ("link", "center")
+            existed = self._latest.pop(key, None) is not None
+            if existed:
+                self._revision[key] = self._revision.get(key, 0) + 1
+            return existed
 
     def note_received(self, channel):
         with self._lock:
@@ -374,6 +466,8 @@ def main():
         # CenterOverlay carries the annotated image and the B frame identity in one ROS message.
         # Only accepted frame messages have a displayable image; status/end markers have no frame.
         if message.kind != "accepted":
+            if message.kind == "marker":
+                relay.invalidate_center_source(str(message.run_id))
             return
         try:
             image_message = message.image
@@ -398,6 +492,10 @@ def main():
             if not ok:
                 return
             seq = keys["image_seq"]
+            changed = relay.update_center_source(
+                str(message.run_id), keys["generation"], keys["capture_generation"])
+            if changed:
+                print("[C 영상] B center 이전 캐시 무효화: 실행 또는 세대 변경", flush=True)
             # Keep the C relay run_id stable across raw/detect/center switches so D's
             # session guard remains usable. Carry B's original run and correlation keys
             # alongside the display envelope; B sequence/generation values are preserved.
@@ -461,6 +559,7 @@ def main():
                     node.destroy_subscription(current)
                     subscriptions.remove(current)
                     center_subscription["value"] = None
+                relay.invalidate_center_source()
                 print(f"[C 영상] B center 입력 구독 중지 variant={selected}", flush=True)
             applied_center_enabled["value"] = center_enabled
 
