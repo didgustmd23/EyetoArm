@@ -211,10 +211,13 @@ class BoltPlanes:
     """B 규격의 볼트 종류별 투영 높이. `specs` = ((이름, 기준 높이 m, 총길이 m), …).
 
     `default_z_m`은 마스크 입력용이다. 종류는 높이 고르기에만 쓰며 B 판정이 아니다.
+    `tolerances_m`(종류별 길이 허용 m, `specs` 순서)을 주면 시야 보정과 같은 `bolt_spec.choose_spec`으로
+    허용 안 종류를 먼저 고르고, 없으면 가장 가까운 종류로 둔다(추적 유지, #270). None이면 가장 가까운 종류(#250).
     """
 
     default_z_m: float
     specs: tuple[tuple[str, float, float], ...]
+    tolerances_m: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         """값 검사: 유한 양수, 이름은 빈 문자열이 아니고 겹치지 않음, 종류 1개 이상."""
@@ -229,6 +232,21 @@ class BoltPlanes:
         for v in (self.default_z_m, *(z for _, z, _ in self.specs), *(L for _, _, L in self.specs)):
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
                 raise WorldTrackerConfigError(f"BoltPlanes values must be finite positive numbers: {v!r}")
+
+        if self.tolerances_m is not None:
+            tol = tuple(self.tolerances_m)
+
+            if len(tol) != len(self.specs) or not all(
+                    not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 for v in tol):
+                raise WorldTrackerConfigError(f"BoltPlanes tolerances must be one finite number >= 0 per spec: {self.tolerances_m!r}")
+
+            object.__setattr__(self, "tolerances_m", tol)
+
+    def bolt_specs(self):
+        """`tolerances_m`이 있을 때 `bolt_spec.BoltSpec` 튜플(라벨 = 이름)."""
+        from eyetoarm.vision.bolt_spec import BoltSpec
+
+        return tuple(BoltSpec(n, n, z, L, t) for (n, z, L), t in zip(self.specs, self.tolerances_m))
 
     @property
     def uniform(self) -> bool:
@@ -301,6 +319,17 @@ def _pick_plane(endpoints_px, K, dist, T_W_C, planes: BoltPlanes) -> tuple[float
     if planes.uniform:
         return planes.default_z_m, None
 
+    if planes.tolerances_m is not None:   # 시야 보정과 같은 고르기(허용 안 먼저, 없으면 가장 가까운 종류)
+        from eyetoarm.vision.bolt_spec import select_spec
+
+        choice = select_spec(endpoints_px, K, dist, T_W_C, planes.bolt_specs())
+        name = choice.name or choice.nearest
+
+        if name is None:
+            return planes.default_z_m, None
+
+        return next(z for n, z, _ in planes.specs if n == name), name
+
     best = None
 
     for name, z_m, total_m in planes.specs:
@@ -365,13 +394,24 @@ def world_inputs(result: AiSegResult, *, K, dist, T_W_C, plane_z_m: float | Bolt
         used = raw
 
         if view_bias is not None and raw is not None:
-            from eyetoarm.vision.view_bias import correct_endpoints
+            from eyetoarm.vision.view_bias import ViewBiasPlan, check_runtime, correct_bolt, correct_endpoints
 
-            vb = correct_endpoints(inst.axis_endpoints_px, K, dist, T_W_C, plane_z_m=view_bias.plane_z_m,
-                                   k_mm=view_bias.k_mm, width=width, height=height)
+            check_runtime(view_bias)
 
-            if vb.applied:
-                used = _project(vb.endpoints_px, K, dist, T_W_C, z_m)
+            if isinstance(view_bias, ViewBiasPlan):
+                # 종류별: 보정이 고른 종류의 높이로 원·보정 위치를 함께 올린다(B 입력과 같은 종류·높이)
+                vb = correct_bolt(inst.axis_endpoints_px, K, dist, T_W_C, view_bias, width=width, height=height)
+
+                if vb.applied:
+                    z_m, spec = vb.plane_z_m, vb.spec
+                    raw = _project(inst.axis_endpoints_px, K, dist, T_W_C, z_m)
+                    used = _project(vb.endpoints_px, K, dist, T_W_C, z_m)
+            else:
+                vb = correct_endpoints(inst.axis_endpoints_px, K, dist, T_W_C, plane_z_m=view_bias.plane_z_m,
+                                       k_mm=view_bias.k_mm, width=width, height=height)
+
+                if vb.applied:
+                    used = _project(vb.endpoints_px, K, dist, T_W_C, z_m)
 
         if used is None or raw is None:
             out.append(WorldInput(**base, candidate=False, untracked_reason="projection_failed", kind="none", mask=m))

@@ -99,7 +99,8 @@ def event_record(event: LiveObservationEvent, png_name: str | None) -> dict:
             vb = p.view_bias[0] if p.view_bias else None
             rec["input"]["axis_endpoints_px"] = _plain(getattr(p.envelope.observation, "axis_endpoints_px", None))
             rec["input"]["axis_endpoints_px_raw"] = None if vb is None else vb.get("axis_endpoints_px_raw")
-            rec["input"]["view_bias"] = None if vb is None else {k: vb[k] for k in ("applied", "s", "delta_mm", "reason")}
+            rec["input"]["view_bias"] = None if vb is None else {k: vb[k] for k in ("applied", "s", "delta_mm", "reason", "spec")
+                                                                 if k in vb}   # spec: 종류별 보정(#270)일 때만
 
     return rec
 

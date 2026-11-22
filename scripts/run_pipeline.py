@@ -402,9 +402,12 @@ def _bolt_planes(specs):
     from eyetoarm.vision.world_tracking import BoltPlanes
 
     heights = _bolt_spec_heights(specs)
-    rows = tuple((name, heights[name], float(specs["specs"][name]["total_length"])) for name in heights if name != "bolt")
+    names = [name for name in heights if name != "bolt"]
+    rows = tuple((name, heights[name], float(specs["specs"][name]["total_length"])) for name in names)
+    # 길이 허용을 함께 넘겨 시야 보정과 같은 고르기(허용 안 먼저)를 쓴다(#270)
+    tols = tuple(float(specs["specs"][name]["length_tolerance"]) for name in names)
 
-    return BoltPlanes(default_z_m=heights["bolt"], specs=rows)
+    return BoltPlanes(default_z_m=heights["bolt"], specs=rows, tolerances_m=tols)
 
 
 def _check_view_bias_plane(bias, specs_path: Path | None = None) -> dict[str, float]:
@@ -425,6 +428,28 @@ def _check_view_bias_plane(bias, specs_path: Path | None = None) -> dict[str, fl
                              "re-derive axis_view_bias for the current B specs")
 
     return heights
+
+
+def _view_bias_runtime(bias, specs_path: Path | None = None):
+    """보정 설정 → 실행 인자. None·기존 형식은 그대로, 종류별 형식은 B 규격과 대조한 `ViewBiasPlan`(#270).
+
+    맞지 않으면 ValueError(시작 거부 2). `specs_path`가 None이면 `PART_SPECS_PATH`.
+    """
+    if bias is None or bias.legacy:
+        return bias
+
+    import hashlib
+
+    from eyetoarm.transforms.work_result import load_specs
+    from eyetoarm.vision.view_bias import build_view_bias_plan
+
+    specs_path = PART_SPECS_PATH if specs_path is None else specs_path
+
+    try:
+        return build_view_bias_plan(bias, load_specs(specs_path),
+                                    part_specs_sha256=hashlib.sha256(Path(specs_path).read_bytes()).hexdigest())
+    except ValueError as exc:
+        raise ValueError(f"{exc} ({specs_path})") from exc
 
 
 def _heights_text(heights: dict[str, float], ref_m: float | None = None) -> str:
@@ -588,10 +613,17 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
             if synthetic is not None:
                 raise ValueError("axis_view_bias is not supported with --synthetic-observation-fixture (no AI endpoints)")
 
-            heights = _check_view_bias_plane(config.axis_view_bias)
-            err.write(f"run_pipeline: axis_view_bias plane_z={config.axis_view_bias.plane_z_m * 1000:.1f}mm; B bolt heights "
-                      f"{_heights_text(heights, config.axis_view_bias.plane_z_m)} within ±{VIEW_BIAS_PLANE_TOL_M * 1000:.0f} mm "
-                      "(correction uses the single config plane)\n")
+            if config.axis_view_bias.legacy:
+                heights = _check_view_bias_plane(config.axis_view_bias)
+                err.write(f"run_pipeline: axis_view_bias plane_z={config.axis_view_bias.plane_z_m * 1000:.1f}mm; B bolt heights "
+                          f"{_heights_text(heights, config.axis_view_bias.plane_z_m)} within ±{VIEW_BIAS_PLANE_TOL_M * 1000:.0f} mm "
+                          "(correction uses the single config plane)\n")
+            else:
+                plan = _view_bias_runtime(config.axis_view_bias)
+                rows = " ".join(f"{s.name}({s.label})=plane {s.plane_z_m * 1000:.1f}mm k {plan.k_of(s.name):.3f}mm "
+                                f"len {(s.total_length_m - s.length_tolerance_m) * 1000:.1f}~"
+                                f"{(s.total_length_m + s.length_tolerance_m) * 1000:.1f}mm" for s in plan.specs)
+                err.write(f"run_pipeline: axis_view_bias by spec: {rows} (spec by endpoint length at each spec plane)\n")
 
             if capture is None and args.live_observation_out is None:
                 err.write("run_pipeline: axis_view_bias inactive: no B input path (needs --capture-meta or "
@@ -1190,7 +1222,7 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         link = controller.start_run(run_id, make_session=lambda rid: LiveObservationLink(
             rid, args.live_observation_out, config=link_config, tf=tf, stage_factory=stage_factory, render=render,
             b_input=args.b_input, list_consumer_factory=consumer_factory, **consumer_kind, run_outputs=run_outputs,
-            view_bias=getattr(settings.detector_config, "axis_view_bias", None),
+            view_bias=_view_bias_runtime(getattr(settings.detector_config, "axis_view_bias", None)),
             sort_part_runtime=sort_rt, tracking=args.tracking,
             **({} if not world_on else {"world_tracker": _new_world_tracker(world_cfg[0], handoff_cfg[0],
                                                                             None if handoff_cfg[1] is None else handoff_cfg[1].config),
@@ -1533,7 +1565,7 @@ def _run_capture_list(args, settings, runner_config, detector_kw, capture, err, 
 
     try:
         recorder = CaptureListRecorder(args.observation_out, meta, consumer_kind=consumer_kind,
-                                       view_bias=getattr(settings.detector_config, "axis_view_bias", None))
+                                       view_bias=_view_bias_runtime(getattr(settings.detector_config, "axis_view_bias", None)))
     except OSError as exc:
         err.write(f"run_pipeline: cannot create a-to-b-out: {exc}\n")
         return 2
@@ -1636,7 +1668,7 @@ def _run_capture_observation(args, settings, runner_config, detector_kw, capture
     try:
         recorder = CaptureObservationRecorder(args.observation_out, stage, meta, ObservationEnvelopeAdapter(stage, tf_lookup),
                                    extension_source=extension_source,
-                                   view_bias=getattr(settings.detector_config, "axis_view_bias", None))
+                                   view_bias=_view_bias_runtime(getattr(settings.detector_config, "axis_view_bias", None)))
     except OSError as exc:
         err.write(f"run_pipeline: cannot create a-to-b-out: {exc}\n")
         return 2

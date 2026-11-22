@@ -233,7 +233,7 @@ class CaptureObservationRecorder:
 
         return {"axis_endpoints_px": None if obs.axis_endpoints_px is None else obs.axis_endpoints_px.tolist(),
                 "axis_endpoints_px_raw": vb["axis_endpoints_px_raw"],
-                "view_bias": {k: vb[k] for k in ("applied", "s", "delta_mm", "reason")}}
+                "view_bias": {k: vb[k] for k in ("applied", "s", "delta_mm", "reason", "spec") if k in vb}}   # spec: 종류별(#270)만
 
     def summary(self, record: dict) -> None:
         """끝 요약을 summary.json으로(새 파일)."""
