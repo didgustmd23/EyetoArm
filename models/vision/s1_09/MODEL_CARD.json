@@ -1,0 +1,95 @@
+{
+  "experiment": "S1-09",
+  "model_family": "yolov8n-seg",
+  "task": "instance_segmentation",
+  "weights": "best.pt",
+  "weights_size_bytes": 7041268,
+  "weights_sha256": "ac4176ee492dc97e6b0bd275240b0a18b9f967fb15475ca03fc075ea75037807",
+  "class_map": {
+    "0": "bolt",
+    "1": "nut"
+  },
+  "runtime_config": "config/vision/ai_s1_09_axis_m2_viewbias.json",
+  "status": "candidate (not operational default; S1-08 remains default until A decides the switch)",
+  "training": {
+    "initial_weights": "official yolov8n-seg.pt (ultralytics/assets v8.4.0, sha256 a7cd8f929e1903d78a12a48efecab430209f18dc46cb96c3599a5980c63c423c)",
+    "data": "bolt_nut_gz_r1 = public bolt_nut_clean_train_r1 + Gazebo G1 600 / G2 200 scenes (640 tiles) + N1 200 arm/shadow negatives",
+    "data_yaml": "data/derived/bolt_nut_gz_r1/dataset.yaml",
+    "data_yaml_sha256": "6606ff7c3516d06a7300e84acf327088f9af14ee1b41a0abd1486b808509a299",
+    "split_manifest": "data/splits/gz_r1/manifest.json",
+    "split_manifest_sha256": "f7d3460bd220f9c25cc12ca84a5fe5d9e43568ca52fee593fb6f3fef9c7f1ebd",
+    "train_images": 3840,
+    "val_images": 450,
+    "test_images": 161,
+    "imgsz": 640,
+    "epochs": 50,
+    "batch": 16,
+    "seed": 0,
+    "hsv_v": 0.6,
+    "deterministic": true,
+    "run_set": "A work record #278 training run set s1_gz_r1 (config_id b3f59a43e40e47941efa923a5e7274b5fc9ed3486ff81d6b099bb3bb2941333e, fingerprint ok)",
+    "run_config_sha256": {
+      "record #278 training config (common)": "678e83941038bd4af221bb2a782b1cf73ff6936c75e18bea9db924face7024e2",
+      "record #278 training config (candidates)": "56d93d581c4f4c366f9e1f91da1c1a5e9c4a5a6f36c6e90d7949294c2de0d9f4"
+    },
+    "original_weights_location": "outside the repository (training PC outputs, A work record #278)",
+    "train_wall_s": 970.651,
+    "git_commit": "b7a865e0bb17342e2d3e82acde6d0038805065b9 (dirty: training tools #278)"
+  },
+  "acceptance_278": {
+    "criteria": "A work record #275 retrain plan r0 section 6, fixed before results",
+    "result": "all passed",
+    "E2_horizontal_M3x20_detected": "15/15 (S1-08 1/15)",
+    "E2_M3x20_pass": "30/40, in-frame 30/33 (S1-08 13/40)",
+    "E2_M6x40_pass": "single 32/32 in-frame, both 40/40",
+    "E3_false_confirmed_bin_wall_pp_off_target": "0/0/0 in 3 conditions (S1-08 14-18 / 11-15 / 2)",
+    "link_v2_bolt_recall_conf005": "441/442, B false positives 1",
+    "gz_eval_v1_recall_bolt_nut_1280_conf025": "0.90/1.00",
+    "public_test_map50_box_mask_640_conf025": "0.562/0.556",
+    "E1_recall_M3x20_M6x12_M6x40_NUT": "1.000/1.000/0.994/1.000, false positives 0",
+    "infer_p95_1280_ms": 13.0
+  },
+  "axis_view_bias_fit_293": {
+    "method": "#206 C1 (no-intercept least squares, bootstrap 2000) on V2 scenes (A work record #267 capture) re-inferred with S1-09 at e938339",
+    "BOLT_A": {
+      "fit_plane_z_m": 0.102,
+      "k_mm": 0.63,
+      "ci95": [
+        0.35,
+        0.882
+      ],
+      "n": 30
+    },
+    "BOLT_B": {
+      "fit_plane_z_m": 0.105,
+      "k_mm": 0.48,
+      "ci95": [
+        0.123,
+        0.829
+      ],
+      "n": 32
+    }
+  },
+  "evidence": [
+    "A work record #278 (training, acceptance)",
+    "A work record #293 (k fit, Gazebo comparison)",
+    "A work record #295 R1/R2 (remaining risks)"
+  ],
+  "original_tested_environment": {
+    "torch": "2.11.0+cu128",
+    "torchvision": "0.26.0+cu128",
+    "ultralytics": "8.4.211",
+    "numpy": "1.26.4",
+    "opencv": "4.6.0 (apt)"
+  },
+  "limits": [
+    "Display-only observations: valid=False, calc_contour=None.",
+    "Training/evaluation scenes are Gazebo; no real-camera validation.",
+    "M3x20 head/shaft ambiguous at some poses (M2 AXIS_HEAD_AMBIGUOUS 3/40 in V2).",
+    "No B/C operational integration or robot execution validation implied.",
+    "Not adopted for operation: S1-08 remains the default model until A decides the switch.",
+    "#295 R1: false detections on the conveyor cross beam and end roller seen through the 10 mm gap beside the belt (S1-09 only). Entered B list candidates 12 times, all rejected as LENGTH_OUT_OF_RANGE (35.4-36.7 mm); margin to the BOLT_B lower bound 39 mm is only 2.3 mm.",
+    "#295 R2: while grasped, the real M3x20 sticking out past the gripper was excluded by the arm-region capsules in 23 frames (exclusion criterion for held bolts pending A decision).",
+    "Picking while the belt moves is not verified (C-12)."
+  ]
+}
