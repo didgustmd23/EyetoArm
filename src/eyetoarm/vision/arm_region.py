@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import json
 import math
@@ -20,7 +19,7 @@ import cv2
 import numpy as np
 
 from eyetoarm.transforms.planar_transform import pixels_to_w
-from eyetoarm.vision.ai_result import ARM_REGION, AiSegResult
+from eyetoarm.vision.ai_result import ARM_REGION, AiSegResult, reject_instances   # reject_instances는 여기서도 내보낸다
 from eyetoarm.vision.arm_occlusion import (Occluder, OccluderConfigError, parse_occluders,
                                            world_capsules)
 
@@ -198,29 +197,6 @@ def filter_result(result: AiSegResult, *, K, dist, T_W_C, T_W_L_by_link: dict,
             removed.add(inst.index)
 
     return reject_instances(result, removed, ARM_REGION), decisions
-
-
-def reject_instances(result: AiSegResult, removed: set, code: str) -> AiSegResult:
-    """`removed` 번호의 인스턴스를 범위 밖 사유 `code`로 거부한 결과(없으면 그대로). 팔·벨트 영역 필터가 같이 쓴다."""
-    if not removed:
-        return result
-
-    instances = []
-
-    for inst in result.instances:
-        if inst.index in removed:
-            # 범위 밖 거부: 축 경로 필드를 비운다(축 후보·추적·목록에서 빠짐)
-            instances.append(dataclasses.replace(inst, rejected=code, axis_endpoints_px=None,
-                                                 axis_reason=None, axis_max_iou=None, axis_diag=None,
-                                                 axis_overlap_with=None))
-        elif inst.axis_overlap_with and removed & set(inst.axis_overlap_with):
-            # 겹침 짝이 제외됐으면 짝 목록에서 뺀다(남은 짝이 없으면 겹침 아님)
-            rest = tuple(i for i in inst.axis_overlap_with if i not in removed)
-            instances.append(dataclasses.replace(inst, axis_overlap_with=rest or None))
-        else:
-            instances.append(inst)
-
-    return dataclasses.replace(result, instances=tuple(instances))
 
 
 class ArmRegionFilter:

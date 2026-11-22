@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 import re
+import dataclasses
 from dataclasses import dataclass
 from numbers import Integral, Real
 
@@ -21,13 +22,14 @@ EMPTY_MASK = "EMPTY_MASK"
 SMALL_MASK = "SMALL_MASK"
 ARM_REGION = "ARM_REGION"   # 링크 카메라에 걸린 팔·그리퍼를 검출한 것(arm_region 판정). 범위 밖으로 다룬다
 OUTSIDE_BELT = "OUTSIDE_BELT"   # 벨트 윗면 밖(바닥·상자 등)의 검출(belt_region 판정). 범위 밖으로 다룬다
-REJECTIONS = (NON_TARGET_CLASS, LOW_CONFIDENCE, EMPTY_MASK, SMALL_MASK, ARM_REGION, OUTSIDE_BELT)
+DUPLICATE_MASK = "DUPLICATE_MASK"   # 같은 볼트를 거의 같은 마스크로 한 번 더 검출한 것(ai_convert 중복 판정). 범위 밖으로 다룬다
+REJECTIONS = (NON_TARGET_CLASS, LOW_CONFIDENCE, EMPTY_MASK, SMALL_MASK, ARM_REGION, OUTSIDE_BELT, DUPLICATE_MASK)
 
 # polygon 허용 조합: 필수 / 금지 / 둘 다 허용
-_POLYGON_REQUIRED = (None, SMALL_MASK, ARM_REGION, OUTSIDE_BELT)
+_POLYGON_REQUIRED = (None, SMALL_MASK, ARM_REGION, OUTSIDE_BELT, DUPLICATE_MASK)
 _POLYGON_FORBIDDEN = (EMPTY_MASK,)
 
-_OUT_OF_SCOPE = (NON_TARGET_CLASS, LOW_CONFIDENCE, ARM_REGION, OUTSIDE_BELT)
+_OUT_OF_SCOPE = (NON_TARGET_CLASS, LOW_CONFIDENCE, ARM_REGION, OUTSIDE_BELT, DUPLICATE_MASK)
 
 # 축 후보 제외 사유. ai_convert가 같은 이름을 다시 내보낸다
 CONTOUR_CLIPPED = "CONTOUR_CLIPPED"
@@ -441,5 +443,32 @@ class AiJobConfigError(Exception):
         self.cause = cause
 
 
+def reject_instances(result: AiSegResult, removed: set, code: str) -> AiSegResult:
+    """`removed` 번호의 인스턴스를 범위 밖 사유 `code`로 거부한 결과(없으면 그대로). 팔·벨트 영역 필터가 같이 쓴다."""
+    if not removed:
+        return result
+
+    return dataclasses.replace(result, instances=reject_in(result.instances, removed, code))
+
+
+def reject_in(instances, removed: set, code: str) -> tuple:
+    """인스턴스 목록판 `reject_instances`(결과 객체를 만들기 전 `ai_convert` 중복 판정이 쓴다)."""
+    out = []
+
+    for inst in instances:
+        if inst.index in removed:
+            # 범위 밖 거부: 축 경로 필드를 비운다(축 후보·추적·목록에서 빠짐)
+            out.append(dataclasses.replace(inst, rejected=code, axis_endpoints_px=None, axis_reason=None,
+                                           axis_max_iou=None, axis_diag=None, axis_overlap_with=None))
+        elif inst.axis_overlap_with and removed & set(inst.axis_overlap_with):
+            # 겹침 짝이 제외됐으면 짝 목록에서 뺀다(남은 짝이 없으면 겹침 아님)
+            rest = tuple(i for i in inst.axis_overlap_with if i not in removed)
+            out.append(dataclasses.replace(inst, axis_overlap_with=rest or None))
+        else:
+            out.append(inst)
+
+    return tuple(out)
+
+
 __all__ = ["AXIS_EXTRACTION_ERROR", "CONTOUR_CLIPPED", "MULTIPLE_CANDIDATES", "axis_candidate_reason", "AiInstance", "AiJobConfigError", "AiSegResult", "EMPTY_MASK", "LOW_CONFIDENCE", "ModelPrepareError", "NON_TARGET_CLASS",
-           "REJECTIONS", "RawSegOutput", "SMALL_MASK"]
+           "REJECTIONS", "RawSegOutput", "SMALL_MASK", "reject_in", "reject_instances"]

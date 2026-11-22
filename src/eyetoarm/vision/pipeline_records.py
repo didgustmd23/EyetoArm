@@ -13,8 +13,8 @@ from typing import Any
 
 from eyetoarm.common.types import CandidateInvalidationEvent, InputStatus, InputStatusEvent
 from eyetoarm.vision.ai_config import AiSegConfig
-from eyetoarm.vision.ai_convert import list_candidate_indices
-from eyetoarm.vision.ai_result import AiSegResult, axis_candidate_reason
+from eyetoarm.vision.ai_convert import AXIS_DUP_EP_PX, AXIS_DUP_IOU, list_candidate_indices
+from eyetoarm.vision.ai_result import DUPLICATE_MASK, AiSegResult, axis_candidate_reason
 from eyetoarm.vision.pipeline_types import (
     InputStateRecord,
     JobOutcome,
@@ -86,7 +86,15 @@ def process_record(outcome: JobOutcome, *, eval_run_id: str | None = None,
         infer_ms=ai.infer_ms if ai is not None else None,
         ai_instances=None if ai is None else tuple(_instance_summary(i) for i in ai.instances),
         axis_valid_count=ai.axis_valid_count if axis_on else None,
-        list_candidate_count=None if listed is None else len(listed), list_indices=listed)
+        list_candidate_count=None if listed is None else len(listed), list_indices=listed,
+        axis_duplicates_merged=_duplicates_merged(ai) if axis_on else None)
+
+
+def _duplicates_merged(ai) -> int | None:
+    """같은 볼트 중복으로 합쳐 빠진 인스턴스 수(0이면 None: 키를 쓰지 않아 기존 기록과 바이트 동일)."""
+    n = sum(1 for i in ai.instances if i.rejected == DUPLICATE_MASK)
+
+    return n or None
 
 
 def _instance_summary(inst) -> dict:
@@ -123,6 +131,10 @@ def _detector_block(cfg) -> dict:
              "iou_threshold": cfg.iou_threshold, "imgsz": cfg.imgsz, "max_det": cfg.max_det, "device": cfg.device,
              "half": cfg.half, "retina_masks": cfg.retina_masks, "roi": None if cfg.roi is None else list(cfg.roi),
              "min_mask_area_px": cfg.min_mask_area_px, "border_margin_px": cfg.border_margin_px}
+
+    # 같은 볼트 중복 합치기 문턱(#292, ai_convert 코드 상수라 설정 지문에 들지 않음). 축 경로 설정만 남긴다
+    if getattr(cfg, "axis_extractor", None):
+        block["axis_dup"] = {"iou": AXIS_DUP_IOU, "ep_px": AXIS_DUP_EP_PX}
 
     # 시선 기반 끝점 보정은 켠 설정만 남긴다
     if getattr(cfg, "axis_view_bias", None) is not None:
