@@ -480,14 +480,32 @@ class TestEndpointInput(unittest.TestCase):
     def test_bolt_a_from_endpoints_and_goal_uses_pb(self):
         from eyetoarm.transforms.grasp import build_sort_goal
         from eyetoarm.transforms.work_result import compute_bolt_from_endpoints
-        h, t, u = self._endpoints(0.018, 0.55, 0.05, 120.0)
+        h, t, u = self._endpoints(0.023, 0.55, 0.05, 120.0, z=0.102)   # BOLT_A = M3x20, 축 높이 102 mm (B-12)
         r = compute_bolt_from_endpoints(h, t, CAM, T_W_C, SPECS)
-        self.assertEqual(r.spec, "BOLT_A")
+        self.assertEqual((r.spec, r.plane_z_m), ("BOLT_A", 0.102))         # 길이로 종류를 고른 뒤 그 종류 높이로 다시 투영
+        self.assertAlmostEqual(r.measured_length_m, 0.023, places=4)
         frames = BStage.from_config(ROOT, CAM, StaticTfLookup(T_W_C)).frames
         g = build_sort_goal(r, source_id="link_cam", stamp_ns=1, frames=frames, specs=SPECS)
-        pb = (np.array([0.55, 0.05]) + u * 0.003) * 1000
+        pb = (np.array([0.55, 0.05]) + u * 0.0015) * 1000                 # M3x20 머리 높이 3 mm / 2
         np.testing.assert_allclose(g["grasp_candidates"][0]["position_mm"][:2], pb, atol=0.15)
         np.testing.assert_allclose(g["observed_position_mm"][:2], [550.0, 50.0], atol=0.15)   # 위치 보고는 Pa
+
+    def test_bolt_length_ranges_b12(self):
+        """B-12: BOLT_A 17~27 mm, BOLT_B 39~52 mm (A 끝점 실측 범위), 사이·밖은 판정 불가."""
+        from eyetoarm.transforms.work_result import _classify
+        cases = {0.017: "BOLT_A", 0.019: "BOLT_A", 0.027: "BOLT_A", 0.030: "UNRESOLVED",
+                 0.039: "BOLT_B", 0.0409: "BOLT_B", 0.052: "BOLT_B", 0.0165: "UNRESOLVED", 0.053: "UNRESOLVED"}
+        for length, want in cases.items():
+            with self.subTest(length=length):
+                self.assertEqual(_classify("bolt", length, 0.0, float("inf"), SPECS)[0], want)
+
+    def test_bolt_b_keeps_105_plane(self):
+        """M6x40은 105 mm 그대로 (BOLT_A만 102 mm로 바뀌어도 BOLT_B 중심이 밀리지 않음)."""
+        from eyetoarm.transforms.work_result import compute_bolt_from_endpoints
+        h, t, u = self._endpoints(0.046, 0.55, -0.10, 30.0)
+        r = compute_bolt_from_endpoints(h, t, CAM, T_W_C, SPECS)
+        self.assertEqual((r.spec, r.plane_z_m), ("BOLT_B", 0.105))
+        np.testing.assert_allclose(r.center_w_m, (0.55, -0.10), atol=1e-4)
 
     def test_nut_uses_top_face_height(self):
         from eyetoarm.transforms.work_result import class_plane_z

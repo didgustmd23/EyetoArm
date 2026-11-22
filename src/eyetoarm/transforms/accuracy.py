@@ -17,12 +17,12 @@ from pathlib import Path
 import numpy as np
 
 # 모델 이름 → 규격
-MODEL_SPEC = {"bolt_m6x12": "BOLT_A", "bolt_m6x40": "BOLT_B", "nut_m6": "NUT"}
+MODEL_SPEC = {"bolt_m3x20": "BOLT_A", "bolt_m6x40": "BOLT_B", "nut_m6": "NUT"}   # BOLT_A = M3x20 (B-12, 2026-11-22)
 
 # 볼트를 눕혔을 때(피치 90°) 위에서 본 모양의 면적 중심이 모델 원점(머리 아래 면)에서 축을 따라 떨어진 거리.
 # 머리 Ø10 × 6 mm(원점 +0~+6 mm), 몸통 Ø6 × L(원점 0~−L) → (60·3 − 6L·L/2) / (60 + 6L)
 BOLT_CENTROID_OFFSET_M = {
-    "BOLT_A": (60 * 3 - 6 * 12 * 6) / (60 + 6 * 12) / 1000.0,    # ≈ −1.9 mm
+    "BOLT_A": (5 * 3 * 1.5 - 3 * 20 * 10) / (5 * 3 + 3 * 20) / 1000.0,   # M3x20: 머리 Ø5×3, 몸통 Ø3×20 → ≈ −7.7 mm
     "BOLT_B": (60 * 3 - 6 * 40 * 20) / (60 + 6 * 40) / 1000.0,   # ≈ −15.4 mm
 }
 
