@@ -31,7 +31,7 @@ REPO = Path(__file__).resolve().parents[1]
 SHANK_RADIUS = {"BOLT_A": 0.0015, "BOLT_B": 0.003}   # shaft radius (m): M3x20, M6x40 (B-12)
 TIP_CLEARANCE = 0.0015        # pick_bolt_demo 값
 MISS_RATIO = 0.97             # 그리퍼가 거의 끝까지 닫히면 못 잡은 것으로 봄
-FINGER_REACH = 0.163 / 3      # 그리퍼 밑면 → 닫힌 손끝(m). 1/3 2F-85. 데모 상수와 분리(A L-N1): 데모는 M3 전용 값으로 바뀜
+FINGER_REACH = 0.0533   # 0.163/3 - 1 mm: M3 needs fingertips below the shaft axis (B test 2026-11-22: BOLT_A and BOLT_B both placed) #      # 그리퍼 밑면 → 닫힌 손끝(m). 1/3 2F-85. 데모 상수와 분리(A L-N1): 데모는 M3 전용 값으로 바뀜
 
 
 # ---------- 계산 (ROS 없이 시험 가능) ----------
@@ -219,7 +219,7 @@ class SimSortServer:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="B 시험용 Gazebo /sort_part 서버 (로봇 실제 동작)")
-    p.add_argument("--finger-reach", type=float, default=None, help="손끝 길이(m). 기본 0.0543 (데모 상수와 분리)")
+    p.add_argument("--finger-reach", type=float, default=None, help="손끝 길이(m). 기본 0.0533 (데모 상수와 분리)")
     p.add_argument("--move-s", type=float, default=3.0, help="구간별 이동 시간(초)")
     args = p.parse_args(argv)
 
