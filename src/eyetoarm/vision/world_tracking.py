@@ -530,7 +530,7 @@ class WorldTracker:
         self.last_belt_vy: float | None = None   # mm/ms, 마지막 갱신의 벨트 공통 추정(없으면 None)
         self._stats = {"updates": 0, "not_updated": {}, "tentative_dropped": 0, "ids_retired": 0, "resets": {},
                        "events": {}, "dup_merged": 0, "dup_merged_with_mask": 0,
-                       "dup_merged_endpoint_contain": 0}
+                       "dup_merged_endpoint_contain": 0, "length_near_confirmed": 0}
 
     @property
     def tracker_epoch(self) -> int:
@@ -549,7 +549,7 @@ class WorldTracker:
         return {"updates": s["updates"], "not_updated": dict(s["not_updated"]), "tentative_dropped": s["tentative_dropped"],
                 "ids_retired": s["ids_retired"], "resets": dict(s["resets"]), "events": dict(s["events"]),
                 "dup_merged": s["dup_merged"], "dup_merged_with_mask": s["dup_merged_with_mask"],
-                "dup_merged_endpoint_contain": s["dup_merged_endpoint_contain"], "tracks": len(self._tracks), "issued": self._issuer.issued,
+                "dup_merged_endpoint_contain": s["dup_merged_endpoint_contain"], "length_near_confirmed": s["length_near_confirmed"], "tracks": len(self._tracks), "issued": self._issuer.issued,
                 "tracker_epoch": self._epoch,
                 "belt_vy_mm_per_s": None if self.last_belt_vy is None else round(self.last_belt_vy * 1000.0, 3),
                 **({} if not self._extended else {"handoff": self._handoff_stats()})}
@@ -861,6 +861,7 @@ class WorldTracker:
         elig: dict[int, list[tuple[float, int]]] = {c.index: [] for c in cands}
         by_track: dict[int, list[tuple[float, int]]] = {k: [] for k in range(len(tracks))}
         other_class_near: set[int] = set()
+        length_blocked: set[int] = set()   # 같은 클래스 확정 트랙 게이트 안인데 길이 비로만 막힌 끝점 후보(F1′)
 
         for c in cands:
             cx, cy = c.center_mm
@@ -882,6 +883,9 @@ class WorldTracker:
                     ratio = max(c.length_mm, t.length) / max(min(c.length_mm, t.length), 1e-9)
 
                     if ratio > cfg.length_ratio_max:
+                        if t.part_track_id is not None:
+                            length_blocked.add(c.index)
+
                         continue
 
                 if c.angle_deg is not None and t.angle is not None and _angle_diff(c.angle_deg, t.angle) > cfg.angle_max_deg:
@@ -930,6 +934,14 @@ class WorldTracker:
         for k, t in enumerate(tracks):
             if k in ended:
                 self._retire_counted(t)
+
+                if self._extended and t.part_track_id is not None:
+                    # 모호 은퇴도 만료처럼 사건으로 남긴다(#279 F5, 켬 기록만)
+                    r = self._handoff["retire_by_reason"]
+                    r["ambiguous"] = r.get("ambiguous", 0) + 1
+                    self._events.append({"kind": "retire", "part_track_id": t.part_track_id, "reason": "ambiguous",
+                                         "timestamp_ms": t_ms, "last_camera": t.last_camera, "unseen_ms": t_ms - t.seen_ms,
+                                         "gap_ms": t.gap_ms})
             elif k in matched_t or t.part_track_id is not None:
                 survivors.append(t)
             else:
@@ -953,6 +965,13 @@ class WorldTracker:
                 # 넘기기 켬: 확정 트랙 근처의 잘린·마스크 후보는 새 트랙을 만들지 않는다(가림 경계 편향 후보)
                 out[c.index] = TrackAssignment(c.index, None, TrackState.UNTRACKED, 0, "near_confirmed")
                 self._handoff["near_confirmed_skipped"] += 1
+                continue
+
+            if c.index in length_blocked:
+                # 확정 트랙 자리의 길이만 다른 끝점 후보(팔 근처에서 길어진 마스크 등)는 새 임시를 만들지 않는다(켬·끔, #279 F1′).
+                # 임시가 생기면 다음 프레임 보통 후보가 확정·임시 사이에서 모호가 되어 확정 번호가 끝난다(#277 (가))
+                out[c.index] = TrackAssignment(c.index, None, TrackState.UNTRACKED, 0, "length_near_confirmed")
+                self._stats["length_near_confirmed"] += 1
                 continue
 
             if len(self._tracks) >= cfg.max_tracks and not self._retire_oldest_lost(t_ms):
