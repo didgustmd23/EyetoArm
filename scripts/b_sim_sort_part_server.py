@@ -26,15 +26,19 @@ from pathlib import Path
 import numpy as np
 
 REPO = Path(__file__).resolve().parents[1]
-SHANK_RADIUS = 0.003          # M6 축 반지름(m) — B 잡는 높이(105 mm)는 축 중심 높이
+SHANK_RADIUS = {"BOLT_A": 0.0015, "BOLT_B": 0.003}   # shaft radius (m): M3x20, M6x40 (B-12)
 TIP_CLEARANCE = 0.0015        # pick_bolt_demo 값
 MISS_RATIO = 0.97             # 그리퍼가 거의 끝까지 닫히면 못 잡은 것으로 봄
 
 
 # ---------- 계산 (ROS 없이 시험 가능) ----------
-def tool_z(axis_z_m: float, finger_reach_m: float) -> float:
+def shank_radius(part_class: str) -> float:
+    return SHANK_RADIUS.get(part_class, 0.003)
+
+
+def tool_z(axis_z_m: float, finger_reach_m: float, radius: float = 0.003) -> float:
     """B 높이(축 중심 z) → 그리퍼 밑면 z. pick_bolt_demo와 같은 식: 받침면 + 여유 + 손끝 길이."""
-    return axis_z_m - SHANK_RADIUS + TIP_CLEARANCE + finger_reach_m
+    return axis_z_m - radius + TIP_CLEARANCE + finger_reach_m
 
 
 def closing_vector(closing_yaw_deg: float) -> np.ndarray:
@@ -54,14 +58,14 @@ def tool_pose(xy, z: float, closing: np.ndarray) -> np.ndarray:
 
 def plan_targets(goal, finger_reach_m: float) -> list[dict]:
     """주문 → 후보별 목표(위치 m·닫는 방향·각 높이). 후보 순서 그대로."""
-    out = []
+    out, r = [], shank_radius(goal.part_class)
     for c in goal.grasp_pose_candidates:
         x, y, z = (v / 1000.0 for v in c.position_mm)
         out.append({
             "xy": (x, y), "closing": closing_vector(c.closing_yaw_deg),
-            "grasp": tool_z(z, finger_reach_m),
-            "approach": tool_z(goal.approach_height_mm / 1000.0, finger_reach_m),
-            "lift": tool_z(goal.lift_height_mm / 1000.0, finger_reach_m),
+            "grasp": tool_z(z, finger_reach_m, r),
+            "approach": tool_z(goal.approach_height_mm / 1000.0, finger_reach_m, r),
+            "lift": tool_z(goal.lift_height_mm / 1000.0, finger_reach_m, r),
         })
     return out
 
@@ -99,7 +103,7 @@ class SimSortServer:
         self.rclpy, self.SortPart, self.args = rclpy, SortPart, args
         self.demo = _load_demo()
         self.chain = self.demo.load_chain()
-        self.reach = self.demo.FINGER_REACH
+        self.reach = args.finger_reach if args.finger_reach is not None else self.demo.FINGER_REACH
         self.arm_node = rclpy.create_node("b_sim_sort_arm")       # 팔 전용 노드 (실행기 밖에서 직접 spin)
         self.arm = self.demo.Arm(self.arm_node)
         self.home = self.arm.joints()
@@ -131,6 +135,8 @@ class SimSortServer:
             return res
         try:
             self.log.info(f"[주문] {g.part_class} {g.goal_kind} id={g.goal_id[:8]} 후보 {len(g.grasp_pose_candidates)}개")
+            for c in g.grasp_pose_candidates:
+                self.log.info(f"  grasp_mm=({c.position_mm[0]:.1f}, {c.position_mm[1]:.1f}, {c.position_mm[2]:.1f}) yaw={c.closing_yaw_deg:.1f} reach={self.reach:.4f}")
             fb("ACCEPTED")
             if g.goal_kind == "PASS_THROUGH":                     # 너트: 잡지 않음
                 handle.succeed()
@@ -149,7 +155,8 @@ class SimSortServer:
             up = self._line(down[-1], t["xy"], t["grasp"], t["lift"], t["closing"])
 
             px, py, pz = (v / 1000.0 for v in g.place_position_mm)
-            place_z = tool_z(pz, self.reach) + SHANK_RADIUS          # 놓는 높이(상자 위)
+            r = shank_radius(g.part_class)
+            place_z = tool_z(pz, self.reach, r) + r   # place height
             over_bin = self.demo.solve_ik(self.chain, tool_pose((px, py), t["lift"], t["closing"]), up[-1])
             to_bin = self._line(over_bin, (px, py), t["lift"], place_z, t["closing"])
 
@@ -193,6 +200,7 @@ class SimSortServer:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="B 시험용 Gazebo /sort_part 서버 (로봇 실제 동작)")
+    p.add_argument("--finger-reach", type=float, default=None, help="finger reach (m); default = pick_bolt_demo value")
     p.add_argument("--move-s", type=float, default=3.0, help="구간별 이동 시간(초)")
     args = p.parse_args(argv)
 
