@@ -1,0 +1,54 @@
+{
+ "description": "#278 S1-09 학습 자료. 공개 clean_train_r1 그대로 + Gazebo 학습 시드(1,000,000번대) 조각 + N1 음성",
+ "sources": {
+  "public": "data/derived/bolt_nut_clean_train_r1",
+  "G1": "/home/yhs/EyetoArm/data/derived/gz_train_r1/G1",
+  "G2": "/home/yhs/EyetoArm/data/derived/gz_train_r1/G2",
+  "N1": "_workspace/278_evidence/n1_picked_200.json"
+ },
+ "val_rule": {
+  "G1": "(index // 20) % 10 == 9",
+  "G2": "G2_v4",
+  "N1": "SIM 시각 뒤쪽 10 %"
+ },
+ "tiles": {
+  "size": 640,
+  "xs": [
+   0,
+   320,
+   640
+  ],
+  "y0": 40,
+  "N1_xs": [
+   0,
+   640
+  ],
+  "keep_frac": 0.15,
+  "min_area_px": 8.0
+ },
+ "stats": {
+  "pub_train": 1420,
+  "pub_val": 162,
+  "pub_test": 161,
+  "G1_train_tiles": 1583,
+  "G1_train_tiles_labeled": 1352,
+  "G1_train_inst": 2812,
+  "G1_train_tiles_empty": 231,
+  "G1_tile_ambiguous": 40,
+  "G1_val_tiles": 177,
+  "G1_val_tiles_empty": 24,
+  "G1_val_inst": 298,
+  "G1_val_tiles_labeled": 153,
+  "G2_train_tiles": 477,
+  "G2_train_tiles_labeled": 344,
+  "G2_train_inst": 770,
+  "G2_train_tiles_empty": 133,
+  "G2_tile_ambiguous": 52,
+  "G2_val_tiles": 71,
+  "G2_val_tiles_labeled": 51,
+  "G2_val_inst": 114,
+  "G2_val_tiles_empty": 20,
+  "N1_train_tiles": 360,
+  "N1_val_tiles": 40
+ }
+}
