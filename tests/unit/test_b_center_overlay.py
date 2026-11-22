@@ -48,6 +48,28 @@ class CenterOverlayTest(unittest.TestCase):
         self.assertFalse(np.array_equal(image, src.image))                    # 무언가 그려짐
         self.assertFalse(src.image.flags.writeable)                          # 원본(쓰기 금지)은 그대로
 
+    def test_results_payload_same_frame_numbers(self):
+        """/b/results: 영상과 같은 번호표 + 부품마다 규격·중심 mm·각도·픽셀 중심 (C 요청 2026-11-22)."""
+        import json
+        from eyetoarm.transforms.center_overlay_pub import results_payload
+
+        class ResultsPub(FakePublisher):
+            def publish_results(self, payload):
+                self.payload = payload
+
+        env = envelope([bolt(0, 0.55, -0.12), bolt(2, 0.56, -0.05)])
+        pub = ResultsPub()
+        rec = center_overlay_consumer(self.stage, pub)(env)
+        p = pub.payload
+        self.assertEqual(p, results_payload(rec, pub.keys))
+        self.assertEqual({k: p[k] for k in pub.keys}, pub.keys)                    # 영상과 같은 번호표
+        self.assertEqual((p["version"], p["selected_instance_index"], len(p["results"])), ("eyetoarm.b_results/1", 2, 2))
+        r = next(x for x in p["results"] if x["instance_index"] == 2)
+        self.assertEqual((r["spec"], r["selected"], r["goal_kind"]), ("BOLT_B", True, "PICK_PLACE"))
+        self.assertAlmostEqual(r["center_w_mm"][0], 560.0, delta=3.0)
+        self.assertIn("center_px", r)
+        json.dumps(p, default=str)                                                 # JSON 한 줄로 보낼 수 있음
+
     def test_publish_failure_keeps_b_result(self):
         consume = center_overlay_consumer(self.stage, FakePublisher(fail=True), on_error=lambda e: None)
         rec = consume(envelope([bolt(0, 0.55, -0.12)]))
