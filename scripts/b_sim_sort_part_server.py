@@ -9,6 +9,8 @@
 
 주의
 - 벨트가 움직이면 B 위치는 "찍은 순간" 위치라 빗나간다(움직임 예측은 C 몫). 시험은 벨트를 멈추고 한다.
+- 물리 엔진: 11/21부터 기본값인 Bullet Featherstone에서는 그리퍼가 볼트를 물고 떨려 닫기가 끝나지 않는다(시간 초과).
+  DART(`physics_engine:=gz-physics-dartsim-plugin`)에서는 같은 파일로 집기·상자 넣기 성공 (B 시험 2026-11-22, A L-N1).
 - C가 정식 서버를 띄우면 이 서버는 끈다 (같은 이름 `/sort_part` 서버가 둘이면 안 됨).
 
 실행 (WSL, 저장소 맨 위, 시뮬을 켠 뒤):
@@ -29,6 +31,7 @@ REPO = Path(__file__).resolve().parents[1]
 SHANK_RADIUS = {"BOLT_A": 0.0015, "BOLT_B": 0.003}   # shaft radius (m): M3x20, M6x40 (B-12)
 TIP_CLEARANCE = 0.0015        # pick_bolt_demo 값
 MISS_RATIO = 0.97             # 그리퍼가 거의 끝까지 닫히면 못 잡은 것으로 봄
+FINGER_REACH = 0.163 / 3      # 그리퍼 밑면 → 닫힌 손끝(m). 1/3 2F-85. 데모 상수와 분리(A L-N1): 데모는 M3 전용 값으로 바뀜
 
 
 # ---------- 계산 (ROS 없이 시험 가능) ----------
@@ -103,7 +106,7 @@ class SimSortServer:
         self.rclpy, self.SortPart, self.args = rclpy, SortPart, args
         self.demo = _load_demo()
         self.chain = self.demo.load_chain()
-        self.reach = args.finger_reach if args.finger_reach is not None else self.demo.FINGER_REACH
+        self.reach = args.finger_reach if args.finger_reach is not None else FINGER_REACH
         self.arm_node = rclpy.create_node("b_sim_sort_arm")       # 팔 전용 노드 (실행기 밖에서 직접 spin)
         self.arm = self.demo.Arm(self.arm_node)
         self.home = self.arm.joints()
@@ -114,7 +117,8 @@ class SimSortServer:
             goal_callback=lambda g: GoalResponse.REJECT if self.busy.locked() else GoalResponse.ACCEPT,
             cancel_callback=lambda h: CancelResponse.REJECT)
         self.log = self.node.get_logger()
-        self.log.info("B 시험용 Gazebo /sort_part 서버 대기 중 (로봇을 실제로 움직임, Ctrl+C 종료)")
+        self.log.info(f"B 시험용 Gazebo /sort_part 서버 대기 중 (로봇을 실제로 움직임, Ctrl+C 종료) "
+                      f"finger_reach={self.reach:.4f} m. 물리 엔진은 DART 권장")
 
     # 직선 위·아래 이동 (pick_bolt_demo.line과 같은 방식)
     def _line(self, q0, xy, z0, z1, closing, steps=25):
@@ -127,7 +131,14 @@ class SimSortServer:
     def execute(self, handle):
         g = handle.request
         res = self.SortPart.Result()
-        fb = lambda s: handle.publish_feedback(self.SortPart.Feedback(stage=s))   # noqa: E731
+        stage = "START"                                            # 실패 때 어느 단계였는지 기록(A L-N1)
+
+        def fb(s):
+            handle.publish_feedback(self.SortPart.Feedback(stage=s))
+
+        def step(name):
+            nonlocal stage
+            stage = name
 
         if not self.busy.acquire(blocking=False):
             handle.abort()
@@ -161,9 +172,13 @@ class SimSortServer:
             to_bin = self._line(over_bin, (px, py), t["lift"], place_z, t["closing"])
 
             fb("EXECUTING")
+            step("OPEN")
             self.arm.grip(self.demo.GRIP_OPEN)
+            step("MOVE_ABOVE")
             self.arm.follow([above], self.args.move_s)
+            step("DESCEND")
             self.arm.follow(down, self.args.move_s * 0.75)
+            step("CLOSE")
             self.arm.grip(self.demo.GRIP_CLOSED)
             knuckle = self.arm.state[self.demo.GRIPPER_JOINT]
             if knuckle > self.demo.GRIP_CLOSED * MISS_RATIO:          # 끝까지 닫힘 = 손가락 사이에 아무것도 없음
@@ -174,11 +189,15 @@ class SimSortServer:
                 self.log.info(f"[결과] 못 잡음 (그리퍼 {knuckle:.3f} rad)")
                 return res
 
+            step("LIFT")
             self.arm.follow(up, self.args.move_s * 0.75)
             fb("PLACING")
+            step("MOVE_BIN")
             self.arm.follow([over_bin], self.args.move_s * 1.5)
             self.arm.follow(to_bin, self.args.move_s * 0.75)
+            step("RELEASE")
             self.arm.release()
+            step("RETURN")
             self.arm.follow([over_bin, self.home], self.args.move_s * 1.5)
             res.arrived_stamp_ns = self.node.get_clock().now().nanoseconds
             handle.succeed()
@@ -186,13 +205,13 @@ class SimSortServer:
             self.log.info(f"[결과] {g.part_class} → {g.place_bin} 상자 넣기 완료")
             return res
         except Exception as exc:                                   # 역기구학 실패·제어기 오류
-            self.log.error(f"[결과] 실패: {type(exc).__name__}: {exc}")
+            self.log.error(f"[결과] 실패 (단계 {stage}): {type(exc).__name__}: {exc}")
             try:
                 self.arm.follow([self.home], self.args.move_s)
             except Exception:
                 pass
             handle.abort()
-            res.status, res.reason = "FAILED", f"EXEC_ERROR:{type(exc).__name__}"
+            res.status, res.reason = "FAILED", f"EXEC_ERROR:{stage}:{type(exc).__name__}"
             return res
         finally:
             self.busy.release()
@@ -200,7 +219,7 @@ class SimSortServer:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="B 시험용 Gazebo /sort_part 서버 (로봇 실제 동작)")
-    p.add_argument("--finger-reach", type=float, default=None, help="finger reach (m); default = pick_bolt_demo value")
+    p.add_argument("--finger-reach", type=float, default=None, help="손끝 길이(m). 기본 0.0543 (데모 상수와 분리)")
     p.add_argument("--move-s", type=float, default=3.0, help="구간별 이동 시간(초)")
     args = p.parse_args(argv)
 
