@@ -41,13 +41,15 @@ def options(**kw):
 
 
 def shm_entries():
-    """대리 객체 슬롯 파일."""
-    return sorted(n for n in os.listdir(SHM_DIR) if n.startswith(SHM_PREFIX))
+    """이 프로세스(부모 pid 이름)의 /dev/shm 슬롯. 동시에 도는 다른 pytest의 슬롯은 세지 않는다."""
+    own = f"{SHM_PREFIX}{os.getpid()}_"
+    return sorted(n for n in os.listdir(SHM_DIR) if n.startswith(own))
 
 
 def child_processes():
-    """살아 있는 자식 진입점 프로세스 수."""
+    """이 프로세스가 띄운(`--parent-pid` 자기 pid) 살아 있는 자식 진입점 수. 다른 pytest의 자식은 세지 않는다."""
     count = 0
+    own = str(os.getpid()).encode()
 
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
@@ -59,7 +61,10 @@ def child_processes():
         except OSError:
             continue
 
-        if b"eyetoarm.vision.ai_process_child" in cmd and state != "Z":
+        mine = b"--parent-pid" in cmd and cmd.index(b"--parent-pid") + 1 < len(cmd) and \
+            cmd[cmd.index(b"--parent-pid") + 1] == own
+
+        if b"eyetoarm.vision.ai_process_child" in cmd and mine and state != "Z":
             count += 1
 
     return count

@@ -32,7 +32,9 @@ _OPTIONAL_KEYS = frozenset({"axis_extractor", "axis_view_bias"})
 
 # 시선 기반 끝점 보정 모형은 C1(δ = k·s) 하나, k 상한은 안전 범위
 VIEW_BIAS_MODELS = ("C1",)
-_VIEW_BIAS_KEYS = frozenset({"model", "k_mm", "plane_z_m", "valid_for_model_id"})
+_VIEW_BIAS_KEYS = frozenset({"model", "k_mm", "plane_z_m", "valid_for_model_id"})          # 기존 형식(평면·k 하나)
+_VIEW_BIAS_SPEC_KEYS = frozenset({"model", "valid_for_model_id", "by_spec"})               # 종류별 형식(#270)
+_VIEW_BIAS_ENTRY_KEYS = frozenset({"label", "k_mm", "fit_plane_z_m"})
 _VIEW_BIAS_K_MAX_MM = 10.0
 
 
@@ -120,47 +122,142 @@ def _roi(v) -> tuple[int, int, int, int] | None:
     return (x, y, w, h)
 
 
-@dataclass(frozen=True)
-class ViewBiasConfig:
-    """시선 기반 끝점 보정 설정. 생성 때 형식·범위를 검사하고, 모델 ID 대조는 `AiSegConfig`가 한다."""
+def _view_bias_k(v, name: str) -> float:
+    """보정 계수 k(mm): 유한, (0, 상한]."""
+    k = _finite_float(v, name)
 
-    model: str
+    if not 0.0 < k <= _VIEW_BIAS_K_MAX_MM:
+        raise ValueError(f"{name} must be in (0, {_VIEW_BIAS_K_MAX_MM}]: {v!r}")
+
+    return k
+
+
+@dataclass(frozen=True)
+class ViewBiasSpecEntry:
+    """B 볼트 종류 하나의 보정 값: 기대 라벨, k(mm), k를 잰 투영 평면 높이(m). B 규격 대조는 실행 시작 때 한다."""
+
+    label: str
     k_mm: float
-    plane_z_m: float
-    valid_for_model_id: str
+    fit_plane_z_m: float
 
     def __post_init__(self) -> None:
-        """모형·계수·높이·모델 ID 형식 검사. 잘못된 값은 ValueError."""
-        if not isinstance(self.model, str) or self.model not in VIEW_BIAS_MODELS:
-            raise ValueError(f"axis_view_bias.model must be one of {VIEW_BIAS_MODELS}: {self.model!r}")
+        """라벨·k·평면 높이 형식 검사. 잘못된 값은 ValueError."""
+        _text(self.label, "axis_view_bias.by_spec.label")
+        object.__setattr__(self, "k_mm", _view_bias_k(self.k_mm, "axis_view_bias.by_spec.k_mm"))
+        z = _finite_float(self.fit_plane_z_m, "axis_view_bias.by_spec.fit_plane_z_m")
 
-        k = _finite_float(self.k_mm, "axis_view_bias.k_mm")
+        if z <= 0.0:
+            raise ValueError(f"axis_view_bias.by_spec.fit_plane_z_m must be > 0: {self.fit_plane_z_m!r}")
 
-        if not 0.0 < k <= _VIEW_BIAS_K_MAX_MM:
-            raise ValueError(f"axis_view_bias.k_mm must be in (0, {_VIEW_BIAS_K_MAX_MM}]: {self.k_mm!r}")
-
-        object.__setattr__(self, "k_mm", k)
-        object.__setattr__(self, "plane_z_m", _finite_float(self.plane_z_m, "axis_view_bias.plane_z_m"))
-        _text(self.valid_for_model_id, "axis_view_bias.valid_for_model_id")
+        object.__setattr__(self, "fit_plane_z_m", z)
 
     def to_json(self) -> dict:
         """정규 JSON·기록용 사전."""
-        return {"model": self.model, "k_mm": self.k_mm, "plane_z_m": self.plane_z_m,
-                "valid_for_model_id": self.valid_for_model_id}
+        return {"label": self.label, "k_mm": self.k_mm, "fit_plane_z_m": self.fit_plane_z_m}
+
+
+def _view_bias_by_spec(v) -> tuple[tuple[str, ViewBiasSpecEntry], ...]:
+    """`by_spec` 사전(이름 → 항목) 또는 정규화된 튜플 → 이름 순 튜플. 빈 값·모르는 키·빠진 키는 ValueError."""
+    if isinstance(v, tuple) and all(isinstance(p, tuple) and len(p) == 2 and isinstance(p[1], ViewBiasSpecEntry) for p in v):
+        items = list(v)
+    elif isinstance(v, dict):
+        items = []
+
+        for name, entry in v.items():
+            if isinstance(entry, ViewBiasSpecEntry):
+                items.append((name, entry))
+                continue
+
+            if not isinstance(entry, dict):
+                raise ValueError(f"axis_view_bias.by_spec[{name!r}] must be an object: {entry!r}")
+
+            missing, unknown = _VIEW_BIAS_ENTRY_KEYS - entry.keys(), entry.keys() - _VIEW_BIAS_ENTRY_KEYS
+
+            if missing or unknown:
+                raise ValueError(f"axis_view_bias.by_spec[{name!r}] keys mismatch: missing={sorted(missing)} "
+                                 f"unknown={sorted(unknown)}")
+
+            items.append((name, ViewBiasSpecEntry(**entry)))
+    else:
+        raise ValueError(f"axis_view_bias.by_spec must be an object of spec name -> entry: {v!r}")
+
+    if not items:
+        raise ValueError("axis_view_bias.by_spec must not be empty")
+
+    for name, _ in items:
+        _text(name, "axis_view_bias.by_spec name")
+
+    return tuple(sorted(items))
+
+
+@dataclass(frozen=True)
+class ViewBiasConfig:
+    """시선 기반 끝점 보정 설정. 생성 때 형식·범위를 검사하고, 모델 ID 대조는 `AiSegConfig`가 한다.
+
+    두 형식 중 하나다.
+    - 기존 형식: `k_mm`·`plane_z_m` 하나(모든 볼트 같은 평면·k). 정규 JSON·설정 ID가 #270 전과 같다.
+    - 종류별 형식(#270): `by_spec` = B 볼트 종류별 (라벨, k, k를 잰 평면). 투영 높이는 실행 때 B 규격에서 읽고
+      `view_bias.build_view_bias_plan`이 라벨·평면을 대조한다(이 설정만으로는 보정하지 않는다).
+    """
+
+    model: str
+    k_mm: float | None
+    plane_z_m: float | None
+    valid_for_model_id: str
+    by_spec: tuple[tuple[str, ViewBiasSpecEntry], ...] | None = None
+
+    def __post_init__(self) -> None:
+        """모형·모델 ID·형식별 값 검사. 두 형식을 섞으면 ValueError."""
+        if not isinstance(self.model, str) or self.model not in VIEW_BIAS_MODELS:
+            raise ValueError(f"axis_view_bias.model must be one of {VIEW_BIAS_MODELS}: {self.model!r}")
+
+        _text(self.valid_for_model_id, "axis_view_bias.valid_for_model_id")
+
+        if self.by_spec is None:
+            object.__setattr__(self, "k_mm", _view_bias_k(self.k_mm, "axis_view_bias.k_mm"))
+            object.__setattr__(self, "plane_z_m", _finite_float(self.plane_z_m, "axis_view_bias.plane_z_m"))
+            return
+
+        if self.k_mm is not None or self.plane_z_m is not None:
+            raise ValueError("axis_view_bias: by_spec cannot be combined with k_mm/plane_z_m")
+
+        object.__setattr__(self, "by_spec", _view_bias_by_spec(self.by_spec))
+
+    @property
+    def legacy(self) -> bool:
+        """기존 형식(평면·k 하나)인가."""
+        return self.by_spec is None
+
+    def to_json(self) -> dict:
+        """정규 JSON·기록용 사전. 기존 형식은 #270 전과 같은 키 4개다."""
+        if self.legacy:
+            return {"model": self.model, "k_mm": self.k_mm, "plane_z_m": self.plane_z_m,
+                    "valid_for_model_id": self.valid_for_model_id}
+
+        return {"model": self.model, "valid_for_model_id": self.valid_for_model_id,
+                "by_spec": {name: e.to_json() for name, e in self.by_spec}}
 
 
 def parse_view_bias(v) -> ViewBiasConfig | None:
-    """설정 값(None·사전·ViewBiasConfig) → ViewBiasConfig 또는 None. 모르는 키·빠진 키는 ValueError."""
+    """설정 값(None·사전·ViewBiasConfig) → ViewBiasConfig 또는 None. 모르는 키·빠진 키는 ValueError.
+
+    `by_spec` 키가 있으면 종류별 형식, 없으면 기존 형식으로 키 집합을 검사한다.
+    """
     if v is None or isinstance(v, ViewBiasConfig):
         return v
 
     if not isinstance(v, dict):
         raise ValueError(f"axis_view_bias must be an object or null: {v!r}")
 
-    missing, unknown = _VIEW_BIAS_KEYS - v.keys(), v.keys() - _VIEW_BIAS_KEYS
+    keys = _VIEW_BIAS_SPEC_KEYS if "by_spec" in v else _VIEW_BIAS_KEYS
+    missing, unknown = keys - v.keys(), v.keys() - keys
 
     if missing or unknown:
         raise ValueError(f"axis_view_bias keys mismatch: missing={sorted(missing)} unknown={sorted(unknown)}")
+
+    if "by_spec" in v:
+        return ViewBiasConfig(model=v["model"], k_mm=None, plane_z_m=None, valid_for_model_id=v["valid_for_model_id"],
+                              by_spec=v["by_spec"])
 
     return ViewBiasConfig(**v)
 
@@ -388,4 +485,5 @@ def load_ai_config(path: str | os.PathLike) -> AiSegConfig:
 
 
 __all__ = ["AXIS_EXTRACTORS", "AiSegConfig", "FORMAT_VERSION", "MODEL_FAMILIES", "VIEW_BIAS_MODELS", "ViewBiasConfig",
+           "ViewBiasSpecEntry",
            "load_ai_config", "parse_view_bias"]

@@ -13,6 +13,7 @@ import importlib.util
 import math
 import signal
 import sys
+import json
 import threading
 from pathlib import Path
 
@@ -26,6 +27,9 @@ from eyetoarm.vision.planar import load_config
 from eyetoarm.vision.handoff import AToCHandoff
 from eyetoarm.vision.c_handoff_probe import HandoffProbe
 from eyetoarm.vision.tracking import PartTracker, PartTrackIdIssuer, TrackMode
+
+
+ARM_REGION_DEFAULT_REL = "config/vision/arm_region_filter.json"   # 팔 영역 제외 기본 설정(실시간 기록 연결 기본 켬)
 
 
 def _positive_int(text: str) -> int:
@@ -131,6 +135,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="--tracking-space world 전용, 기본 꺼짐: 그리퍼 깊이(/gripper_cam/depth_image)로 확정 W 트랙의 위치를 "
                              "이어 갱신하고 화면 밖이면 번호를 유지한다. --world-tracker-config에 visibility·gripper 블록 필수 "
                              "(예 config/vision/world_tracker_gripper_test.json). B 입력은 바뀌지 않는다")
+    parser.add_argument("--arm-region-filter", dest="arm_region_filter", metavar="JSON", default=None,
+                        help="--live-observation-out 전용: 팔·그리퍼 투영 영역 검출 제외 설정(기본 켬, "
+                             f"기본 파일 {ARM_REGION_DEFAULT_REL})")
+    parser.add_argument("--no-arm-region-filter", dest="no_arm_region_filter", action="store_true",
+                        help="--live-observation-out 전용: 팔·그리퍼 투영 영역 검출 제외를 끈다")
     parser.add_argument("--live-sort-part", dest="live_sort_part", action="store_true",
                         help="--live-observation-out 전용(#214 D13 해제): 수락된 B 결과의 C 목표를 /sort_part로 송신. 단계 T, 또는 "
                              "단계 L(#233, B가 고른 1개만). 설정 sort_part 필수. robot_ws의 eyetoarm_interfaces 빌드·source 필요")
@@ -284,6 +293,14 @@ def _check_source_args(args, ros_available) -> None:
     if getattr(args, "gripper_handoff", False) and args.tracking_space != "world":
         build_parser().error("--gripper-handoff requires --tracking-space world (W tracking)")
 
+    # 팔 영역 제외는 촬영 시각 TF·카메라가 있는 실시간 기록 연결에서만(기본 켬)
+    if args.arm_region_filter is not None and args.no_arm_region_filter:
+        build_parser().error("--arm-region-filter and --no-arm-region-filter are mutually exclusive")
+
+    if (args.arm_region_filter is not None or args.no_arm_region_filter) and args.live_observation_out is None:
+        build_parser().error("--arm-region-filter/--no-arm-region-filter require --live-observation-out "
+                             "(needs capture-time TF and camera)")
+
     # C 목표 송신: 기록 전용 연결의 수락 결과만(단계 L은 B가 고른 1개)
     if args.live_sort_part:
         if args.live_observation_out is None:
@@ -376,6 +393,7 @@ class _StopSignals:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+ARM_REGION_DEFAULT = REPO_ROOT / ARM_REGION_DEFAULT_REL
 PART_SPECS_PATH = REPO_ROOT / "config/calibration/part_specs.json"   # B 파일(읽기만)
 FRAMES_PATH = REPO_ROOT / "config/robot/frames.yaml"   # 좌표 기준(읽기만): 그리퍼 카메라 대조·벨트 사각형
 # 시야 보정 평면과 B 볼트 기준 높이의 허용 차(m). 평면 차가 보정량에 주는 영향은 작지만(5 mm면 약 1 %)
@@ -402,9 +420,12 @@ def _bolt_planes(specs):
     from eyetoarm.vision.world_tracking import BoltPlanes
 
     heights = _bolt_spec_heights(specs)
-    rows = tuple((name, heights[name], float(specs["specs"][name]["total_length"])) for name in heights if name != "bolt")
+    names = [name for name in heights if name != "bolt"]
+    rows = tuple((name, heights[name], float(specs["specs"][name]["total_length"])) for name in names)
+    # 길이 허용을 함께 넘겨 시야 보정과 같은 고르기(허용 안 먼저)를 쓴다(#270)
+    tols = tuple(float(specs["specs"][name]["length_tolerance"]) for name in names)
 
-    return BoltPlanes(default_z_m=heights["bolt"], specs=rows)
+    return BoltPlanes(default_z_m=heights["bolt"], specs=rows, tolerances_m=tols)
 
 
 def _check_view_bias_plane(bias, specs_path: Path | None = None) -> dict[str, float]:
@@ -425,6 +446,28 @@ def _check_view_bias_plane(bias, specs_path: Path | None = None) -> dict[str, fl
                              "re-derive axis_view_bias for the current B specs")
 
     return heights
+
+
+def _view_bias_runtime(bias, specs_path: Path | None = None):
+    """보정 설정 → 실행 인자. None·기존 형식은 그대로, 종류별 형식은 B 규격과 대조한 `ViewBiasPlan`(#270).
+
+    맞지 않으면 ValueError(시작 거부 2). `specs_path`가 None이면 `PART_SPECS_PATH`.
+    """
+    if bias is None or bias.legacy:
+        return bias
+
+    import hashlib
+
+    from eyetoarm.transforms.work_result import load_specs
+    from eyetoarm.vision.view_bias import build_view_bias_plan
+
+    specs_path = PART_SPECS_PATH if specs_path is None else specs_path
+
+    try:
+        return build_view_bias_plan(bias, load_specs(specs_path),
+                                    part_specs_sha256=hashlib.sha256(Path(specs_path).read_bytes()).hexdigest())
+    except ValueError as exc:
+        raise ValueError(f"{exc} ({specs_path})") from exc
 
 
 def _heights_text(heights: dict[str, float], ref_m: float | None = None) -> str:
@@ -588,10 +631,17 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
             if synthetic is not None:
                 raise ValueError("axis_view_bias is not supported with --synthetic-observation-fixture (no AI endpoints)")
 
-            heights = _check_view_bias_plane(config.axis_view_bias)
-            err.write(f"run_pipeline: axis_view_bias plane_z={config.axis_view_bias.plane_z_m * 1000:.1f}mm; B bolt heights "
-                      f"{_heights_text(heights, config.axis_view_bias.plane_z_m)} within ±{VIEW_BIAS_PLANE_TOL_M * 1000:.0f} mm "
-                      "(correction uses the single config plane)\n")
+            if config.axis_view_bias.legacy:
+                heights = _check_view_bias_plane(config.axis_view_bias)
+                err.write(f"run_pipeline: axis_view_bias plane_z={config.axis_view_bias.plane_z_m * 1000:.1f}mm; B bolt heights "
+                          f"{_heights_text(heights, config.axis_view_bias.plane_z_m)} within ±{VIEW_BIAS_PLANE_TOL_M * 1000:.0f} mm "
+                          "(correction uses the single config plane)\n")
+            else:
+                plan = _view_bias_runtime(config.axis_view_bias)
+                rows = " ".join(f"{s.name}({s.label})=plane {s.plane_z_m * 1000:.1f}mm k {plan.k_of(s.name):.3f}mm "
+                                f"len {(s.total_length_m - s.length_tolerance_m) * 1000:.1f}~"
+                                f"{(s.total_length_m + s.length_tolerance_m) * 1000:.1f}mm" for s in plan.specs)
+                err.write(f"run_pipeline: axis_view_bias by spec: {rows} (spec by endpoint length at each spec plane)\n")
 
             if capture is None and args.live_observation_out is None:
                 err.write("run_pipeline: axis_view_bias inactive: no B input path (needs --capture-meta or "
@@ -1002,6 +1052,60 @@ def _default_live_handoff():
     return AToCHandoff(notify=probe.notify), probe
 
 
+def _load_arm_region(args, world_frame: str, injected_tf: bool):
+    """팔 영역 제외 설정. (설정 | None, 표시 사전 | None). 끔이면 설정 None. 읽기·검사 오류는 ValueError·OSError.
+
+    기본 켬은 실제 TF 런타임일 때만이다. 시험이 TF 대역을 주입하면(카메라 프레임만 흉내) 기본은 끔이고 표시도
+    더하지 않는다(기존 출력 그대로). 명시 --arm-region-filter는 주입 TF에서도 켠다.
+    """
+    if args.no_arm_region_filter:
+        return None, {"enabled": False, "source": "argument"}
+
+    if args.arm_region_filter is None and injected_tf:
+        return None, None
+
+    from eyetoarm.vision.arm_region import load_arm_region_config
+
+    path = args.arm_region_filter or str(ARM_REGION_DEFAULT)
+    config, sha = load_arm_region_config(path)
+
+    if config.world_frame != world_frame:
+        raise ValueError(f"arm region world_frame {config.world_frame!r} != live observation world_frame "
+                         f"{world_frame!r}")
+
+    return config, {"enabled": True, "source": "argument" if args.arm_region_filter else "default", "path": path,
+                    "sha256": sha}
+
+
+class _ArmRegionRecords:
+    """팔 영역 판정 기록(`arm_region.jsonl`, 제외·TF 실패·오류가 있는 프레임만). worker 스레드가 쓴다."""
+
+    def __init__(self, path) -> None:
+        """새 파일을 연다(있으면 FileExistsError)."""
+        self._fh = open(path, "x", encoding="utf-8")
+        self._lock = threading.Lock()
+        self.written = 0
+        self.error: str | None = None
+
+    def write(self, record: dict) -> None:
+        """한 줄(정상이고 제외 없는 프레임은 쓰지 않는다). 쓰기 실패는 기록만 하고 검출을 막지 않는다."""
+        if record.get("status") == "ok" and not any(d["excluded"] for d in record.get("decisions", ())):
+            return
+
+        try:
+            with self._lock:
+                self._fh.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
+                self._fh.flush()
+                self.written += 1
+        except (OSError, ValueError) as exc:   # 기록 실패: 요약 problems로 올린다
+            self.error = self.error or f"{type(exc).__name__}: {exc}"
+
+    def close(self) -> None:
+        """파일을 닫는다."""
+        with self._lock:
+            self._fh.close()
+
+
 def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_stage_hook, live_source_factory,
                           live_tf_factory, controller, list_consumer_factory=None,
                           live_sort_part_factory=None, live_conveyor_probe=None, live_handoff_factory=None,
@@ -1029,6 +1133,12 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
     if settings.detector_config.axis_extractor is None:
         err.write("run_pipeline: config error: --live-observation-out requires an AI config with axis_extractor\n")
+        return 2
+
+    try:
+        arm_config, arm_mark = _load_arm_region(args, link_config.world_frame, live_tf_factory is not None)
+    except (OSError, ValueError) as exc:
+        err.write(f"run_pipeline: arm region filter config error: {exc}\n")
         return 2
 
     sort_on = bool(getattr(args, "live_sort_part", False))
@@ -1190,7 +1300,7 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         link = controller.start_run(run_id, make_session=lambda rid: LiveObservationLink(
             rid, args.live_observation_out, config=link_config, tf=tf, stage_factory=stage_factory, render=render,
             b_input=args.b_input, list_consumer_factory=consumer_factory, **consumer_kind, run_outputs=run_outputs,
-            view_bias=getattr(settings.detector_config, "axis_view_bias", None),
+            view_bias=_view_bias_runtime(getattr(settings.detector_config, "axis_view_bias", None)),
             sort_part_runtime=sort_rt, tracking=args.tracking,
             **({} if not world_on else {"world_tracker": _new_world_tracker(world_cfg[0], handoff_cfg[0],
                                                                             None if handoff_cfg[1] is None else handoff_cfg[1].config),
@@ -1213,6 +1323,8 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
     stage_l = (f" b_input=eyetoarm.b_input/2 consumer={link.consumer_kind}" if listed else "")
     err.write(f"run_pipeline: LIVE A->B RECORD-ONLY TEST run_id={run_id} config_sha256={link_config.sha256} "
               f"status=test_only{stage_l}; outputs={','.join(run_outputs)}; no D/robot output from A, no auto restart\n")
+
+    arm_filter = arm_records = None   # 팔 영역 제외 감싸개·판정 기록(실행 try 안에서 만든다)
 
     if center_on:
         overlay = getattr(center_pub, "overlay_topic", None)
@@ -1294,6 +1406,27 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
     # 세션 등록 뒤 모든 단계는 이 try 안이다. 실패해도 세션·TF를 정리하고 1로 끝낸다
     try:
+        # 팔 영역 제외: 검출기 바로 뒤(worker 안, 관측 선택 전). 촬영 stamp TF·현재 카메라는 이 연결부의 것을 쓴다
+        if arm_config is not None:
+            from eyetoarm.vision.ai_convert import observation_from_ai
+            from eyetoarm.vision.arm_region import ArmRegionFilter
+            from eyetoarm.vision.live_observation_envelope import LiveCaptureTfLookup
+
+            arm_records = _ArmRegionRecords(Path(args.live_observation_out) / "arm_region.jsonl")
+            arm_filter = ArmRegionFilter(
+                detector_kw["detector"],
+                tf_lookup=LiveCaptureTfLookup(link.tf.lookup, world_frame=link_config.world_frame,
+                                              wait_limit_s=link_config.tf_wait_limit_s),
+                camera_for=lambda frame: link._track_camera, config=arm_config, select=observation_from_ai,
+                on_decision=arm_records.write)
+            detector_kw = {**detector_kw, "detector": arm_filter}
+            err.write(f"run_pipeline: ARM REGION FILTER ON source={arm_mark['source']} config={arm_mark['path']} "
+                      f"sha256={arm_mark['sha256'][:12]} min_fraction={arm_config.min_fraction:g} "
+                      f"margin={arm_config.margin_mm:g}mm occluders={len(arm_config.occluders)} "
+                      "(capture-stamp TF; TF failure keeps the detection)\n")
+        elif arm_mark is not None:
+            err.write("run_pipeline: arm region filter off (--no-arm-region-filter)\n")
+
         make = live_source_factory or _live_factory
         source_factory = make(args.source_id, args.ros_reliability, boundary_hook=link.boundary_hook)
 
@@ -1319,7 +1452,7 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
             log_kw = {"b_input": B_INPUT_LIST} if listed else {}
             log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
                               log_geometry=args.log_instance_geometry, infer_process=infer_proxy is not None,
-                              infer_process_source=args.infer_process_source,
+                              infer_process_source=args.infer_process_source, arm_region_filter=arm_mark,
                               **log_kw)
             run_kw = {"live_observation_b_input": "list"} if listed else {}
             result = run(source_factory, settings, log, run_id=run_id, config=runner_config, stderr=err,
@@ -1367,6 +1500,16 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
         if infer_failed is not None:
             problems.append(f"infer process failed: {infer_failed}")
+
+        # 팔 영역 제외 요약(실행기가 끝난 뒤라 worker가 더 쓰지 않는다)
+        arm_summary = arm_mark if arm_filter is None else {**arm_mark, **arm_filter.summary(),
+                                                           "records_written": arm_records.written}
+
+        if arm_records is not None:
+            arm_records.close()
+
+            if arm_records.error is not None:
+                problems.append(f"arm region record error: {arm_records.error}")
 
         if not link.cleanup_confirmed:
             problems.append(f"cleanup not confirmed: {list(record.close_errors)}")
@@ -1444,6 +1587,9 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
             if infer_summary is not None:
                 tracking_extra["infer_process"] = infer_summary
+
+            if arm_summary is not None:
+                tracking_extra["arm_region_filter"] = arm_summary
             link.write_summary({"exit_code": exit_code, "reset_detected": reset, "problems": problems, **tracking_extra,
                                 "runner": None if result is None else {
                                     "exit_code": result.exit_code, "stop_reason": result.stop_reason,
@@ -1533,7 +1679,7 @@ def _run_capture_list(args, settings, runner_config, detector_kw, capture, err, 
 
     try:
         recorder = CaptureListRecorder(args.observation_out, meta, consumer_kind=consumer_kind,
-                                       view_bias=getattr(settings.detector_config, "axis_view_bias", None))
+                                       view_bias=_view_bias_runtime(getattr(settings.detector_config, "axis_view_bias", None)))
     except OSError as exc:
         err.write(f"run_pipeline: cannot create a-to-b-out: {exc}\n")
         return 2
@@ -1636,7 +1782,7 @@ def _run_capture_observation(args, settings, runner_config, detector_kw, capture
     try:
         recorder = CaptureObservationRecorder(args.observation_out, stage, meta, ObservationEnvelopeAdapter(stage, tf_lookup),
                                    extension_source=extension_source,
-                                   view_bias=getattr(settings.detector_config, "axis_view_bias", None))
+                                   view_bias=_view_bias_runtime(getattr(settings.detector_config, "axis_view_bias", None)))
     except OSError as exc:
         err.write(f"run_pipeline: cannot create a-to-b-out: {exc}\n")
         return 2

@@ -1,0 +1,109 @@
+{
+  "status": "test_only",
+  "note": "#262 팔·그리퍼 투영 영역 검출 제외(D16) 시험 설정. occluders는 world_tracker_gripper_test.json visibility.occluders와 같은 값(복사, 공유 파일 통합은 A 결정 Q2). 마스크 내부 픽셀을 고르게 솎은 표본(max_samples개) 중 링크 카메라→볼트 평면(plane_z_m) 교점 선분이 캡슐(+margin_mm)을 지나는 비율이 min_fraction 이상이면 ARM_REGION(범위 밖)으로 거부. 캡슐이 실제보다 커서 margin 0, 그리퍼 바로 아래 실제 볼트 오제외를 막으려 min_fraction 0.6. TF 실패면 제외하지 않음.",
+  "occluders": [
+    {
+      "link": "forearm_link",
+      "p0_m": [
+        0.0,
+        0.0,
+        0.005
+      ],
+      "p1_m": [
+        -0.392,
+        0.0,
+        0.005
+      ],
+      "radius_m": 0.05
+    },
+    {
+      "link": "wrist_1_link",
+      "p0_m": [
+        0.0,
+        0.0,
+        -0.065
+      ],
+      "p1_m": [
+        0.0,
+        0.0,
+        0.03
+      ],
+      "radius_m": 0.05
+    },
+    {
+      "link": "wrist_2_link",
+      "p0_m": [
+        0.0,
+        0.0,
+        -0.04
+      ],
+      "p1_m": [
+        0.0,
+        0.0,
+        0.035
+      ],
+      "radius_m": 0.05
+    },
+    {
+      "link": "wrist_3_link",
+      "p0_m": [
+        0.0,
+        0.0,
+        -0.04
+      ],
+      "p1_m": [
+        0.0,
+        0.0,
+        -0.005
+      ],
+      "radius_m": 0.04
+    },
+    {
+      "link": "ur_to_robotiq_link",
+      "p0_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "p1_m": [
+        0.0,
+        0.0,
+        0.011
+      ],
+      "radius_m": 0.0375
+    },
+    {
+      "link": "robotiq_85_base_link",
+      "p0_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "p1_m": [
+        0.0,
+        0.0,
+        0.03
+      ],
+      "radius_m": 0.016
+    },
+    {
+      "link": "robotiq_85_base_link",
+      "p0_m": [
+        0.0,
+        0.0,
+        0.03
+      ],
+      "p1_m": [
+        0.0,
+        0.0,
+        0.05
+      ],
+      "radius_m": 0.025
+    }
+  ],
+  "margin_mm": 0.0,
+  "min_fraction": 0.6,
+  "max_samples": 64,
+  "plane_z_m": 0.105,
+  "world_frame": "world"
+}

@@ -70,8 +70,9 @@ def image(code=fake.NORMAL, pos=0, w=W, h=H):
 
 
 def shm_entries():
-    """이 시험이 만들 수 있는 /dev/shm 항목."""
-    return sorted(n for n in os.listdir(SHM_DIR) if n.startswith(SHM_PREFIX))
+    """이 프로세스(부모 pid 이름)의 /dev/shm 슬롯. 동시에 도는 다른 pytest의 슬롯은 세지 않는다."""
+    own = f"{SHM_PREFIX}{os.getpid()}_"
+    return sorted(n for n in os.listdir(SHM_DIR) if n.startswith(own))
 
 
 class Base(unittest.TestCase):
