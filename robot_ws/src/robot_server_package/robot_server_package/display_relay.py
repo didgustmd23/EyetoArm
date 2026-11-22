@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 import socket
 import struct
@@ -149,6 +150,8 @@ class LatestFrameServer:
         self.run_id = run_id or str(uuid.uuid4())
         self._detect_source = None
         self._center_source = None
+        self._center_order = None
+        self._retired_center_runs = deque(maxlen=32)
         self._rx_count = {name: 0 for name in CAMERAS}
         self._center_rx_count = 0
         self._handoff_rx_count = 0
@@ -211,14 +214,24 @@ class LatestFrameServer:
                 self._revision[key] = self._revision.get(key, 0) + 1
             return existed
 
-    def update_center_source(self, producer_run_id, generation, capture_generation):
-        """Invalidate B center cache when B starts a new run or source epoch."""
+    def update_center_source(self, producer_run_id, generation, capture_generation, image_seq):
+        """Accept only forward B frames; retire superseded producer runs."""
         identity = (producer_run_id, generation, capture_generation)
+        order = (generation, capture_generation, image_seq)
         with self._lock:
+            if producer_run_id in self._retired_center_runs:
+                return None
             previous = self._center_source
+            if previous is not None and previous[0] == producer_run_id:
+                if order <= self._center_order:
+                    return None
+            elif previous is not None:
+                self._retired_center_runs.append(previous[0])
             if previous == identity:
+                self._center_order = order
                 return False
             self._center_source = identity
+            self._center_order = order
             if previous is not None:
                 key = ("link", "center")
                 if self._latest.pop(key, None) is not None:
@@ -226,13 +239,15 @@ class LatestFrameServer:
             return previous is not None
 
     def invalidate_center_source(self, producer_run_id=None):
-        """Clear B center cache only for the matching producer run."""
+        """Clear B cache; retire a matching run on its end marker."""
         with self._lock:
-            if self._center_source is None:
+            if producer_run_id is not None and (self._center_source is None
+                                                or self._center_source[0] != producer_run_id):
                 return False
-            if producer_run_id is not None and self._center_source[0] != producer_run_id:
-                return False
-            self._center_source = None
+            if producer_run_id is not None:
+                self._retired_center_runs.append(producer_run_id)
+                self._center_source = None
+                self._center_order = None
             key = ("link", "center")
             existed = self._latest.pop(key, None) is not None
             if existed:
@@ -493,7 +508,9 @@ def main():
                 return
             seq = keys["image_seq"]
             changed = relay.update_center_source(
-                str(message.run_id), keys["generation"], keys["capture_generation"])
+                str(message.run_id), keys["generation"], keys["capture_generation"], keys["image_seq"])
+            if changed is None:
+                return
             if changed:
                 print("[C 영상] B center 이전 캐시 무효화: 실행 또는 세대 변경", flush=True)
             # Keep the C relay run_id stable across raw/detect/center switches so D's

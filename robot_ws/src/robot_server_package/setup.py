@@ -26,6 +26,7 @@ setup(
             'planning_scene_manager = robot_server_package.planning_scene_manager:main',
             'pose_plan_test = robot_server_package.pose_plan_test:main',
             'conveyor_controller = robot_server_package.conveyor_controller:main',
+            'controller_recovery = robot_server_package.controller_recovery:main',
         ],
     },
 )

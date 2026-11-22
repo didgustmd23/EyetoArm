@@ -11,13 +11,13 @@
   "cases": [
     {
       "name": "bolt_a_along_x",
-      "input": {"spec": "BOLT_A", "center_mm": [550.0, -100.0], "grasp_mm": [553.0, -100.0], "theta_deg": 0.0, "plane_z_mm": 105.0},
+        "input": {"spec": "BOLT_A", "center_mm": [550.0, -100.0], "grasp_mm": [553.0, -100.0], "theta_deg": 0.0, "plane_z_mm": 102.0},
       "expected": {
         "kind": "PICK_PLACE", "reason": null, "frame_id": "base_link",
-        "observed_position_mm": [550.0, -100.0, 105.0],
+        "observed_position_mm": [550.0, -100.0, 102.0],
         "grasp_candidates": [
-          {"position_mm": [553.0, -100.0, 105.0], "orientation_xyzw": [0.707107, 0.707107, 0.0, 0.0], "closing_yaw_deg": 90.0},
-          {"position_mm": [553.0, -100.0, 105.0], "orientation_xyzw": [0.707107, -0.707107, 0.0, 0.0], "closing_yaw_deg": -90.0}
+          {"position_mm": [553.0, -100.0, 102.0], "orientation_xyzw": [0.707107, 0.707107, 0.0, 0.0], "closing_yaw_deg": 90.0},
+          {"position_mm": [553.0, -100.0, 102.0], "orientation_xyzw": [0.707107, -0.707107, 0.0, 0.0], "closing_yaw_deg": -90.0}
         ],
         "gripper_opening_mm": 20.0, "approach_height_mm": 205.0, "lift_height_mm": 250.0,
         "place": {"bin": "BOLT_A", "position_mm": [720.0, -50.0, 180.0], "orientation_xyzw": [0.707105, 0.707108, 0.0, 0.0]}

@@ -10,6 +10,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/GraspCandidate.msg"
   "msg/CenterOverlay.msg"
   "action/SortPart.action"
+  "srv/GetSortRun.srv"
   DEPENDENCIES action_msgs sensor_msgs
 )
 
