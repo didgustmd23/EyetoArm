@@ -13,6 +13,7 @@ import math
 from dataclasses import dataclass
 
 import rclpy
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import TwistStamped
@@ -74,7 +75,7 @@ class ConveyorController(Node):
         self._pose_client = self.create_client(SetEntityPose, "/world/sort_cell/set_pose")
         self._run_service = self.create_service(SetBool, "~/set_running", self._set_running)
         self._timer = self.create_timer(1.0 / self.update_rate_hz, self._tick)
-        self._state_watchdog = self.create_wall_timer(0.1, self._check_state_clock)
+        self._state_watchdog = self.create_timer(0.1, self._check_state_clock, clock=Clock(clock_type=ClockType.STEADY_TIME))
         self._publish_state()
         self.get_logger().info(
             "Kinematic conveyor ready (stopped). Set speed_mps explicitly, then call "
