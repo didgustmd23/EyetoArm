@@ -116,9 +116,15 @@ def _classify(class_name, length_m, width_m, aspect, specs) -> tuple[str, str | 
         best, best_err = None, None
 
         for name in ("BOLT_A", "BOLT_B"):
-            err = abs(length_m - s[name]["total_length"])
+            sp = s[name]
+            err = abs(length_m - sp["total_length"])
 
-            if err <= s[name]["length_tolerance"] and (best_err is None or err < best_err):
+            if "length_min" in sp:                      # 범위 판정 (A 끝점 실측, B-12 2026-11-22)
+                ok = sp["length_min"] <= length_m <= sp["length_max"]
+            else:
+                ok = err <= sp["length_tolerance"]
+
+            if ok and (best_err is None or err < best_err):
                 best, best_err = name, err
 
         return (best, None) if best else (UNRESOLVED, "LENGTH_OUT_OF_RANGE")
@@ -134,8 +140,9 @@ def _classify(class_name, length_m, width_m, aspect, specs) -> tuple[str, str | 
 
 
 def class_plane_z(specs: dict, class_name: str | None, spec: str | None = None) -> float:
-    """종류별 기준 높이 (B 선택 2026-11-17). 볼트 축 105.0 mm, 너트 윗면 105.2 mm (2026-11-20 Gazebo 실측). 모르면 기본 plane_z."""
-    key = spec if spec in specs["specs"] else {"bolt": "BOLT_A", "nut": "NUT"}.get(normalize_class(class_name) or "")
+    """종류별 기준 높이. BOLT_A(M3x20) 축 102.0 mm, BOLT_B(M6x40) 축 105.0 mm, 너트 윗면 105.2 mm (Gazebo 실측). 모르면 기본 plane_z."""
+    # 종류를 모르는 「bolt」는 BOLT_A가 아니라 기본 plane_z(105.0 mm, M6x40 축)를 쓴다 (B-12: BOLT_A M3x20 102 mm, 2026-11-22)
+    key = spec if spec in specs["specs"] else {"nut": "NUT"}.get(normalize_class(class_name) or "")
 
     return float(specs["specs"].get(key, {}).get("plane_z", specs["plane_z"])) if key else float(specs["plane_z"])
 
@@ -145,18 +152,30 @@ def compute_bolt_from_endpoints(head_px, tip_px, camera: CameraProfile, T_W_C: n
                                 part_track_id: int | None = None, image_seq: int | None = None) -> WorkPlanarResult:
     """볼트 머리 끝·축 끝 픽셀 두 점 → `WorkPlanarResult` (B 선택 2026-11-17, A-2).
 
-    - 두 점은 축 위의 점이라 높이 = 볼트 축 높이(105.0 mm). 그 평면으로 투영한다.
+    - 두 점은 축 위의 점이다. 먼저 볼트 기본 높이(`class_plane_z(specs, "bolt")`, 105.0 mm)로 투영해 길이로 종류를 고르고,
+      고른 종류의 `plane_z`(BOLT_A M3x20 102.0 mm, BOLT_B 105.0 mm)로 다시 투영한다 (A B-12 #270, 2026-11-22).
     - 길이 = 두 점 거리(머리 포함 총길이), 각도 = 축 방향 [0, 180).
-    - 위치 `center_w_m` = 총길이 중점 Pa. 집는 점 `grasp_w_m` = 축 가운데 Pb = Pa에서 축 끝 쪽으로 머리 높이/2(3 mm).
+    - 위치 `center_w_m` = 총길이 중점 Pa. 집는 점 `grasp_w_m` = 축 가운데 Pb = Pa에서 축 끝 쪽으로 그 종류 머리 높이/2.
     """
     t0 = time.perf_counter()
     plane_z = class_plane_z(specs, "bolt")
+    endpoints = np.array([head_px, tip_px], dtype=np.float64).reshape(2, 2)
     reason, owner = None, None
 
     if observed_calibration_id is not None and observed_calibration_id != camera.calibration_id:
         reason, owner = "CALIBRATION_MISMATCH", "A"
 
-    pts = pixels_to_w(np.array([head_px, tip_px], dtype=np.float64).reshape(2, 2), camera.K, camera.dist, T_W_C, plane_z)
+    pts = pixels_to_w(endpoints, camera.K, camera.dist, T_W_C, plane_z)
+    length = float(np.hypot(*(pts[1] - pts[0])))
+    spec, cls_reason = _classify("bolt", length, 0.0, float("inf"), specs)   # 판정은 기본 높이 길이로 (A 실측 범위와 같은 평면)
+    sp = specs["specs"].get(spec, specs["specs"]["BOLT_A"])
+
+    if spec in specs["specs"]:                                               # 종류별 높이로 다시 투영
+        z = class_plane_z(specs, "bolt", spec)
+        if z != plane_z:
+            plane_z = z
+            pts = pixels_to_w(endpoints, camera.K, camera.dist, T_W_C, plane_z)
+
     head, tip = pts[0], pts[1]
     axis = tip - head
     length = float(np.hypot(*axis))
@@ -168,10 +187,9 @@ def compute_bolt_from_endpoints(head_px, tip_px, camera: CameraProfile, T_W_C: n
         unit = axis / length
 
     pa = (head + tip) / 2.0
-    head_h = float(specs["specs"]["BOLT_A"].get("head_height", 0.006))
+    head_h = float(sp.get("head_height", 0.006))
     pb = pa + unit * head_h / 2.0
     theta = math.degrees(math.atan2(unit[1], unit[0])) % 180.0
-    spec, cls_reason = _classify("bolt", length, 0.0, float("inf"), specs)
 
     if reason is None and cls_reason is not None:
         reason, owner = cls_reason, "B"
@@ -180,7 +198,7 @@ def compute_bolt_from_endpoints(head_px, tip_px, camera: CameraProfile, T_W_C: n
         center_w_m=(float(pa[0]), float(pa[1])), plane_z_m=plane_z,
         theta_deg=float(theta) if reason is None else None, theta_valid=reason is None,
         spec=spec if reason is None else UNRESOLVED, class_name=class_name,
-        measured_length_m=length, measured_width_m=float(specs["specs"]["BOLT_A"]["shaft_diameter"]),
+        measured_length_m=length, measured_width_m=float(sp["shaft_diameter"]),
         aspect_ratio=float("inf"), area_w_m2=0.0, contour_w_m=pts, valid=reason is None,
         reason=reason, reason_owner=owner, calibration_id=camera.calibration_id, camera_frame=camera.frame_id,
         compute_ms=(time.perf_counter() - t0) * 1000.0, part_track_id=part_track_id, image_seq=image_seq,
