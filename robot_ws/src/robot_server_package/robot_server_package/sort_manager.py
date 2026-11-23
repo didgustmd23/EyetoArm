@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sqlite3
+import sys
 from threading import Lock
 import uuid
 
@@ -18,6 +19,7 @@ from std_srvs.srv import Trigger
 from eyetoarm_interfaces.action import SortPart
 from eyetoarm_interfaces.srv import GetSortRun
 from .gazebo_sort_executor import POSE_SOURCES, TRACK_TOPIC, GazeboSortExecutor, SortCanceled, SortFailure
+from .action_server_guard import ActionServerConflict, acquire_action_server_guard
 
 
 ACTION_NAME = "/sort_part"
@@ -71,22 +73,37 @@ class SortGoalReceiver(Node):
         self._seen = set()
         self._seen_lock = Lock()
         self._recovery_required = False
-        self._server = ActionServer(
-            self,
-            SortPart,
-            action_name,
-            execute_callback=self._execute,
-            goal_callback=self._goal_request,
-            cancel_callback=self._cancel_request,
-            callback_group=ReentrantCallbackGroup(),
-            result_timeout=3600,
-        )
+        self._server_guard = acquire_action_server_guard(self, action_name)
+        try:
+            self._server = ActionServer(
+                self,
+                SortPart,
+                action_name,
+                execute_callback=self._execute,
+                goal_callback=self._goal_request,
+                cancel_callback=self._cancel_request,
+                callback_group=ReentrantCallbackGroup(),
+                result_timeout=3600,
+            )
+        except Exception:
+            self._server_guard.close()
+            self.destroy_node()
+            raise
         if epoch_file is not None:
             self.create_service(Trigger, "~/start_run", self._start_run)
             self.create_service(GetSortRun, "~/get_run", self._get_run)
         self.get_logger().info(
             f"B→C SortPart {action_name}; mode={'gazebo' if backend is not None else 'receive-only'}"
         )
+
+    def destroy_node(self):
+        try:
+            return super().destroy_node()
+        finally:
+            guard = getattr(self, "_server_guard", None)
+            if guard is not None:
+                guard.close()
+                self._server_guard = None
 
     def _start_run(self, request, response):
         if not self._execution_lock.acquire(blocking=False):
@@ -242,6 +259,9 @@ def main(args=None) -> int:
         node = SortGoalReceiver(parsed.action, backend, parsed.run_state)
         executor.add_node(node)
         executor.spin()
+    except ActionServerConflict as exc:
+        print(f"sort_goal_receiver: {exc}", file=sys.stderr)
+        return 2
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:

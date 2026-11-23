@@ -43,6 +43,7 @@ def overlay_keys(envelope) -> dict:
     return {
         "run_id": str(f.run_id), "source_id": str(f.source_id), "image_seq": int(f.image_seq),
         "capture_generation": int(f.capture_generation), "generation": int(fo.generation), "job_seq": int(fo.job_seq),
+        "detector_config_id": str(getattr(fo, "detector_config_id", "") or ""),
         "capture_stamp_ns": int(f.ros_stamp_ns or 0), "timestamp_base": str(getattr(base, "value", base)),
         "calibration_id": str(getattr(getattr(fo, "capture", None), "calibration_id", None) or ""),
     }

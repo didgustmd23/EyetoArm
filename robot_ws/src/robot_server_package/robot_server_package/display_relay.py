@@ -455,6 +455,62 @@ def main():
     threading.Thread(target=relay.report_rates, daemon=True).start()
     bridge = CvBridge()
     sequences = {channel: 0 for channel in CAMERAS}
+    # /b/results and CenterOverlay use separate ROS topics. Join them by the complete
+    # B frame identity and retain only a small bounded set while the topics race.
+    center_result_cache = {}
+    center_frame = {"key": None, "metadata": None, "jpeg": None}
+
+    def result_key(payload):
+        return tuple(payload.get(key) for key in (
+            "run_id", "source_id", "image_seq", "capture_generation", "generation", "job_seq",
+            "detector_config_id", "capture_stamp_ns", "timestamp_base", "calibration_id"))
+
+    def publish_center_frame(result_payload=None):
+        current = center_frame
+        if current["metadata"] is None or current["jpeg"] is None:
+            return
+        metadata = dict(current["metadata"])
+        if result_payload is not None:
+            selected = next((item for item in result_payload.get("results", [])
+                             if isinstance(item, dict) and item.get("selected") is True), None)
+            if selected is not None and type(selected.get("valid")) is bool:
+                # D's display result uses the relay run as its session ID. Preserve B's
+                # producer run separately while keeping all frame keys identical.
+                metadata["detector_config_id"] = result_payload["detector_config_id"]
+                metadata["result"] = {
+                    **{key: metadata[key] for key in (
+                        "source_id", "image_seq", "capture_generation", "generation", "job_seq",
+                        "capture_stamp_ns", "timestamp_base", "calibration_id")},
+                    **selected,
+                    "run_id": metadata["run_id"],
+                    "producer_run_id": metadata["producer_run_id"],
+                    "detector_config_id": result_payload["detector_config_id"],
+                }
+        relay.offer("link", pack_packet(metadata, current["jpeg"]), variant="center")
+
+    def on_results(message):
+        try:
+            payload = json.loads(message.data)
+            required = ("run_id", "source_id", "image_seq", "capture_generation", "generation", "job_seq",
+                        "capture_stamp_ns", "timestamp_base", "calibration_id", "detector_config_id", "results")
+            if (not isinstance(payload, dict) or payload.get("version") != "eyetoarm.b_results/1"
+                    or any(key not in payload for key in required)
+                    or payload["source_id"] != "gz_link"
+                    or any(type(payload[key]) is not int or payload[key] < 0 for key in (
+                        "image_seq", "capture_generation", "generation", "job_seq", "capture_stamp_ns"))
+                    or not isinstance(payload["run_id"], str) or not payload["run_id"]
+                    or not isinstance(payload["timestamp_base"], str) or not payload["timestamp_base"]
+                    or not isinstance(payload["detector_config_id"], str) or not payload["detector_config_id"]
+                    or not isinstance(payload["results"], list)):
+                return
+            key = result_key(payload)
+            center_result_cache[key] = payload
+            while len(center_result_cache) > 8:
+                center_result_cache.pop(next(iter(center_result_cache)))
+            if key == center_frame["key"]:
+                publish_center_frame(payload)
+        except (ValueError, TypeError, KeyError) as exc:
+            node.get_logger().warning(f"B result dropped: {exc}")
     rclpy.init()
     node = rclpy.create_node("c_camera_display_relay")
 
@@ -483,6 +539,8 @@ def main():
         if message.kind != "accepted":
             if message.kind == "marker":
                 relay.invalidate_center_source(str(message.run_id))
+                if center_frame["metadata"] is not None and center_frame["metadata"].get("producer_run_id") == str(message.run_id):
+                    center_frame.update(key=None, metadata=None, jpeg=None)
             return
         try:
             image_message = message.image
@@ -531,7 +589,10 @@ def main():
                 "stamp_sec": int(image_message.header.stamp.sec),
                 "stamp_nanosec": int(image_message.header.stamp.nanosec),
             }
-            relay.offer("link", pack_packet(meta, encoded.tobytes()), variant="center")
+            frame_key = result_key({**keys, "run_id": str(message.run_id)})
+            center_frame.update(key=frame_key, metadata=meta, jpeg=encoded.tobytes())
+            result_payload = center_result_cache.pop(frame_key, None)
+            publish_center_frame(result_payload)
             relay.note_center_received()
         except Exception as exc:
             node.get_logger().warning(f"B center frame dropped: {exc}")
@@ -541,6 +602,7 @@ def main():
     link_subscription = {"value": subscribe("link", CAMERAS["link"])}
     applied_link_variant = {"value": "raw"}
     center_subscription = {"value": None}
+    results_subscription = {"value": None}
     applied_center_enabled = {"value": False}
     subscriptions = [link_subscription["value"]]
     subscriptions.extend(subscribe(channel, topic) for channel, topic in CAMERAS.items()
@@ -569,6 +631,10 @@ def main():
                 center_subscription["value"] = node.create_subscription(
                     CenterOverlay, args.center_topic, on_center_overlay, qos_profile_sensor_data)
                 subscriptions.append(center_subscription["value"])
+                from std_msgs.msg import String
+                results_subscription["value"] = node.create_subscription(
+                    String, "/b/results", on_results, qos_profile_sensor_data)
+                subscriptions.append(results_subscription["value"])
                 print("[C 영상] B center 입력 구독 재개", flush=True)
             else:
                 current = center_subscription["value"]
@@ -576,7 +642,14 @@ def main():
                     node.destroy_subscription(current)
                     subscriptions.remove(current)
                     center_subscription["value"] = None
+                current_results = results_subscription["value"]
+                if current_results is not None:
+                    node.destroy_subscription(current_results)
+                    subscriptions.remove(current_results)
+                    results_subscription["value"] = None
                 relay.invalidate_center_source()
+                center_frame.update(key=None, metadata=None, jpeg=None)
+                center_result_cache.clear()
                 print(f"[C 영상] B center 입력 구독 중지 variant={selected}", flush=True)
             applied_center_enabled["value"] = center_enabled
 

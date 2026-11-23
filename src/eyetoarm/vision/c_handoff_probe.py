@@ -55,6 +55,8 @@ class _DisplayFrameForwarder:
             "calibration_id": frame.calibration_id, "run_id": frame.run_id,
             "capture_generation": frame.capture_generation,
             "detector_config_id": view.display.config_sha256, "job_seq": view.job_seq,
+            "capture_stamp_ns": frame.ros_stamp_ns,
+            "timestamp_base": str(getattr(frame.timestamp_base, "value", frame.timestamp_base)),
         }
         image = annotate(view)
         ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 80])

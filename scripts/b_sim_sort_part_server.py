@@ -225,19 +225,33 @@ def main(argv=None) -> int:
 
     import rclpy
     from rclpy.executors import MultiThreadedExecutor
+    from robot_server_package.action_server_guard import ActionServerConflict, acquire_action_server_guard
 
     rclpy.init()
-    srv = SimSortServer(args)
-    ex = MultiThreadedExecutor(num_threads=2)
-    ex.add_node(srv.node)
+    guard_node = rclpy.create_node("b_sim_sort_part_start_guard")
+    guard = None
+    srv = None
+    ex = None
     try:
+        guard = acquire_action_server_guard(guard_node, "/sort_part")
+        srv = SimSortServer(args)
+        ex = MultiThreadedExecutor(num_threads=2)
+        ex.add_node(srv.node)
         ex.spin()
+    except ActionServerConflict as exc:
+        print(f"b_sim_sort_part_server: {exc}. C/B 중 하나만 /sort_part 서버로 실행하세요.", flush=True)
+        return 2
     except KeyboardInterrupt:
         pass
     finally:
-        ex.shutdown()
-        srv.node.destroy_node()
-        srv.arm_node.destroy_node()
+        if ex is not None:
+            ex.shutdown()
+        if srv is not None:
+            srv.node.destroy_node()
+            srv.arm_node.destroy_node()
+        if guard is not None:
+            guard.close()
+        guard_node.destroy_node()
         rclpy.try_shutdown()
     return 0
 
