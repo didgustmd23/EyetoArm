@@ -8,12 +8,15 @@
 │   {"type":"SET_DISPLAY_VARIANT","channel":"link","variant":...} + LF 를    │
 │   보낸다(임시 형식, C 와 합의 전). 해당 영상 수신으로 확인한다: 고른 종류의│
 │   ETV1 JPEG 프레임이 와야 화면에 보인다(다른 종류 링크 프레임 무시).        │
-│ [결과 없음] C 시제품은 영상만 보낸다. 결과·무효화 사건을 지어내지 않는다.   │
+│ [B 결과] C 가 center 프레임 메타에 B 선택 결과(result)를 실어 보낼 때만    │
+│   그 프레임과 키가 같은 결과를 넘긴다(C 시제품, 2026-11-23). 무효화 사건은  │
+│   아직 받지 않는다. 결과·무효화를 지어내지 않는다.                           │
 └────────────────────────────────────────────────────────────────────────────┘
 
 패킷: b"ETV1" + 본문 길이(>I, 8 MiB 이하) + 본문[메타 길이(>I) + 메타 JSON + JPEG].
 메타(C 현재): channel·variant·source_id·image_seq·generation·calibration_id·run_id·capture_generation·
-detector_config_id·job_seq(+ stamp_sec·stamp_nanosec). DisplayModel 이 받는 키만 엄격히 검사해 넘긴다.
+detector_config_id·job_seq(+ stamp_sec·stamp_nanosec, center 는 선택 result). DisplayModel 이 받는 키만 엄격히 검사해 넘긴다.
+result 는 프레임 봉투와 따로 display_result 로 넘긴다. 형식이 틀리거나 프레임 키가 다르면 결과만 버리고 영상은 그대로 보인다.
 C 의 run_id 는 relay 프로세스마다 하나로 고정이다. 새 run_id 를 처음 보면 새 세션을 시작하고, 이미 지나간
 run_id 는 같은 연결 안에서도 다시 받지 않는다(세션이 뒤로 가지 않게).
 C 는 새 접속에 채널별 마지막 패킷(캐시)을 나이와 상관없이 바로 보낸다. 그래서 연결·run 마다 채널·종류별 첫 패킷은
@@ -49,6 +52,13 @@ READ_CHUNK = 1024 * 1024               # 한 번에 읽어 파서에 넣는 최�
 SOCKET_BUFFER = 2 * (MAX_PACKET + 8)  # Qt 소켓 내부 버퍼 상한. 차면 TCP 흐름 제어로 C 송신이 기다린다
 RETIRED_RUNS = 32
 VARIANT_REQUEST = "SET_DISPLAY_VARIANT"
+# center 결과가 자기 프레임과 같아야 하는 키(C display_relay publish_center_frame 이 프레임 메타에서 복사한다)
+RESULT_FRAME_KEYS = ("source_id", "image_seq", "generation", "capture_generation", "job_seq", "run_id",
+                     "calibration_id", "detector_config_id")
+# DisplayModel·표시에 넘기는 B 결과 키(B work_result 출력 + 프레임 키). 그 외 키는 버린다
+RESULT_KEYS = RESULT_FRAME_KEYS + ("producer_run_id", "capture_stamp_ns", "timestamp_base", "valid", "reason",
+                                   "reason_owner", "spec", "class_name", "center_px", "center_w_mm", "theta_deg",
+                                   "theta_valid", "length_mm", "width_mm", "selected", "instance_index", "part_track_id")
 
 
 class PacketError(ValueError):
@@ -100,6 +110,8 @@ def parse_metadata(raw: bytes) -> tuple[str, dict]:
     if "capture_stamp_ns" in meta and (type(stamp) is not int or stamp < 0):
         raise PacketError("capture_stamp_ns 가 0 이상 정수가 아님")
     envelope["capture_stamp_ns"] = stamp
+    if "result" in meta:   # 검사는 수신기(_take_result)가 한다. 결과가 틀려도 영상 패킷은 살린다
+        envelope["result"] = meta["result"]
     return channel, envelope
 
 
@@ -171,6 +183,7 @@ class RelayViewReceiver(QObject):
     frame_received = Signal(QImage)          # 창 공통 인터페이스. 이 수신기는 내지 않는다(3채널은 display_frame)
     display_session = Signal(str, str)       # (run_id, 링크 source_id) 새 C relay 세션
     display_frame = Signal(str, object, object)   # (channel, QImage, ingest_frame 키워드)
+    display_result = Signal(object, int, int)     # (B 결과 사전, generation, 수신 순서) center 프레임 뒤에만
 
     def __init__(self, host: str = "127.0.0.1", port: int = DEFAULT_PORT, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -185,6 +198,8 @@ class RelayViewReceiver(QObject):
         self.decode_errors = 0
         self.stale_session_drops = 0
         self.framing_errors = 0
+        self.result_drops = 0     # 형식·프레임 키가 틀려 버린 B 결과 수(영상은 표시)
+        self._result_order = 0    # display_result 수신 순서. 연결·run 과 무관하게 늘기만 한다
         self.socket_error = ""   # 마지막 연결 오류(Qt errorString). 오류 수에는 넣지 않는다
         self._last_error = ""
         self.run_id: str | None = None
@@ -218,7 +233,7 @@ class RelayViewReceiver(QObject):
 
     def error_summary(self) -> str:
         counts = (("경계", self.framing_errors), ("메타/패킷", self.packet_errors), ("JPEG", self.decode_errors),
-                  ("지난 세션", self.stale_session_drops))
+                  ("지난 세션", self.stale_session_drops), ("B 결과", self.result_drops))
         parts = [f"{name} {count}" for name, count in counts if count]
         return f"수신 오류 {', '.join(parts)} · 최근: {self.last_error}" if parts else ""
 
@@ -429,4 +444,29 @@ class RelayViewReceiver(QObject):
                 self._confirmed.add(key)
                 self._last_frame_at = time.monotonic()   # 확인 대기·같은 순번 반복·역행은 「최근 수신」으로 치지 않는다
             confirmed = key in self._confirmed
+            result = envelope.pop("result", None)
             self.display_frame.emit(channel, image, dict(envelope, confirmed=confirmed))
+            if result is not None and confirmed:   # 확인 대기(C 캐시일 수 있는) 프레임의 결과는 넘기지 않는다
+                result = self._take_result(key, envelope, result)
+                if result is not None:
+                    self._result_order += 1
+                    self.display_result.emit(result, envelope["generation"], self._result_order)
+
+    def _take_result(self, key: tuple[str, str], envelope: dict, result) -> dict | None:
+        """center 프레임에 실린 B 결과를 검사한다. 값의 형식(유한 수 등)은 DisplayModel.ingest_result 가 다시 본다."""
+        reason = None
+        if key != ("link", "center"):
+            reason = "center 가 아닌 프레임의 결과"
+        elif not isinstance(result, dict):
+            reason = "결과가 객체가 아님"
+        elif any(result.get(name) != envelope[name] for name in RESULT_FRAME_KEYS) or any(
+                name not in result for name in RESULT_FRAME_KEYS):
+            reason = "결과와 프레임 키 불일치"
+        elif envelope["producer_run_id"] is not None and result.get("producer_run_id") != envelope["producer_run_id"]:
+            reason = "결과와 프레임 producer_run_id 불일치"
+        if reason is not None:
+            self.result_drops += 1
+            self._last_error = f"B 결과 버림: {reason}"
+            self._parser.last_error = ""
+            return None
+        return {name: result[name] for name in RESULT_KEYS if name in result}
