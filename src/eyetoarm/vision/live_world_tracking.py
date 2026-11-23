@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from eyetoarm.transforms.planar_transform import w_to_image
 from eyetoarm.vision.arm_occlusion import occluded_fn, world_capsules
 from eyetoarm.vision.gripper_depth import GripperConfig, GripperConfigError, GripperDepthFrame, observe, parse_gripper, project_w
+from eyetoarm.vision.track_stream import TrackStream, frame_message, marker_message, reset_message
 from eyetoarm.vision.tracking import FrameKey, TrackFrame
 from eyetoarm.vision.world_tracking import (BoltPlanes, GripperInput, VisibilityConfig, WorldTracker, WorldTrackerConfigError,
                                             parse_visibility, world_inputs)
@@ -223,10 +224,12 @@ class LiveWorldTracking:
     def __init__(self, run_id: str, tracker: WorldTracker, config: LiveWorldConfig, *, tf_lookup: Callable,
                  plane_z_m: float | BoltPlanes,
                  out_dir: str, view_bias=None, clock_ns: Callable[[], int] = time.monotonic_ns,
-                 visibility: VisibilityConfig | None = None, gripper: GripperLive | None = None) -> None:
+                 visibility: VisibilityConfig | None = None, gripper: GripperLive | None = None,
+                 stream: TrackStream | None = None) -> None:
         """새 기록 파일 `world_tracks.jsonl`을 연다. `tf_lookup(frame)`은 촬영 stamp 정확 조회다.
 
         `plane_z_m`은 볼트 투영 높이 하나(m) 또는 종류별 높이 `BoltPlanes`다. `visibility`·`gripper`가 None이면 지금과 같다.
+        `stream`(시작 전 상태로 받음)이 있으면 링크 프레임마다 확정 트랙을 발행하고, 이 객체가 시작·종료한다. None이면 지금과 같다.
         """
         self.run_id = run_id
         self._tracker = tracker
@@ -278,6 +281,9 @@ class LiveWorldTracking:
         self.occlusion_tf_fail = 0
         self.gripper_reasons: dict[str, int] = {}
         self._gripper_ms: collections.deque[float] = collections.deque(maxlen=4096)
+        self._stream = stream
+        self._stream_classes: dict = {}          # 확정 번호 → (종류, 투영 높이 m), 끝점 입력에서 고른 값(추적 스레드)
+        self._stream_source = ""                 # 마지막 링크 항목의 source_id(재설정·끝 알림용, 추적 스레드)
 
     @property
     def handoff_on(self) -> bool:
@@ -403,6 +409,9 @@ class LiveWorldTracking:
             self._grip_thread = threading.Thread(target=self._grip_loop, name="eyetoarm-gripper-observe", daemon=True)
             self._grip_thread.start()
 
+        if self._stream is not None:
+            self._stream.start()
+
     @property
     def thread(self) -> threading.Thread | None:
         """추적 스레드(정리 확인용)."""
@@ -420,6 +429,10 @@ class LiveWorldTracking:
 
                 if th.is_alive():
                     return False
+
+        # 추적 스레드가 끝난 뒤(끝 알림을 넣은 뒤) 남은 발행을 보낸다
+        if self._stream is not None and not self._stream.close(limit_s):
+            return False
 
         if not self._fh.closed:
             try:
@@ -496,6 +509,7 @@ class LiveWorldTracking:
             if lag_reset is not None:
                 self._clear_display_prev()
                 self._tracker.reset("lag")
+                self._stream_reset("lag")
                 self._write({"kind": "lag_reset", **lag_reset})
 
             # stamp 순서: 링크보다 이른 그리퍼 → 링크 → 남은(대기 만료) 그리퍼
@@ -544,6 +558,7 @@ class LiveWorldTracking:
         self._bump_gripper_epoch()
         self._tracker.reset(reason)
         self.last_reset = reason
+        self._stream_reset(reason)
         self._write({"kind": "reset", "reason": reason, "t_mono_ns": self._clock_ns()})
 
     def _finish(self) -> None:
@@ -554,8 +569,15 @@ class LiveWorldTracking:
         if pending is not None:
             self._apply_reset(pending)
 
-        self._write({"kind": "closed", "pending_reset_applied": pending is not None, "last_reset": self.last_reset,
-                     "t_mono_ns": self._clock_ns()})
+        rec = {"kind": "closed", "pending_reset_applied": pending is not None, "last_reset": self.last_reset,
+               "t_mono_ns": self._clock_ns()}
+
+        if self._stream is not None:
+            self._stream.offer(marker_message(run_id=self.run_id, source_id=self._stream_source,
+                                              tracker_epoch=self._tracker.tracker_epoch, handoff_on=self.handoff_on))
+            rec["stream"] = self._stream.summary()["counts"]
+
+        self._write(rec)
 
     def _process(self, item: WorldTrackItem, lag_ms: float) -> None:
         frame, key = item.frame, item.key
@@ -619,6 +641,9 @@ class LiveWorldTracking:
             if self.handoff_on:
                 rec["camera"] = "link"
 
+            if self._stream is not None:
+                rec["stream"] = self._stream_frame(key, frame, ts, track, inputs)
+
         # 갱신한 결과면 확정 번호의 표시용 박스 사본을 둔다(추적 판정·송신에는 쓰지 않음)
         snap = snapshot(value, item.display) if isinstance(value, TrackFrame) else None
 
@@ -636,6 +661,50 @@ class LiveWorldTracking:
 
         self._write(rec)
         self._write_events()
+
+    # ------------------------------------------------------------------ 추적 흐름 발행(추적 스레드)
+
+    def _stream_reset(self, reason: str) -> None:
+        """재설정 알림을 발행 큐에 넣고 종류 기억을 비운다(켜졌을 때만)."""
+        if self._stream is None:
+            return
+
+        self._stream_classes = {}
+        self._stream.offer(reset_message(run_id=self.run_id, source_id=self._stream_source, reason=reason,
+                                         tracker_epoch=self._tracker.tracker_epoch, handoff_on=self.handoff_on))
+
+    def _stream_frame(self, key: FrameKey, frame, ts: int, track: TrackFrame, inputs) -> dict:
+        """링크 프레임 결과 → 확정 트랙 발행. 범위가 바뀌어 추적기가 비워졌으면 재설정 알림을 먼저 낸다. 기록용 결과를 돌려준다."""
+        t0 = self._clock_ns()
+        self._stream_source = key.source_id
+
+        if track.event == "scope_changed":
+            self._stream_reset("scope_changed")
+
+        by_index = {i.index: i for i in inputs}
+
+        for a in track.assignments:
+            c = by_index[a.instance_index]
+
+            if a.part_track_id is not None and c.plane_spec is not None:
+                self._stream_classes[a.part_track_id] = (c.plane_spec, c.plane_z_m)
+
+        velocity = self._tracker.last_velocity if self._visibility is not None else None
+        belt = self._tracker.last_belt_vy
+
+        if velocity is not None and velocity.get("vy_mm_per_s") is not None:
+            belt_mm_s = velocity["vy_mm_per_s"]   # 긴 기준선 공통 속도(hold 예측에 쓰는 값)
+        else:
+            belt_mm_s = None if belt is None else belt * 1000.0
+
+        snap = self._tracker.stream_snapshot(ts)
+        msg = frame_message(run_id=self.run_id, source_id=key.source_id, image_seq=key.image_seq, generation=key.generation,
+                            tracker_epoch=track.tracker_epoch, capture_stamp_ns=int(getattr(frame, "ros_stamp_ns", 0) or 0),
+                            timestamp_ms=ts, snapshot=snap, belt_velocity_mm_per_s=belt_mm_s, handoff_on=self.handoff_on,
+                            classes=self._stream_classes, default_plane_z_m=self._plane_z_m())
+        result = self._stream.offer(msg)
+
+        return {"result": result, "tracks": len(msg["tracks"]), "build_ms": round((self._clock_ns() - t0) / 1e6, 3)}
 
     # ------------------------------------------------------------------ 그리퍼(추적 스레드)
 
@@ -914,7 +983,8 @@ class LiveWorldTracking:
         return {"config": self.config.to_json(), "counts": counts, "not_updated": dict(sorted(self.not_updated.items())),
                 "lag": lag, "tracker": self._tracker.stats(), "diagnostics": dict(self.diagnostics),
                 "display_lookup": display,
-                "crash": self.crash, "write_error": self.write_error, **({} if handoff is None else {"handoff": handoff})}
+                "crash": self.crash, "write_error": self.write_error, **({} if handoff is None else {"handoff": handoff}),
+                **({} if self._stream is None else {"track_stream": self._stream.summary()})}
 
 
 def _r(p):

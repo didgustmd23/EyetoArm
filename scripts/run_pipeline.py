@@ -137,6 +137,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="--tracking-space world 전용, 기본 꺼짐: 그리퍼 깊이(/gripper_cam/depth_image)로 확정 W 트랙의 위치를 "
                              "이어 갱신하고 화면 밖이면 번호를 유지한다. --world-tracker-config에 visibility·gripper 블록 필수 "
                              "(예 config/vision/world_tracker_gripper_test.json). B 입력은 바뀌지 않는다")
+    parser.add_argument("--track-stream", dest="track_stream", metavar="JSON", default=None,
+                        help="--tracking-space world 전용, 기본 꺼짐: 링크 프레임마다 확정 W 트랙을 ROS 토픽(TrackStateArray, "
+                             "예 config/vision/track_stream_test.json의 /a/track_states)으로 발행한다. robot_ws 빌드·source 필요. "
+                             "이동 집기용이면 --gripper-handoff와 함께 켠다")
     parser.add_argument("--arm-region-filter", dest="arm_region_filter", metavar="JSON", default=None,
                         help="--live-observation-out 전용: 팔·그리퍼 투영 영역 검출 제외 설정(기본 켬, "
                              f"기본 파일 {ARM_REGION_DEFAULT_REL})")
@@ -299,6 +303,9 @@ def _check_source_args(args, ros_available) -> None:
 
     if getattr(args, "gripper_handoff", False) and args.tracking_space != "world":
         build_parser().error("--gripper-handoff requires --tracking-space world (W tracking)")
+
+    if getattr(args, "track_stream", None) is not None and args.tracking_space != "world":
+        build_parser().error("--track-stream requires --tracking-space world (W tracking)")
 
     # 팔 영역 제외는 촬영 시각 TF·카메라가 있는 실시간 기록 연결에서만(기본 켬)
     if args.arm_region_filter is not None and args.no_arm_region_filter:
@@ -599,7 +606,8 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
          live_source_factory=None, b_stage_hook=None, extension_source=None, live_tf_factory=None,
          live_run_controller=None, list_consumer_factory=None,
          live_sort_part_factory=None, live_conveyor_probe=None, live_handoff_factory=None,
-         center_publisher_factory=None, live_gripper_factory=None, infer_process_options=None) -> int:
+         center_publisher_factory=None, live_gripper_factory=None, infer_process_options=None,
+         live_track_stream_factory=None) -> int:
     """CLI 진입점. 종료 코드를 돌려준다.
 
     나머지 키워드 인자(`b_stage_hook`·`extension_source`·`ros_available`·`*_factory`·`live_run_controller`·
@@ -701,7 +709,8 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
                                      live_conveyor_probe=live_conveyor_probe,
                                      live_handoff_factory=live_handoff_factory,
                                      center_publisher_factory=center_publisher_factory,
-                                     live_gripper_factory=live_gripper_factory)
+                                     live_gripper_factory=live_gripper_factory,
+                                     live_track_stream_factory=live_track_stream_factory)
 
     if capture is not None and args.b_input == "list":
         return _run_capture_list(args, settings, runner_config, detector_kw, capture, err, b_stage_hook,
@@ -865,6 +874,13 @@ def _load_gripper_handoff(path: str):
                          f"{cam['optical_frame']}/{cam['camera_info_topic']}")
 
     return visibility, GripperLive(gripper, belt_roi_xy_m(frames))
+
+
+def _default_track_stream_sender(config):
+    """실제 추적 흐름 발행기(rclpy·eyetoarm_interfaces). 시험은 같은 모양(send·now_ns·close)의 대역을 준다."""
+    from eyetoarm.vision.track_stream import RosTrackStreamSender
+
+    return RosTrackStreamSender(config)
 
 
 def _default_gripper_transport(config, sink):
@@ -1273,7 +1289,7 @@ class _ArmRegionRecords:
 def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_stage_hook, live_source_factory,
                           live_tf_factory, controller, list_consumer_factory=None,
                           live_sort_part_factory=None, live_conveyor_probe=None, live_handoff_factory=None,
-                          center_publisher_factory=None, live_gripper_factory=None) -> int:
+                          center_publisher_factory=None, live_gripper_factory=None, live_track_stream_factory=None) -> int:
     """실시간 A→B 기록 전용 시험. 리셋이면 실행을 멈추고 정리한다(자동 재시작 없음).
 
     경로: LiveLinkSource → 실행기 → AiSegDetector → 코어 → `live_observation_sink` → 디스패처 → TF → B → 기록기.
@@ -1343,6 +1359,8 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
     world_cfg = None
     gripper_on = bool(getattr(args, "gripper_handoff", False))
     handoff_cfg = (None, None)
+    stream_on = world_on and getattr(args, "track_stream", None) is not None
+    stream_cfg = None
 
     # W 추적 설정·볼트 평면 높이(B 규격 읽기만)는 출력·세션을 만들기 전에 확인한다
     if world_on:
@@ -1356,6 +1374,11 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
             if gripper_on:
                 handoff_cfg = _load_gripper_handoff(args.world_tracker_config)
+
+            if stream_on:
+                from eyetoarm.vision.track_stream import load_track_stream_config
+
+                stream_cfg = load_track_stream_config(args.track_stream)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             err.write(f"run_pipeline: world tracking config error: {exc}\n")
             return 2
@@ -1382,6 +1405,7 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
     controller.close_limit_s = link_config.close_limit_s
     sort_rt = None
     center_pub = None
+    stream_sender = None
     center_stats = _CenterOverlayStats()
 
     def close_sort_rt():
@@ -1397,6 +1421,12 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
                 center_pub.close()
             except Exception as cexc:
                 err.write(f"run_pipeline: center overlay publisher close failed: {type(cexc).__name__}: {cexc}\n")
+
+        if stream_sender is not None:
+            try:
+                stream_sender.close()
+            except Exception as texc:
+                err.write(f"run_pipeline: track stream publisher close failed: {type(texc).__name__}: {texc}\n")
 
     # C 송신 런타임은 TF·세션 앞(인터페이스가 없으면 아무것도 만들지 않고 1)
     if sort_on:
@@ -1425,6 +1455,26 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
             err.write(f"run_pipeline: center overlay publisher start failed: {type(exc).__name__}: {exc}\n")
             close_sort_rt()
             return 1
+
+    # 추적 흐름 발행기도 TF·세션 앞(인터페이스가 없으면 1). 발행 큐·스레드는 W 추적 스레드가 시작·종료한다
+    world_stream = None
+
+    if stream_on:
+        from eyetoarm.vision.track_stream import TrackStream
+
+        try:
+            stream_sender = (live_track_stream_factory or _default_track_stream_sender)(stream_cfg[0])
+        except ImportError as exc:
+            err.write(f"run_pipeline: --track-stream: eyetoarm_interfaces TrackStateArray not found ({exc}); build robot_ws "
+                      "and source robot_ws/install/setup.bash\n")
+            close_sort_rt()
+            return 1
+        except Exception as exc:
+            err.write(f"run_pipeline: track stream publisher start failed: {type(exc).__name__}: {exc}\n")
+            close_sort_rt()
+            return 1
+
+        world_stream = TrackStream(stream_cfg[0], stream_sender.send, stream_sender.now_ns)
 
     if center_on:
         from eyetoarm.transforms.center_overlay_pub import center_overlay_consumer
@@ -1475,6 +1525,7 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
             **({} if not world_on else {"world_tracker": _new_world_tracker(world_cfg[0], handoff_cfg[0],
                                                                             None if handoff_cfg[1] is None else handoff_cfg[1].config),
                                         "world_config": world_cfg[1], "world_plane_z_m": world_plane_z,
+                                        **({} if world_stream is None else {"world_stream": world_stream}),
                                         **({} if not gripper_on else {"world_visibility": handoff_cfg[0],
                                                                       "world_gripper": handoff_cfg[1]})})))
     except Exception as exc:
@@ -1599,6 +1650,16 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
                   f"rate<={g.config.max_rate_hz:g}Hz reorder_wait={g.config.reorder_wait_ms:g}ms late_limit={g.config.late_limit_ms}ms "
                   f"hold_limit={v.hold_limit_ms}ms margin={v.margin_px:g}px gate={g.config.gate_x_mm:g}x{g.config.gate_y_mm:g}mm "
                   "(confirmed W tracks only: position/time, no new ids, class kept, velocity unchanged; B input unchanged)\n")
+
+    if stream_on:
+        c = stream_cfg[0]
+        err.write(f"run_pipeline: TRACK STREAM ON topic={c.topic} rate<={c.max_rate_hz:g}Hz qos=RELIABLE/KEEP_LAST{c.qos_depth} "
+                  f"queue={c.queue_capacity} config_sha256={stream_cfg[1]} handoff_on={str(link.world.handoff_on).lower()} "
+                  "(confirmed W tracks only, SIM_TIME, base_link mm)\n")
+
+        if not link.world.handoff_on:
+            err.write("run_pipeline: WARNING track stream without --gripper-handoff: handoff_on=false is published; "
+                      "moving picks from this stream are not supported (C may refuse)\n")
 
     # 세션 등록 뒤 모든 단계는 이 try 안이다. 실패해도 세션·TF를 정리하고 1로 끝낸다
     try:
@@ -1777,6 +1838,20 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
                     problems.append(f"center overlay publisher close failed: {type(cexc).__name__}: {cexc}")
             else:
                 problems.append("center publisher left open (dispatcher not confirmed stopped)")
+
+        # 추적 흐름: W 추적 스레드가 닫힌 뒤(연결부 정리) 발행기를 닫는다. 정리 미확인이면 발행 중일 수 있어 열어 둔다
+        if stream_sender is not None:
+            if link.cleanup_confirmed:
+                try:
+                    stream_sender.close()
+                except Exception as texc:
+                    problems.append(f"track stream publisher close failed: {type(texc).__name__}: {texc}")
+            else:
+                problems.append("track stream publisher left open (world tracking not confirmed stopped)")
+
+        if world_stream is not None and world_stream.counts["publish_errors"]:
+            problems.append(f"track stream publish errors: {world_stream.counts['publish_errors']} "
+                            f"(first: {world_stream.first_error})")
 
         if handoff_probe is not None:
             try:

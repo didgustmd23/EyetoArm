@@ -797,6 +797,39 @@ class WorldTracker:
 
         return out
 
+    def stream_snapshot(self, timestamp_ms: int, belt_running=None) -> list[dict]:
+        """확정 트랙 전부의 발행용 사본(읽기 전용, 추적 상태를 바꾸지 않음). 위치는 `timestamp_ms`로 예측한 W mm.
+
+        `velocity_source`: 정지 신호면 NONE, 링크에서 놓친 트랙(hold)은 긴 기준선 공통 속도(BELT_COMMON),
+        자기 속도가 있으면 TRACK, 없으면 공통 속도를 낼 트랙이 있을 때 BELT_COMMON, 없으면 NONE.
+        """
+        belt_vy = self._belt_vy(belt_running)
+        common = any(t.part_track_id is not None and t.has_v for t in self._tracks)
+        out = []
+
+        for t in self._tracks:
+            if t.part_track_id is None:
+                continue
+
+            x, y = self._predict(t, timestamp_ms, belt_vy, belt_running)
+
+            if belt_running is False:
+                source = "NONE"
+            elif self._visibility is not None and (t.out_link or t.hold_pred):
+                source = "BELT_COMMON"
+            elif t.has_v:
+                source = "TRACK"
+            else:
+                source = "BELT_COMMON" if common else "NONE"
+
+            out.append({"part_track_id": t.part_track_id, "x_mm": x, "y_mm": y,
+                        "vy_mm_per_s": self._pred_vy(t, belt_vy, belt_running) * 1000.0, "velocity_source": source,
+                        "length_mm": t.length, "angle_deg": t.angle, "last_hit_ms": t.last_hit_ms,
+                        "hit_camera": t.hit_camera, "occluded": t.occluded, "out_link": t.out_link,
+                        "hold_pred": t.hold_pred})
+
+        return out
+
     def _held(self, t: _WTrack) -> bool:
         """가시성 만료가 켜져 있고 마지막 판정에서 링크·그리퍼 화면 모두 밖인 트랙."""
         return self._visibility is not None and t.out_link and t.out_grip

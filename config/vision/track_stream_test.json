@@ -1,0 +1,8 @@
+{
+  "status": "test_only",
+  "note": "A track stream (/a/track_states) development values. Off unless a run passes this file. Stale limit is decided by the receiver (C).",
+  "topic": "/a/track_states",
+  "max_rate_hz": 20,
+  "qos_depth": 10,
+  "queue_capacity": 4
+}
