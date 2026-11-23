@@ -1,3 +1,19 @@
 {
-  "extraPaths": ["src"]
+  "extraPaths": [
+    "src"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.*",
+    "_workspace",
+    "outputs",
+    "data",
+    "logs",
+    "recordings",
+    "rosbags",
+    "robot_ws/build",
+    "robot_ws/install",
+    "robot_ws/log"
+  ]
 }
