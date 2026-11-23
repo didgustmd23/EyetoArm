@@ -74,6 +74,11 @@ class CliTest(StreamCli):
         """--track-stream이 없으면 발행기를 만들지 않고 요약·기록에 stream이 없다."""
         code, err, out = self.run_stream(Scenario(5), WORLD, lambda c: self.fail("sender must not start"))
         self.assertEqual(code, 0, err)
+        # 같은 실행: retry 블록 없는 송신 설정이면 기본 제한을 시작 줄·run_meta에 남긴다
+        self.assertIn("retry=off tracking=world", err)
+        self.assertIn("retry_default=failure_gap_1s", err)
+        meta = json.loads((Path(self.tmp.name) / f"{Path(out).name}.jsonl").read_text().splitlines()[0])
+        self.assertEqual(meta["sort_part_retry"], {"source": "default", "failure_gap_s": 1.0})
         self.assertNotIn("track_stream", self.summary(out)["world_tracking"])
         self.assertNotIn("TRACK STREAM", err)
         self.assertFalse(any("stream" in r for r in self.world_records(out)))
@@ -89,6 +94,10 @@ class CliTest(StreamCli):
 
         code, err, out = self.run_stream(Scenario(5), GRIP + STREAM, factory)
         self.assertEqual(code, 0, err)
+        rows = [json.loads(t) for t in (Path(out) / "track_stream.jsonl").read_text().splitlines()]
+        self.assertEqual(len(rows), len(made[0].got))
+        self.assertTrue(all(r["published"] and r["publish_stamp_ns"] == 1 for r in rows))
+        self.assertEqual(rows[-1]["kind"], "marker")
         self.assertIn("TRACK STREAM ON topic=/a/track_states", err)
         self.assertIn("handoff_on=true", err)
         self.assertNotIn("WARNING track stream", err)

@@ -228,11 +228,12 @@ class PipelineLog:
     def __init__(self, recorder: JsonlRecorder, *, eval_run_id: str | None = None, log_geometry: bool = False,
                  b_input: str = B_INPUT_SINGLE, infer_process: bool = False,
                  infer_process_source: str | None = None, arm_region_filter: dict | None = None,
-                 belt_region_filter: dict | None = None) -> None:
+                 belt_region_filter: dict | None = None, sort_part_retry: dict | None = None) -> None:
         """기록기, 평가 실행 ID(평가가 아니면 None), AI geometry 기록 여부, B 입력 단계, 추론 프로세스 사용 여부·출처를 받는다.
 
         출처는 None·"argument"·"default". 켬이거나 인자로 끈 경우에만 run_meta에 표시한다(기본 끔이면 바이트 동일).
         `arm_region_filter`(팔 영역 제외)·`belt_region_filter`(벨트 밖 제외) 표시 사전은 주어졌을 때만 run_meta에 넣는다.
+        `sort_part_retry`(C 목표 송신의 재시도 정책)도 주어졌을 때만 넣는다.
         """
         if not isinstance(log_geometry, bool):
             raise ValueError(f"log_geometry must be a bool: {log_geometry!r}")
@@ -254,6 +255,11 @@ class PipelineLog:
             raise ValueError(f"belt_region_filter must be a dict or None: {belt_region_filter!r}")
 
         self._belt_region = belt_region_filter
+
+        if sort_part_retry is not None and not isinstance(sort_part_retry, dict):
+            raise ValueError(f"sort_part_retry must be a dict or None: {sort_part_retry!r}")
+
+        self._sort_part_retry = sort_part_retry
 
         if b_input not in B_INPUT_MODES:
             raise ValueError(f"b_input must be one of {B_INPUT_MODES}: {b_input!r}")
@@ -308,6 +314,9 @@ class PipelineLog:
 
         if self._belt_region is not None:
             meta["belt_region_filter"] = dict(self._belt_region)
+
+        if self._sort_part_retry is not None:
+            meta["sort_part_retry"] = dict(self._sort_part_retry)
 
         self._recorder.write("run_meta", meta)
 

@@ -210,6 +210,26 @@ class TrackStream:
         self.first_error: str | None = None
         self._latency_sim_ms: collections.deque[float] = collections.deque(maxlen=LATENCY_KEEP)
         self._queue_ms: collections.deque[float] = collections.deque(maxlen=LATENCY_KEEP)
+        self._record = None                 # 발행 기록 파일(발행 스레드만 씀)
+        self.record_error: str | None = None
+
+    def set_record(self, path) -> None:
+        """시작 전에 발행 기록 파일(새 파일)을 정한다. 줄마다 촬영·발행 SIM 시각과 지연을 남긴다."""
+        if self._thread is not None:
+            raise TrackStreamConfigError("set_record must be called before start")
+
+        self._record = open(path, "x", encoding="utf-8")
+
+    def _write_record(self, rec: dict) -> None:
+        """발행 스레드: 기록 한 줄. 실패는 첫 오류만 남기고 이후 쓰지 않는다(발행은 계속)."""
+        if self._record is None or self.record_error is not None:
+            return
+
+        try:
+            self._record.write(json.dumps(rec, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n")
+            self._record.flush()
+        except (OSError, ValueError) as exc:
+            self.record_error = f"{type(exc).__name__}: {exc}"
 
     def start(self) -> None:
         """발행 스레드 시작."""
@@ -276,14 +296,25 @@ class TrackStream:
             with self._cond:
                 self.counts["publish_errors"] += 1
                 self.first_error = self.first_error or f"{type(exc).__name__}: {exc}"
+
+            self._write_record({**_record_keys(out), "published": False, "error": f"{type(exc).__name__}: {exc}"})
             return
+
+        queue_ms = (self._clock_ns() - queued_ns) / 1e6
+        latency = None
+
+        if out["kind"] == "frame" and out["capture_stamp_ns"] > 0 and out["publish_stamp_ns"] > 0:
+            latency = (out["publish_stamp_ns"] - out["capture_stamp_ns"]) / 1e6
 
         with self._cond:
             self.counts["published"] += 1
-            self._queue_ms.append((self._clock_ns() - queued_ns) / 1e6)
+            self._queue_ms.append(queue_ms)
 
-            if out["kind"] == "frame" and out["capture_stamp_ns"] > 0 and out["publish_stamp_ns"] > 0:
-                self._latency_sim_ms.append((out["publish_stamp_ns"] - out["capture_stamp_ns"]) / 1e6)
+            if latency is not None:
+                self._latency_sim_ms.append(latency)
+
+        self._write_record({**_record_keys(out), "published": True, "capture_to_publish_sim_ms": latency,
+                            "queue_wait_ms": round(queue_ms, 3)})
 
     def close(self, limit_s: float) -> bool:
         """남은 항목을 보내고 끝낸다. 제한 안에 끝나면 True."""
@@ -291,12 +322,19 @@ class TrackStream:
             self._stop = True
             self._cond.notify_all()
 
-        if self._thread is None:
-            return True
+        if self._thread is not None:
+            self._thread.join(limit_s)
 
-        self._thread.join(limit_s)
+            if self._thread.is_alive():
+                return False
 
-        return not self._thread.is_alive()
+        if self._record is not None and not self._record.closed:
+            try:
+                self._record.close()
+            except OSError as exc:
+                self.record_error = self.record_error or f"close: {type(exc).__name__}: {exc}"
+
+        return True
 
     def summary(self) -> dict:
         """계수·지연(촬영 → 발행 SIM ms, 큐 대기 ms) 요약."""
@@ -304,10 +342,19 @@ class TrackStream:
             lat, qms = list(self._latency_sim_ms), list(self._queue_ms)
 
             return {"config": self.config.to_json(), "counts": dict(self.counts), "first_error": self.first_error,
+                    "record_error": self.record_error,
                     "queue_left": len(self._queue),
                     "capture_to_publish_sim_ms": {"n": len(lat), "p50": _pct(lat, 0.5), "p95": _pct(lat, 0.95),
                                                   "max": _pct(lat, 1.0)},
                     "queue_wait_ms": {"n": len(qms), "p50": _pct(qms, 0.5), "p95": _pct(qms, 0.95), "max": _pct(qms, 1.0)}}
+
+
+def _record_keys(msg: dict) -> dict:
+    """발행 기록 줄의 공통 키(SIM ns)."""
+    return {"kind": msg["kind"], "image_seq": msg["image_seq"], "generation": msg["generation"],
+            "tracker_epoch": msg["tracker_epoch"], "capture_stamp_ns": msg["capture_stamp_ns"],
+            "publish_stamp_ns": msg["publish_stamp_ns"], "tracks": len(msg["tracks"]),
+            "reset_reason": msg["reset_reason"] or None}
 
 
 # ---------------------------------------------------------------------- ROS 발행기

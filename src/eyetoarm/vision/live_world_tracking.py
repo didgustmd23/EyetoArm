@@ -282,6 +282,9 @@ class LiveWorldTracking:
         self.gripper_reasons: dict[str, int] = {}
         self._gripper_ms: collections.deque[float] = collections.deque(maxlen=4096)
         self._stream = stream
+
+        if stream is not None:   # 발행 기록(촬영·발행 SIM 시각)은 같은 실행 폴더에
+            stream.set_record(Path(out_dir) / "track_stream.jsonl")
         self._stream_classes: dict = {}          # 확정 번호 → (종류, 투영 높이 m), 끝점 입력에서 고른 값(추적 스레드)
         self._stream_source = ""                 # 마지막 링크 항목의 source_id(재설정·끝 알림용, 추적 스레드)
 

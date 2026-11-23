@@ -22,8 +22,19 @@ _FAIL_STATUSES = ("FAILED", "EXPIRED", "ERROR", "REJECTED")
 _RUN_SOURCE_KEYS = {"service", "poll_s", "call_timeout_s", "stale_s"}
 _RUN_BLOCK_EVENTS = ("skip:run_unknown", "skip:run_inactive", "skip:run_changed")
 _NO_CALL_RELEASE = ("gate_closed", "state_failed", "skip:track_retry_limit", "skip:failed_point_block",
-                    *_RUN_BLOCK_EVENTS)
+                    "skip:failure_gap", *_RUN_BLOCK_EVENTS)
+# `retry` 블록이 없을 때의 기본 제한: 실패한 목표의 촬영 시각부터 이 SIM 시간 안에 찍힌 같은 번호(번호 없으면 모든)
+# `PICK_PLACE`는 보내지 않는다. 실패가 곧바로 돌아올 때 프레임마다 다시 보내는 폭주를 막는다(블록이 있으면 블록 값)
+DEFAULT_FAILURE_GAP_S = 1.0
 RUN_MISMATCH_REASON = "SORT_RUN_MISMATCH"   # C 결과 사유: 이것을 받으면 실행 번호를 바로 다시 묻는다
+
+
+def retry_policy(config) -> dict:
+    """기록용 재시도 정책: 설정 블록이 있으면 그 값, 없으면 기본 제한 상수."""
+    if config.retry is not None:
+        return {"source": "config", **config.retry.to_json()}
+
+    return {"source": "default", "failure_gap_s": DEFAULT_FAILURE_GAP_S}
 
 
 class SortPartConfigError(ValueError):
@@ -222,6 +233,8 @@ class LiveSortPartSender:
         self._failed_points: list[tuple] = []          # (x_mm, y_mm, z_mm, 촬영 stamp ns)
         self._goal_meta: dict[str, tuple] = {}         # goal_id → (번호, 관측 위치 mm, 촬영 stamp ns)
         self.retry_counts = {"track_limit": 0, "point_block": 0, "failures_recorded": 0, "points_recorded": 0}
+        self._default_failures: dict = {}              # retry 블록 없음: 번호(없으면 None) → 실패한 목표의 촬영 stamp ns
+        self.default_gap_counts = {"failures_recorded": 0, "blocked": 0}
         self.no_track_id_states: dict[str, int] = {}   # skip:no_track_id의 track_state 분포(기록 조건변수 안)
         self.config = config
         self.runtime = runtime
@@ -307,6 +320,7 @@ class LiveSortPartSender:
 
             self._track_failures.clear()
             self._failed_points.clear()
+            self._default_failures.clear()
 
     def _run_block(self, goal: dict) -> str | None:
         """관리 실행 송신 조건(#301 P2). 막으면 사건 이름, 보낼 수 있으면 None."""
@@ -367,6 +381,16 @@ class LiveSortPartSender:
                         self.retry_counts["points_recorded"] += 1
                 elif status == "SUCCEEDED" and track is not None:
                     self._track_failures.pop(track, None)
+
+            # 기본 제한(retry 블록 없음): 실패한 목표의 촬영 시각을 번호별로 남긴다. 성공하면 지운다
+            if event.startswith("result:") and self.config.retry is None and same_run:
+                status = event.split(":", 1)[1]
+
+                if status in _FAIL_STATUSES and stamp is not None:
+                    self._default_failures[track] = max(stamp, self._default_failures.get(track, stamp))
+                    self.default_gap_counts["failures_recorded"] += 1
+                elif status == "SUCCEEDED":
+                    self._default_failures.pop(track, None)
 
         self._record(event, goal_id, keys, **detail)
 
@@ -527,8 +551,11 @@ class LiveSortPartSender:
         """재시도 제한(설정이 있을 때, PICK_PLACE만). 막으면 사건 이름."""
         r = self.config.retry
 
-        if r is None or kind != "PICK_PLACE":
+        if kind != "PICK_PLACE":
             return None
+
+        if r is None:
+            return self._default_gap_block(track, stamp)
 
         with self._qcond:
             if track is not None and self._track_failures.get(track, 0) >= r.max_failures_per_track:
@@ -542,6 +569,20 @@ class LiveSortPartSender:
                     if 0 <= stamp - fstamp <= window_ns and math.dist(pos, (fx, fy, fz)) <= r.failed_point_block_mm:
                         self.retry_counts["point_block"] += 1
                         return "skip:failed_point_block"
+
+        return None
+
+    def _default_gap_block(self, track, stamp) -> str | None:
+        """기본 제한: 같은 번호의 마지막 실패 목표 촬영 뒤 `DEFAULT_FAILURE_GAP_S` 안에 찍힌 목표는 막는다."""
+        if stamp is None:
+            return None
+
+        with self._qcond:
+            failed = self._default_failures.get(track)
+
+            if failed is not None and 0 <= stamp - failed < DEFAULT_FAILURE_GAP_S * 1e9:
+                self.default_gap_counts["blocked"] += 1
+                return "skip:failure_gap"
 
         return None
 
@@ -641,9 +682,11 @@ class LiveSortPartSender:
                      {**self.retry_counts, "track_failures": {str(k): v for k, v in sorted(self._track_failures.items())},
                       "failed_points": len(self._failed_points)})
             no_track_states = dict(sorted(self.no_track_id_states.items()))
+            default_gap = None if self.config.retry is not None else {**retry_policy(self.config), **self.default_gap_counts}
 
         return {"config": self.config.to_json(), "server_seen": getattr(self.runtime, "server_seen", None),
                 "tracking": self.tracking, "retry": retry,
+                **({} if default_gap is None else {"retry_default": default_gap}),
                 **({} if self.config.require_track_id is None else
                    {"require_track_id": self.config.require_track_id,
                     "no_track_id_states": no_track_states}),
@@ -690,5 +733,5 @@ def _refusal(before: dict, after: dict) -> str:
     return "send_refused"
 
 
-__all__ = ["LiveSortPartSender", "RecordingSortPartClient", "RetryConfig", "RunSourceConfig", "SortPartConfig",
-           "SortPartConfigError", "parse_sort_part"]
+__all__ = ["DEFAULT_FAILURE_GAP_S", "LiveSortPartSender", "RecordingSortPartClient", "RetryConfig", "RunSourceConfig",
+           "SortPartConfig", "SortPartConfigError", "parse_sort_part", "retry_policy"]

@@ -1573,6 +1573,8 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         if link.sort_part.managed and callable(set_run):
             set_run(link.sort_part)
 
+        from eyetoarm.vision.live_sort_part import DEFAULT_FAILURE_GAP_S
+
         seen = getattr(sort_rt, "server_seen", None)
         retry = link_config.sort_part.retry
         retry_text = ("off" if retry is None else f"max_failures_per_track={retry.max_failures_per_track} "
@@ -1585,7 +1587,8 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         err.write(f"run_pipeline: LIVE A->B->C SORT_PART ON action=/sort_part server_seen={str(seen).lower()} "
                   f"retry={retry_text} tracking={track_text} "
                   f"require_track_id={({True: 'true', False: 'false'}).get(link_config.sort_part.require_track_id, 'unset')} "
-                  "(D13 released by user decision 2026-11-20, accepted risk without pre-release test F6)\n")
+                  + ("" if retry is not None else f"retry_default=failure_gap_{DEFAULT_FAILURE_GAP_S:g}s ")
+                  + "(D13 released by user decision 2026-11-20, accepted risk without pre-release test F6)\n")
 
         if link_config.sort_part.require_track_id:
             err.write("run_pipeline: require_track_id=true: PICK_PLACE without a confirmed part_track_id is not sent "
@@ -1730,6 +1733,12 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
 
         with stream, _StopSignals() as signals:
             log_kw = {"b_input": B_INPUT_LIST} if listed else {}
+
+            if sort_on:   # C 목표 송신 재시도 정책(설정 블록 또는 기본 제한 상수)을 run_meta에 남긴다
+                from eyetoarm.vision.live_sort_part import retry_policy
+
+                log_kw["sort_part_retry"] = retry_policy(link_config.sort_part)
+
             log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
                               log_geometry=args.log_instance_geometry, infer_process=infer_proxy is not None,
                               infer_process_source=args.infer_process_source, arm_region_filter=arm_mark,
