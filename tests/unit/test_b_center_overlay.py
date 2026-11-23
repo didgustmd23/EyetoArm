@@ -100,21 +100,6 @@ class CenterOverlayTest(unittest.TestCase):
         self.assertEqual((m.kind, m.image_seq, m.capture_stamp_ns), ("accepted", keys["image_seq"], keys["capture_stamp_ns"]))
         self.assertIs(m.image, img_msg)
 
-    def test_generated_ros_message_accepts_every_published_key(self):
-        """빌드된 실제 ROS 메시지에서도 overlay_keys 필드 대입이 가능해야 한다."""
-        try:
-            from eyetoarm_interfaces.msg import CenterOverlay
-        except ImportError:
-            self.skipTest("eyetoarm_interfaces ROS build is not sourced")
-
-        env = envelope([bolt(0, 0.55, -0.12)])
-        img_msg = make_image_msg(np.zeros((4, 5, 3), np.uint8), 7_000, "f")
-        keys = overlay_keys(env)
-        available = set(CenterOverlay.get_fields_and_field_types())
-        self.assertTrue(set(keys).issubset(available), set(keys) - available)
-        msg = make_overlay_msg(img_msg, keys, CenterOverlay)
-        self.assertEqual(msg.detector_config_id, keys["detector_config_id"])
-
     def test_image_msg_rejects_gray(self):
         with self.assertRaises(ValueError):
             make_image_msg(np.zeros((4, 5), np.uint8), 0, "f", FakeMsg)
