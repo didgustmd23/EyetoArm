@@ -12,9 +12,14 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from sensor_msgs.msg import JointState
 
+from .track_stream_tracker import SimExecutionFeedback, SimTruthLog, TrackStreamTracker
+
 PARTS = {"BOLT_A": ("part_00", 0.0015, (0.72, -0.05)),
          "BOLT_B": ("part_01", 0.003, (0.72, 0.17))}
 DOWN = np.array([0., 0., -1.])
+POSE_SOURCES = ("sim", "track")
+NO_HOME_AFTER = ("STOP_UNCONFIRMED",)   # stop not confirmed: recovery first, no automatic motion
+TRACK_TOPIC = "/a/track_states"
 
 
 class SortFailure(RuntimeError):
@@ -25,10 +30,42 @@ class SortCanceled(RuntimeError):
     """Controller goals ended and subsequent joint feedback confirmed a stop."""
 
 
+class SimPoses:
+    """Latest simulation poses of all sort_cell parts (execution feedback and evaluation log only)."""
+
+    def __init__(self, world="sort_cell"):
+        from threading import Lock
+        from gz.msgs10.pose_v_pb2 import Pose_V
+        from gz.transport13 import Node
+        self._lock, self._poses, self._node = Lock(), {}, Node()
+        self._topic = f"/world/{world}/pose/info"
+        if not self._node.subscribe(Pose_V, self._topic, self._on_poses):
+            raise RuntimeError(f"cannot subscribe to {self._topic}")
+
+    def _on_poses(self, message):
+        poses = {}
+        for pose in message.pose:
+            if pose.name.startswith("part_"):
+                p, q = pose.position, pose.orientation
+                poses[pose.name] = (np.array([p.x, p.y, p.z]), (q.w, q.x, q.y, q.z))
+        with self._lock:
+            self._poses.update(poses)
+
+    def __call__(self):
+        with self._lock:
+            return dict(self._poses)
+
+    def close(self):
+        self._node.unsubscribe(self._topic)
+
+
 class GazeboSortExecutor:
     """Use B's static pick target and verify it against the simulation."""
 
-    def __init__(self, node, project_root: Path, *, moving=False):
+    def __init__(self, node, project_root: Path, *, moving=False, pose_source="sim",
+                 track_topic=TRACK_TOPIC, sim_truth_log=None):
+        if pose_source not in POSE_SOURCES:
+            raise ValueError(f"pose_source must be one of {POSE_SOURCES}: {pose_source!r}")
         self.node = node
         path = project_root / "scripts" / "pick_bolt_demo.py"
         spec = importlib.util.spec_from_file_location("c_pick_bolt_kinematics", path)
@@ -40,7 +77,34 @@ class GazeboSortExecutor:
         self.cancel_requested = lambda: False
         self.stationary_samples = 0
         self.active_grip = None
+        self.home = None
+        self._arm_moved = False
+        self._retreat_z = None
         self.node.create_subscription(JointState, "/joint_states", self._observe_velocity, 10)
+        self.pose_source = pose_source
+        self.sim_poses = None
+        self.truth_log = None
+        self._track = None
+        self._last_track_message = None
+        if pose_source == "track":
+            from eyetoarm_interfaces.msg import TrackStateArray
+            self.node.create_subscription(TrackStateArray, track_topic, self._on_track_message, 10)
+            self.sim_poses = SimPoses()
+            if sim_truth_log is not None:
+                self.truth_log = SimTruthLog(self.sim_poses, open(sim_truth_log, "a", encoding="utf-8"))
+        self.node.get_logger().info(f"SortPart executor pose_source={pose_source} moving={moving}")
+
+    def _on_track_message(self, message):
+        self._last_track_message = message
+        if self._track is not None:
+            self._track.on_message(message)
+
+    def _now_ns(self):
+        return self.node.get_clock().now().nanoseconds
+
+    def _record_truth(self, stage, goal, xyz):
+        if self.truth_log is not None:
+            self.truth_log.record(stage, goal.goal_id, goal.part_track_id, xyz, self._now_ns())
 
     def _observe_velocity(self, message):
         joints = dict(zip(message.name, message.velocity))
@@ -126,6 +190,7 @@ class GazeboSortExecutor:
         return path
 
     def _follow(self, path, seconds):
+        self._arm_moved = True
         error = self.arm.follow(path, seconds)
         if error > .015:
             target = np.asarray(path[-1], dtype=float)
@@ -136,7 +201,9 @@ class GazeboSortExecutor:
             raise SortFailure("ARM_TRACKING_ERROR")
 
     def _check_stationary(self, tracker, initial):
-        if np.linalg.norm(tracker.pose()[0] - initial) > .002:
+        if self.pose_source == "track":
+            tracker.check_stationary(initial)
+        elif np.linalg.norm(tracker.pose()[0] - initial) > .002:
             raise SortFailure("PART_MOVED")
 
     def execute(self, goal, feedback: Callable[[str], None], cancel_requested: Callable[[], bool]):
@@ -179,7 +246,7 @@ class GazeboSortExecutor:
                             self.history.append(self._pose)
                         break
 
-            def recent_motion(self):
+            def recent_motion(self, prefer_gripper=False):
                 with self._lock:
                     sample = self._pose
                     old = next((pose for pose in reversed(self.history)
@@ -188,12 +255,22 @@ class GazeboSortExecutor:
                     raise SortFailure("SIM_POSE_STALE")
                 return sample, (sample[0][:2] - old[0][:2]) / ((sample[2] - old[2]) / 1e9)
 
-        tracker = PoseTracker("sort_cell", name)
+            def close(self):
+                self._node.unsubscribe("/world/sort_cell/pose/info")
+
+        if self.pose_source == "track":
+            tracker = TrackStreamTracker(goal.part_track_id, goal.part_class, self._now_ns, failure=SortFailure)
+            if self._last_track_message is not None:
+                tracker.on_message(self._last_track_message)
+            self._track = tracker
+        else:
+            tracker = PoseTracker("sort_cell", name)
         try:
             return self._pick_and_place(goal, feedback, tracker, observed,
                                         place, place_rotation, heights, radius, bin_xy)
         finally:
-            tracker._node.unsubscribe("/world/sort_cell/pose/info")
+            self._track = None
+            tracker.close()
             self._finish_grip()
 
     def _deadline(self, goal):
@@ -208,26 +285,48 @@ class GazeboSortExecutor:
 
     def _pick_and_place(self, goal, feedback, tracker, observed, place,
                         place_rotation, heights, radius, bin_xy):
+        """Run one goal. After a failure once the arm has moved, return home (not after a cancel
+        or an unconfirmed stop); the failure reason is raised unchanged."""
+        self._arm_moved = False
+        self._retreat_z = None
+        try:
+            return self._pick_and_place_steps(goal, feedback, tracker, observed, place,
+                                              place_rotation, heights, radius, bin_xy)
+        except SortFailure as exc:
+            if self._arm_moved and str(exc) not in NO_HOME_AFTER:
+                self._return_home(goal, f"failure:{exc}", retreat=True)
+            raise
+
+    def _pick_and_place_steps(self, goal, feedback, tracker, observed, place,
+                              place_rotation, heights, radius, bin_xy):
         feedback("PLANNING")
-        start = tracker.pose()
-        self._spin_for(.5)
-        initial, initial_orientation, stamp = tracker.pose()
-        dt = (stamp - start[2]) / 1e9
-        if dt <= 0:
-            raise SortFailure("SIM_POSE_STALE")
-        self._deadline(goal)
-        velocity = (initial - start[0]) / dt
-        age = (stamp - goal.capture_stamp_ns) / 1e9
-        correction = np.r_[velocity[:2] * max(0., age), 0.] if self.moving else np.zeros(3)
-        if np.linalg.norm(initial - observed - correction) > .025:
-            raise SortFailure("PART_NOT_AT_OBSERVATION")
-        if not self.moving:
-            self._check_stationary(tracker, start[0])
+        if self.pose_source == "track":
+            initial, initial_orientation, still, velocity, correction = self._plan_from_track(goal, tracker, observed)
+        else:
+            start = tracker.pose()
+            self._spin_for(.5)
+            initial, initial_orientation, stamp = tracker.pose()
+            dt = (stamp - start[2]) / 1e9
+            if dt <= 0:
+                raise SortFailure("SIM_POSE_STALE")
+            self._deadline(goal)
+            velocity = (initial - start[0]) / dt
+            age = (stamp - goal.capture_stamp_ns) / 1e9
+            correction = np.r_[velocity[:2] * max(0., age), 0.] if self.moving else np.zeros(3)
+            if np.linalg.norm(initial - observed - correction) > .025:
+                raise SortFailure("PART_NOT_AT_OBSERVATION")
+            still = initial
+            if not self.moving:
+                self._check_stationary(tracker, start[0])
         if self.arm is None:
             self.arm = self.demo.Arm(self.node)
             self.arm._call = self._dispatch
+        if self.home is None:
+            self.home = self.arm.joints()
+            self.node.get_logger().info(f"SortPart HOME saved joints={np.round(self.home, 4).tolist()}")
         current = self.arm.joints()
         offset = self.demo.FINGER_REACH + self.demo.TIP_CLEARANCE - radius
+        self._retreat_z = heights[0] + offset
         candidates = []
         for candidate in goal.grasp_pose_candidates:
             pick = np.asarray(candidate.position_mm) / 1000.
@@ -265,8 +364,8 @@ class GazeboSortExecutor:
         self._deadline(goal)
         self._follow([approach], 3.)
         if self.moving:
-            self._moving_grasp(tracker, initial, initial_orientation, at_pick, raised,
-                               rotation, goal.part_class)
+            result, base_z = self._moving_grasp(tracker, initial, initial_orientation, at_pick, raised,
+                                                rotation, goal, offset)
             # The transport endpoints are derived from B's placement, with IK seeded
             # from the actual lift pose after the moving grasp.
             over_pose = self.demo.forward(self.chain, carry)
@@ -274,39 +373,115 @@ class GazeboSortExecutor:
             release_pose = self.demo.forward(self.chain, lowering[-1])
             lowering = self._line(over_pose[:3,3], release_pose[:3,3], place_rotation, carry)
         else:
-            self._check_stationary(tracker, initial)
+            self._check_stationary(tracker, still)
             self._follow(descent, 2.)
             try:
-                self._check_stationary(tracker, initial)
+                self._check_stationary(tracker, still)
             except SortFailure:
                 self._follow(list(reversed(descent[:-1])) + [approach], 2.)
                 raise
             self.arm.grip(self.demo.GRIP_CLOSED, settle=.1)
+            result, base_z = self._result_source(tracker, initial, offset)
             self._follow(lift, 2.)
-        if tracker.pose()[0][2] - initial[2] < .025:
+        if result.pose()[0][2] - base_z < .025:
             self.arm.grip(self.demo.GRIP_OPEN)
             raise SortFailure("MISSED")
         feedback("PLACING")
         self._follow([carry], 3.)
         self._follow(lowering, 1.5)
-        held = tracker.pose()[0]
+        held = result.pose()[0]
         if np.any(np.abs(held[:2] - bin_xy) >= [.05, .07]) or held[2] <= .08:
             raise SortFailure("PART_LOST_BEFORE_RELEASE")
         self.arm.grip(self.demo.GRIP_OPEN)
-        arrival = self._wait_for_bin(tracker, bin_xy)
+        arrival = self._wait_for_bin(result, bin_xy)
         self._follow([carry], 1.5)
+        self._return_home(goal, "success")
         return arrival
 
-    def _moving_grasp(self, tracker, initial, initial_orientation, at_pick, raised, rotation, part):
-        # B's candidate sets the point and direction. Gazebo pose increments
-        # supply relative XY corrections while a goal is already executing.
+    def _return_home(self, goal, why, retreat=False):
+        """Move back to the saved home joints. After a failure first rise to the approach
+        height where possible. A failed return only logs a warning; the goal result is unchanged."""
+        log = self.node.get_logger()
+        log.info(f"SortPart HOME_RETURN start goal={goal.goal_id} after={why}")
+        try:
+            self._finish_grip()
+            if retreat and self._retreat_z is not None:
+                current = self.arm.joints()
+                pose = self.demo.forward(self.chain, current)
+                start = pose[:3, 3]
+                if start[2] < self._retreat_z:
+                    try:
+                        up = self._line(start, np.r_[start[:2], self._retreat_z], pose[:3, :3], current)
+                    except RuntimeError:
+                        up = None
+                        log.warning(f"SortPart HOME_RETURN no straight retreat path goal={goal.goal_id}")
+                    if up is not None:
+                        self._follow(up, 1.5)
+            self._follow([self.home], 3.)
+        except RuntimeError as exc:   # SortFailure/SortCanceled included: keep the original result
+            log.warning(f"SortPart HOME_RETURN failed goal={goal.goal_id} after={why}: {type(exc).__name__}: {exc}")
+            return
+        log.info(f"SortPart HOME_RETURN done goal={goal.goal_id}")
+
+    def _plan_from_track(self, goal, tracker, observed):
+        """Track mode planning: position, motion and identity all come from the A track.
+
+        The node is spun only while a goal runs, so its SIM clock and the cached track message are
+        as old as the previous goal. Spin (at least once, at most 0.5 s) until a frame at or after
+        this goal's capture arrives; without one the cached sample is TRACK_STALE."""
+        started = time.monotonic()
+        self._spin_until(lambda: tracker.failed or (tracker.last_frame_ns or 0) >= goal.capture_stamp_ns, .5)
+        self.node.get_logger().info(
+            f"SortPart track planning goal={goal.goal_id} now={self._now_ns()} capture={goal.capture_stamp_ns} "
+            f"frame={tracker.last_frame_ns} waited_ms={(time.monotonic() - started) * 1000.:.0f}")
+        initial, initial_orientation, stamp = tracker.pose(require_axis=self.moving)
+        if self.moving and not tracker.handoff_on():
+            raise SortFailure("TRACK_HANDOFF_OFF")
+        self._deadline(goal)
+        velocity = tracker.velocity()
+        tracker.check_observation(observed, goal.capture_stamp_ns)
+        age = (stamp - goal.capture_stamp_ns) / 1e9
+        correction = np.r_[velocity[:2] * max(0., age), 0.] if self.moving else np.zeros(3)
+        still = tracker.measured_position()
+        if not self.moving:
+            tracker.check_stationary(still)
+        self._record_truth("planning", goal, initial)
+        return initial, initial_orientation, still, velocity, correction
+
+    def _result_source(self, tracker, initial, offset):
+        """Lift, hold and arrival feedback after closing: the tracker itself in sim mode,
+        the simulation part nearest the fingers in track mode."""
+        if self.pose_source != "track":
+            return tracker, initial[2]
+        tool = self.demo.forward(self.chain, self.arm.joints())[:3, 3]
+        result = SimExecutionFeedback(self.sim_poses, failure=SortFailure)
+        bound = result.bind(tool - np.array([0., 0., offset]))
+        self.node.get_logger().info(f"SortPart execution feedback part={result.part}")
+        return result, bound[0][2]
+
+    def _spin_until(self, done, seconds):
+        stop = time.monotonic() + seconds
+        rclpy.spin_once(self.node, timeout_sec=.05)   # always once: pending /clock and track messages
+        while not done() and time.monotonic() < stop:
+            rclpy.spin_once(self.node, timeout_sec=.05)
+
+    def _moving_grasp(self, tracker, initial, initial_orientation, at_pick, raised, rotation, goal, offset):
+        # B's candidate sets the point and direction. Pose increments (Gazebo in sim
+        # mode, the A track in track mode) supply relative XY corrections while a goal
+        # is already executing.
+        part = goal.part_class
+        track = self.pose_source == "track"
         self.arm.grip(.62 if part == "BOLT_A" else .55, settle=.1)
         grasp_goal = None
         reference = self.demo.quaternion_matrix(*initial_orientation)[:2, 2]
         base_rotation = rotation
         for clearance in (.05, .035, .023, .014, .007, 0., 0., 0., 0., 0.):
             self._check_cancel()
-            sample, velocity = tracker.recent_motion()
+            sample, velocity = tracker.recent_motion(prefer_gripper=track and not clearance)
+            if track:
+                self._record_truth(f"follow:{clearance:.3f}", goal, sample[0])
+                if not clearance:
+                    self.node.get_logger().info(f"SortPart grasp_source={tracker.grasp_source} goal={goal.goal_id}")
             age = self.node.get_clock().now().nanoseconds - sample[2]
             if not -250_000_000 <= age <= 250_000_000:
                 raise SortFailure("SIM_POSE_STALE")
@@ -321,7 +496,8 @@ class GazeboSortExecutor:
             target = at_pick.copy()
             target[:2] = sample[0][:2] + yaw @ (at_pick[:2] - initial[:2]) + np.clip(velocity, -.05, .05) * .36
             target[2] += clearance + self.demo.GRASP_HEIGHT_OFFSET[PARTS[part][0]]
-            if not (.46 <= target[0] <= .64 and abs(target[1]) <= .53 and .097 <= sample[0][2] <= .12):
+            # Track z is the A projection plane, not the simulation part origin; only xy is checked there.
+            if not (.46 <= target[0] <= .64 and abs(target[1]) <= .53 and (track or .097 <= sample[0][2] <= .12)):
                 raise SortFailure("PART_LEFT_PICK_REGION")
             closing = yaw @ base_rotation[:2, 0]
             closing = np.r_[closing, 0.]
@@ -332,12 +508,13 @@ class GazeboSortExecutor:
             if not clearance and grasp_goal is None:
                 grasp_goal = self._start_grip()
         self._check_cancel()
-        grasping_position = tracker.pose()[0]
+        result, _ = self._result_source(tracker, initial, offset)
+        grasping_position = result.pose()[0]
         current = self.arm.joints()
         start = self.demo.forward(self.chain, current)[:3,3]
         probe = start + np.array([0., 0., .020])
         self._follow(self._line(start, probe, rotation, current), .55)
-        moved = tracker.pose()[0] - grasping_position
+        moved = result.pose()[0] - grasping_position
         if moved[2] < .014 or np.linalg.norm(moved - [0., 0., .020]) > .008:
             self._finish_grip()
             self.arm.grip(self.demo.GRIP_OPEN)
@@ -346,6 +523,7 @@ class GazeboSortExecutor:
         probe = self.demo.forward(self.chain, current)[:3,3]
         target = np.r_[probe[:2], raised[2]]
         self._follow(self._line(probe, target, rotation, current), 1.2)
+        return result, initial[2] if not track else grasping_position[2]
 
     def _start_grip(self):
         from control_msgs.action import ParallelGripperCommand

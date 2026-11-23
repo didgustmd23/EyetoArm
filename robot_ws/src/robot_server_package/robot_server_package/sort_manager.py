@@ -17,7 +17,7 @@ from std_srvs.srv import Trigger
 
 from eyetoarm_interfaces.action import SortPart
 from eyetoarm_interfaces.srv import GetSortRun
-from .gazebo_sort_executor import GazeboSortExecutor, SortCanceled, SortFailure
+from .gazebo_sort_executor import POSE_SOURCES, TRACK_TOPIC, GazeboSortExecutor, SortCanceled, SortFailure
 
 
 ACTION_NAME = "/sort_part"
@@ -210,12 +210,22 @@ def main(args=None) -> int:
     parser.add_argument("--run-state", type=Path,
                         help="Enable managed sort runs and persist the execution epoch in this SQLite file")
     parser.add_argument("--moving-belt", action="store_true",
-                        help="Enable Gazebo pose based moving target prediction in managed runs")
+                        help="Enable moving target prediction in managed runs")
+    parser.add_argument("--pose-source", choices=POSE_SOURCES, default="sim",
+                        help="Target position source: sim (Gazebo poses) or track (A track stream)")
+    parser.add_argument("--track-topic", default=TRACK_TOPIC,
+                        help="A TrackStateArray topic for --pose-source track")
+    parser.add_argument("--sim-truth-log", type=Path,
+                        help="With --pose-source track, append track minus simulation pose lines (evaluation only)")
     parsed, ros_args = parser.parse_known_args(args)
     if parsed.run_state and not parsed.gazebo_project_root:
         parser.error("--run-state requires --gazebo-project-root")
     if parsed.moving_belt and not parsed.run_state:
         parser.error("--moving-belt requires --run-state")
+    if parsed.pose_source == "track" and not parsed.gazebo_project_root:
+        parser.error("--pose-source track requires --gazebo-project-root")
+    if parsed.sim_truth_log and parsed.pose_source != "track":
+        parser.error("--sim-truth-log requires --pose-source track")
     rclpy.init(args=ros_args)
     arm_node = None
     node = None
@@ -227,7 +237,8 @@ def main(args=None) -> int:
                 Parameter("use_sim_time", value=True),
             ])
             backend = GazeboSortExecutor(arm_node, parsed.gazebo_project_root.resolve(),
-                                         moving=parsed.moving_belt)
+                                         moving=parsed.moving_belt, pose_source=parsed.pose_source,
+                                         track_topic=parsed.track_topic, sim_truth_log=parsed.sim_truth_log)
         node = SortGoalReceiver(parsed.action, backend, parsed.run_state)
         executor.add_node(node)
         executor.spin()
