@@ -36,6 +36,11 @@ LIVE_CONFIG = ROOT / "config" / "vision" / "live_observation_test.json"
 def _live_pipeline_actions(context, root, ai_config, live_config, ai_log, stamp):
     start_a = LaunchConfiguration("start_a").perform(context).lower() == "true"
     start_b = LaunchConfiguration("start_b").perform(context).lower() == "true"
+    sorting = LaunchConfiguration('auto_sort').perform(context).lower() == 'true'
+    if sorting and not (start_a and start_b):
+        raise ValueError('auto_sort requires start_a and start_b')
+    if sorting:
+        live_config = root / 'config/vision/live_observation_sort_part_managed_test.json'
     if not start_a:
         if start_b:
             return [LogInfo(msg="start_b requires start_a:=true; B consumes live A candidates.")]
@@ -52,6 +57,10 @@ def _live_pipeline_actions(context, root, ai_config, live_config, ai_log, stamp)
     ]
     if start_b:
         cmd.extend(["--b-input", "list", "--b-center-overlay"])
+    if sorting:
+        cmd.extend(["--live-sort-part", "--tracking", "--tracking-space", "world",
+                    "--world-tracker-config", str(root / "config/vision/world_tracker_gripper_test.json"),
+                    "--track-stream", str(root / "config/vision/track_stream_test.json"), "--gripper-handoff"])
     cmd.extend(["--log", str(ai_log)])
     return [ExecuteProcess(cmd=cmd, cwd=str(root), output="screen")]
 
@@ -74,6 +83,7 @@ def generate_launch_description():
     interface_python = Path(get_package_prefix("eyetoarm_interfaces")) / python_site
 
     return LaunchDescription([
+        DeclareLaunchArgument("auto_sort", default_value="false"),
         DeclareLaunchArgument("gui", default_value="false",
                               description="Gazebo GUI 실행 여부 (false면 headless)"),
         DeclareLaunchArgument("start_a", default_value="true",
@@ -113,6 +123,11 @@ def generate_launch_description():
 
         # 이 두 entry point는 rclpy Node가 아니라 argparse 기반 프로세스이므로
         # launch_ros Node가 붙이는 --ros-args를 전달하지 않는다.
+        ExecuteProcess(cmd=[str(c_executables / "sort_goal_receiver"),
+                            "--gazebo-project-root", str(ROOT), "--moving-belt",
+                            "--pose-source", "track", "--feed-parts", "--run-state",
+                            str(ROOT / "logs" / "sort_run.sqlite3")],
+                       condition=IfCondition(LaunchConfiguration("auto_sort")), output="screen"),
         ExecuteProcess(cmd=[str(c_executables / "tcp_server")], output="screen"),
         ExecuteProcess(cmd=[str(c_executables / "display_relay")], output="screen"),
         OpaqueFunction(function=lambda context: _live_pipeline_actions(
