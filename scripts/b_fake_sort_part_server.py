@@ -14,11 +14,12 @@ from rclpy.action import ActionServer
 from rclpy.executors import MultiThreadedExecutor
 
 from eyetoarm_interfaces.action import SortPart
+from robot_server_package.action_server_guard import ActionServerConflict, acquire_action_server_guard
 
 STAGES = ("ACCEPTED", "PLANNING", "EXECUTING", "PLACING")
 
 
-def main() -> None:
+def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--step-s", type=float, default=0.5, help="단계 사이 시간(s)")
     ap.add_argument("--fail", action="store_true", help="결과를 FAILED로")
@@ -26,6 +27,8 @@ def main() -> None:
 
     rclpy.init()
     node = rclpy.create_node("b_fake_sort_part_server")
+    guard = None
+    server = None
 
     def execute(handle):
         g = handle.request
@@ -41,18 +44,28 @@ def main() -> None:
         handle.succeed()
         return SortPart.Result(status="SUCCEEDED", reason="")
 
-    ActionServer(node, SortPart, "/sort_part", execute)
     ex = MultiThreadedExecutor()
-    ex.add_node(node)
-    node.get_logger().info("가짜 /sort_part 서버 대기 중 (Ctrl+C 종료)")
     try:
+        guard = acquire_action_server_guard(node, "/sort_part")
+        server = ActionServer(node, SortPart, "/sort_part", execute)
+        ex.add_node(node)
+        node.get_logger().info("가짜 /sort_part 서버 대기 중 (Ctrl+C 종료)")
         ex.spin()
+    except ActionServerConflict as exc:
+        node.get_logger().error(f"{exc}. C/B 중 하나만 /sort_part 서버로 실행하세요.")
+        return 2
     except KeyboardInterrupt:
         pass
     finally:
+        if server is not None:
+            server.destroy()
+        if guard is not None:
+            guard.close()
+        ex.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -7,8 +7,11 @@
 | Gazebo link / gripper / fixed cameras | ROS `sensor_msgs/Image` | `link/raw`, `gripper/raw`, `fixed/raw` |
 | A AI detect frame | AToCHandoff consumer in `run_pipeline.py` → local TCP `127.0.0.1:47093` | `link/detect` |
 | B center-overlay frame + identity | ROS eyetoarm_interfaces/msg/CenterOverlay, default /b/center_overlay (--center-topic overrides it); image and B frame keys arrive together | link/center over ETV1/JPEG |
+| B measurement results | ROS `std_msgs/String` JSON on `/b/results`, subscribed only while `center` is selected | Exact-key selected result embedded as optional ETV1 metadata on its center frame |
 
-The center subscription consumes CenterOverlay so the JPEG and B frame identity come from the same ROS message. ETV1 preserves B source_id, image_seq, capture_generation, generation, job_seq, capture_stamp_ns, timestamp_base, and calibration_id; it adds the C relay session ID for D's session guard and carries B's original run ID as producer_run_id. D's current receiver uses the standard display envelope and does not surface optional producer fields to the GUI. CenterOverlay contains no grasp/place coordinates; those remain in /sort_part. The center stream is display-only and does not authorize a robot action.
+The center subscription consumes CenterOverlay so the JPEG and B frame identity come from the same ROS message. C also subscribes to `/b/results` while `center` is selected and joins the selected B result to the latest center JPEG using the complete B frame key (run/source/image sequence/generations/job sequence/capture stamp/time base/calibration). The result may arrive before or after the image; C retains a bounded cache and forwards only an exact match. ETV1 carries the selected result as optional metadata, with the C relay session ID for D's session guard and B's original run ID as `producer_run_id`. A detect ETV1 frame now also preserves its capture stamp and time base. This remains prototype behavior pending C↔D contract approval and live integration confirmation.
+
+The joined B result contains display measurements and classification only; it is not a robot command. CenterOverlay contains no grasp/place coordinates; those remain in `/sort_part`. The center stream is display-only and does not authorize a robot action.
 
 `sort_goal_receiver` provides the B→C ROS action server `/sort_part` using `eyetoarm_interfaces/action/SortPart`. It logs received goal fields and acknowledges receipt. Until the robot execution backend is connected, it returns `FAILED / EXECUTION_NOT_CONFIGURED`; it does not move the robot or report a sort as successful.
 
@@ -41,8 +44,10 @@ source robot_ws/install/setup.bash
 ros2 run robot_server_package sort_goal_receiver
 ```
 
+`sort_goal_receiver`, `scripts/b_sim_sort_part_server.py`, and the B fake receiver guard `/sort_part` at startup. The guard checks for an existing action server in the ROS graph and holds a per-`ROS_DOMAIN_ID` local lock while the server is alive. If another server is found, startup exits with an error; run only one `/sort_part` server at a time. Rebuild `robot_ws` after updating the package before using the guard. Build and duplicate-start checks passed on 2026-11-23; simultaneous starts from different hosts are not atomically coordinated.
+
 The relay listens on `0.0.0.0:47092` for D and `127.0.0.1:47093` for the local A handoff. The B center topic can be changed with `--center-topic` if B publishes it under another agreed name.
 
 ## Boundary
 
-A live test confirmed B can publish CenterOverlay and C can receive its image and identity fields. C now forwards those fields with the center JPEG over ETV1. A live test with D's Windows GUI and repeated raw/detect/center switching remains to be done.
+A live test confirmed B can publish CenterOverlay and C can receive its image and identity fields. The code now joins `/b/results` to matching center frames and D can consume an optional result from the ETV1 envelope. This code path has not been runtime-verified as part of the current change. A live test with D's Windows GUI and repeated raw/detect/center switching remains to be done.

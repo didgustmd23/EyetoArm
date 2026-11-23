@@ -6,6 +6,7 @@ import numpy as np
 import rclpy
 from gz.msgs10.double_pb2 import Double
 from control_msgs.action import ParallelGripperCommand
+from control_msgs.msg import JointTrajectoryControllerState
 from sensor_msgs.msg import JointState
 from pick_bolt_demo import (
     Arm, PartTracker, forward, load_chain, solve_ik, quaternion_matrix, transform,
@@ -45,6 +46,17 @@ pub = tracker._node.advertise('/model/conveyor/link/link/track_cmd_vel', Double)
 rclpy.init()
 node = rclpy.create_node('moving_belt_pick_trial')
 arm = Arm(node)
+controller_samples = []
+node.create_subscription(
+    JointTrajectoryControllerState,
+    '/joint_trajectory_controller/controller_state',
+    lambda message: controller_samples.append((
+        message.joint_names,
+        tuple(message.error.positions),
+        message.header.stamp.sec + message.header.stamp.nanosec * 1e-9,
+    )),
+    100,
+)
 chain = load_chain()
 home = arm.joints()
 down = np.array([0.,0.,-1.])
@@ -79,7 +91,21 @@ def sample_after(seconds):
     raise RuntimeError('Gazebo pose timestamps did not advance')
 
 def follow(points, seconds):
+    sample_start = len(controller_samples)
     error = arm.follow(points, seconds)
+    samples = controller_samples[sample_start:]
+    if samples:
+        names = samples[-1][0]
+        max_by_joint = {
+            name: max(abs(sample[1][index]) for sample in samples)
+            for index, name in enumerate(names)
+            if all(len(sample[1]) > index for sample in samples)
+        }
+        print(f'ARM_DIAG duration_sim_s={seconds:.3f} samples={len(samples)} '
+              f'max_error_by_joint_rad={max_by_joint} final_error_rad={error:.6f}', flush=True)
+    else:
+        print('ARM_DIAG controller_state_samples=0; checking /joint_trajectory_controller/controller_state',
+              flush=True)
     if error > .012:
         raise RuntimeError(f'arm tracking error {error:.4f} rad, goal={points[-1]}, actual={arm.joints()}')
 
