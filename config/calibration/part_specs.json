@@ -1,39 +1,40 @@
 {
   "format_version": 1,
-  "status": "draft-2026-11-22",
-  "note": "B 규격 판정 기준. 길이는 m. 근거: simulation/models/bolt_m6x12·bolt_m6x40·nut_m6 (ISO 4762 / ISO 4032). 볼트는 머리 포함 전체 길이로 판정(A B-04). 판정 규칙·허용 범위는 B 협업 요청 §6 DB-01과 같다. 2026-11-17 B 선택(A-2): 볼트는 머리 끝·축 끝 두 점, 너트는 윗면 바깥 테두리. 종류별 기준 높이 plane_z(A 후보 자료 r1: 볼트 축 105.0 mm, 너트 윗면 105.7 mm). 2026-11-20 B 수정: 너트 105.2 mm (Gazebo 실측 part_02 z=0.0999995 + 두께 5.2 mm, nut_m6 SDF). 2026-11-22 B 수정(A B-12, #267·#270): BOLT_A = M3x20(bolt_m3x20, 원점 z 실측 중앙 0.1019 m → plane_z 0.102), 길이 판정은 length_min~length_max(A 끝점 실측: BOLT_A 17~27 mm, BOLT_B 39~52 mm). 볼트 계산은 끝점 길이로 종류를 고른 뒤 그 종류의 plane_z·head_height를 쓴다.",
+  "status": "draft-2026-11-23",
+  "note": "B 규격 판정 기준. 길이는 m. 근거: simulation/models/bolt_m6x12·bolt_m6x40·nut_m6 (ISO 4762 / ISO 4032). 볼트는 머리 포함 전체 길이로 판정(A B-04). 판정 규칙·허용 범위는 B 협업 요청 §6 DB-01과 같다. 2026-11-17 B 선택(A-2): 볼트는 머리 끝·축 끝 두 점, 너트는 윗면 바깥 테두리. 종류별 기준 높이 plane_z(A 후보 자료 r1: 볼트 축 105.0 mm, 너트 윗면 105.7 mm). 2026-11-20 B 수정: 너트 105.2 mm (Gazebo 실측 part_02 z=0.0999995 + 두께 5.2 mm, nut_m6 SDF). 2026-11-22 B 수정(A B-12, #267·#270): BOLT_A = M3x20(bolt_m3x20, 원점 z 실측 중앙 0.1019 m → plane_z 0.102), 길이 판정은 length_min~length_max(A 끝점 실측: BOLT_A 17~27 mm, BOLT_B 39~52 mm). 볼트 계산은 끝점 길이로 종류를 고른 뒤 그 종류의 plane_z·head_height를 쓴다. 2026-11-23 B 수정(A B-14, #317·#319·#323): 볼트 머리를 ISO 4017 육각으로 바꿈. BOLT_A 전체 22 mm·머리 높이 k 2 mm·plane_z 0.1027(원점 z 실측 중앙), BOLT_B 전체 44 mm·k 4 mm·length_min 36 mm(육각 M6x40 끝점 38.2 mm 사례). head_diameter는 맞모서리 e(6.35·11.55 mm). grasp_z_offset(BOLT_A −2 mm)은 C 목표 grasp_pose_candidates 높이에만 더한다(C 서버가 축 가운데에서 닫으면 육각 M3x20이 미끄러짐, C pick_bolt_demo GRASP_HEIGHT_OFFSET과 같은 값).",
   "plane_z": 0.105,
   "bolt_min_aspect": 1.5,
   "specs": {
     "BOLT_A": {
       "class_name": "bolt",
       "label": "M3x20",
-      "total_length": 0.023,
+      "total_length": 0.022,
       "length_min": 0.017,
       "length_max": 0.027,
       "length_tolerance": 0.006,
-      "head_diameter": 0.005,
+      "head_diameter": 0.00635,
       "shaft_diameter": 0.003,
       "grasp_opening": 0.02,
       "bin": "BOLT_A",
       "action": "PICK_PLACE",
-      "plane_z": 0.102,
-      "head_height": 0.003
+      "plane_z": 0.1027,
+      "head_height": 0.002,
+      "grasp_z_offset": -0.002
     },
     "BOLT_B": {
       "class_name": "bolt",
       "label": "M6x40",
-      "total_length": 0.046,
-      "length_min": 0.039,
+      "total_length": 0.044,
+      "length_min": 0.036,
       "length_max": 0.052,
       "length_tolerance": 0.006,
-      "head_diameter": 0.01,
+      "head_diameter": 0.01155,
       "shaft_diameter": 0.006,
       "grasp_opening": 0.02,
       "bin": "BOLT_B",
       "action": "PICK_PLACE",
       "plane_z": 0.105,
-      "head_height": 0.006
+      "head_height": 0.004
     },
     "NUT": {
       "class_name": "nut",

@@ -82,7 +82,10 @@ def build_sort_goal(r: WorkPlanarResult, *, source_id: str, stamp_ns: int | None
     closing = _wrap_deg(r.theta_deg + 90.0)
     candidates = []
     gx, gy = r.grasp_w_m if getattr(r, "grasp_w_m", None) else r.center_w_m   # 볼트 두 끝점 입력이면 축 가운데 Pb
-    grasp_pos = [mm(gx), mm(gy), mm(r.plane_z_m)]
+    # 집는 높이 = 축 중심 높이 + 종류별 grasp_z_offset (2026-11-23 B 결정: 육각 M3x20은 축 가운데에서 닫으면 미끄러져
+    # C pick_bolt_demo GRASP_HEIGHT_OFFSET과 같은 −2 mm. 보고 위치 observed_position_mm 높이는 그대로 plane_z)
+    grasp_z = r.plane_z_m + float(spec.get("grasp_z_offset", 0.0))
+    grasp_pos = [mm(gx), mm(gy), mm(grasp_z)]
 
     for yaw in (closing, _wrap_deg(closing + 180.0)):
         candidates.append({"position_mm": grasp_pos, "orientation_xyzw": down_quat_xyzw(math.radians(yaw)),
