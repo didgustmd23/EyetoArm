@@ -7,12 +7,12 @@
 | 파일 | 원본 | 저작자 | 라이선스 | 수정 |
 |---|---|---|---|---|
 | `models/bolt_m6x12/meshes/bolt_m6x12.stl` | [FreeCAD-library](https://github.com/FreeCAD/FreeCAD-library) `Mechanical Parts/Fasteners/Bolts & Screws/Metric/ISO4762_Hex_Socket_Head_Cap_Screw_M6x12.stl` (commit `f5ca01cdcaa2f69b9295a6382719c2d90628780c`) | Normand C (최초 추가 commit `a79401b6ec`, 2013-08-05) | [CC-BY 3.0](https://creativecommons.org/licenses/by/3.0/) | 파일명 변경만. 형상 수정 없음. SDF에서 0.001 배율(mm → m)과 색상·재질 지정 |
-| `models/bolt_m6x40/meshes/bolt_m6x40.stl` | 같은 저장소 `…/ISO4762_Hex_Socket_Head_Cap_Screw_M6x40.stl` (같은 commit) | obijuan (최초 추가 commit `80174e9a7b`, 2014-11-09) | CC-BY 3.0 | 위와 같음 |
+| `models/bolt_m5x35/meshes/bolt_m5x35.stl`, `models/bolt_m9x60/meshes/bolt_m9x60.stl` | 같은 저장소 `…/ISO4762_Hex_Socket_Head_Cap_Screw_M6x40.stl` (같은 commit) | obijuan (최초 추가 commit `80174e9a7b`, 2014-11-09) | CC-BY 3.0 | 파일명 변경만(바이트 복사). 형상 수정 없음. SDF에서 배율(0.875·1.5 × 0.001)과 색상·재질 지정 |
 | `models/nut_m6/meshes/nut_m6.stl` | 같은 저장소 `Mechanical Parts/Fasteners/Nuts/Metric/ISO4032_Hex_Nut_M6.stl` (같은 commit) | Normand C (최초 추가 commit `cfc2cd5b3a`, 2013-08-05) | CC-BY 3.0 | 위와 같음 |
 
 FreeCAD-library README 원문: "All Parts in this repository are licensed under CC-BY 3.0 … Each Part is copyrighted by and should be attributed to its respective author(s). See commit details to find the authors of each Part." 저장소 전체의 경로 이동 commit `6f071a4bab`(WladIMirG, 2019-03-13 "INICIO")은 저작자 판단에 쓰지 않았다.
 
-CC-BY 3.0 표기: 위 세 메시는 각 저작자의 작품이며 CC-BY 3.0으로 이용한다. 원본에서 파일명만 바꾸었다.
+CC-BY 3.0 표기: 위 메시는 각 저작자의 작품이며 CC-BY 3.0으로 이용한다. 원본에서 파일명만 바꾸었다.
 
 ## 2. 실행 시 참조만 하는 패키지(저장소에 복사하지 않음)
 
@@ -33,6 +33,8 @@ CC-BY 3.0 표기: 위 세 메시는 각 저작자의 작품이며 CC-BY 3.0으�
 ## 3. 직접 만든 파일
 
 `scripts/generate_sim_meshes.py`로 만든 `models/conveyor_belt/meshes/*.stl`, `models/sort_bin/meshes/bin.stl`, 모든 `model.sdf`·`model.config`, `worlds/sort_cell.sdf`, `models/ur5e_2f85/`, `scripts/sim_*.launch.py`·`scripts/*_sim_*.py`는 EyetoArm D가 작성했다. 라이선스는 팀 저장소에 라이선스가 정해지지 않아 미정이다.
+
+`scripts/generate_hex_bolt_models.py`로 만든 `models/bolt_m3x20`·`models/bolt_m6x40`(ISO 4017 육각 머리 볼트, `meshes/*.stl`·`model.sdf`·`model.config`)은 EyetoArm A가 작성했다. 외부 메시를 쓰지 않는다. 라이선스는 위와 같이 미정이다.
 
 ## 4. 후속 후보 모델(아직 사용·포함하지 않음)
 
