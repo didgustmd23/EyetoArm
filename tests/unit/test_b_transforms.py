@@ -439,7 +439,7 @@ class TestAccuracy(unittest.TestCase):
         from eyetoarm.transforms.accuracy import load_truth
         t = {p.name: p for p in load_truth(ROOT / "simulation/worlds/sort_cell.sdf")}
         self.assertEqual({k: v.spec for k, v in t.items()}, {"part_00": "BOLT_A", "part_01": "BOLT_B", "part_02": "NUT"})
-        np.testing.assert_allclose(t["part_01"].xy_m, (0.55 - 0.0154, -0.15), atol=1e-4)   # 머리 아래 원점 → 면적 중심
+        np.testing.assert_allclose(t["part_01"].xy_m, (0.55 - 0.01645, -0.15), atol=1e-4)   # 머리 아래 원점 → 면적 중심 (육각 머리, B-14)
         self.assertEqual(t["part_01"].theta_deg, 0.0)
         self.assertIsNone(t["part_02"].theta_deg)
 
@@ -475,26 +475,39 @@ class TestEndpointInput(unittest.TestCase):
         self.assertAlmostEqual(r.measured_length_m, 0.046, places=4)
         self.assertAlmostEqual(r.theta_deg, 30.0, places=2)
         np.testing.assert_allclose(r.center_w_m, (0.55, -0.10), atol=1e-4)                 # Pa
-        np.testing.assert_allclose(r.grasp_w_m, np.array([0.55, -0.10]) + u * 0.003, atol=1e-4)   # Pb = 축 끝 쪽 3 mm
+        np.testing.assert_allclose(r.grasp_w_m, np.array([0.55, -0.10]) + u * 0.002, atol=1e-4)   # Pb = 축 끝 쪽 2 mm (육각 머리 높이 k 4 mm / 2, B-14)
 
     def test_bolt_a_from_endpoints_and_goal_uses_pb(self):
         from eyetoarm.transforms.grasp import build_sort_goal
         from eyetoarm.transforms.work_result import compute_bolt_from_endpoints
-        h, t, u = self._endpoints(0.023, 0.55, 0.05, 120.0, z=0.102)   # BOLT_A = M3x20, 축 높이 102 mm (B-12)
+        h, t, u = self._endpoints(0.022, 0.55, 0.05, 120.0, z=0.1027)   # BOLT_A = 육각 M3x20, 전체 22 mm, 축 높이 102.7 mm (B-14)
         r = compute_bolt_from_endpoints(h, t, CAM, T_W_C, SPECS)
-        self.assertEqual((r.spec, r.plane_z_m), ("BOLT_A", 0.102))         # 길이로 종류를 고른 뒤 그 종류 높이로 다시 투영
-        self.assertAlmostEqual(r.measured_length_m, 0.023, places=4)
+        self.assertEqual((r.spec, r.plane_z_m), ("BOLT_A", 0.1027))         # 길이로 종류를 고른 뒤 그 종류 높이로 다시 투영
+        self.assertAlmostEqual(r.measured_length_m, 0.022, places=4)
         frames = BStage.from_config(ROOT, CAM, StaticTfLookup(T_W_C)).frames
         g = build_sort_goal(r, source_id="link_cam", stamp_ns=1, frames=frames, specs=SPECS)
-        pb = (np.array([0.55, 0.05]) + u * 0.0015) * 1000                 # M3x20 머리 높이 3 mm / 2
+        pb = (np.array([0.55, 0.05]) + u * 0.001) * 1000                  # 육각 M3x20 머리 높이 k 2 mm / 2 (B-14)
         np.testing.assert_allclose(g["grasp_candidates"][0]["position_mm"][:2], pb, atol=0.15)
         np.testing.assert_allclose(g["observed_position_mm"][:2], [550.0, 50.0], atol=0.15)   # 위치 보고는 Pa
+        self.assertAlmostEqual(g["observed_position_mm"][2], 102.7, places=1)                # 보고 높이는 plane_z 그대로
+        for c in g["grasp_candidates"]:                                                   # 집는 높이만 grasp_z_offset −2 mm
+            self.assertAlmostEqual(c["position_mm"][2], 100.7, places=1)
+
+    def test_bolt_b_grasp_height_has_no_offset(self):
+        from eyetoarm.transforms.grasp import build_sort_goal
+        from eyetoarm.transforms.work_result import compute_bolt_from_endpoints
+        h, t, _ = self._endpoints(0.044, 0.55, -0.10, 30.0)
+        r = compute_bolt_from_endpoints(h, t, CAM, T_W_C, SPECS)
+        frames = BStage.from_config(ROOT, CAM, StaticTfLookup(T_W_C)).frames
+        g = build_sort_goal(r, source_id="link_cam", stamp_ns=1, frames=frames, specs=SPECS)
+        self.assertEqual(g["spec"], "BOLT_B")
+        self.assertEqual({c["position_mm"][2] for c in g["grasp_candidates"]}, {105.0})
 
     def test_bolt_length_ranges_b12(self):
-        """B-12: BOLT_A 17~27 mm, BOLT_B 39~52 mm (A 끝점 실측 범위), 사이·밖은 판정 불가."""
+        """B-12·B-14: BOLT_A 17~27 mm, BOLT_B 36~52 mm (A 끝점 실측 범위), 사이·밖은 판정 불가."""
         from eyetoarm.transforms.work_result import _classify
         cases = {0.017: "BOLT_A", 0.019: "BOLT_A", 0.027: "BOLT_A", 0.030: "UNRESOLVED",
-                 0.039: "BOLT_B", 0.0409: "BOLT_B", 0.052: "BOLT_B", 0.0165: "UNRESOLVED", 0.053: "UNRESOLVED"}
+                 0.035: "UNRESOLVED", 0.036: "BOLT_B", 0.039: "BOLT_B", 0.0409: "BOLT_B", 0.052: "BOLT_B", 0.0165: "UNRESOLVED", 0.053: "UNRESOLVED"}
         for length, want in cases.items():
             with self.subTest(length=length):
                 self.assertEqual(_classify("bolt", length, 0.0, float("inf"), SPECS)[0], want)

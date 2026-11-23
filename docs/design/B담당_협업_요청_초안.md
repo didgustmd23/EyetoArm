@@ -1,6 +1,6 @@
 # B 담당 협업 요청 초안 (A·C)
 
-문서 버전 0.17 · 작성 B담당 · 2026-11-22
+문서 버전 0.18 · 작성 B담당 · 2026-11-23
 **목적:** B(보정·좌표)가 A·C와 **무엇을 주고받는지**, **누가 무엇을 맡는지**를 확정하기 위한 요청서입니다.
 
 > ### ✍️ 답하는 방법
@@ -8,6 +8,8 @@
 >
 > **A가 답할 곳:** §8.2 (A-1·A-6·A-7). A-1·A-2·A-7은 A 답을 받아 B 선택을 회신했습니다(§8.2 「B 선택」). A-8은 A 구현(`4edf845`, PR #84로 main 반영)으로 해결했습니다.
 > **C가 답할 곳:** §8.3 (C-10~C-12, C-15·C-16), §0.1은 확인만. C-1~C-7은 C 답(2026-11-16)을 받아 §0에 반영했습니다. C-14(인터페이스 패키지)는 B가 만들었습니다.
+>
+> **v0.18(2026-11-23):** A 요청 B-14(육각 머리 볼트 규격) 반영(§8.5).
 >
 > **v0.17(2026-11-22):** A 요청 B-11·B-12 반영 완료(§8.5), B-13은 C `c_stack.launch.py`로 대신, C-16에 B 회신, 통합 시험 결과(§8.6)를 적었습니다.
 >
@@ -90,8 +92,8 @@ B 몫(C 합의 「B 계산·C 확인」, C 요청 CB-02·CB-05)이라 B가 값�
 
 | 규격 | 부품 | 기준 | 허용 범위 | 상자 |
 | --- | --- | --- | --- | --- |
-| BOLT_A | M3×20 (B-12, 2026-11-22. 전: M6×12) | 23 mm | 17~27 mm | A 상자 (720, −50) mm |
-| BOLT_B | M6×40 | 46 mm | 39~52 mm (B-12) | B 상자 (720, 170) mm |
+| BOLT_A | 육각 M3×20 (B-14, 2026-11-23. 전: 둥근 머리 M3×20, M6×12) | 22 mm | 17~27 mm | A 상자 (720, −50) mm |
+| BOLT_B | 육각 M6×40 (B-14) | 44 mm | 36~52 mm (B-14. 전: 39~52) | B 상자 (720, 170) mm |
 | NUT | M6 | 맞변 약 10 mm | 7~14 mm | 너트 상자 (550, 700) mm |
 | UNRESOLVED | 판정 불가 | — | — | 집지 않음 |
 
@@ -430,10 +432,11 @@ D 확인(DB-01 미회신 ①②)과 C 요청 CB-05, B→C 제안 1에 맞춰 B �
 | 픽셀 중심 (D ②) | 표시 사전에 `center_px` [u, v] (원본 사진 기준, 소수 1자리). TF가 없거나 중심을 못 구하면 `null` | `BStage._center_px()` |
 | C 대기열 넘기기 (B→C 제안 1, **C가 ROS 액션을 골라 운영에는 안 씀**. 시험·같은 프로세스 임시 연결용으로만 남김) | `stage.on_output = make_c_handoff(loop, sort_goal_queue)` — `loop.call_soon_threadsafe`로 넣음, `PICK_PLACE`·`PASS_THROUGH`만, 가득 차면 가장 오래된 목표를 버림, `stats`에 보낸·건너뛴·버린 수 | `b_stage.make_c_handoff()` |
 
-### 8.5 A 요청 회신 (B-11·B-12·B-13, 2026-11-22)
+### 8.5 A 요청 회신 (B-11·B-12·B-13 2026-11-22, B-14 2026-11-23)
 
 | 요청 | B 반영 | 위치 |
 |---|---|---|
+| B-14 육각 머리 | A 제안 값 그대로 반영: 전체 길이 BOLT_A 22·BOLT_B 44 mm, 머리 높이 k 2·4 mm(Pb는 Pa에서 축 끝 쪽 1·2 mm), BOLT_B `length_min` 36 mm, BOLT_A `plane_z` 102.7 mm(BOLT_B 105 mm 그대로). `head_diameter`는 맞모서리 e(6.35·11.55 mm, 기록용, 계산에 안 씀). 정확도 도구 면적 중심 BOLT_A −8.1·BOLT_B −16.5 mm(A 계산과 같음). **A 확인 부탁:** `ai_s1_09_axis_m2_viewbias.json`의 BOLT_A `fit_plane_z_m` 0.102는 B 102.7 mm와 0.7 mm 차이라 허용(±0.5 mm)을 넘어 시작이 거부됩니다(A 시야 보정 재측정 몫). `config/robot/b_c_test_vectors.json` `bolt_a_along_x`도 보고 102.7·집기 100.7 mm로 바꿈. **집는 높이:** C 서버(`sort_goal_receiver`)로 육각 M3×20을 축 가운데 높이에서 집으면 MISSED·PART_LOST_BEFORE_RELEASE로 놓쳐(2026-11-23 B 시험), BOLT_A만 `grasp_z_offset` −2 mm(C `pick_bolt_demo` `GRASP_HEIGHT_OFFSET`과 같은 값)를 목표 `grasp_pose_candidates` 높이에 더함(100.7 mm). 보고 높이 `observed_position_mm`는 102.7 mm 그대로. **C 확인 부탁:** 서버에 같은 보정을 넣으면 4 mm가 빠지니 한쪽만 둡니다 | `part_specs.json`, `accuracy.py`, `grasp.py`, `b_c_test_vectors.json`, `test_b_transforms.py` |
 | B-12 M3×20 | BOLT_A M3×20(23 mm, 머리 Ø5×3, 축 Ø3), 길이 범위 BOLT_A 17~27·BOLT_B 39~52 mm(`length_min`·`length_max`), 기본 높이 105 mm로 종류를 고른 뒤 그 종류 높이(BOLT_A 102 mm)로 다시 계산, Pb의 머리 높이도 종류별. `length_tolerance`(0.006)는 A 코드 호환으로 남김 | `part_specs.json`, `work_result.py`, PR #137·#138 |
 | B-11 추적 번호 | 목록 후보의 A 추적 번호를 결과·목표 `part_track_id`로 싣고 같은 번호는 C 결과 전까지 한 번만 보냄 | `b_stage._candidate_view`, PR #137 |
 | B-1 (결과서) | B 시험 서버 축 반지름 BOLT_A 1.5 mm·BOLT_B 3 mm | `b_sim_sort_part_server.py`, PR #137 |
