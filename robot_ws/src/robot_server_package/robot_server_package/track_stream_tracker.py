@@ -8,6 +8,7 @@ pose tracker. Simulation poses are never passed into this module.
 from __future__ import annotations
 
 import math
+from collections import deque
 from threading import Lock
 
 import numpy as np
@@ -104,6 +105,7 @@ class TrackStreamTracker:
         self.grasp_source = None
         self.frames = 0
         self._last_frame_ns = None      # newest frame capture seen, with or without the selected id
+        self._history = deque(maxlen=300)   # (capture ns, measured xyz m) of accepted samples
 
     @property
     def last_frame_ns(self):
@@ -176,6 +178,7 @@ class TrackStreamTracker:
                 return
 
             self._sample = sample
+            self._history.append((sample.stamp_ns, sample.position))
             if math.isfinite(sample.yaw):
                 self._known_yaw = sample.yaw
             if sample.gripper:
@@ -258,6 +261,26 @@ class TrackStreamTracker:
         sample, _ = self._current()
         if np.linalg.norm(sample.position - np.asarray(initial, dtype=float)) > self.still_threshold:
             raise self.failure("PART_MOVED")
+
+    def stillness(self, window_ns, threshold_m=None):
+        """Has the measured track stayed put for window_ns?
+
+        The reference is the last sample at or before (latest capture - window_ns); every sample
+        from it to the latest must be within threshold_m (default: the stationary threshold) of the
+        latest. Without a sample that old the window is not covered and the track is not still yet.
+        Returns (still, spread m, latest measured xyz m, (w, x, y, z) or None, latest capture ns)."""
+        threshold = self.still_threshold if threshold_m is None else threshold_m
+        sample, _ = self._current()
+        with self._lock:
+            history = list(self._history)
+
+        start = sample.stamp_ns - window_ns
+        anchor = next((i for i in range(len(history) - 1, -1, -1) if history[i][0] <= start), None)
+        recent = history if anchor is None else history[anchor:]
+        spread = max((float(np.linalg.norm(p - sample.position)) for _, p in recent), default=0.)
+
+        still = anchor is not None and spread <= threshold
+        return still, spread, sample.position.copy(), self._orientation(sample.yaw, False), sample.stamp_ns
 
     def close(self):
         """Nothing to release; the executor owns the subscription."""

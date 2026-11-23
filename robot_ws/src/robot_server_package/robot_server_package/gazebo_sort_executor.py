@@ -12,7 +12,7 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from sensor_msgs.msg import JointState
 
-from .track_stream_tracker import SimExecutionFeedback, SimTruthLog, TrackStreamTracker
+from .track_stream_tracker import STILL_M, SimExecutionFeedback, SimTruthLog, TrackStreamTracker
 
 PARTS = {"BOLT_A": ("part_00", 0.0015, (0.72, -0.05)),
          "BOLT_B": ("part_01", 0.003, (0.72, 0.17))}
@@ -20,6 +20,20 @@ DOWN = np.array([0., 0., -1.])
 POSE_SOURCES = ("sim", "track")
 NO_HOME_AFTER = ("STOP_UNCONFIRMED",)   # stop not confirmed: recovery first, no automatic motion
 TRACK_TOPIC = "/a/track_states"
+PICK_X_M = (.46, .64)                  # pick region in base_link
+PICK_ABS_Y_M = .53
+
+# Static track pick: wait above the part until it settles (test values, logged at start).
+STILL_WINDOW_S = 1.0                   # settled: measured track within STILL_M for this long
+STILL_WAIT_MAX_S = 10.0                # SIM time; longer is PART_MOVED
+STILL_WAIT_REAL_FACTOR = 3.            # real-time guard against a stopped SIM clock
+REDESCEND_MAX = 2                      # rises after the part moved during the descent
+FOLLOW_PERIOD_S = .2                   # wait between checks when the arm does not move
+FOLLOW_DEADBAND_M = .002               # follow the track only beyond this xy change
+FOLLOW_SPEED_MPS = .10                 # follow move duration = distance / speed
+FOLLOW_MIN_S = .2
+FOLLOW_TURN_S = 1.                     # minimum duration of a move that also turns the grasp
+YAW_DEADBAND_RAD = np.radians(2.)      # re-aim the grasp only beyond this axis change
 
 
 class SortFailure(RuntimeError):
@@ -93,6 +107,12 @@ class GazeboSortExecutor:
             if sim_truth_log is not None:
                 self.truth_log = SimTruthLog(self.sim_poses, open(sim_truth_log, "a", encoding="utf-8"))
         self.node.get_logger().info(f"SortPart executor pose_source={pose_source} moving={moving}")
+        if pose_source == "track" and not moving:
+            self.node.get_logger().info(
+                f"SortPart static settle window_s={STILL_WINDOW_S} still_mm={STILL_M * 1000.:g} "
+                f"wait_max_s={STILL_WAIT_MAX_S} redescend_max={REDESCEND_MAX} follow_period_s={FOLLOW_PERIOD_S} "
+                f"follow_deadband_mm={FOLLOW_DEADBAND_M * 1000.:g} follow_speed_mps={FOLLOW_SPEED_MPS} "
+                f"yaw_deadband_deg={np.degrees(YAW_DEADBAND_RAD):g}")
 
     def _on_track_message(self, message):
         self._last_track_message = message
@@ -336,19 +356,10 @@ class GazeboSortExecutor:
                 continue
             try:
                 rotation = self._rotation(candidate.orientation_xyzw)
-                z = pick[2] + offset
                 pick_xy = pick[:2] + correction[:2]
-                above = np.r_[pick_xy + (velocity[:2] * 2. if self.moving else 0), heights[0] + offset]
-                at_pick = np.r_[pick_xy, z]
-                raised = np.r_[pick_xy, heights[1] + offset]
-                release_z = place[2] + self.demo.FINGER_REACH
-                over_bin = np.r_[place[:2], max(raised[2], release_z)]
-                release = np.r_[place[:2], release_z]
-                approach = self._solve(above, rotation, current)
-                descent = self._line(above, at_pick, rotation, approach)
-                lift = self._line(at_pick, raised, rotation, descent[-1])
-                carry = self._solve(over_bin, place_rotation, lift[-1])
-                lowering = self._line(over_bin, release, place_rotation, carry)
+                lead = velocity[:2] * 2. if self.moving else 0
+                approach, descent, lift, carry, lowering, at_pick, raised = self._paths(
+                    pick_xy, pick[2] + offset, lead, rotation, heights, offset, place, place_rotation, current)
             except RuntimeError:
                 continue
             cost = np.max(np.abs(approach - current))
@@ -372,6 +383,14 @@ class GazeboSortExecutor:
             carry = self._solve(over_pose[:3,3], place_rotation, self.arm.joints())
             release_pose = self.demo.forward(self.chain, lowering[-1])
             lowering = self._line(over_pose[:3,3], release_pose[:3,3], place_rotation, carry)
+        elif self.pose_source == "track":
+            plan = (still, initial_orientation)
+            lift, carry, lowering = self._settle_and_descend(
+                goal, tracker, plan, (approach, descent, lift, carry, lowering, rotation, at_pick),
+                heights, offset, place, place_rotation)
+            self.arm.grip(self.demo.GRIP_CLOSED, settle=.1)
+            result, base_z = self._result_source(tracker, initial, offset)
+            self._follow(lift, 2.)
         else:
             self._check_stationary(tracker, still)
             self._follow(descent, 2.)
@@ -397,6 +416,132 @@ class GazeboSortExecutor:
         self._follow([carry], 1.5)
         self._return_home(goal, "success")
         return arrival
+
+    def _paths(self, pick_xy, z, lead, rotation, heights, offset, place, place_rotation, seed):
+        """Joint paths for one grasp point: (approach, descent, lift, carry, lowering, at_pick, raised).
+        Raises RuntimeError (SortFailure included) when IK has no solution."""
+        above = np.r_[pick_xy + lead, heights[0] + offset]
+        at_pick = np.r_[pick_xy, z]
+        raised = np.r_[pick_xy, heights[1] + offset]
+        release_z = place[2] + self.demo.FINGER_REACH
+        over_bin = np.r_[place[:2], max(raised[2], release_z)]
+        release = np.r_[place[:2], release_z]
+        approach = self._solve(above, rotation, seed)
+        descent = self._line(above, at_pick, rotation, approach)
+        lift = self._line(at_pick, raised, rotation, descent[-1])
+        carry = self._solve(over_bin, place_rotation, lift[-1])
+        lowering = self._line(over_bin, release, place_rotation, carry)
+        return approach, descent, lift, carry, lowering, at_pick, raised
+
+    def _settle_and_descend(self, goal, tracker, plan, paths, heights, offset, place, place_rotation):
+        """Static track pick from the approach height: wait until the track settles, following it at
+        the approach height, then descend to the settled position. If the part moves during the
+        descent, rise and wait again (at most REDESCEND_MAX times). Returns (lift, carry, lowering)
+        with the fingers at the part.
+
+        plan is (measured xyz at planning, track orientation at planning or None); paths are the
+        planned (approach, descent, lift, carry, lowering, rotation, at_pick)."""
+        log = self.node.get_logger()
+        plan_position, plan_orientation = plan
+        approach, descent, lift, carry, lowering, base_rotation, at_pick = paths
+        pick_xy, z = at_pick[:2].copy(), at_pick[2]
+        z_above = heights[0] + offset
+        arm_xy, rotation = pick_xy.copy(), base_rotation    # where the arm waits now
+        followed_m, redescents = 0., 0
+
+        while True:
+            log.info(f"SortPart STILL_WAIT start goal={goal.goal_id} redescents={redescents}")
+            started_ns, started_real = self._now_ns(), time.monotonic()
+            while True:
+                self._check_cancel()
+                still, spread, position, orientation, _ = tracker.stillness(int(STILL_WINDOW_S * 1e9))
+                target_xy = pick_xy + (position[:2] - plan_position[:2])
+                if not (PICK_X_M[0] <= target_xy[0] <= PICK_X_M[1] and abs(target_xy[1]) <= PICK_ABS_Y_M):
+                    raise SortFailure("PART_LEFT_PICK_REGION")
+                if still:
+                    break
+
+                waited_s = (self._now_ns() - started_ns) / 1e9
+                if (waited_s > STILL_WAIT_MAX_S
+                        or time.monotonic() - started_real > STILL_WAIT_MAX_S * STILL_WAIT_REAL_FACTOR):
+                    log.warning(f"SortPart STILL_WAIT timeout goal={goal.goal_id} waited_s={waited_s:.2f} "
+                                f"spread_mm={spread * 1000.:.1f} followed_mm={followed_m * 1000.:.1f} "
+                                f"redescents={redescents}")
+                    raise SortFailure("PART_MOVED")
+
+                step = float(np.linalg.norm(target_xy - arm_xy))
+                if step > FOLLOW_DEADBAND_M:
+                    self._move_above(arm_xy, target_xy, z_above, rotation, rotation, step)
+                    arm_xy, followed_m = target_xy, followed_m + step
+                else:
+                    self._spin_for(FOLLOW_PERIOD_S)
+
+            # Settled: re-aim the grasp at the settled position and axis.
+            new_rotation = self._turned(base_rotation, plan_orientation, orientation)
+            # Keep the planned paths when the part is still where they aim and the arm waits there.
+            planned = (np.linalg.norm(target_xy - pick_xy) <= FOLLOW_DEADBAND_M
+                       and np.linalg.norm(arm_xy - pick_xy) <= FOLLOW_DEADBAND_M
+                       and new_rotation is base_rotation and rotation is base_rotation)
+            if not planned:
+                step = float(np.linalg.norm(target_xy - arm_xy))
+                self._move_above(arm_xy, target_xy, z_above, rotation, new_rotation, step)
+                arm_xy, rotation, followed_m = target_xy, new_rotation, followed_m + step
+                try:
+                    approach, descent, lift, carry, lowering, _, _ = self._paths(
+                        target_xy, z, 0, rotation, heights, offset, place, place_rotation, self.arm.joints())
+                except SortFailure:
+                    raise
+                except RuntimeError:
+                    raise SortFailure("IK_NO_SOLUTION")
+                pick_xy, plan_position = target_xy, position
+                base_rotation, plan_orientation = rotation, orientation
+            log.info(f"SortPart STILL_WAIT done goal={goal.goal_id} "
+                     f"waited_s={(self._now_ns() - started_ns) / 1e9:.2f} spread_mm={spread * 1000.:.1f} "
+                     f"followed_mm={followed_m * 1000.:.1f} redescents={redescents} "
+                     f"pick_mm={np.round(target_xy * 1000., 1).tolist()} replanned={not planned}")
+
+            self._follow(descent, 2.)
+            try:
+                tracker.check_stationary(position)
+            except SortFailure as exc:
+                if str(exc) != "PART_MOVED":
+                    raise
+                self._follow(list(reversed(descent[:-1])) + [approach], 2.)
+                redescents += 1
+                log.info(f"SortPart REDESCEND goal={goal.goal_id} redescents={redescents} max={REDESCEND_MAX}")
+                if redescents > REDESCEND_MAX:
+                    raise
+                continue
+            return lift, carry, lowering
+
+    def _move_above(self, start_xy, target_xy, z, rotation, target_rotation, distance):
+        """Move the tool at height z from start_xy to target_xy; the last point takes target_rotation."""
+        current = self.arm.joints()
+        try:
+            path = self._line(np.r_[start_xy, z], np.r_[target_xy, z], rotation, current)
+            if target_rotation is not rotation:
+                path.append(self._solve(np.r_[target_xy, z], target_rotation, path[-1]))
+        except SortFailure:
+            raise
+        except RuntimeError:
+            raise SortFailure("IK_NO_SOLUTION")
+        seconds = max(FOLLOW_MIN_S, distance / FOLLOW_SPEED_MPS)
+        self._follow(path, seconds if target_rotation is rotation else max(seconds, FOLLOW_TURN_S))
+
+    def _turned(self, rotation, reference, orientation):
+        """B's grasp rotation turned about the vertical by the track axis change from reference to
+        orientation. The same object when either axis is unknown or the change is within the deadband."""
+        if reference is None or orientation is None:
+            return rotation
+        a = self.demo.quaternion_matrix(*reference)[:2, 2]
+        b = self.demo.quaternion_matrix(*orientation)[:2, 2]
+        angle = float(np.arctan2(a[0] * b[1] - a[1] * b[0], np.dot(a, b)))
+        if abs(angle) <= YAW_DEADBAND_RAD:
+            return rotation
+        c, s = np.cos(angle), np.sin(angle)
+        closing = np.r_[np.array([[c, -s], [s, c]]) @ rotation[:2, 0], 0.]
+        closing /= np.linalg.norm(closing)
+        return np.column_stack([closing, np.cross(DOWN, closing), DOWN])
 
     def _return_home(self, goal, why, retreat=False):
         """Move back to the saved home joints. After a failure first rise to the approach
@@ -497,7 +642,8 @@ class GazeboSortExecutor:
             target[:2] = sample[0][:2] + yaw @ (at_pick[:2] - initial[:2]) + np.clip(velocity, -.05, .05) * .36
             target[2] += clearance + self.demo.GRASP_HEIGHT_OFFSET[PARTS[part][0]]
             # Track z is the A projection plane, not the simulation part origin; only xy is checked there.
-            if not (.46 <= target[0] <= .64 and abs(target[1]) <= .53 and (track or .097 <= sample[0][2] <= .12)):
+            if not (PICK_X_M[0] <= target[0] <= PICK_X_M[1] and abs(target[1]) <= PICK_ABS_Y_M
+                    and (track or .097 <= sample[0][2] <= .12)):
                 raise SortFailure("PART_LEFT_PICK_REGION")
             closing = yaw @ base_rotation[:2, 0]
             closing = np.r_[closing, 0.]
