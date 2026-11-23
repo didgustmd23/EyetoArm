@@ -325,6 +325,7 @@ C의 회신은 Gazebo 카메라 입력 연동과 비상·이상 정지 뒤 재�
 - **미회신 영향:** A는 자체 수신률만 기록하고 C 결과와의 대조는 기다립니다.
 - **근거:** C §8.1·§12, 계획서 §5 완료 기준.
 - **회신(C, 2026-11-12, A 담당 전달 원문):** 「월드와 카메라 설정 통합 후 A와 동일한 조건으로 측정하고, 수신률·RTF 결과를 공유.」 동의. **남은 일:** 통합 후 측정·공유(A의 링크 카메라 설정 공유가 선행 조건).
+- **C 추가 회신 (2026-11-23):** GPU D3D12 렌더링(`NVIDIA GeForce RTX 3060`)으로 헤드리스 Gazebo `sim_sort_cell`에서 링크 카메라 `/link_cam/image`를 20초간 측정했습니다. 조건은 1280×720, SIM_TIME 40 Hz입니다. 측정 결과는 SIM_TIME 40.00 Hz, 벽시계 수신률 14.34 Hz, RTF 0.358, 프레임 간격 중앙값 25 ms, 추정 누락 0장입니다. A 측정은 RTX 5080 GPU에서 벽시계 27~31 Hz·RTF 0.69~0.77이었습니다. 카메라 설정·D3D12 렌더링 방식은 맞췄지만 GPU 사양이 다르므로 결과값 차이는 GPU 사양 차이에 따른 것으로 예상합니다.
 - **A 상태(2026-11-22):** A 측정(SIM 40 Hz·손실 0, 벽시계 = 40 × RTF, CPU 6~7 Hz·GPU 27~31 Hz, #256·#281·#293)을 [A 상세설계 §6.1](A담당_비전_상세설계.md) 「CA-01 A 측정」에 기록했습니다. C 측정 없이 이 값으로 대체·종결할지는 **A 결정 대기**입니다.
 
 ### C-07 비상·이상 정지 뒤 재시작 입력과 시각 대응
@@ -431,6 +432,8 @@ C→D는 raw 영상 3채널을 47092/ETV1/JPEG 시제품으로 전송해 테스�
   2. C 파일(`gazebo_sort_executor.py`·`sort_manager.py`)을 A가 수정하는 범위와 검토 방식
 - **A 연결 `5099e65`:** 관리 실행(`--run-state`)에서 A가 C `/c_sort_goal_receiver/get_run`으로 `sort_job_id`·`run_epoch`를 받아 목표에 채웁니다. 번호를 모르거나 C 실행이 꺼져 있으면 보내지 않습니다(A 상세설계 §13.1, A 작업 기록 #301 P2). 실제 C 서비스와의 실측은 미실행입니다.
 
+**C 추가 회신 (2026-11-23):** 실행기는 Gazebo 정답 위치를 사용하던 경로에서 A 추적 토픽 `/a/track_states`를 입력으로 받아 대상 위치를 추적·예측하도록 구현했습니다. 추적 입력 소비 코드와 실행기 연결은 반영되어 있습니다. 실제 A 추적 입력을 사용한 이동 중 집기와 목표 만료(`valid_until_ns`) 처리는 통합 시험으로 확인한 뒤 결과를 공유하겠습니다.
+
 ### C-13 center 영상 번호표와 결과 값의 D 전달 (0.13 추가)
 
 - **배경:** B center 발행기가 `/b/center_overlay/image`와 번호표가 붙은 `/b/center_overlay`(`CenterOverlay`)를 함께 냅니다(B PR #120, A가 실시간 경로에 연결 #233). D 화면에서 center·detect가 실제로 보입니다(2026-11-21 A 확인). 그러나 C 중계기는 `CenterOverlay`를 구독하지 않고, center의 `image_seq`·`job_seq`를 C 순번으로, `generation`을 0으로, `calibration_id`를 비워 D로 보냅니다(`display_relay.py:374-392`). D 화면에서 center 영상과 목표·detect 프레임을 같은 사진으로 맞출 수 없습니다(화면 표시 「프레임 126 · 보정 —」). 위치·각도 측정값도 D로 가지 않아 「현재 측정: A·B 미수신」입니다(C-08 남은 일).
@@ -467,6 +470,8 @@ C→D는 raw 영상 3채널을 47092/ETV1/JPEG 시제품으로 전송해 테스�
   2. 종료 정리: `conveyor_controller`가 종료 때 `RCLError: rcl_shutdown already called`, `c_stack` 그룹이 Ctrl+C 뒤 30 s 안에 끝나지 않아 KILL이 필요했습니다.
 
 **반영 상태 (2026-11-22, 0.17):** 3) A 실행 인자는 `c_stack.launch.py`에 들어 있고, #249 추가 2의 `c_stack` 종료 KILL은 해소됐습니다(C `17f2e43`). 남은 것은 1) `set_pose` 연결, 2) `ur5e_moveit_config` 무조건 조회, 4) `sort_goal_receiver`·`conveyor_controller` 미포함과 `--tracking`·`--live-sort-part` 없음, #249 추가 1 `--initialize-command-log`(`RECOVERY_FAILED`), 컨베이어 종료 `RCLError`입니다(A 작업 기록 #286). ~~물리 엔진 기본값(Bullet에서 그리퍼가 닫히지 않음, A 메신저 문의 2026-11-22 #291)~~ (해소 2026-11-22, C `c8cbc7b`: `sim_sort_cell.launch.py` 기본 DART 복귀, 월드 재설정 뒤 제어기를 다시 띄우는 `controller_recovery` 추가). 같은 문의의 부착 집기·종류별 손끝은 C 회신 기록이 없습니다.
+
+**C 추가 회신 (2026-11-23):** `c_stack.launch.py`에 A 파이프라인 `start_a`·`start_b` 옵션과 B center overlay 실행을 반영했습니다. 현재 이 launch에는 C `sort_goal_receiver`와 `conveyor_controller`가 포함되어 있지 않아, 분류 실행 묶음은 아직 완료되지 않았습니다.
 
 ## 5. D에게 요청 (7건)
 

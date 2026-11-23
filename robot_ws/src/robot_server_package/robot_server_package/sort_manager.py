@@ -5,7 +5,7 @@ import argparse
 from pathlib import Path
 import sqlite3
 import sys
-from threading import Lock
+from threading import Event, Lock
 import uuid
 
 import rclpy
@@ -63,8 +63,10 @@ def _goal_summary(goal) -> str:
 class SortGoalReceiver(Node):
     """Validate goals and dispatch them to the configured executor."""
 
-    def __init__(self, action_name: str = ACTION_NAME, backend=None, epoch_file=None) -> None:
+    def __init__(self, action_name: str = ACTION_NAME, backend=None, epoch_file=None, feeder=None) -> None:
         super().__init__("c_sort_goal_receiver")
+        self._feeder = feeder
+        self._stop_run_requested = Event()
         self._backend = backend
         self._execution_lock = Lock()
         self._epoch_file = epoch_file
@@ -91,6 +93,9 @@ class SortGoalReceiver(Node):
             raise
         if epoch_file is not None:
             self.create_service(Trigger, "~/start_run", self._start_run)
+            self.create_service(Trigger, "~/stop_run", self._stop_run)
+            if feeder is not None:
+                self.create_timer(0.25, self._feed)
             self.create_service(GetSortRun, "~/get_run", self._get_run)
         self.get_logger().info(
             f"B→C SortPart {action_name}; mode={'gazebo' if backend is not None else 'receive-only'}"
@@ -105,6 +110,23 @@ class SortGoalReceiver(Node):
                 guard.close()
                 self._server_guard = None
 
+    def _feed(self):
+        if self._job_id and not self._recovery_required:
+            try:
+                self._feeder.tick()
+            except Exception as exc:
+                self.get_logger().error(f"Part supply failed: {exc}")
+                self._stop_run(None, Trigger.Response())
+
+    def _stop_run(self, request, response):
+        self._stop_run_requested.set()
+        self._job_id = ""
+        if self._feeder is not None:
+            self._feeder.set_running(False)
+        response.success = True
+        response.message = "STOP_REQUESTED"
+        return response
+
     def _start_run(self, request, response):
         if not self._execution_lock.acquire(blocking=False):
             response.message = "BUSY"
@@ -113,7 +135,14 @@ class SortGoalReceiver(Node):
             if self._recovery_required:
                 response.message = "RECOVERY_REQUIRED"
                 return response
-            if self._job_id:
+            if self._feeder is not None:
+                if self._job_id:
+                    response.success = True
+                    response.message = "ALREADY_RUNNING"
+                    return response
+                self._feeder.set_running(True)
+            self._stop_run_requested.clear()
+            if self._job_id or self._seen:
                 self._epoch = next_epoch(self._epoch_file)
             self._job_id = str(uuid.uuid4())
             with self._seen_lock:
@@ -192,14 +221,17 @@ class SortGoalReceiver(Node):
                         raise SortFailure("DUPLICATE_GOAL")
                     self._seen.add(request.goal_id)
                 result.arrived_stamp_ns = self._backend.execute(
-                    request, publish, lambda: goal_handle.is_cancel_requested)
+                    request, publish, lambda: goal_handle.is_cancel_requested or self._stop_run_requested.is_set())
                 result.status = "SUCCEEDED"
                 goal_handle.succeed()
                 self.get_logger().info(f"B_GOAL_ARRIVED goal_id={request.goal_id} stamp={result.arrived_stamp_ns}")
                 return result
             except SortCanceled:
                 result.status, result.reason = "CANCELED", "ROBOT_STOP_CONFIRMED"
-                goal_handle.canceled()
+                if goal_handle.is_cancel_requested:
+                    goal_handle.canceled()
+                else:
+                    goal_handle.abort()
                 return result
             except SortFailure as exc:
                 result.reason = str(exc)
@@ -226,6 +258,7 @@ def main(args=None) -> int:
                         help="Enable sort_cell simulation execution using this EyetoArm checkout")
     parser.add_argument("--run-state", type=Path,
                         help="Enable managed sort runs and persist the execution epoch in this SQLite file")
+    parser.add_argument("--feed-parts", action="store_true", help="Drive the Gazebo belt and supply parts during a managed run")
     parser.add_argument("--moving-belt", action="store_true",
                         help="Enable moving target prediction in managed runs")
     parser.add_argument("--pose-source", choices=POSE_SOURCES, default="sim",
@@ -235,6 +268,8 @@ def main(args=None) -> int:
     parser.add_argument("--sim-truth-log", type=Path,
                         help="With --pose-source track, append track minus simulation pose lines (evaluation only)")
     parsed, ros_args = parser.parse_known_args(args)
+    if parsed.feed_parts and (not parsed.moving_belt or parsed.pose_source != 'track'):
+        parser.error('--feed-parts requires --moving-belt --pose-source track')
     if parsed.run_state and not parsed.gazebo_project_root:
         parser.error("--run-state requires --gazebo-project-root")
     if parsed.moving_belt and not parsed.run_state:
@@ -256,7 +291,11 @@ def main(args=None) -> int:
             backend = GazeboSortExecutor(arm_node, parsed.gazebo_project_root.resolve(),
                                          moving=parsed.moving_belt, pose_source=parsed.pose_source,
                                          track_topic=parsed.track_topic, sim_truth_log=parsed.sim_truth_log)
-        node = SortGoalReceiver(parsed.action, backend, parsed.run_state)
+        feeder = None
+        if parsed.feed_parts:
+            from .gazebo_part_feeder import GazeboPartFeeder
+            feeder = GazeboPartFeeder(parsed.gazebo_project_root)
+        node = SortGoalReceiver(parsed.action, backend, parsed.run_state, feeder)
         executor.add_node(node)
         executor.spin()
     except ActionServerConflict as exc:
@@ -265,6 +304,9 @@ def main(args=None) -> int:
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        if node is not None and node._feeder is not None:
+            node._stop_run_requested.set()
+            node._feeder.set_running(False)
         executor.shutdown()
         if node is not None:
             node.destroy_node()
