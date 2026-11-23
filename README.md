@@ -33,43 +33,13 @@ AI 검출은 YOLOv8n-seg 분할 모델 **S1-08**을 운영 모델로 채택했�
 
 ## 시스템 구성
 
-D 운영 GUI는 **Windows**, A·B·C와 ROS 2·MoveIt 2·Gazebo는 **WSL2**에서 실행합니다(사용자 확정). 상세 구성도와 미결 사항은 [시스템 계획 §2.1](docs/architecture/시스템_아키텍처_및_프로젝트_계획.md)을 기준으로 합니다.
+D 운영 GUI는 **Windows**, A·B·C와 ROS 2·MoveIt 2·Gazebo는 **WSL2**에서 실행합니다(사용자 확정). 아래 그림은 main 현재 구현의 개요입니다. 구현 상세 구성도와 미결 사항은 [시스템 계획 §2.1](docs/architecture/시스템_아키텍처_및_프로젝트_계획.md#21-시스템-아키텍처-v11), 데이터 흐름과 근거는 [§2.1.1](docs/architecture/시스템_아키텍처_및_프로젝트_계획.md#211-구현-구성도와-데이터-흐름-v17-2026-11-23-main-기준)을 기준으로 합니다.
 
-```mermaid
-flowchart LR
-    subgraph Win["Windows 11"]
-        Gui["D 운영 GUI · TCP 클라이언트"]
-    end
-    subgraph WSL["WSL2 Ubuntu 24.04"]
-        Phone["스마트폰 · 저장 영상"]
-        subgraph Pipe["A·B 내부 파이프라인"]
-            A["A 검출(OpenCV / AI)·추적<br/>사람 자세 관절점(4~5주)"]
-            B["B 좌표·규격·목표 계산<br/>액션 클라이언트"]
-            A -->|"공통 자료형·내부 호출"| B
-        end
-        subgraph CProc["C 로봇 서버 프로세스"]
-            Tcp["TCP 서버 · 포트 하나"]
-            Act["분류 목표 액션 서버 (제안)"]
-            Exec["단일 실행 관리자<br/>작업대 → 로봇 베이스"]
-            Tcp --> Exec
-            Act --> Exec
-        end
-        subgraph Sim["Gazebo Harmonic"]
-            Camera["가상 작업대 카메라"]
-            Belt["컨베이어 · 볼트/너트 · 상자"]
-            Arm["UR5e · 2지 그리퍼"]
-        end
-        Camera --> Bridge["ros_gz_bridge"] --> A
-        Phone --> A
-        B -->|"ROS 액션 goal"| Act
-        Act -. "feedback·result" .-> B
-        Exec --> MoveIt["MoveIt 2 · ros2_control"] --> Arm
-        Exec --> Belt
-        Arm -. 관절 피드백 .-> Exec
-    end
-    Gui -->|"TCP 연결 하나<br/>MOVE·GET_STATUS·CANCEL (1.1) · START·STOP·RECOVER (개정 제안)"| Tcp
-    Tcp -. 상태 응답 .-> Gui
-```
+![EyetoArm 시스템 개요 (main 기준, Archify)](docs/images/system_overview.svg)
+
+[대화형 구성도 보기](https://didgustmd23.github.io/EyetoArm/images/system_overview.html) (저장소 파일: [system_overview.html](docs/images/system_overview.html))
+
+그림 원본 정의는 [docs/images/system_overview.archify.json](docs/images/system_overview.archify.json)(Archify)입니다. 사람 자세 제어(4~5주)는 「예정」으로 표시했습니다.
 
 - **자동 분류:** 목표는 GUI를 거치지 않고 B→C ROS 액션으로 전달합니다. C가 목표를 검증·계획·실행·취소하고 결과를 책임집니다.
 - **GUI 명령:** GUI는 같은 TCP 서버·포트·연결로 `START`·`STOP`·`RECOVER`와 상태 조회를 보냅니다. 이 분류 명령은 TCP 1.1에 없으므로 [TCP 명세서 부록 A](docs/protocol/TCP_프로토콜_명세서.md)의 **미승인 개정 제안**이며, 별도 확장 서버·포트·계약은 두지 않습니다. `STOP`은 요청 접수와 정지 확인을 구분하고, `RECOVER` 성공은 분류 자동 재개가 아닙니다.

@@ -1,0 +1,655 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "EyetoArm 시스템 구성 (계획서 1.7, main c826ddd)",
+    "locale": "ko",
+    "output": ".archify/architecture-eyetoarm-system-20261123-161223/eyetoarm-system-head.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/didgustmd23/EyetoArm.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "c826dddda464868aef56253bde481d2813a06d2a"
+    }
+  },
+  "components": [
+    {
+      "id": "relay",
+      "type": "backend",
+      "label": "C display_relay",
+      "sublabel": "영상 47092 · A 결과 47093",
+      "sources": [
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/display_relay.py",
+          "line": 19,
+          "label": "영상 포트 47092"
+        },
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/display_relay.py",
+          "line": 432,
+          "label": "A 결과 포트 47093"
+        }
+      ],
+      "pos": [
+        540,
+        40
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "tcp",
+      "type": "backend",
+      "label": "C tcp_server",
+      "sublabel": "TCP 1.1 · 47090",
+      "sources": [
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/tcp_server.py",
+          "line": 18,
+          "label": "포트 47090"
+        }
+      ],
+      "pos": [
+        1320,
+        580
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "dash",
+      "type": "frontend",
+      "label": "D 대시보드",
+      "sublabel": "Windows · 중계 수신",
+      "tag": "명령은 TCP",
+      "sources": [
+        {
+          "path": "dashboard-client/src/eyetoarm/gui/window.py",
+          "line": 7,
+          "end_line": 10,
+          "label": "47092 수신"
+        }
+      ],
+      "pos": [
+        1320,
+        40
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "gz",
+      "type": "cloud",
+      "label": "Gazebo 월드 (DART)",
+      "sublabel": "물리 벨트 · 육각 볼트",
+      "tag": "카메라 3대",
+      "sources": [
+        {
+          "path": "scripts/sim_sort_cell.launch.py",
+          "line": 55,
+          "end_line": 56,
+          "label": "DART 기본"
+        },
+        {
+          "path": "simulation/models/conveyor_belt/model.sdf",
+          "line": 48,
+          "end_line": 52,
+          "label": "TrackController"
+        },
+        {
+          "path": "simulation/models/bolt_m3x20/model.sdf",
+          "line": 3,
+          "label": "ISO 4017 볼트"
+        }
+      ],
+      "pos": [
+        40,
+        212
+      ],
+      "size": [
+        170,
+        88
+      ]
+    },
+    {
+      "id": "infer",
+      "type": "backend",
+      "label": "A AI 추론",
+      "sublabel": "별도 자식 프로세스",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/ai_process.py",
+          "line": 1,
+          "end_line": 6,
+          "label": "추론 자식 프로세스"
+        }
+      ],
+      "pos": [
+        290,
+        220
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "filt",
+      "type": "backend",
+      "label": "A 검출 정리",
+      "sublabel": "팔·벨트 밖·2중 제외",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/arm_region.py",
+          "line": 202,
+          "end_line": 203,
+          "label": "팔 영역 제외"
+        },
+        {
+          "path": "src/eyetoarm/vision/belt_region.py",
+          "line": 29,
+          "end_line": 30,
+          "label": "벨트 밖 제외"
+        },
+        {
+          "path": "src/eyetoarm/vision/world_tracking.py",
+          "line": 565,
+          "end_line": 566,
+          "label": "2중 검출 합침 계수"
+        }
+      ],
+      "pos": [
+        540,
+        220
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "wtrack",
+      "type": "backend",
+      "label": "A W 추적",
+      "sublabel": "번호 유지 · 그리퍼 깊이 인계",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/world_tracking.py",
+          "line": 518,
+          "end_line": 519,
+          "label": "WorldTracker"
+        },
+        {
+          "path": "src/eyetoarm/vision/live_world_tracking.py",
+          "line": 221,
+          "end_line": 222,
+          "label": "추적 스레드"
+        },
+        {
+          "path": "src/eyetoarm/vision/live_world_tracking.py",
+          "line": 863,
+          "label": "그리퍼 깊이 인계"
+        }
+      ],
+      "pos": [
+        790,
+        220
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "list",
+      "type": "backend",
+      "label": "A→B 목록 입력",
+      "sublabel": "b_input/2 · 추적 번호",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/live_observation_link.py",
+          "line": 1078,
+          "end_line": 1079,
+          "label": "b_input/2"
+        },
+        {
+          "path": "src/eyetoarm/vision/pipeline_records.py",
+          "line": 44,
+          "label": "목록 단계 L"
+        }
+      ],
+      "pos": [
+        1040,
+        220
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "rec",
+      "type": "backend",
+      "label": "C controller_recovery",
+      "sublabel": "재설정 뒤 제어기 재생성",
+      "sources": [
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/controller_recovery.py",
+          "line": 1,
+          "label": "제어기 재생성"
+        },
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/controller_recovery.py",
+          "line": 21,
+          "label": "ControllerRecovery"
+        }
+      ],
+      "pos": [
+        40,
+        400
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "sup",
+      "type": "backend",
+      "label": "run_pipeline_supervisor",
+      "sublabel": "SIM 되감기 뒤 A 재시작",
+      "sources": [
+        {
+          "path": "scripts/run_pipeline_supervisor.py",
+          "line": 1,
+          "end_line": 4,
+          "label": "reset_detected 뒤 재시작"
+        }
+      ],
+      "pos": [
+        290,
+        400
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "stream",
+      "type": "messagebus",
+      "label": "A 추적 흐름",
+      "sublabel": "/a/track_states",
+      "tag": "기본 꺼짐",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/track_stream.py",
+          "line": 22,
+          "label": "토픽"
+        },
+        {
+          "path": "src/eyetoarm/vision/track_stream.py",
+          "line": 188,
+          "label": "발행 큐"
+        },
+        {
+          "path": "robot_ws/src/eyetoarm_interfaces/CMakeLists.txt",
+          "line": 12,
+          "end_line": 13,
+          "label": "TrackState msg"
+        }
+      ],
+      "pos": [
+        790,
+        400
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "bcalc",
+      "type": "backend",
+      "label": "B 목록 소비자",
+      "sublabel": "규격·좌표·집는 점",
+      "tag": "grasp_z_offset",
+      "sources": [
+        {
+          "path": "src/eyetoarm/transforms/b_stage.py",
+          "line": 117,
+          "label": "BStage"
+        },
+        {
+          "path": "src/eyetoarm/transforms/grasp.py",
+          "line": 85,
+          "end_line": 88,
+          "label": "집는 높이 오프셋"
+        },
+        {
+          "path": "src/eyetoarm/transforms/center_overlay_pub.py",
+          "line": 32,
+          "end_line": 34,
+          "label": "center·results 토픽"
+        }
+      ],
+      "pos": [
+        1040,
+        400
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "exec",
+      "type": "backend",
+      "label": "C gazebo_sort_executor",
+      "sublabel": "sim·track · HOME 복귀",
+      "tag": "정지 멈춤 대기",
+      "sources": [
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/gazebo_sort_executor.py",
+          "line": 76,
+          "label": "실행기"
+        },
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/gazebo_sort_executor.py",
+          "line": 436,
+          "label": "정지 멈춤 대기"
+        },
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/gazebo_sort_executor.py",
+          "line": 546,
+          "label": "HOME 복귀"
+        }
+      ],
+      "pos": [
+        790,
+        580
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "recv",
+      "type": "backend",
+      "label": "C sort_goal_receiver",
+      "sublabel": "관리 실행 run_epoch",
+      "sources": [
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/sort_manager.py",
+          "line": 84,
+          "end_line": 86,
+          "label": "start_run·get_run"
+        },
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/sort_manager.py",
+          "line": 212,
+          "end_line": 215,
+          "label": "--moving-belt·--pose-source"
+        }
+      ],
+      "pos": [
+        1040,
+        580
+      ],
+      "size": [
+        170,
+        72
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "시뮬레이션",
+      "wraps": [
+        "gz"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "C 화면 중계",
+      "wraps": [
+        "relay"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "D Windows",
+      "wraps": [
+        "dash"
+      ]
+    },
+    {
+      "kind": "security-group",
+      "label": "A run_pipeline 검출·추적",
+      "wraps": [
+        "infer",
+        "filt",
+        "wtrack",
+        "list"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "B 좌표 계산",
+      "wraps": [
+        "bcalc"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "C 분류 실행·명령",
+      "wraps": [
+        "exec",
+        "recv",
+        "tcp"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "C 복구",
+      "wraps": [
+        "rec"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "gz-infer",
+      "from": "gz",
+      "to": "infer",
+      "label": "링크 영상",
+      "variant": "emphasis"
+    },
+    {
+      "id": "infer-filt",
+      "from": "infer",
+      "to": "filt",
+      "label": "인스턴스",
+      "variant": "emphasis"
+    },
+    {
+      "id": "filt-wtrack",
+      "from": "filt",
+      "to": "wtrack",
+      "label": "관측",
+      "variant": "emphasis"
+    },
+    {
+      "id": "wtrack-list",
+      "from": "wtrack",
+      "to": "list",
+      "label": "관측·번호",
+      "variant": "emphasis"
+    },
+    {
+      "id": "list-bcalc",
+      "from": "list",
+      "to": "bcalc",
+      "label": "목록 봉투",
+      "variant": "emphasis"
+    },
+    {
+      "id": "bcalc-recv",
+      "from": "bcalc",
+      "to": "recv",
+      "label": "/sort_part",
+      "variant": "emphasis"
+    },
+    {
+      "id": "recv-exec",
+      "from": "recv",
+      "to": "exec",
+      "label": "목표 실행",
+      "variant": "emphasis"
+    },
+    {
+      "id": "exec-gz",
+      "from": "exec",
+      "to": "gz",
+      "label": "팔·그리퍼 명령"
+    },
+    {
+      "id": "gz-exec-pose",
+      "from": "gz",
+      "to": "exec",
+      "label": "sim 위치·결과 판정",
+      "variant": "dashed"
+    },
+    {
+      "id": "wtrack-stream",
+      "from": "wtrack",
+      "to": "stream",
+      "label": "확정 번호"
+    },
+    {
+      "id": "stream-exec",
+      "from": "stream",
+      "to": "exec",
+      "label": "track 모드"
+    },
+    {
+      "id": "gz-relay",
+      "from": "gz",
+      "to": "relay",
+      "label": "카메라 3대"
+    },
+    {
+      "id": "filt-relay",
+      "from": "filt",
+      "to": "relay",
+      "label": "A detect 주석 영상 (47093)",
+      "variant": "dashed"
+    },
+    {
+      "id": "bcalc-relay",
+      "from": "bcalc",
+      "to": "relay",
+      "label": "중심점 영상·B 결과",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "right",
+      "via": [
+        [
+          1270,
+          436
+        ],
+        [
+          1270,
+          76
+        ]
+      ]
+    },
+    {
+      "id": "relay-dash",
+      "from": "relay",
+      "to": "dash",
+      "label": "영상·결과",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [
+        [
+          625,
+          16
+        ],
+        [
+          1405,
+          16
+        ]
+      ]
+    },
+    {
+      "id": "dash-tcp",
+      "from": "dash",
+      "to": "tcp",
+      "label": "TCP 1.1 (47090)"
+    },
+    {
+      "id": "rec-gz",
+      "from": "rec",
+      "to": "gz",
+      "label": "제어기 재생성",
+      "variant": "dashed"
+    },
+    {
+      "id": "sup-infer",
+      "from": "sup",
+      "to": "infer",
+      "label": "A 재시작",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "A→B→C 목표 계약",
+      "items": [
+        "SortPart.action: capture_stamp_ns · valid_until_ns · sort_job_id · run_epoch · part_track_id",
+        "집는 높이 = plane_z + grasp_z_offset (BOLT_A −2 mm)",
+        "관리 실행: A가 C get_run으로 sort_job_id·run_epoch를 채움",
+        "추적 흐름은 확정 번호만, 20 Hz 상한, RELIABLE"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "실행 위치 출처",
+      "items": [
+        "sim: Gazebo pose/info로 위치·신원 (비교·회귀용)",
+        "track: A /a/track_states 번호로 대상 선택, 이동 집기는 A 인계 켬 필수",
+        "들어 올림·보유·상자 도착 판정은 두 모드 모두 시뮬 상태",
+        "놓은 뒤·실패 뒤 HOME 복귀, 취소·STOP_UNCONFIRMED 제외"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "부품·시뮬레이션",
+      "items": [
+        "볼트 ISO 4017 육각 머리: M3×20 22 mm · M6×40 44 mm, 너트 ISO 4032 M6",
+        "물리 엔진 DART, 벨트 TrackController track_cmd_vel",
+        "카메라 3대: 링크(A 검출) · 그리퍼 깊이(인계) · 고정"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "실행 환경·미구현",
+      "items": [
+        "D 대시보드는 Windows, 나머지는 WSL2 Ubuntu 24.04",
+        "사람 자세 제어(4~5주)는 미구현",
+        "track 모드·추적 흐름은 main에 있으나 Gazebo 실측 기준 미확정"
+      ]
+    }
+  ]
+}

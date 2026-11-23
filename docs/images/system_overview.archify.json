@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "EyetoArm 시스템 개요 (main 기준)",
+    "locale": "ko",
+    "output": ".archify/architecture-eyetoarm-readme-overview-20261123-163600/eyetoarm-overview.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/didgustmd23/EyetoArm.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "60e2b0b1b21c59390594bd1dec577175746b01bd"
+    }
+  },
+  "components": [
+    { "id": "relay", "type": "backend", "label": "C 영상 중계기", "sublabel": "display_relay · 47092", "pos": [290, 40], "size": [170, 72],
+      "sources": [{ "path": "robot_ws/src/robot_server_package/robot_server_package/display_relay.py", "line": 19, "label": "영상 포트 47092" },
+                  { "path": "robot_ws/src/robot_server_package/robot_server_package/display_relay.py", "line": 432, "label": "A 결과 포트 47093" }] },
+    { "id": "cams", "type": "cloud", "label": "카메라 3대", "sublabel": "링크 · 그리퍼 깊이 · 고정", "pos": [40, 220], "size": [170, 72],
+      "sources": [{ "path": "simulation/models/ur5e_2f85/ur5e_2f85.urdf.xacro", "line": 16, "end_line": 18, "label": "링크 카메라" },
+                  { "path": "simulation/models/ur5e_2f85/ur5e_2f85.urdf.xacro", "line": 22, "end_line": 24, "label": "그리퍼 깊이 카메라" },
+                  { "path": "simulation/worlds/sort_cell.sdf", "line": 79, "label": "고정 카메라" }] },
+    { "id": "a", "type": "backend", "label": "A 검출·추적", "sublabel": "AI 추론 · W 추적", "tag": "run_pipeline", "pos": [290, 220], "size": [170, 72],
+      "sources": [{ "path": "src/eyetoarm/vision/ai_process.py", "line": 1, "end_line": 6, "label": "추론 자식 프로세스" },
+                  { "path": "src/eyetoarm/vision/world_tracking.py", "line": 518, "end_line": 519, "label": "W 추적" },
+                  { "path": "src/eyetoarm/vision/track_stream.py", "line": 22, "label": "/a/track_states" }] },
+    { "id": "b", "type": "backend", "label": "B 좌표·목표", "sublabel": "규격 · 집는 점", "pos": [540, 220], "size": [170, 72],
+      "sources": [{ "path": "src/eyetoarm/transforms/b_stage.py", "line": 117, "label": "BStage" },
+                  { "path": "src/eyetoarm/transforms/sort_part_client.py", "line": 1, "end_line": 4, "label": "/sort_part 클라이언트" },
+                  { "path": "src/eyetoarm/transforms/center_overlay_pub.py", "line": 32, "end_line": 34, "label": "중심점 영상·결과" }] },
+    { "id": "tcp", "type": "backend", "label": "C TCP 서버", "sublabel": "TCP 1.1 · 47090", "pos": [790, 220], "size": [170, 72],
+      "sources": [{ "path": "robot_ws/src/robot_server_package/robot_server_package/tcp_server.py", "line": 18, "label": "포트 47090" }] },
+    { "id": "dash", "type": "frontend", "label": "D 대시보드", "sublabel": "조작 · 상태 · 영상", "pos": [1080, 220], "size": [170, 72],
+      "sources": [{ "path": "dashboard-client/src/eyetoarm/gui/window.py", "line": 7, "end_line": 10, "label": "영상 47092 수신" }] },
+    { "id": "arm", "type": "cloud", "label": "UR5e + 2F-85", "sublabel": "ros2_control", "pos": [40, 400], "size": [170, 72],
+      "sources": [{ "path": "simulation/models/ur5e_2f85/ur5e_2f85.urdf.xacro", "line": 2, "end_line": 9, "label": "팔·그리퍼 모델" }] },
+    { "id": "exec", "type": "backend", "label": "C 분류 실행", "sublabel": "목표 수신 · 실행기", "tag": "sim·track", "pos": [290, 400], "size": [170, 72],
+      "sources": [{ "path": "robot_ws/src/robot_server_package/robot_server_package/sort_manager.py", "line": 61, "end_line": 62, "label": "sort_goal_receiver" },
+                  { "path": "robot_ws/src/robot_server_package/robot_server_package/gazebo_sort_executor.py", "line": 76, "label": "gazebo_sort_executor" },
+                  { "path": "robot_ws/src/robot_server_package/robot_server_package/gazebo_sort_executor.py", "line": 546, "label": "HOME 복귀" }] },
+    { "id": "pose", "type": "external", "label": "사람 자세 제어", "sublabel": "4~5주 기능 경로", "tag": "예정", "pos": [790, 400], "size": [170, 72],
+      "sources": [{ "path": "docs/architecture/시스템_아키텍처_및_프로젝트_계획.md", "line": 194, "label": "계획서 작업 표" }] },
+    { "id": "world", "type": "cloud", "label": "Gazebo 월드", "sublabel": "DART · 물리 벨트 · 볼트", "pos": [40, 580], "size": [170, 72],
+      "sources": [{ "path": "scripts/sim_sort_cell.launch.py", "line": 55, "end_line": 56, "label": "DART 기본" },
+                  { "path": "simulation/models/conveyor_belt/model.sdf", "line": 48, "end_line": 52, "label": "TrackController" },
+                  { "path": "simulation/models/bolt_m3x20/model.sdf", "line": 3, "label": "ISO 4017 볼트" }] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "WSL2 Ubuntu 24.04", "wraps": ["relay", "cams", "a", "b", "tcp", "arm", "exec", "pose", "world"] },
+    { "kind": "security-group", "label": "Gazebo Harmonic", "wraps": ["cams", "arm", "world"] },
+    { "kind": "region", "label": "Windows 11", "wraps": ["dash"] }
+  ],
+  "connections": [
+    { "id": "cams-a", "from": "cams", "to": "a", "label": "링크 영상", "variant": "emphasis" },
+    { "id": "a-b", "from": "a", "to": "b", "label": "후보 목록", "variant": "emphasis" },
+    { "id": "b-exec", "from": "b", "to": "exec", "label": "/sort_part", "variant": "emphasis", "fromSide": "bottom", "toSide": "right", "via": [[625, 436]] },
+    { "id": "a-exec", "from": "a", "to": "exec", "label": "/a/track_states" },
+    { "id": "exec-arm", "from": "exec", "to": "arm", "label": "팔·그리퍼", "variant": "emphasis" },
+    { "id": "world-exec", "from": "world", "to": "exec", "label": "sim 위치", "variant": "dashed", "fromSide": "right", "toSide": "bottom", "via": [[375, 616]] },
+    { "id": "cams-relay", "from": "cams", "to": "relay", "label": "카메라 영상", "fromSide": "top", "toSide": "left", "via": [[125, 76]] },
+    { "id": "a-relay", "from": "a", "to": "relay", "label": "검출 주석 영상", "variant": "dashed" },
+    { "id": "b-relay", "from": "b", "to": "relay", "label": "중심점 영상·결과", "variant": "dashed", "fromSide": "top", "toSide": "right", "via": [[625, 76]] },
+    { "id": "relay-dash", "from": "relay", "to": "dash", "label": "영상 47092", "fromSide": "top", "toSide": "top", "via": [[375, 16], [1165, 16]] },
+    { "id": "dash-tcp", "from": "dash", "to": "tcp", "label": "TCP 47090" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "주요 통로", "items": ["A → B 후보 목록(b_input/2), B → C /sort_part(SortPart.action)", "A → C /a/track_states: track 모드에서 대상 위치, 기본 꺼짐", "C 영상 중계 47092 → D, D → C TCP 1.1 47090"] },
+    { "dot": "amber", "title": "구현 상태", "items": ["main 현재 구현 기준(시뮬레이션)", "사람 자세 제어(4~5주)는 예정, 아직 없음", "상세 구성은 계획서 §2.1.1"] }
+  ]
+}
