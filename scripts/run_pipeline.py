@@ -15,6 +15,7 @@ import signal
 import sys
 import json
 import threading
+import time
 from pathlib import Path
 
 import cv2
@@ -918,8 +919,10 @@ def _ros_conveyor_speed_probe(timeout_s: float) -> dict:
 class _RosSortPartRuntime:
     """C 송신 런타임: 자기 rclpy Context + 노드 + spin 스레드 + `RecordingSortPartClient`.
 
-    spin 스레드는 액션 콜백만 처리하고 `send`는 worker가 부른다(기다리지 않음).
+    spin 스레드는 액션 콜백(관리 실행이면 `GetSortRun` 조회 타이머·응답도)을 처리하고 `send`는 worker가 부른다(기다리지 않음).
     시작 때 `server_wait_s` 동안 서버를 기다려 `server_seen`을 남긴다(없어도 실행).
+    관리 실행(`config.run_source`)이면 같은 시간 동안 조회 서비스를 기다리고 첫 답을 `call_timeout_s`까지 기다린다.
+    서비스가 없어도 실행하며, 답이 올 때까지 송신기가 보내지 않는다(#301 P2 Q2).
     """
 
     NODE_NAME = "eyetoarm_live_sort_part"
@@ -944,17 +947,134 @@ class _RosSortPartRuntime:
         self._closed = False
         self.spin_error = None
 
+        # 실행 번호 조회 상태(`_run_lock`). 조회는 spin 스레드 타이머·결과 콜백, 첫 조회만 진입점 스레드
+        self._run_cfg = getattr(config, "run_source", None)
+        self._run_client = None
+        self._run_request = None
+        self._run_listener = None
+        self._run_last = None                 # (active, job, epoch)
+        self._run_lock = threading.Lock()
+        self._run_future = None
+        self._run_future_ns = 0
+        self._run_first = threading.Event()
+        self.run_service_seen = None
+        self.run_first_answer = None
+
         try:
             self._node = rclpy.create_node(self.NODE_NAME, context=self._context)
             self.client = RecordingSortPartClient(self._node, self._emit, stage=None)
+
+            if self._run_cfg is not None:
+                from eyetoarm_interfaces.srv import GetSortRun   # 없으면 ImportError(진입점 종료 1)
+
+                self._run_request = GetSortRun.Request
+                self._run_client = self._node.create_client(GetSortRun, self._run_cfg.service)
+                self._node.create_timer(self._run_cfg.poll_s, self._poll_run)
+
             self._executor = SingleThreadedExecutor(context=self._context)
             self._executor.add_node(self._node)
             self._thread = threading.Thread(target=self._spin, name="eyetoarm-live-sort-part-spin", daemon=True)
             self._thread.start()
             self.server_seen = bool(self.client.client.wait_for_server(timeout_sec=config.server_wait_s))
+
+            if self._run_client is not None:
+                self.run_service_seen = bool(self._run_client.wait_for_service(timeout_sec=config.server_wait_s))
+
+                if self.run_service_seen:
+                    self.request_run_refresh()
+                    self._run_first.wait(self._run_cfg.call_timeout_s)
+
+                self.run_first_answer = self._run_last
         except BaseException:
             self.close(1.0)
             raise
+
+    # ---------- 실행 번호 조회(관리 실행) ----------
+    def set_run_listener(self, listener) -> None:
+        """조회 결과 받을 곳(`on_run_snapshot`·`on_run_query_failed`). 이미 받은 답이 있으면 바로 넘긴다."""
+        with self._run_lock:
+            self._run_listener = listener
+            last = self._run_last
+
+        if listener is not None and last is not None:
+            listener.on_run_snapshot(*last)
+
+    def request_run_refresh(self) -> None:
+        """지금 한 번 조회한다(진행 중인 조회가 있으면 그것을 기다림). 주기 타이머도 이것을 부른다."""
+        self._poll_run()
+
+    def _poll_run(self) -> None:
+        """조회 하나를 보낸다. 진행 중이면 건너뛰고, `call_timeout_s`를 넘긴 조회는 버리고 실패로 센다."""
+        if self._run_client is None:
+            return
+
+        failure = None
+        future = None
+
+        with self._run_lock:
+            now = time.monotonic_ns()
+            pending = self._run_future
+
+            if pending is not None and not pending.done():
+                if now - self._run_future_ns < self._run_cfg.call_timeout_s * 1e9:
+                    return
+
+                self._run_client.remove_pending_request(pending)
+                failure = "timeout"
+
+            self._run_future = None
+
+            if not self._run_client.service_is_ready():
+                failure = failure or "no_service"
+            else:
+                future = self._run_client.call_async(self._run_request())
+                self._run_future, self._run_future_ns = future, now
+
+        if failure is not None:
+            self._run_failed(failure)
+
+        if future is not None:
+            future.add_done_callback(self._on_run_answer)
+
+    def _on_run_answer(self, future) -> None:
+        """조회 답(spin 스레드). 취소·예외는 실패로 센다."""
+        try:
+            res = future.result()
+        except Exception as exc:  # noqa: BLE001 - 서비스 응답 실패는 사유로 남긴다
+            self._run_failed(f"error:{type(exc).__name__}")
+            return
+
+        if res is None:
+            self._run_failed("no_answer")
+            return
+
+        snap = (bool(res.active), str(res.sort_job_id), int(res.run_epoch))
+
+        with self._run_lock:
+            self._run_last = snap
+            listener = self._run_listener
+
+        self._run_first.set()
+
+        if listener is not None:
+            listener.on_run_snapshot(*snap)
+
+    def _run_failed(self, reason: str) -> None:
+        with self._run_lock:
+            listener = self._run_listener
+
+        if listener is not None:
+            listener.on_run_query_failed(reason)
+
+    def run_source_status(self) -> dict | None:
+        """요약용 시작 상태(관리 실행이 아니면 None)."""
+        if self._run_cfg is None:
+            return None
+
+        first = self.run_first_answer
+        return {"service": self._run_cfg.service, "service_seen_at_start": self.run_service_seen,
+                "first_answer": None if first is None else
+                {"active": first[0], "sort_job_id": first[1], "run_epoch": first[2]}}
 
     def set_release_target(self, target) -> None:
         """B 클라이언트의 `stage` 자리(결과·no_server·busy 때 `release(번호)`를 받을 곳)."""
@@ -1396,6 +1516,12 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         if link.release_proxy is not None and callable(set_release):
             set_release(link.release_proxy)
 
+        # 관리 실행: C 실행 번호 조회 결과 → 송신기(B 단계에 넣고 송신 조건 판정, #301 P2)
+        set_run = getattr(sort_rt, "set_run_listener", None)
+
+        if link.sort_part.managed and callable(set_run):
+            set_run(link.sort_part)
+
         seen = getattr(sort_rt, "server_seen", None)
         retry = link_config.sort_part.retry
         retry_text = ("off" if retry is None else f"max_failures_per_track={retry.max_failures_per_track} "
@@ -1418,6 +1544,24 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         if not seen:
             err.write("run_pipeline: warning: /sort_part server not seen at start; goals will be recorded as no_server "
                       "until it appears\n")
+
+        run_source = link_config.sort_part.run_source
+
+        if run_source is not None:   # 없으면 시작 줄 형식 그대로(비관리)
+            status_fn = getattr(sort_rt, "run_source_status", None)
+            status = (status_fn() if callable(status_fn) else None) or {}
+            first = status.get("first_answer")
+            first_text = ("none" if first is None else
+                          f"active={str(first['active']).lower()} sort_job_id={first['sort_job_id'] or '-'} "
+                          f"run_epoch={first['run_epoch']}")
+            err.write(f"run_pipeline: sort_part run_source=managed service={run_source.service} "
+                      f"service_seen={str(status.get('service_seen_at_start')).lower()} first={first_text} "
+                      f"poll={run_source.poll_s}s timeout={run_source.call_timeout_s}s stale={run_source.stale_s}s "
+                      "(goals sent only while the C run is active: skip:run_unknown|run_inactive|run_changed)\n")
+
+            if not status.get("service_seen_at_start"):
+                err.write(f"run_pipeline: warning: {run_source.service} not seen at start; goals are not sent "
+                          "(skip:run_unknown) until a C run answer arrives\n")
 
     if args.tracking and not world_on:
         err.write("run_pipeline: tracking ON M2(heuristic): confirmed part_track_id only -> B _dedupe/release "

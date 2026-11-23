@@ -19,7 +19,11 @@ from eyetoarm.transforms.sort_part_client import SEND_KINDS, SortPartClient
 _CONFIG_KEYS = {"server_wait_s", "result_wait_s", "close_limit_s", "spin_timeout_s"}
 _RETRY_KEYS = {"max_failures_per_track", "failed_point_block_s", "failed_point_block_mm"}
 _FAIL_STATUSES = ("FAILED", "EXPIRED", "ERROR", "REJECTED")
-_NO_CALL_RELEASE = ("gate_closed", "state_failed", "skip:track_retry_limit", "skip:failed_point_block")
+_RUN_SOURCE_KEYS = {"service", "poll_s", "call_timeout_s", "stale_s"}
+_RUN_BLOCK_EVENTS = ("skip:run_unknown", "skip:run_inactive", "skip:run_changed")
+_NO_CALL_RELEASE = ("gate_closed", "state_failed", "skip:track_retry_limit", "skip:failed_point_block",
+                    *_RUN_BLOCK_EVENTS)
+RUN_MISMATCH_REASON = "SORT_RUN_MISMATCH"   # C 결과 사유: 이것을 받으면 실행 번호를 바로 다시 묻는다
 
 
 class SortPartConfigError(ValueError):
@@ -44,6 +48,24 @@ class RetryConfig:
 
 
 @dataclass(frozen=True)
+class RunSourceConfig:
+    """C 실행 번호 조회(`GetSortRun`) 설정(기본값 없음). 있으면 관리 실행으로 보낸다(#301 P2).
+
+    `poll_s`마다 조회하고, `call_timeout_s` 안에 답이 없으면 실패로 센다.
+    마지막 답이 `stale_s`보다 오래되면 실행 번호를 모른다고 보고 보내지 않는다.
+    """
+
+    service: str
+    poll_s: float
+    call_timeout_s: float
+    stale_s: float
+
+    def to_json(self) -> dict:
+        """요약용 사전."""
+        return {k: getattr(self, k) for k in sorted(_RUN_SOURCE_KEYS)}
+
+
+@dataclass(frozen=True)
 class SortPartConfig:
     """송신 설정(기본값 없음, 모두 필수)."""
 
@@ -53,6 +75,7 @@ class SortPartConfig:
     spin_timeout_s: float    # spin_once 대기
     retry: RetryConfig | None = None   # 없으면 제한 없음
     require_track_id: bool | None = None   # 참이면 확정 번호 없는 PICK_PLACE를 보내지 않음
+    run_source: RunSourceConfig | None = None   # 없으면 비관리(빈 job·epoch 0, 지금 동작)
 
     def to_json(self) -> dict:
         """요약용 사전. `require_track_id`는 설정에 있을 때만 넣는다(없으면 형식 그대로)."""
@@ -62,6 +85,9 @@ class SortPartConfig:
         if self.require_track_id is not None:
             doc["require_track_id"] = self.require_track_id
 
+        if self.run_source is not None:   # 없으면 형식 그대로
+            doc["run_source"] = self.run_source.to_json()
+
         return doc
 
 
@@ -70,7 +96,7 @@ def parse_sort_part(doc) -> SortPartConfig:
     if not isinstance(doc, dict):
         raise SortPartConfigError("sort_part must be an object")
 
-    unknown, missing = set(doc) - _CONFIG_KEYS - {"retry", "require_track_id"}, _CONFIG_KEYS - set(doc)
+    unknown, missing = set(doc) - _CONFIG_KEYS - {"retry", "require_track_id", "run_source"}, _CONFIG_KEYS - set(doc)
 
     if unknown or missing:
         raise SortPartConfigError(f"sort_part: unknown keys {sorted(unknown)}, missing keys {sorted(missing)}")
@@ -101,7 +127,24 @@ def parse_sort_part(doc) -> SortPartConfig:
     if "require_track_id" in doc and not isinstance(require, bool):
         raise SortPartConfigError(f"sort_part.require_track_id must be true or false: {require!r}")
 
-    return SortPartConfig(**{k: float(doc[k]) for k in _CONFIG_KEYS}, retry=retry, require_track_id=require)
+    run_source = _parse_run_source(doc["run_source"]) if "run_source" in doc else None
+
+    return SortPartConfig(**{k: float(doc[k]) for k in _CONFIG_KEYS}, retry=retry, require_track_id=require,
+                          run_source=run_source)
+
+
+def _parse_run_source(r) -> RunSourceConfig:
+    """`sort_part.run_source`: 네 키 모두 필요, 서비스 이름은 `/`로 시작하는 문자열, 나머지는 양수."""
+    if not isinstance(r, dict) or set(r) != _RUN_SOURCE_KEYS:
+        raise SortPartConfigError(f"sort_part.run_source must have exactly {sorted(_RUN_SOURCE_KEYS)}")
+
+    service = r["service"]
+
+    if not isinstance(service, str) or not service.startswith("/") or len(service) < 2 or any(c.isspace() for c in service):
+        raise SortPartConfigError(f"sort_part.run_source.service must be an absolute ROS name: {service!r}")
+
+    return RunSourceConfig(service=service,
+                           **{k: _positive(r[k], f"sort_part.run_source.{k}") for k in ("poll_s", "call_timeout_s", "stale_s")})
 
 
 def _positive(v, name: str) -> float:
@@ -165,10 +208,13 @@ class LiveSortPartSender:
 
     def __init__(self, run_id: str, config: SortPartConfig, runtime, out_dir: str, *,
                  is_failed: Callable[[], bool] | None = None, clock_ns: Callable[[], int] = time.monotonic_ns,
-                 tracking: bool = False, release_target=None) -> None:
+                 tracking: bool = False, release_target=None,
+                 run_target: Callable[[str | None, int | None], None] | None = None) -> None:
         """새 기록 파일 `sort_part.jsonl`을 연다. `tracking`이면 모든 줄에 `part_track_id`를 붙인다.
 
-        클라이언트를 부르지 않은 번호 있는 `PICK_PLACE`는 `release_target.release(번호)`로 B 기록을 푼다."""
+        클라이언트를 부르지 않은 번호 있는 `PICK_PLACE`는 `release_target.release(번호)`로 B 기록을 푼다.
+        관리 실행(`config.run_source`)이면 실행 번호가 바뀔 때 `run_target(job, epoch)`로 B 단계에 넣는다
+        (비활성·모름이면 둘 다 None)."""
         self.run_id = run_id
         self.tracking = bool(tracking)
         self.release_target = release_target
@@ -197,6 +243,93 @@ class LiveSortPartSender:
         self.unresolved: list[str] = []
         self._runtime_closed = False
 
+        # 관리 실행 상태. `_run_lock`이 지킨다. 쓰는 쪽은 런타임 조회 콜백(spin 스레드, 시작 때 진입점)
+        self.run_target = run_target
+        self._run_lock = threading.Lock()
+        self._run: tuple | None = None           # (active, sort_job_id, run_epoch) 마지막 답
+        self._run_t_ns: int | None = None        # 그 답을 받은 시각(clock_ns)
+        self.applied_run: tuple = (None, None)   # B 단계에 넣은 (job, epoch). 한 번에 통째로 바꿈(잠금 없이 읽음)
+        self.run_counts = {"snapshots": 0, "query_failed": 0, "state_changes": 0, "run_changes": 0,
+                           "retry_cleared": 0, "refresh_requests": 0}
+        self.run_query_failures: dict[str, int] = {}
+
+    @property
+    def managed(self) -> bool:
+        """관리 실행(C 실행 번호를 받아 실음)인가."""
+        return self.config.run_source is not None
+
+    # ------------------------------------------------------------------ 실행 번호(런타임 콜백)
+
+    def on_run_snapshot(self, active: bool, sort_job_id: str, run_epoch: int) -> None:
+        """`GetSortRun` 답 하나. 상태가 바뀌면 기록하고, (job, epoch)가 바뀌면 재시도 기억을 비우고 B 단계에 넣는다."""
+        new = (bool(active), str(sort_job_id), int(run_epoch))
+
+        with self._run_lock:
+            old = self._run
+            self._run, self._run_t_ns = new, self._clock_ns()
+            self.run_counts["snapshots"] += 1
+
+            if new == old:
+                return
+
+            self.run_counts["state_changes"] += 1
+            changed = old is not None and old[1:] != new[1:]
+
+            if changed:
+                self.run_counts["run_changes"] += 1
+                self._clear_retry_memory()
+
+            applied = new[1:] if new[0] else (None, None)
+            apply = applied != self.applied_run
+            self.applied_run = applied
+
+            # B 단계 쓰기도 이 잠금 안: 답 순서대로 넣는다(연결부 잠금은 이 잠금을 잡지 않음)
+            if apply and self.run_target is not None:
+                self.run_target(*applied)
+
+        detail = {"old": None if old is None else _run_json(old), "new": _run_json(new)}
+        self._record("run_state", None, None, **detail)
+
+        if changed:
+            self._record("run_changed", None, None, **detail)
+
+    def on_run_query_failed(self, reason: str) -> None:
+        """조회 실패(서비스 없음·시간 초과·오류). 마지막 답은 그대로 두고(`stale_s`가 지나면 모름) 수만 센다."""
+        with self._run_lock:
+            self.run_counts["query_failed"] += 1
+            self.run_query_failures[reason] = self.run_query_failures.get(reason, 0) + 1
+
+    def _clear_retry_memory(self) -> None:
+        """실행이 바뀌면 번호별 실패 수·실패 위치를 비운다(C 중복 기억도 새 실행에서 비워짐)."""
+        with self._qcond:
+            if self._track_failures or self._failed_points:
+                self.run_counts["retry_cleared"] += 1
+
+            self._track_failures.clear()
+            self._failed_points.clear()
+
+    def _run_block(self, goal: dict) -> str | None:
+        """관리 실행 송신 조건(#301 P2). 막으면 사건 이름, 보낼 수 있으면 None."""
+        rs = self.config.run_source
+
+        if rs is None:
+            return None
+
+        with self._run_lock:
+            run, t_ns = self._run, self._run_t_ns
+
+        if run is None or t_ns is None or self._clock_ns() - t_ns > rs.stale_s * 1e9:
+            return "skip:run_unknown"
+
+        if not run[0]:
+            return "skip:run_inactive"
+
+        # 목표를 만든 때의 B 단계 값이 지금 실행과 다르면(옛 실행·비활성 때 만든 목표) 보내지 않는다
+        if goal.get("sort_job_id") != run[1] or goal.get("run_epoch") != run[2]:
+            return "skip:run_changed"
+
+        return None
+
     # ------------------------------------------------------------------ 기록
 
     def _record(self, event: str, goal_id: str | None, keys: dict | None = None, **detail) -> None:
@@ -216,8 +349,12 @@ class LiveSortPartSender:
         with self._qcond:
             keys = dict(self.goal_keys.get(goal_id, {}))
 
-            if event.startswith("result:") and self.config.retry is not None:
-                track, pos, stamp = self._goal_meta.get(goal_id, (None, None, None))
+            track, pos, stamp, run_ids = self._goal_meta.get(goal_id, (None, None, None, None))
+
+            # 관리 실행: 다른 실행에서 보낸 목표의 결과는 지금 실행의 재시도 기억에 넣지 않는다
+            same_run = not self.managed or run_ids == self.applied_run
+
+            if event.startswith("result:") and self.config.retry is not None and same_run:
                 status = event.split(":", 1)[1]
 
                 if status in _FAIL_STATUSES:
@@ -232,6 +369,16 @@ class LiveSortPartSender:
                     self._track_failures.pop(track, None)
 
         self._record(event, goal_id, keys, **detail)
+
+        # C가 실행 번호가 다르다고 거부했으면 다음 주기를 기다리지 않고 다시 묻는다
+        if self.managed and event.startswith("result:") and detail.get("reason") == RUN_MISMATCH_REASON:
+            refresh = getattr(self.runtime, "request_run_refresh", None)
+
+            if callable(refresh):
+                with self._run_lock:
+                    self.run_counts["refresh_requests"] += 1
+
+                refresh()
 
     def start(self) -> None:
         """기록 스레드를 시작한다."""
@@ -290,6 +437,9 @@ class LiveSortPartSender:
                 "kind": goal.get("kind"), "spec": goal.get("spec"),
                 # track_state는 no_track_id 줄에만 남긴다
                 **{k: v for k, v in ids.items() if k not in ("track_state", "a_part_track_id")}}
+        if self.managed:   # 목표를 만든 때 실린 실행 번호(비관리면 줄 형식 그대로)
+            keys.update(sort_job_id=goal.get("sort_job_id"), run_epoch=goal.get("run_epoch"))
+
         goal_track = goal.get("part_track_id")
         stage_l = "a_part_track_id" in ids   # 단계 L 추적이면 연결부가 고른 후보의 A 번호를 넘긴다
         a_track = ids.get("a_part_track_id")
@@ -338,13 +488,17 @@ class LiveSortPartSender:
                 event = "gate_closed"
             elif self._is_failed():
                 event = "state_failed"
+            elif (blocked := self._run_block(goal)) is not None:
+                event = blocked
             elif (limited := self._retry_block(goal.get("kind"), track, pos, stamp)) is not None:
                 event = limited
             else:
+                run_ids = (goal.get("sort_job_id"), goal.get("run_epoch")) if self.managed else None
+
                 with self._qcond:
                     if gid:
                         self.goal_keys[gid] = keys
-                        self._goal_meta[gid] = (track, pos, stamp)
+                        self._goal_meta[gid] = (track, pos, stamp, run_ids)
 
                 before = _stats_copy(self.runtime.stats)
                 ok = bool(self.runtime.send(out))
@@ -457,6 +611,16 @@ class LiveSortPartSender:
 
     # ------------------------------------------------------------------ 요약
 
+    def _run_summary(self) -> dict:
+        """요약 `sort_part.run_source`: 설정·런타임 시작 상태·계수·마지막 답."""
+        status = getattr(self.runtime, "run_source_status", None)
+
+        with self._run_lock:
+            return {"status": status() if callable(status) else None,
+                    "counts": dict(self.run_counts), "query_failures": dict(sorted(self.run_query_failures.items())),
+                    "last": None if self._run is None else _run_json(self._run),
+                    "applied": {"sort_job_id": self.applied_run[0], "run_epoch": self.applied_run[1]}}
+
     def problem(self) -> str | None:
         """진입점이 종료 1로 드러낼 문제(기록 실패). 서버 없음·busy는 문제가 아니다."""
         if self.crash is not None:
@@ -483,9 +647,15 @@ class LiveSortPartSender:
                 **({} if self.config.require_track_id is None else
                    {"require_track_id": self.config.require_track_id,
                     "no_track_id_states": no_track_states}),
+                **({} if not self.managed else {"run_source": self._run_summary()}),
                 "events": counts, "unresolved_at_close": list(self.unresolved), "close_reason": self.close_reason,
                 "gate_wait_max_ms": round(self.gate_wait_max_ms, 3), "write_error": self.write_error, "crash": self.crash,
                 "client_stats_reference_only": _stats_copy(getattr(self.runtime, "stats", {}))}
+
+
+def _run_json(run: tuple) -> dict:
+    """(active, job, epoch) → 기록용 사전."""
+    return {"active": run[0], "sort_job_id": run[1], "run_epoch": run[2]}
 
 
 def _stats_copy(stats: Any) -> dict:
@@ -520,4 +690,5 @@ def _refusal(before: dict, after: dict) -> str:
     return "send_refused"
 
 
-__all__ = ["LiveSortPartSender", "RecordingSortPartClient", "RetryConfig", "SortPartConfig", "SortPartConfigError", "parse_sort_part"]
+__all__ = ["LiveSortPartSender", "RecordingSortPartClient", "RetryConfig", "RunSourceConfig", "SortPartConfig",
+           "SortPartConfigError", "parse_sort_part"]

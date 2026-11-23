@@ -93,6 +93,12 @@ class _StageReleaseProxy:
             stage.release(part_track_id)
 
 
+def _set_run(stage, sort_job_id, run_epoch) -> None:
+    """B 단계 공개 속성에 실행 번호를 쓴다(job 먼저). 송신기가 목표의 두 값을 지금 실행과 비교해 엇갈림을 막는다."""
+    stage.sort_job_id = sort_job_id
+    stage.run_epoch = run_epoch
+
+
 class LiveObservationConfigError(ValueError):
     """설정 파일 오류."""
 
@@ -304,7 +310,8 @@ class LiveObservationLink:
         self.sort_part = (None if sort_part_runtime is None else
                           LiveSortPartSender(run_id, config.sort_part, sort_part_runtime, str(self.dir),
                                              is_failed=lambda: self.state.failed is not None, tracking=self.tracking,
-                                             release_target=self.release_proxy))
+                                             release_target=self.release_proxy,
+                                             run_target=self._apply_run if config.sort_part.run_source is not None else None))
         hooked = self.sort_part is not None or self.tracking
         hook_kw = {} if not hooked else {"on_accepted": self._on_accepted}
 
@@ -490,9 +497,20 @@ class LiveObservationLink:
 
             st = (st[0], st[1], consume)
 
-        self.stages.append(st)
+        # 관리 실행: 새 B 단계에도 지금 실행 번호를 넣는다. 같은 잠금이라 `_apply_run`과 엇갈려도 새 값이 남는다
+        with self._lock:
+            if self.sort_part is not None and self.sort_part.managed:
+                _set_run(st[0], *self.sort_part.applied_run)
+
+            self.stages.append(st)
 
         return st
+
+    def _apply_run(self, sort_job_id, run_epoch) -> None:
+        """송신기 콜백(런타임 조회 스레드): 모든 B 단계에 C 실행 번호를 넣는다. B `_dedupe`가 epoch 변화를 보고 기억을 비운다."""
+        with self._lock:
+            for st in self.stages:
+                _set_run(st[0], sort_job_id, run_epoch)
 
     # ------------------------------------------------------------------ 단계 L(worker, 잠금 밖)
 
