@@ -211,12 +211,13 @@ class LiveObservationLink:
                  b_input: str = B_INPUT_SINGLE, list_consumer_factory: Callable | None = None,
                  view_bias=None, sort_part_runtime=None, tracking: bool = False,
                  world_tracker=None, world_config=None, world_plane_z_m=None, world_visibility=None, world_gripper=None,
-                 list_consumer_kind: str | None = None, run_outputs: tuple | None = None) -> None:
+                 world_stream=None, list_consumer_kind: str | None = None, run_outputs: tuple | None = None) -> None:
         """출력 폴더(새로)·상태·기록기·디스패처·TF 준비를 만든다.
 
         `b_input`은 `"single"`(봉투 1) 또는 `"list"`(목록 봉투 2). `sort_part_runtime`이 None이면 송신 없음.
         W 추적 인자(`world_tracker`·`world_config`·`world_plane_z_m`)는 `tracking`이 참이어야 한다.
         `world_visibility`·`world_gripper`(그리퍼 넘기기)는 W 추적일 때만, None이면 꺼짐.
+        `world_stream`(추적 흐름 발행 `TrackStream`, 시작 전)도 W 추적일 때만, None이면 꺼짐.
         """
         # 검사 실패가 기록 파일 핸들을 남기지 않게 파일을 열기 전에 검사한다
         if type(config.skip_queue_capacity) is not int or config.skip_queue_capacity <= 0:
@@ -230,6 +231,9 @@ class LiveObservationLink:
 
         if world_tracker is None and (world_visibility is not None or world_gripper is not None):
             raise ValueError("gripper handoff (visibility/gripper) requires world tracking")
+
+        if world_tracker is None and world_stream is not None:
+            raise ValueError("track stream requires world tracking")
 
         if sort_part_runtime is not None:
             if config.sort_part is None:
@@ -300,6 +304,7 @@ class LiveObservationLink:
         self.world = (None if world_tracker is None else
                       LiveWorldTracking(run_id, world_tracker, world_config, tf_lookup=capture, plane_z_m=world_plane_z_m,
                                         out_dir=str(self.dir), view_bias=view_bias,
+                                        **({} if world_stream is None else {"stream": world_stream}),
                                         **({} if world_visibility is None and world_gripper is None else
                                            {"visibility": world_visibility, "gripper": world_gripper})))
         self._track_camera = None                  # 추적 스레드에 넘길 현재 카메라(제어 흐름만 씀)

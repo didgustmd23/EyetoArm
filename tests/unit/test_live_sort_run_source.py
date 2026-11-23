@@ -88,7 +88,7 @@ class ConfigTest(unittest.TestCase):
         self.assertNotIn("run_source", c.to_json())
 
     def test_repo_managed_config(self):
-        """저장소 관리 시험 설정: 서비스 이름·시험값(Q6·Q7)·require_track_id=true, 다른 값은 원본 시험 설정과 같다."""
+        """저장소 관리 시험 설정: 서비스 이름·시험값(Q6·Q7)·require_track_id=true·retry, 다른 값은 원본 시험 설정과 같다."""
         doc = json.loads(MANAGED_CONFIG.read_text(encoding="utf-8"))
         plain = json.loads(PLAIN_CONFIG.read_text(encoding="utf-8"))
         self.assertEqual(doc["status"], "test_only")
@@ -99,7 +99,10 @@ class ConfigTest(unittest.TestCase):
                          {"call_timeout_s": 1.0, "poll_s": 0.5, "service": SERVICE, "stale_s": 2.0})
         rest = {k: v for k, v in doc.items() if k not in ("note", "sort_part")}
         self.assertEqual(rest, {k: v for k, v in plain.items() if k not in ("note", "sort_part")})
-        self.assertEqual({k: v for k, v in doc["sort_part"].items() if k not in ("run_source", "require_track_id")},
+        # 재시도 제한: #221 K3 실측 시험값(같은 번호 실패 폭주 방지)
+        self.assertEqual((c.retry.max_failures_per_track, c.retry.failed_point_block_s, c.retry.failed_point_block_mm),
+                         (2, 10.0, 15.0))
+        self.assertEqual({k: v for k, v in doc["sort_part"].items() if k not in ("run_source", "require_track_id", "retry")},
                          plain["sort_part"])
 
     def test_bad_run_source_refused(self):
