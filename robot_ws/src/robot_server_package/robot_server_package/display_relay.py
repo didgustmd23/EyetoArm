@@ -552,13 +552,17 @@ def main():
                 "generation": int(message.generation),
                 "job_seq": int(message.job_seq),
                 "capture_stamp_ns": int(message.capture_stamp_ns),
+                "timestamp_base": str(message.timestamp_base),
+                "calibration_id": str(message.calibration_id),
+                "detector_config_id": str(message.detector_config_id),
             }
             if (keys["source_id"] != "gz_link"
                     or any(keys[key] < 0 for key in ("image_seq", "capture_generation", "generation", "job_seq"))
                     or keys["capture_stamp_ns"] < 0
                     or keys["capture_stamp_ns"] != stamp_ns
                     or not message.run_id
-                    or not message.timestamp_base):
+                    or not keys["timestamp_base"]
+                    or not keys["detector_config_id"]):
                 raise ValueError("invalid B frame identity or image timestamp")
             image = bridge.imgmsg_to_cv2(image_message, desired_encoding="bgr8")
             ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, args.quality])
@@ -578,13 +582,13 @@ def main():
                 "channel": "link", "variant": "center",
                 "source_id": keys["source_id"], "image_seq": seq,
                 "generation": keys["generation"],
-                "calibration_id": str(message.calibration_id) or None,
+                "calibration_id": keys["calibration_id"] or None,
                 "run_id": run_id, "capture_generation": keys["capture_generation"],
-                "detector_config_id": "b-center-overlay-v1", "job_seq": keys["job_seq"],
+                "detector_config_id": keys["detector_config_id"], "job_seq": keys["job_seq"],
                 "producer": "B", "producer_run_id": str(message.run_id),
                 "producer_topic": args.center_topic, "kind": message.kind,
                 "capture_stamp_ns": keys["capture_stamp_ns"],
-                "timestamp_base": str(message.timestamp_base),
+                "timestamp_base": keys["timestamp_base"],
                 "frame_id": image_message.header.frame_id,
                 "stamp_sec": int(image_message.header.stamp.sec),
                 "stamp_nanosec": int(image_message.header.stamp.nanosec),
@@ -592,8 +596,11 @@ def main():
             frame_key = result_key({**keys, "run_id": str(message.run_id)})
             center_frame.update(key=frame_key, metadata=meta, jpeg=encoded.tobytes())
             result_payload = center_result_cache.pop(frame_key, None)
-            publish_center_frame(result_payload)
-            relay.note_center_received()
+            # Publish only after its matching B result is available. D rejects a repeated
+            # (capture_generation, image_seq, job_seq), so a later enriched resend is lost.
+            if result_payload is not None:
+                publish_center_frame(result_payload)
+                relay.note_center_received()
         except Exception as exc:
             node.get_logger().warning(f"B center frame dropped: {exc}")
 

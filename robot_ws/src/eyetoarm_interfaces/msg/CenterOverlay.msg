@@ -13,4 +13,5 @@ int64 job_seq                # same as SortPart goal
 int64 capture_stamp_ns       # same as SortPart goal; also image.header.stamp
 string timestamp_base        # SIM_TIME, same as SortPart goal
 string calibration_id        # same as SortPart goal
+string detector_config_id    # B detector configuration used for this frame; same as /b/results
 sensor_msgs/Image image      # bgr8 annotated frame, header.frame_id = optical frame
