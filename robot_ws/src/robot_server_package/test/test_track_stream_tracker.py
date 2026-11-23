@@ -337,6 +337,8 @@ class World:
         self.dropped = None
         self.executor = None
         self.no_attach = False          # closing grabs nothing (MISSED after the lift)
+        self.roll = None                # roll(seconds since start) -> extra xyz m of the free part
+        self.kick = np.zeros(3)         # extra step of the free part set by a test
         self.offset = demo.FINGER_REACH + demo.TIP_CLEARANCE - .003
 
     def part(self):
@@ -345,7 +347,15 @@ class World:
             return self.dropped
         if self.attached is not None:
             return self.demo.forward(self.chain, self.arm.q)[:3, 3] - [0., 0., self.offset] + self.attached
-        return self.base + self.belt * ((self.ns - self.t0) / 1e9)
+        dt = (self.ns - self.t0) / 1e9
+        return self.base + self.belt * dt + (0. if self.roll is None else self.roll(dt)) + self.kick
+
+    def velocity(self):
+        """Velocity of the free part (belt plus roll), as A would estimate it."""
+        if self.roll is None or self.attached is not None or self.dropped is not None:
+            return self.belt
+        t = (self.ns - self.t0) / 1e9
+        return self.belt + (self.roll(t) - self.roll(t - .01)) / .01
 
     def sim_poses(self):
         return {"part_01": (self.part() + self.truth_shift, AXIS_X),
@@ -356,12 +366,20 @@ class World:
         self.ns += int(seconds * 1e9)
 
     def advance(self, seconds):
-        self.ns += int(seconds * 1e9)
-        self.node_ns = self.ns
+        """SIM time passes while the node spins; in track mode A publishes a frame at least every 0.1 s."""
+        end = self.ns + int(seconds * 1e9)
+        while True:
+            self.ns = min(end, self.ns + SEC // 10)
+            self.node_ns = self.ns
+            self._publish()
+            if self.ns >= end:
+                return
+
+    def _publish(self):
         if self.executor is not None and getattr(self.executor, "pose_source", "sim") == "track":
             # The error starts after planning: a constant offset cancels in the relative moving correction
             p = self.part() + (self.track_error if self.ns - self.t0 > SEC else 0.)
-            self.executor._on_track_message(frame(self.ns, [track(pos=tuple(p * 1000.), vel=tuple(self.belt * 1000.))],
+            self.executor._on_track_message(frame(self.ns, [track(pos=tuple(p * 1000.), vel=tuple(self.velocity() * 1000.))],
                                                   belt=self.belt[1] * 1000.))
 
     def attach(self):
@@ -590,6 +608,28 @@ def test_track_mode_moving_requires_handoff(monkeypatch):
     assert not any(entry[0] == "follow" for entry in log)
 
 
+def test_stillness_window():
+    """Still only when every sample since the last one at or before (latest - window) is within 3 mm of
+    the latest; without a sample that old the window is not covered."""
+    clock = Clock()
+    t = tracker(clock)
+    t.on_message(frame(clock.ns, [track(pos=(550., 100., 100.))]))
+    assert t.stillness(SEC)[0] is False                      # one sample: window not covered
+
+    for y in (104., 108., 110., 110.5, 111., 111.5):          # every 0.25 s; latest at 1.5 s
+        clock.ns += SEC // 4
+        t.on_message(frame(clock.ns, [track(pos=(550., y, 100.))]))
+    still, spread, position, orientation, stamp = t.stillness(SEC)
+    assert not still and spread == pytest.approx(.0035)     # reference: the 0.5 s sample (108 mm)
+    assert np.allclose(position, [.55, .1115, .1]) and stamp == clock.ns and orientation is not None
+
+    clock.ns += SEC // 4
+    t.on_message(frame(clock.ns, [track(pos=(550., 111.5, 100.))]))
+    still, spread = t.stillness(SEC)[:2]
+    assert still and spread == pytest.approx(.0015)         # reference: the 0.75 s sample (110 mm)
+    assert not t.stillness(SEC, threshold_m=.001)[0]
+
+
 def test_track_mode_reasons(monkeypatch):
     """Track mode: missing id, wrong id and observation mismatch reasons."""
     cases = [({"part_track_id": ""}, "TRACK_ID_MISSING"), ({"part_track_id": "99"}, "TRACK_NOT_FOUND"),
@@ -727,3 +767,119 @@ def test_frames_with_and_without_optional_fields():
     m.some_future_field = "x"
     t.on_message(m)
     assert t.last_frame_ns == clock.ns and np.allclose(t.pose()[0], [.55, .1, .1])
+
+
+# ---------------------------------------------------------------- static track pick: wait until still
+
+def follows(log):
+    """Arm log follow entries."""
+    return [entry for entry in log if entry[0] == "follow"]
+
+
+def rolling(start_s, stop_s, speed_mps):
+    """Part offset rolling along +y from start_s to stop_s (None: never stops)."""
+    def roll(t):
+        end = t if stop_s is None else min(t, stop_s)
+        return np.array([0., speed_mps * max(0., end - start_s), 0.])
+    return roll
+
+
+def logged(ex, key):
+    """Executor log lines containing key."""
+    return [str(line) for line in ex.node.logs if key in str(line)]
+
+
+def is_descent(ex, path):
+    """A 20 point path ending low over the belt (not over the bins)."""
+    tip = ex.demo.forward(ex.chain, np.asarray(path[-1]))[:3, 3]
+    return len(path) == 20 and tip[0] < .65 and tip[2] < .15 + world_offset(ex)
+
+
+def world_offset(ex):
+    return ex.demo.FINGER_REACH + ex.demo.TIP_CLEARANCE - .003
+
+
+def test_static_track_follows_rolling_part_then_picks(monkeypatch):
+    """A part rolling 40 mm after planning: the arm follows at the approach height, waits until it has
+    been still for 1 s and picks at the settled position (the fake grasp needs the fingers within 10 mm)."""
+    ex, world = make(NEW, track=True, monkeypatch=monkeypatch)
+    world.roll = rolling(1., 5., .01)
+    result, log = run_pick(ex, world, goal(world))
+    assert result[0] == "ok", result
+    assert world.dropped is not None and abs(world.dropped[0] - .72) < .05     # placed in the bin
+
+    z_above = .2 + world_offset(ex)
+    at_height = [e for e in follows(log)[1:] if e[1] == 20
+                 and abs(ex.demo.forward(ex.chain, np.asarray(e[3]))[2, 3] - z_above) < 1e-3]
+    assert len(at_height) >= 2                                  # followed at the approach height
+    done = logged(ex, "STILL_WAIT done")
+    assert len(done) == 1 and "replanned=True" in done[0] and "redescents=0" in done[0]
+    assert float(done[0].split("followed_mm=")[1].split()[0]) > 30.
+    assert logged(ex, "HOME_RETURN done")
+
+
+def test_static_track_still_part_unchanged(monkeypatch):
+    """A part that does not move: no extra arm command, the wait ends at once and the planned paths are kept."""
+    ex, world = make(NEW, track=True, monkeypatch=monkeypatch)
+    result, log = run_pick(ex, world, goal(world))
+    assert result[0] == "ok"
+    assert [e[:3] for e in follows(log)[:2]] == [("follow", 1, 3.), ("follow", 20, 2.)]   # approach, descent
+    assert "replanned=False" in logged(ex, "STILL_WAIT done")[0]
+
+
+def test_static_track_never_still_is_part_moved(monkeypatch):
+    """A part that keeps rolling: PART_MOVED after 10 s of SIM time waiting, then home."""
+    ex, world = make(NEW, track=True, monkeypatch=monkeypatch)
+    world.roll = rolling(1., None, .015)
+    result, log = run_pick(ex, world, goal(world))
+    assert result == ("SortFailure", "PART_MOVED")
+    assert log[-1] == home_entry(ex)
+    timeout = logged(ex, "STILL_WAIT timeout")
+    assert len(timeout) == 1
+    assert NEW.STILL_WAIT_MAX_S < float(timeout[0].split("waited_s=")[1].split()[0]) < NEW.STILL_WAIT_MAX_S + 1.
+    assert not any(e[0] == "grip" and e[1] == ex.demo.GRIP_CLOSED for e in log)
+
+
+@pytest.mark.parametrize("kicks, expected", [(1, "ok"), (3, "PART_MOVED")])
+def test_static_track_moves_during_descent(monkeypatch, kicks, expected):
+    """The part steps 6 mm during the descent: rise, wait, re-aim and descend again. One step succeeds
+    after one re-descent; a step on every descent fails PART_MOVED after REDESCEND_MAX re-descents."""
+    ex, world = make(NEW, track=True, monkeypatch=monkeypatch)
+    descents = []
+
+    def fail(path, count):
+        if is_descent(ex, path):
+            descents.append(count)
+            if len(descents) <= kicks:
+                world.kick = world.kick + [0., .006, 0.]
+        return None
+
+    ex.arm.fail = fail
+    result, log = run_pick(ex, world, goal(world))
+    redescend = logged(ex, "SortPart REDESCEND")
+    if expected == "ok":
+        assert result[0] == "ok", result
+        assert len(descents) == 2 and len(redescend) == 1
+        assert "replanned=True" in logged(ex, "STILL_WAIT done")[-1]
+    else:
+        assert result == ("SortFailure", "PART_MOVED")
+        assert len(descents) == NEW.REDESCEND_MAX + 1 and len(redescend) == NEW.REDESCEND_MAX + 1
+        assert log[-1] == home_entry(ex)
+        assert not any(e[0] == "grip" and e[1] == ex.demo.GRIP_CLOSED for e in log)
+
+
+def test_static_track_lost_while_waiting(monkeypatch):
+    """A reset while following the rolling part is TRACK_LOST, and the arm returns home."""
+    ex, world = make(NEW, track=True, monkeypatch=monkeypatch)
+    world.roll = rolling(1., None, .015)
+
+    def fail(path, count):
+        if count == 3:
+            ex._on_track_message(frame(0, [], kind="reset", epoch=2))
+        return None
+
+    ex.arm.fail = fail
+    result, log = run_pick(ex, world, goal(world))
+    assert result == ("SortFailure", "TRACK_LOST")
+    assert logged(ex, "STILL_WAIT start") and not logged(ex, "STILL_WAIT done")
+    assert log[-1] == home_entry(ex)
