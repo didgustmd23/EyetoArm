@@ -1,6 +1,6 @@
 {
   "status": "test_only",
-  "note": "#301 P2 관리 실행 송신 시험 설정: live_observation_sort_part_test.json과 같고 sort_part.run_source만 더했다(C GetSortRun /c_sort_goal_receiver/get_run 조회, C sort_goal_receiver --run-state일 때만 있음). poll 0.5 s·timeout 1.0 s·stale 2.0 s는 시험값이며 운영 승인값이 아니다(사용자 결정 2026-11-23). 원본 note: 실시간 A→B 기록 + C 목표 송신(#214 D13 해제, 사용자 결정 2026-11-20 「승인하고 위험으로 기록만해」) 시험 설정. 기존 시험값(live_observation_test.json)에 sort_part 블록을 더했다. 서버 대기·결과 대기·종료 상한·spin 대기는 시험값이며 운영 승인값이 아니다.",
+  "note": "#301 P2 관리 실행 송신 시험 설정: live_observation_sort_part_test.json과 같고 sort_part.run_source와 require_track_id=true를 더했다(관리 실행은 이동 집기·추적 번호 대상이라 --tracking 필수이고, run_pipeline은 --tracking일 때 require_track_id를 요구함. C GetSortRun /c_sort_goal_receiver/get_run 조회, C sort_goal_receiver --run-state일 때만 있음). poll 0.5 s·timeout 1.0 s·stale 2.0 s는 시험값이며 운영 승인값이 아니다(사용자 결정 2026-11-23). 원본 note: 실시간 A→B 기록 + C 목표 송신(#214 D13 해제, 사용자 결정 2026-11-20 「승인하고 위험으로 기록만해」) 시험 설정. 기존 시험값(live_observation_test.json)에 sort_part 블록을 더했다. 서버 대기·결과 대기·종료 상한·spin 대기는 시험값이며 운영 승인값이 아니다.",
   "world_frame": "world",
   "tf_wait_limit_s": 0.05,
   "static_pairs": [],
@@ -15,6 +15,7 @@
     "result_wait_s": 3.0,
     "close_limit_s": 2.0,
     "spin_timeout_s": 0.05,
+    "require_track_id": true,
     "run_source": {
       "service": "/c_sort_goal_receiver/get_run",
       "poll_s": 0.5,

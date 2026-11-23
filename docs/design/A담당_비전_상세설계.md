@@ -1,6 +1,6 @@
 # A 담당 비전 상세설계
 
-문서 버전 1.34 · 설계 초안 · 갱신 2026-11-22
+문서 버전 1.36 · 설계 초안 · 갱신 2026-11-23
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
@@ -63,6 +63,8 @@
 | 1.32 (W 추적 중복·긴 후보, 통합 재시험) | 2026-11-22 | §13.1에 같은 볼트 이중 검출의 끝점 쌍 마스크 포함률 합치기(`mask_dup_contain` 0.85)·확정 게이트 안 긴 후보의 임시 트랙 금지(`length_near_confirmed`)·넘기기 켬의 모호 은퇴 사건(`retire`/`ambiguous`)과 재생 근거(A 작업 기록 #276·#279)를 추가하고 넘기기 끔 경로도 바뀜을 명시. §9 기록 표에 W 추적 계수 행 추가. §6에 Gazebo GPU 렌더링 변수·없을 때 약 6 fps(#256)·GPU 렌더링 장시간 메모리 증가(L-N2, Mesa 간접 그리기 차단으로 증가 없음 #282) 추가. §10에 통합 재시험(#281) 결과 요약과 [결과서](A담당_통합시험_결과.md) §9 연결, 검증 표에 W 추적 행 추가. 결과서 파일 이름 변경(날짜 제거)에 맞춰 1.30 행·§10의 링크 경로만 갱신 |
 | 1.33 (2중 검출 대표·벨트 밖 제외, S1-09 평가) | 2026-11-22 | 코드 `1e57e9f`·`e938339` 기준으로 같은 볼트 2중 검출의 대표 선택(`DUPLICATE_MASK`, §7.2)과 벨트 밖 검출 제외(`OUTSIDE_BELT`, §7.4 신설)를 §4·§5.4·§7.2·§9에 반영. §7.1에 S1-09 설정(`ai_s1_09_axis_m2_viewbias.json`, 종류별 k 0.63/0.48)을 「평가 중, 미채택」으로 기록. §7.2 「종류 고르기」를 B 길이 범위 규칙(`db1f5c6`, #285)으로 정정. §7.3 남은 한계와 §10에 2026-11-22 이후 결과(A 작업 기록 #287~#297, [결과서](A담당_통합시험_결과.md) §10) 연결 |
 | 1.34 (받은 요청 회신 정리: CA-01·CA-03·CA-04·DA-01) | 2026-11-22 | C 요청 CA-01·CA-03·CA-04와 D 요청 DA-01 ②~④에 대한 A 회신 근거를 현재 코드(HEAD `2850cb9`)·A 작업 기록(#256·#281·#288·#293) 기준으로 정리. §5.4에 실시간 입력 시각·세대 규칙표와 무효화 종류별 복구 경계(A→C 연결부 `msg_seq`) 추가, §6.1에 CA-01 A 측정 기록, §6.3(그리퍼·고정 카메라 현재 모델 위치와 담당표 제안) 신설, §1 카메라 담당 「미결」 문구를 §6.3 참조로 변경, §10 되감기 행과 §11 재설정 위험 행에 #281 E3 확인 표시. CA-01 종결과 CA-04 담당은 **A 결정 대기**. 설계 결정·코드 변경 없음 |
+| 1.35 (C 실행기용 추적 흐름 설계) | 2026-11-23 | A 결정 2026-11-23: A가 A 쪽 추적 발행과 C 실행기(`gazebo_sort_executor.py`) 수정까지 맡음(C 합의). C 실행기(`744dc99`)가 Gazebo 정답 위치(`/world/sort_cell/pose/info`)로 대상 신원·위치·이동 중 따라가기를 하는 것을 A W 추적 흐름으로 바꾸는 설계를 §13.3에 신설(설계, 미구현). 메시지 초안 `TrackState`·`TrackStateArray`, 발행 조건, 시각·좌표 규칙, C 사용 방식, 정답과 실행 피드백 경계, 단계, 미결 항목. 계획 A 작업 기록 #303(`_workspace/303_builder3_plan_r1.md`, #302 결과로 안 다 확정). 코드·msg 무변 |
+| 1.36 (C 실행 번호 연결, P2 `5099e65`) | 2026-11-23 | A 실시간 송신이 C 관리 실행 번호(`sort_job_id`·`run_epoch`)를 C `/c_sort_goal_receiver/get_run`(`GetSortRun`)으로 받아 `/sort_part` 목표에 채우는 동작(`sort_part.run_source`, 커밋 `5099e65`, A 작업 기록 #301 P2)을 §13.1에 반영. §9 기록 표에 송신 막음 사건·실행 변경 기록 행 추가. 시험 설정에 `require_track_id: true` 포함(#307 r1, `5099e65` 판의 누락 보완). D13 해제 위험 표의 「C `run_epoch` 미구현」·「목표 식별 필드 공백」을 현재 상태로 갱신(해소된 부분 삭선). 실측(관리 실행 Gazebo)은 미실행 |
 
 ## 1. 목적과 적용 범위
 
@@ -1084,6 +1086,7 @@ AI 평면 모드에서는 검출 방식, 모델·가중치 식별자, 클래스�
 | 2중 검출 대표(§7.2) | `run_meta.detector.axis_dup`(`iou`·`ep_px`, 축 경로 설정일 때), 처리 기록 `axis_duplicates_merged`(합친 것이 있을 때만), 인스턴스 `rejected: DUPLICATE_MASK`·`axis_diag` |
 | W 추적 넘기기 | `world_tracks.jsonl`에 `gripper_frame`·`track_event`(카메라 전환·은퇴 사유·복귀 오프셋)·hold 예측(옵션을 켰을 때만) |
 | W 추적 중복·긴 후보(§13.1) | 넘기기 켬·끔 공통으로 요약 `world_tracking.tracker`에 `dup_merged_endpoint_contain`·`length_near_confirmed` 키가 늘고, `world_tracks.jsonl` 배정 reason에 `length_near_confirmed`가 나올 수 있음. 넘기기 켬은 `retire` 사건 reason `ambiguous`와 `handoff.retire_by_reason.ambiguous` |
+| C 실행 번호 연결(§13.1, `sort_part.run_source`) | 블록이 있을 때만 키가 늘고, 없으면 이전 기록과 같음. `live/sort_part.jsonl`에 송신 막음 사건 `skip:run_unknown`·`skip:run_inactive`·`skip:run_changed`, 상태 줄 `run_state`(활성·번호가 바뀔 때), 실행 변경 줄 `run_changed`, 송신기 줄의 `sort_job_id`·`run_epoch`. 요약 `sort_part.run_source`(`status`, `counts`: `snapshots`·`query_failed`·`state_changes`·`run_changes`·`retry_cleared`·`refresh_requests`, `query_failures`, `last`, `applied`)와 `sort_part.config.run_source`. 시작 줄 `run_pipeline: sort_part run_source=managed service=… service_seen=… first=…`(서비스가 안 보이면 경고 줄) |
 
 **추론 프로세스 실측(A 작업 기록 #259, 격리 Gazebo, NVIDIA 렌더링, 조건마다 90 s).**
 
@@ -1255,8 +1258,8 @@ AI 평면 모드에서는 검출 방식, 모델·가중치 식별자, 클래스�
 | Gazebo 재설정(시각 되감기) 직후, 감지 전 짧은 구간에 이전 실행 영상이 B까지 도달 | 이전 위치로 C 목표가 나가 팔이 빈 자리를 집으러 움직임 | 되감기 감지 시 실행 종료·이전 결과 철회, 자동 재시작 없음(새 실행은 새 프로세스·새 구독), 미래 stamp 휴리스틱 필터 | 재설정 N회 뒤 이전 영상 B·C 도달 0건(F6, #167 §4 시험 1). #281 E3에서 1회 확인(B·C 목표 0건, D detect·center 0장) |
 | 재접속·발행자 교체·CameraInfo 변경 경계 뒤 이전 세대 프레임 | 같음 | 수신 epoch·세대 폐기, 보정 번호 대조 | #167 §4 시험 2·3 |
 | 경계 폭주 | 실행 중단 지연 | 1초 10회 상한(D5) | #167 §4 시험 5 |
-| 재설정 식별 연동 없음(D13 (c)) | 위 위험의 보장 수단 부재 | 없음(C `run_epoch` 미구현) | C 구현 뒤 |
-| 목표 식별 필드 공백(`sort_job_id`·`run_epoch` 빈 값, `valid_until_ns` 0) | C가 오래된 목표를 거르지 못함 | B 클라이언트의 같은 종류 결과 대기 중 송신 안 함 | B·C 공급자 확정 뒤 |
+| 재설정 식별 연동 없음(D13 (c)) | 위 위험의 보장 수단 부재 | ~~없음(C `run_epoch` 미구현)~~ → C `744dc99`가 관리 실행(`--run-state`)에서 `run_epoch`를 발급·검사하고(`SORT_RUN_MISMATCH`), A `5099e65`가 목표에 채움(§13.1). Gazebo 재설정을 C 새 실행으로 볼지는 C 결정(미결, 지금은 재시작한 A가 같은 번호를 다시 받아 보냄) | 관리 실행 Gazebo 실측(A 작업 기록 #301 P1 장면 M), 재설정 경계 |
+| 목표 식별 필드 공백(~~`sort_job_id`·`run_epoch` 빈 값~~, ~~`valid_until_ns` 0~~) | C가 오래된 목표를 거르지 못함 | B 클라이언트의 같은 종류 결과 대기 중 송신 안 함. 관리 실행에서는 A `5099e65`가 `sort_job_id`·`run_epoch`를 채움(비관리 실행은 여전히 빈 값이며 C도 검사하지 않음). `valid_until_ns`는 B가 촬영 시각 + 2 s로 채우고 C `744dc99` 실행기가 `GOAL_EXPIRED`로 검사(`gazebo_sort_executor.py:199-207`) | 관리 실행 Gazebo 실측(#301 P1 장면 M) |
 
 **실측 사례(2026-11-20, #214 S4, 가짜 C 서버):** 월드 리셋 명령 뒤 347 ms에 실행이 닫혔고, 그 사이 수락 2건 중 1건(리셋 명령 +320.8 ms)이 C로 송신됐습니다. A 기록에서는 철회(revoke)됐지만 가짜 C는 그 목표를 완료(SUCCEEDED)했습니다. B 클라이언트에 취소 기능이 없어 이미 보낸 목표는 되돌리지 못합니다. 닫힘 뒤 시작한 송신은 0건이었습니다. 이 1건은 표 1행 위험이 실제로 일어난 것이며 수용 범위 안입니다.
 
@@ -1405,8 +1408,130 @@ AI 평면 모드에서는 검출 방식, 모델·가중치 식별자, 클래스�
 
 실측 결과는 §10 「최근 구현 확인 결과」입니다. 넘기기 기본값과 c_stack 적용(C launch 인자)은 실측 뒤 A가 정합니다(§12).
 
+**C 실행 번호 연결(`sort_part.run_source`, 커밋 `5099e65`, A 작업 기록 #301 P2).** C 관리 실행(`sort_goal_receiver --run-state`, C `744dc99`)은 목표의 `sort_job_id`·`run_epoch`가 C 실행 번호와 다르면 `SORT_RUN_MISMATCH`로 거부합니다(`sort_manager.py:168-170`). 이동 벨트 집기(`--moving-belt`)는 관리 실행에서만 켜집니다. B `BStage`에는 이 값의 자리가 있지만(「C가 START 수락 때 발급 → 파이프라인이 넣어 줌」) 채우는 코드가 없었습니다. 그래서 A 실시간 송신 설정에 선택 블록 `sort_part.run_source`를 두었습니다.
+
+- **조회:** C `/c_sort_goal_receiver/get_run`(`GetSortRun`)을 다음 세 시점에 묻습니다. 서비스 이름은 코드에 고정하지 않고 설정에 적습니다.
+  - 시작 때 1회(`server_wait_s` 동안 서비스를 기다리고 첫 답을 `call_timeout_s`까지 기다림)
+  - `poll_s`마다
+  - `SORT_RUN_MISMATCH` 결과를 받은 직후
+- **송신 조건:**
+
+  | 상황 | 처리 |
+  |---|---|
+  | 번호를 모르거나 마지막 답이 `stale_s`보다 오래됨 | 보내지 않음(`skip:run_unknown`) |
+  | C 실행이 꺼져 있음(`active=false`) | 보내지 않음(`skip:run_inactive`) |
+  | 목표를 만든 뒤 실행이 바뀜 | 보내지 않음(`skip:run_changed`) |
+  | 그 밖 | 목표에 `sort_job_id`·`run_epoch`를 넣어 보냄 |
+
+  보내지 않은 경우는 B 중복 기록을 풉니다.
+- **실행이 바뀔 때:** (job, epoch)가 바뀌면 다음을 합니다.
+  - 모든 B 단계에 새 번호를 넣습니다. B 대기 목표는 B `_dedupe`가 epoch 변화를 보고 다음 처리에서 비웁니다(B 파일 무변).
+  - A 재시도 기억(번호별 실패 수·실패 위치)을 비우고 `run_changed`를 기록합니다.
+  - 이미 보낸 목표는 취소하지 않습니다. 다른 실행에서 보낸 목표의 결과는 재시도 기억에 넣지 않습니다.
+- **C 서비스가 없을 때:** 실행은 계속하고 송신만 막습니다. 시작 줄에 경고를 남깁니다.
+- **값:** `poll_s` 0.5 s·`call_timeout_s` 1.0 s·`stale_s` 2.0 s는 시험값이며 운영값이 아닙니다(`config/vision/live_observation_sort_part_managed_test.json`).
+- **블록이 없을 때:** 송신·기록·시작 줄이 이전과 같습니다. 정지 벨트(비관리) 실행에는 영향이 없습니다.
+- **남은 것:**
+  - Gazebo 재설정을 C 새 실행으로 볼지(C 결정)
+  - B 중복 방지를 (job, epoch) 기준으로 바꿀지(지금 C 동작에서는 job이 바뀔 때 epoch도 오름)
+  - 조회 주기 사이 실행 변경으로 옛 번호 목표가 최대 `poll_s` 동안 `SORT_RUN_MISMATCH`로 실패할 수 있음
+  - 실제 C 서비스 조회와 관리 실행 실측(#301 P1 장면 M)
+- **추적 필수:** 관리 실행은 이동 집기·추적 번호 대상이므로 `--tracking`과 함께 씁니다. 실행기는 `--tracking`일 때 `sort_part.require_track_id`를 필수로 요구합니다. 이 값(`true`)은 시험 설정에 포함돼 있습니다. `5099e65` 판에는 빠져 있어 시작이 거부됐고, A 작업 기록 #307 r1에서 넣었습니다(미커밋).
+
 ### 13.2 사람 자세 관측 출력 (구 「사람 자세 제어 상세설계」 2절 A 행·8절)
 
 자세 모델 실행(후보 MediaPipe Pose Landmarker, 사전학습 모델 추론 — 학습 필수 아님), 관절점(이미지 정규화 좌표·모델 world 좌표), visibility/presence 신뢰도, 프레임 시각·`image_seq`, 사람 수, 유효성·무효 사유를 출력합니다. 로봇 명령을 직접 만들지 않습니다. 모델 world 관절점은 사람 몸(골반 중심 등) 기준 좌표이므로 로봇·작업대 절대 좌표로 내보내지 않습니다([B 상세설계 §15.5](B담당_보정_좌표_상세설계.md)).
 
 - [MediaPipe Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker) — 관절점 출력·world 좌표의 정의. 설치 버전에서 출력 형식 확인은 A의 1주차 확인 항목
+
+### 13.3 C 실행기용 추적 흐름 (설계, 미구현 · A 결정 2026-11-23)
+
+**목적.** C 실행기 `gazebo_sort_executor.py`(C `744dc99`)는 Gazebo 정답 위치(`/world/sort_cell/pose/info`)를 직접 구독합니다. 이 값을 다음에 씁니다.
+
+- 대상 신원: 이름 고정 `BOLT_A→part_00`·`BOLT_B→part_01`(`:15-16`, `:152`)
+- 관측 25 mm 확인(`:222-223`)
+- 속도·경과 보정(`:212-221`)
+- 정지 확인(`:138-139`)
+- 이동 중 따라가기(`:300-332`)
+
+이는 [C 상세설계 §16.7.4](C담당_로봇서버_상세설계.md)의 「런타임 피드백은 … 비전·목표·계획용 부품 자세·`MOVE`에 넣지 않습니다」와 §16.7.5의 「계획용 자세 출처 … 런타임 피드백·정답으로 보정하지 않음」에 어긋납니다. A가 W 추적(§13.1) 결과를 ROS 토픽으로 내고, C 실행기가 이를 위치 출처로 쓰도록 바꿉니다. A가 C 실행기 수정까지 맡습니다(A 결정 2026-11-23, C 합의). 계획은 A 작업 기록 #303입니다.
+
+**메시지 초안**(`eyetoarm_interfaces`, 미추가, 이름·필드는 C 합의로 확정)
+
+| 메시지 | 필드(요약) |
+|---|---|
+| `TrackStateArray` | `kind`(`frame`·`reset`·`marker`), `run_id`, `source_id`, `image_seq`, `generation`, `tracker_epoch`, `capture_stamp_ns`, `timestamp_base`, `frame_id`, `publish_stamp_ns`, `belt_velocity_mm_per_s`, `reset_reason`, `handoff_on`, `tracks[]` |
+| `TrackState` | `part_track_id`(목표와 같은 문자열), `part_class`, `state`(`VISIBLE`·`PREDICTED`·`OCCLUDED`·`GRIPPER`), `position_mm`, `velocity_mm_per_s`, `velocity_source`(`TRACK`·`BELT_COMMON`·`NONE`), `axis_yaw_deg`([-90, 90)으로 접음), `length_mm`, `endpoint_a_mm`·`endpoint_b_mm`, `last_hit_stamp_ns`, `last_hit_camera`, `confirmed` |
+
+- **토픽·QoS·주기(제안):** `/a/track_states`. RELIABLE·KEEP_LAST 10·VOLATILE. 링크 프레임 처리마다 1건, 상한 20 Hz. 상한 때문에 `frame`을 건너뛰어도 `reset`·`marker`는 건너뛰지 않습니다.
+- **시각·좌표:** `SortPart.action`과 같습니다(mm, `base_link`(= world), SIM_TIME ns). `capture_stamp_ns`는 그 링크 프레임의 촬영 시각이고, 키 이름은 `CenterOverlay`와 같습니다. `position_mm`은 촬영 시각 위치(보이지 않으면 예측), z는 투영 높이(§7.2)입니다.
+
+**발행 조건(A)**
+
+- **켜기:** W 추적에서만 켭니다. `--track-stream` 기본은 끔이고, 끄면 기존 출력·기록과 같습니다.
+- **대상:** 확정 번호(`part_track_id` 있음)만 냅니다. 임시·모호·`untracked`는 내지 않습니다.
+- **재설정·실행 끝:** 추적 재설정 때 `kind=reset`, 실행 끝에 `kind=marker`를 냅니다. 세대·범위가 바뀌면 `tracker_epoch`가 오릅니다.
+- **스레드:** 추적 스레드는 유한 큐에 넣기만 하고 발행은 별도 스레드가 합니다.
+- **기록:** 지연(촬영 → 발행)을 `world_tracks.jsonl`에 기록합니다.
+
+**C 실행기의 사용 방식(설계)**
+
+- **위치 출처 선택:** `--pose-source {sim,track}`. `sim`은 지금 동작으로, 비교·회귀용으로 남깁니다. `track`이면 목표의 `part_track_id`로 트랙을 고르고, 기존 `PoseTracker`와 같은 `pose()`·`recent_motion()`을 현재 SIM 시각 예측으로 제공합니다.
+- **새 실패 사유:**
+
+  | 사유 | 조건 |
+  |---|---|
+  | `TRACK_ID_MISSING` | 목표에 번호 없음 |
+  | `TRACK_NOT_FOUND` | 수신 배열에 그 번호 없음 |
+  | `TRACK_CLASS_MISMATCH` | 종류 다름 |
+  | `TRACK_STALE` | 마지막 수신이 오래됨(제안 500 ms) |
+  | `TRACK_LOST` | 실행 중 번호 사라짐, `reset`, epoch 변화 |
+  | `TRACK_JUMP` | 수신 위치가 직전 예측과 25 mm 넘게 어긋남 |
+  | `TRACK_HANDOFF_OFF` | 이동 집기인데 A 인계 꺼짐 |
+
+- **25 mm 확인:** 같은 번호의 트랙 위치(목표 촬영 시각 예측)와 `observed_position_mm`의 비교로 바꿉니다. 사유 이름(`PART_NOT_AT_OBSERVATION`)은 유지합니다.
+- **정지 확인:** 정답 2 mm 대신 A 벨트 공통 속도와 트랙 위치 변화로 판정합니다. 문턱은 A 추적 잡음 실측 뒤 정합니다.
+- **정답의 역할:** 정답은 선택 옵션 `--sim-truth-log`의 비교 기록으로만 남깁니다. 실행 결정에는 넣지 않습니다.
+
+**정답과 실행 피드백의 경계.** 위치·신원·움직임은 A 값을 씁니다. 들어 올림(`:286`, `:335-345`)·보유(`:292-294`)·상자 도착(`:369-388`) 판정은 C 실행 피드백(§16.7.4가 허용하는 시뮬레이터 상태)이므로 시뮬 상태를 써도 됩니다. 다만 부품 이름은 고정 매핑 대신 닫기 직후 그리퍼 기준 최근접 부품으로 정하는 안을 제안합니다. 신원이 정답에서 오지 않게 하고, 같은 종류가 여럿인 장면에서도 동작하게 하려는 것입니다(미결). 실제 로봇에서는 이 판정을 그대로 쓸 수 없다는 한계는 §16.7.4와 같습니다.
+
+**단계**
+
+1. msg 추가 + A 발행 + 단위시험
+2. C 실행기 전환 + 단위시험(`sim` 무변 확인)
+3. Gazebo 실측: 정지·이동, S1-08/S1-09, 정답 비교 기록, #301 하네스
+4. 문서 반영과 C 공유
+
+**안 선택(A 작업 기록 #302 반영).** 세 안을 비교했습니다: 송신 시 예측만(가), 이 추적 흐름(나), 그리퍼 카메라 보조(다). 기준은 이동 집기의 축 직각 허용 오차 `E_tol`입니다. (손끝 간격 − 축 지름) / 2로 계산하며, M3×20 ±2.0~3.2 mm, M6×40 ±1.8~2.7 mm입니다. 정지 집기(완전 열림)는 ±11~12.7 mm입니다.
+
+| 안 | 축 직각 p95 | 판정 |
+|---|---|---|
+| 가(A 속도 × 17 s) | 약 13 mm(추정) | 미충족 |
+| 나(인계 켬) | 하강 M3 1.84·M6 1.22 mm, 잡는 높이 M3 5.6·M6 2.4 mm | 하강 충족, 잡는 높이는 M3 미충족·M6 경계 |
+| 다(나 + 그리퍼 깊이) | 잡는 높이 2.2~2.8 mm | 허용 안, 여유 작음 |
+
+- **선택(확정):** **안 다**입니다. 안 나에 그리퍼 인계 켬을 더하며, 인계 켬은 Gazebo 실측(3단계)의 필수 조건입니다. 마지막 잡는 높이 구간에 그리퍼 깊이 위치를 씁니다.
+  - 그리퍼 깊이로 갱신된 위치(`state=GRIPPER`)가 있으면 그것을 쓰고, 없으면 링크 예측으로 진행하며 그 사실을 기록합니다.
+  - `track` 모드 이동 집기는 A 인계(`--gripper-handoff`)를 켰을 때만 허용합니다. 인계를 끈 구성은 p95가 25~60 mm였습니다.
+- **25 mm 확인:** 확정 번호 위치가 정답 25 mm 안에 든 비율이 현재 main에서 100 %입니다.
+- **남은 위험:** 잡는 높이 M3 2.8 mm는 허용 상한에 붙어 있습니다. 실측 성공률이 모자라면 다음 중 하나가 필요합니다(A·C 결정).
+  - 이동 집기 개구 확대(C 결정)
+  - 그리퍼 깊이 정확도 개선
+  - 가려지기 직전 관측 치우침 분석
+- **미검증(#302 §8):** 위 판정은 모두 저장 기록의 오프라인 모사입니다.
+  - 17·20 s 직접 표본이 거의 없습니다(n ≤ 1).
+  - C가 A 위치로 실제로 집는 폐루프 기록이 없습니다.
+  - 벨트 재출발 기록이 없습니다.
+  - 이 항목들은 실측에서 확인합니다.
+
+**미결 항목**
+
+| 항목 | 정할 곳 |
+|---|---|
+| 메시지 이름·필드 확정과 소유(공용 `eyetoarm_interfaces`) | C 합의 |
+| C 상세설계 §16.7.4·§16.7.5 갱신 | C(A는 C 문서를 고치지 않음, [A 협업 요청 C-12](A담당_협업_요청_초안.md#c-12-분류-목표-실행예측만료-013-추가)) |
+| 기존 정답 경로를 남길지와 기본값 | A 제안: 남김, 실측 합격 전 `sim` |
+| 실행 결과 판정의 부품 이름 결정 방식 | A·C |
+| 주기·오래됨 기준 | 지연 실측 뒤 A |
+| A 발행 기본값과 c_stack 적용 | 실측 뒤 A |
+| 같은 종류 여러 개 장면 시험 월드 | A(시험용, 운영 월드 무변) |

@@ -18,6 +18,7 @@ from eyetoarm.transforms.b_stage import BStage
 from eyetoarm.vision.live_sort_part import (LiveSortPartSender, RetryConfig, RunSourceConfig, SortPartConfig,
                                             SortPartConfigError, parse_sort_part)
 from test_live_sort_part import CliBase, FakeRuntime, frame_of, records
+from test_live_tracking_link import PIXEL
 from test_run_pipeline_live_observation import Scenario
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +28,9 @@ SERVICE = "/c_sort_goal_receiver/get_run"   # sort_manager.py:65·85 노드 이�
 RUN_SOURCE = RunSourceConfig(service=SERVICE, poll_s=0.5, call_timeout_s=1.0, stale_s=2.0)
 BASE = dict(server_wait_s=0.01, result_wait_s=0.05, close_limit_s=2.0, spin_timeout_s=0.01)
 SEC = 1_000_000_000
+# 관리 설정은 require_track_id=true라 --tracking이 필요하다(run_pipeline 짝 검사). 진입점 시험은 픽셀 추적으로 돌린다
+MANAGED_EXTRA = ("--live-sort-part", "--tracking", *PIXEL)
+TRACK_FRAMES = 9   # 픽셀 추적이 번호를 확정하고 송신까지 가는 프레임 수(test_tracking_send_fixes와 같음)
 
 
 class Clock:
@@ -84,17 +88,19 @@ class ConfigTest(unittest.TestCase):
         self.assertNotIn("run_source", c.to_json())
 
     def test_repo_managed_config(self):
-        """저장소 관리 시험 설정: 서비스 이름·시험값(Q6·Q7), 다른 값은 원본 시험 설정과 같다."""
+        """저장소 관리 시험 설정: 서비스 이름·시험값(Q6·Q7)·require_track_id=true, 다른 값은 원본 시험 설정과 같다."""
         doc = json.loads(MANAGED_CONFIG.read_text(encoding="utf-8"))
         plain = json.loads(PLAIN_CONFIG.read_text(encoding="utf-8"))
         self.assertEqual(doc["status"], "test_only")
         c = parse_sort_part(doc["sort_part"])
         self.assertEqual(c.run_source, RUN_SOURCE)
+        self.assertIs(c.require_track_id, True)   # 관리 실행은 추적 번호 대상(#307)
         self.assertEqual(c.to_json()["run_source"],
                          {"call_timeout_s": 1.0, "poll_s": 0.5, "service": SERVICE, "stale_s": 2.0})
         rest = {k: v for k, v in doc.items() if k not in ("note", "sort_part")}
         self.assertEqual(rest, {k: v for k, v in plain.items() if k not in ("note", "sort_part")})
-        self.assertEqual({k: v for k, v in doc["sort_part"].items() if k != "run_source"}, plain["sort_part"])
+        self.assertEqual({k: v for k, v in doc["sort_part"].items() if k not in ("run_source", "require_track_id")},
+                         plain["sort_part"])
 
     def test_bad_run_source_refused(self):
         """키 누락·모르는 키·0 이하·bool·상대 이름·공백 이름은 거부한다."""
@@ -501,7 +507,8 @@ class CliManagedTest(CliBase):
     def test_active_run_numbers_reach_b_goals(self):
         """활성 답이면 B 목표(accept 기록)와 보낸 목표에 같은 job·epoch가 실린다."""
         rt = ManagedRuntime((True, "job-1", 7))
-        code, err, out = self.run_sort(Scenario(4), config=MANAGED_CONFIG, factory=self.factory(rt))
+        code, err, out = self.run_sort(Scenario(TRACK_FRAMES), config=MANAGED_CONFIG, extra=MANAGED_EXTRA,
+                                         factory=self.factory(rt))
         self.assertEqual(code, 0, err)
         self.assertIn(f"sort_part run_source=managed service={SERVICE} service_seen=true "
                       "first=active=true sort_job_id=job-1 run_epoch=7", err)
@@ -518,7 +525,8 @@ class CliManagedTest(CliBase):
     def test_inactive_sends_nothing(self):
         """비활성 답이면 송신 0, 모두 skip:run_inactive."""
         rt = ManagedRuntime((False, "", 3))
-        code, err, out = self.run_sort(Scenario(4), config=MANAGED_CONFIG, factory=self.factory(rt))
+        code, err, out = self.run_sort(Scenario(TRACK_FRAMES), config=MANAGED_CONFIG, extra=MANAGED_EXTRA,
+                                         factory=self.factory(rt))
         self.assertEqual(code, 0, err)
         self.assertEqual(rt.sent, [])
         events = {r["event"] for r in self.sort_records(out) if r["event"].startswith("skip:run")}
@@ -527,11 +535,23 @@ class CliManagedTest(CliBase):
     def test_no_service_warns_and_keeps_running(self):
         """시작 때 서비스가 없으면 경고하고 실행은 계속, 송신은 skip:run_unknown(Q2)."""
         rt = ManagedRuntime(None)
-        code, err, out = self.run_sort(Scenario(4), config=MANAGED_CONFIG, factory=self.factory(rt))
+        code, err, out = self.run_sort(Scenario(TRACK_FRAMES), config=MANAGED_CONFIG, extra=MANAGED_EXTRA,
+                                         factory=self.factory(rt))
         self.assertEqual(code, 0, err)
         self.assertIn(f"warning: {SERVICE} not seen at start; goals are not sent (skip:run_unknown)", err)
         self.assertEqual(rt.sent, [])
         self.assertTrue(any(r["event"] == "skip:run_unknown" for r in self.sort_records(out)))
+
+    def test_managed_config_with_tracking_starts(self):
+        """저장소 관리 설정 + --tracking: 짝 검사를 통과해 시작하고(종료 0), 시작 줄에 관리·확정 번호 송신이 나온다(#307)."""
+        rt = ManagedRuntime((True, "job-1", 1))
+        code, err, out = self.run_sort(Scenario(TRACK_FRAMES), config=MANAGED_CONFIG, extra=MANAGED_EXTRA,
+                                       factory=self.factory(rt))
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("require_track_id is required with --tracking", err)
+        self.assertIn("require_track_id=true", err)
+        self.assertIn(f"sort_part run_source=managed service={SERVICE}", err)
+        self.assertIs(self.summary(out)["sort_part"]["require_track_id"], True)
 
     def test_plain_config_has_no_run_source_output(self):
         """관리 설정이 아니면 시작 줄·요약에 run_source가 없고 목표 실행 번호는 비어 있다(예전 동작)."""
