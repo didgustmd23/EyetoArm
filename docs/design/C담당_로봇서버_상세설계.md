@@ -43,7 +43,7 @@
 | 1.11 (11/19 완료·부분완료 기록 및 11/20 잔여 작업 이동) | 2026-11-20 | D TCP `GET_STATUS` 응답 표시와 47092 영상 표시를 19일 완료로 기록. CA-02 A→C 전달 통합 및 B 목표 좌표·파지/배출 검증의 미완료 범위를 부분완료로 기록해 20일로 이동. B 협의, Pb 기반 파지·충돌 시험, 움직이는 벨트 작업 및 부자연스러운 시제품 벨트 이동 개선을 20일에 추가. §11·§12 갱신 |
 | 1.12 (11/20 진행 결과 및 11/21 후속 작업 반영) | 2026-11-21 | MoveIt 시험 좌표의 IK·충돌 상태·경로 계획 확인을 완료로 분리하고, 실제 집기·운반·배출은 미완료로 구분. B 영상의 C 수신·D 표시와 통합 런치 기동을 완료로 기록. 미완료 항목은 ‘21일로 변경’, 부분완료 항목은 21일 후속 작업과 완료 기준을 구체화. A/B FPS 분석은 사용자 요청에 따라 추후 일정으로 보류. §11·§12 갱신 |
 | 1.13 (BOLT_A 규격 불일치 재시험 추가) | 2026-11-21 | A 통합시험에서 확인한 월드 BOLT_A M3×20과 B 시험 설정 M6×12의 불일치를 기록. B가 시험 규격을 M3×20으로 수정한 뒤 C가 최신 Pb·파지 자세를 기준으로 MoveIt 충돌·경로와 실제 집기·배출을 재시험하도록 11/21 할 일에 추가. B 수정은 미완료로 표시 |
-| 1.14 (실행기 위치 출처·관리 실행 번호) | 2026-11-23 | §16.7.8 신설: `gazebo_sort_executor` 위치 출처 `--pose-source`(`sim`·`track`, 기본 `sim`), `track`의 A 추적 흐름(`/a/track_states`, `TrackStateArray`·`TrackState`) 구독·번호 선택·관측 25 mm·정지 3 mm 판정, 이동 집기 `handoff_on` 필수, 잡는 높이 `GRIPPER` 표본 우선과 `grasp_source` 기록, `--sim-truth-log` 비교 기록, 실행 결과 판정의 `SimExecutionFeedback`. §16.7.6 실패 표에 `TRACK_*`·`FEEDBACK_LOST`(track) 행 추가. §16.5.3 신설: 관리 실행 `--run-state`·`~/start_run`·`~/get_run`과 `SORT_RUN_MISMATCH`, A 목표의 `get_run` 채움(`sort_part.run_source`). 상태: track 모드·추적 흐름은 구현됨, 미커밋·Gazebo 실측 전 / 관리 실행 번호 연결은 main 반영(#152). §16.7.8에 놓은 뒤·실패 뒤 HOME 복귀 추가(`sim`·`track` 공통, 취소·`STOP_UNCONFIRMED` 제외) |
+| 1.14 (실행기 위치 출처·관리 실행 번호) | 2026-11-23 | §16.7.8 신설: `gazebo_sort_executor` 위치 출처 `--pose-source`(`sim`·`track`, 기본 `sim`), `track`의 A 추적 흐름(`/a/track_states`, `TrackStateArray`·`TrackState`) 구독·번호 선택·관측 25 mm·정지 3 mm 판정, 이동 집기 `handoff_on` 필수, 잡는 높이 `GRIPPER` 표본 우선과 `grasp_source` 기록, `--sim-truth-log` 비교 기록, 실행 결과 판정의 `SimExecutionFeedback`. §16.7.6 실패 표에 `TRACK_*`·`FEEDBACK_LOST`(track) 행 추가. §16.5.3 신설: 관리 실행 `--run-state`·`~/start_run`·`~/get_run`과 `SORT_RUN_MISMATCH`, A 목표의 `get_run` 채움(`sort_part.run_source`). 상태: track 모드·추적 흐름은 구현됨, 미커밋·Gazebo 실측 전 / 관리 실행 번호 연결은 main 반영(#152). §16.7.8에 놓은 뒤·실패 뒤 HOME 복귀 추가(`sim`·`track` 공통, 취소·`STOP_UNCONFIRMED` 제외). §16.7.8 정지 벨트 track 멈춤 대기·따라가기 추가 |
 
 | 항목 | 내용 |
 |---|---|
@@ -682,7 +682,7 @@ Gazebo Harmonic(gz-sim 8) `DetachableJoint`를 1안으로 둡니다.
 | 대상 선택 | 목표 `part_track_id`. 처음 쓴 프레임의 (`run_id`, `tracker_epoch`)를 고정하고, 바뀌거나 `reset`·`marker`가 오면 `TRACK_LOST` |
 | 위치·속도 | 선택 트랙의 `position_mm`을 `velocity_mm_per_s` × (현재 SIM 시각 − `capture_stamp_ns`)로 현재 시각까지 예측. `velocity_source=NONE`이면 속도 0 |
 | 관측 확인 | 목표 촬영 시각으로 예측한 트랙 위치와 `observed_position_mm`의 xy 차 ≤ 25 mm. 넘으면 `PART_NOT_AT_OBSERVATION` |
-| 정지 확인 | 벨트 공통 속도 < 2 mm/s, 그리고 측정 위치 변화 ≤ 3 mm. 넘으면 `PART_MOVED` |
+| 정지 확인 | 측정 위치 변화 ≤ 3 mm(벨트 공통 속도는 쓰지 않음). 넘으면 `PART_MOVED` |
 | 이동 집기 | A가 `handoff_on=true`로 발행할 때만. 아니면 `TRACK_HANDOFF_OFF`. 축 방향은 트랙 `axis_yaw_deg`(NaN이면 그 번호의 마지막 값) |
 | 잡는 높이(clearance 0) | 오래됨 기준 안의 `state=GRIPPER`(그리퍼 깊이로 갱신된) 표본을 우선하고, 없으면 링크 예측을 씁니다. 어느 쪽을 썼는지 `grasp_source`(`gripper`·`link_pred`)로 기록합니다 |
 | 오래됨·튐 | 촬영 시각이 500 ms 넘게 오래되면 `TRACK_STALE`, 새 위치가 직전 예측과 25 mm 넘게 어긋나면 `TRACK_JUMP` |
@@ -690,6 +690,16 @@ Gazebo Harmonic(gz-sim 8) `DetachableJoint`를 1안으로 둡니다.
 **정답 비교 기록.** `--sim-truth-log FILE`(`track` 전용)을 주면 계획·따라가기 단계마다 「선택 트랙 위치 − 가장 가까운 시뮬 부품」을 줄 단위로 기록만 합니다(`SimTruthLog`). 이 값은 판정에 쓰지 않고 실행에 영향을 주지 않습니다.
 
 **실행 결과 판정.** 들어 올림(z +25 mm)·운반 중 보유·상자 도착은 시뮬 상태로 판정합니다(§16.7.4의 실행 피드백). `track` 모드에서는 대상을 이름 고정 대신 **닫은 직후 손가락 기준 최근접 시뮬 부품**(30 mm 안)으로 한 번 정합니다(`SimExecutionFeedback`). 범위 안에 없으면 `MISSED`, 정한 부품이 사라지면 `FEEDBACK_LOST`입니다. 이 객체는 집기 위치를 고르거나 보정하는 데 쓰지 않습니다. 실제 로봇에서는 이 판정을 그대로 쓸 수 없다는 §16.7.4의 한계는 같습니다.
+
+**정지 벨트(`track`)의 멈춤 대기.** 접근 높이에 도착하면 선택 트랙이 멈출 때까지 기다립니다.
+
+- **멈춤:** 최근 1 s 동안 측정 위치 변화가 3 mm 이하일 때입니다.
+- **따라가기:** 기다리는 동안 트랙이 2 mm 넘게 움직이면 접근 높이를 유지한 채 팔을 최신 위치 위로 옮깁니다. 옮길 위치가 집는 구역 밖이면 `PART_LEFT_PICK_REGION`입니다.
+- **하강:** 멈추면 그 위치와 축 방향으로 집는 점·자세를 다시 계산해 내려갑니다.
+- **하강 중 다시 움직이면:** 접근 높이로 올라가 다시 기다립니다. 최대 2회이고, 넘으면 `PART_MOVED`입니다.
+- **시간 초과:** SIM 10 s 안에 멈추지 않으면 `PART_MOVED`입니다(SIM 시계가 멈춘 경우를 위해 벽시계 30 s 상한도 둡니다).
+- **트랙을 잃으면:** 기존 `TRACK_*` 사유입니다.
+- **기록:** 대기·따라간 거리·재하강 횟수는 로그(`STILL_WAIT`·`REDESCEND`)에 남깁니다. 이동 벨트와 `sim` 모드는 이 대기를 하지 않습니다.
 
 놓기·도착 확인 뒤, 그리고 팔이 움직인 뒤의 실패 뒤에는 접근 높이로 올린 뒤 실행기 준비 때 저장한 처음 자세(HOME)로 돌아갑니다. 취소와 정지 미확인(`STOP_UNCONFIRMED`)에서는 자동으로 움직이지 않습니다. 복귀 실패는 결과 사유를 바꾸지 않고 경고로 기록합니다.
 
