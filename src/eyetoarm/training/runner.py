@@ -210,7 +210,7 @@ def _expected_common(cfg: TrainingConfig) -> dict:
     t = cfg.train_args()
     out = {"data": cfg.common.data["data_yaml"], "imgsz": t["imgsz"], "batch": t["batch"], "epochs": t["epochs"],
            "seed": t["seed"], "deterministic": t["deterministic"], "workers": t["workers"], "device": t["device"]}
-    for k in OPTIONAL_COMMON_KEYS:   # 선택 키(hsv_v)는 설정에 있을 때만 대조한다
+    for k in OPTIONAL_COMMON_KEYS:   # 선택 키(hsv_v·degrees·scale)는 설정에 있을 때만 대조한다
         if k in t:
             out[k] = t[k]
     return out

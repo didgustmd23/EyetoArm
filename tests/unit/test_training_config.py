@@ -416,3 +416,89 @@ class HsvVTest(unittest.TestCase):
         self.assertEqual(cfg.train_args(), {**clean.train_args(), "hsv_v": 0.6})
         self.assertEqual(thaw(cfg.common.raw["data"]), thaw(clean.common.raw["data"]))
         self.assertEqual(dict(cfg.common.watch), dict(clean.common.watch))
+
+
+def aug_common(**train_over):
+    """공통 설정 사본의 train에 선택 증강 키(degrees·scale 등)를 넣는다."""
+    d = common_doc()
+    d["train"] = {**d["train"], **train_over}
+    return d
+
+
+class DegreesScaleTest(unittest.TestCase):
+    """선택 학습 키 degrees(무작위 회전)·scale(크기 증강): 명시할 때만 전달, 값 검사, 생략 시 기존 설정 그대로."""
+
+    def test_omitted_keeps_existing_config_ids(self):
+        """degrees·scale 없는 저장소 설정 3종은 train_args에 두 키가 없고 config_id가 기록값과 같다."""
+        base = load_training_config(COMMON, CANDS)
+        clean = load_training_config(CLEAN_COMMON, CLEAN_CANDS)
+        hsvv = load_training_config(HSVV_COMMON, HSVV_CANDS)
+
+        for cfg in (base, clean, hsvv):
+            self.assertNotIn("degrees", cfg.train_args())
+            self.assertNotIn("scale", cfg.train_args())
+        self.assertEqual(base.config_id, "77368a324a0da01e7bd379b84cc96b3b5603a7db6c25b7973ee02bf1d2d7bb56")
+        self.assertEqual(clean.config_id, "1e38cf433ee6c4327145b2853bd121da4e24647115ce42ecdcb47015857c98b1")
+        self.assertEqual(hsvv.train_args(), {**clean.train_args(), "hsv_v": 0.6})
+
+    def test_degrees_accepts_range(self):
+        """degrees 0·90·180(정수 포함)과 45.5는 통과하고 train_args에 그 값, 검증된 train에 float로 들어간다."""
+        for v in (0, 0.0, 45.5, 90, 180, 180.0):
+            with self.subTest(v=v):
+                cfg = training_config_from_dicts(aug_common(degrees=v), cands_doc())
+                self.assertEqual(cfg.train_args()["degrees"], v)
+                self.assertEqual(cfg.common.train["degrees"], float(v))
+
+    def test_degrees_rejects_bad_values(self):
+        """degrees의 bool·문자열·null·비유한·음수·180 초과·리스트·거대 정수는 ConfigError."""
+        for v in (True, False, "180", None, float("nan"), float("inf"), float("-inf"), -1, -0.1, 180.01, 360,
+                  [180], 10 ** 400, -(10 ** 400)):
+            with self.subTest(v=v):
+                with self.assertRaises(ConfigError):
+                    common_from_dict(aug_common(degrees=v))
+
+    def test_scale_number_and_list(self):
+        """scale 숫자(0·0.5·0.9)와 목록([0.1, 1.5]·[1, 1])은 통과하고 목록은 목록 그대로 train_args에 들어간다."""
+        for v in (0, 0.5, 0.9):
+            with self.subTest(v=v):
+                cfg = training_config_from_dicts(aug_common(scale=v), cands_doc())
+                self.assertEqual(cfg.train_args()["scale"], float(v))
+
+        for v in ([0.1, 1.5], [1, 1]):
+            with self.subTest(v=v):
+                cfg = training_config_from_dicts(aug_common(scale=v), cands_doc())
+                self.assertEqual(cfg.train_args()["scale"], [float(x) for x in v])
+
+    def test_scale_rejects_bad_values(self):
+        """scale 숫자 1 이상·음수·bool·비유한, 목록의 길이 오류·하한 0·하한 > 상한·상한 10 초과·문자는 ConfigError."""
+        for v in (1, 1.0, 1.5, -0.1, True, float("nan"), float("inf"), "0.5", None,
+                  [], [0.5], [0.1, 1.5, 2.0], [0, 1.5], [1.5, 0.1], [0.1, 11], [0.1, "1.5"], [True, 1.5],
+                  [0.1, float("inf")], [0.1, 10 ** 400]):
+            with self.subTest(v=v):
+                with self.assertRaises(ConfigError):
+                    common_from_dict(aug_common(scale=v))
+
+    def test_candidate_cannot_carry_degrees_or_scale(self):
+        """후보별 degrees·scale은 학습 인자로 거부된다(공통 설정에만 둔다)."""
+        for k, v in (("degrees", 180), ("scale", 0.5)):
+            d = cands_doc()
+            d["candidates"][0][k] = v
+            with self.subTest(k=k):
+                with self.assertRaises(ConfigError) as ctx:
+                    candidates_from_dict(d)
+                self.assertIn("training args", str(ctx.exception))
+
+    def test_values_change_config_id(self):
+        """degrees 180·90·생략, scale 0.5·[0.1, 1.5]는 서로 다른 config_id."""
+        ids = {training_config_from_dicts(c, cands_doc()).config_id for c in (
+            aug_common(degrees=180), aug_common(degrees=90), common_doc(), aug_common(scale=0.5),
+            aug_common(scale=[0.1, 1.5]))}
+
+        self.assertEqual(len(ids), 5)
+
+    def test_other_augment_keys_still_rejected(self):
+        """degrees·scale을 더해도 다른 증강 키(shear·perspective·flipud·mosaic)는 공통 train에서 거부된다."""
+        for k in ("shear", "perspective", "flipud", "mosaic"):
+            with self.subTest(k=k):
+                with self.assertRaises(ConfigError):
+                    common_from_dict(aug_common(degrees=180, **{k: 0.5}))

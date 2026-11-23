@@ -260,6 +260,56 @@ class HsvVChildTest(Fixture):
         self.assertEqual(json.loads(buf.getvalue())["train_args"]["hsv_v"], 0.6)
 
 
+class DegreesChildTest(Fixture):
+    """학습 자식이 degrees·scale을 설정에 있을 때만 model.train에 넘기는지 확인한다."""
+
+    def run_child_train(self, over):
+        """train에 over를 넣은 설정으로 _child-train을 부르고 train 인자를 돌려준다."""
+        import types
+        from unittest import mock
+        common, _ = self.config_docs()
+        common["train"] = {**common["train"], **over}
+        os.makedirs(os.path.join(self.root, "config", "training"), exist_ok=True)
+        _write(os.path.join(self.root, "config", "training", "c.json"), json.dumps(common))
+        _write(os.path.join(self.root, "config", "training", "k.json"),
+               json.dumps({"format_version": 1, "selection_mode": "single", "candidates": [self.cands[0]]}))
+        fake_ul = types.ModuleType("ultralytics")
+        fake_ul.YOLO, fake_ul.__version__ = FakeYOLO, "fake"
+        FakeYOLO.calls = []
+        exp = os.path.join(self.root, "outputs", "training", "x", "S1-01_yolov8n-seg")
+        os.makedirs(exp, exist_ok=True)
+        argv = ["--repo-root", self.root, "--common", "config/training/c.json", "--candidates",
+                "config/training/k.json", "_child-train", "--exp-id", "S1-01", "--exp-dir", exp]
+        with mock.patch.dict(sys.modules, {"torch": types.ModuleType("torch"), "ultralytics": fake_ul}):
+            self.assertEqual(load_cli().main(argv), 0)
+        return FakeYOLO.calls[0]
+
+    def test_degrees_scale_passed_only_when_configured(self):
+        """degrees 180·scale [0.1, 1.5] 설정이면 그 값 그대로 model.train에 가고, 없으면 두 인자 모두 없다."""
+        with_aug = self.run_child_train({"degrees": 180, "scale": [0.1, 1.5]})
+        without = self.run_child_train({})
+
+        self.assertEqual(with_aug["degrees"], 180)
+        self.assertEqual(with_aug["scale"], [0.1, 1.5])
+        self.assertNotIn("degrees", without)
+        self.assertNotIn("scale", without)
+        self.assertEqual({k: v for k, v in with_aug.items() if k not in ("degrees", "scale")}, without)
+
+    def test_inspect_reports_degrees_scale(self):
+        """_child-inspect는 체크포인트 train_args의 degrees·scale을 메타에 넣는다(재개·완료 대조용)."""
+        import types
+        from unittest import mock
+        fake_torch = types.ModuleType("torch")
+        fake_torch.load = lambda *a, **k: {"epoch": 3, "optimizer": object(),
+                                           "train_args": {"degrees": 180.0, "scale": [0.1, 1.5], "imgsz": 640}}
+        buf = io.StringIO()
+        with mock.patch.dict(sys.modules, {"torch": fake_torch}), redirect_stdout(buf):
+            load_cli().main(["_child-inspect", "x.pt"])
+
+        meta = json.loads(buf.getvalue())["train_args"]
+        self.assertEqual((meta["degrees"], meta["scale"]), (180.0, [0.1, 1.5]))
+
+
 class HsvVBadConfigCliTest(Fixture):
     """잘못된 hsv_v 설정의 CLI check: traceback 대신 오류 JSON과 종료 2."""
 

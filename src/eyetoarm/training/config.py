@@ -23,7 +23,8 @@ FAMILY_WEIGHTS = {"yolov8n-seg": "yolov8n-seg.pt", "yolo11n-seg": "yolo11n-seg.p
 TRAIN_KEYS = ("imgsz", "epochs", "seed", "deterministic", "batch", "device", "workers", "cache", "plots")
 SMOKE_ONLY_KEYS = ("fraction",)
 # 명시할 때만 ultralytics에 넘기는 선택 학습 키. 생략하면 ultralytics 기본값, config_id 불변
-OPTIONAL_TRAIN_KEYS = ("hsv_v",)
+# hsv_v: 밝기 증강 폭, degrees: 무작위 회전 최대 각도(°), scale: 크기 증강(1 ± scale 또는 [하한, 상한] 배율)
+OPTIONAL_TRAIN_KEYS = ("hsv_v", "degrees", "scale")
 WATCH_KEYS = ("watch_interval_s", "mem_available_stop_kib", "kill_grace_s", "train_deadline_s", "eval_deadline_s",
               "reap_timeout_s", "monitor_cmd_timeout_s")
 REQUIRED_ENV = {"YOLO_AUTOINSTALL": "false", "YOLO_OFFLINE": "1"}
@@ -76,6 +77,39 @@ def _pos_num(v, name: str) -> float:
     if f is None or not math.isfinite(f) or f <= 0:
         raise ConfigError(f"{name} must be a finite number > 0: {v!r}")
     return f
+
+
+def _bounded_real(v, name: str, lo: float, hi: float) -> float:
+    """bool이 아닌 유한 실수로 lo ≤ v ≤ hi. float로 돌려준다.
+
+    범위 비교를 isfinite보다 먼저 한다: 거대 정수(10**400)는 float 변환 없이 걸러지고, NaN은 비교가 거짓이라 걸러진다.
+    """
+    if isinstance(v, bool) or not isinstance(v, Real) or not lo <= v <= hi or not math.isfinite(v):
+        raise ConfigError(f"{name} must be a finite number in [{lo:g}, {hi:g}]: {v!r}")
+
+    return float(v)
+
+
+def _scale_value(v):
+    """크기 증강 scale: 숫자 s(배율 U(1 − s, 1 + s), 0 ≤ s < 1) 또는 [하한, 상한](0 < 하한 ≤ 상한 ≤ 10).
+
+    ultralytics RandomPerspective가 두 형식을 모두 받는다. 숫자 1 이상은 하한 배율이 0 이하가 되어 거부한다.
+    """
+    # 숫자 형식: 1 ± s
+    if not isinstance(v, list):
+        s = _bounded_real(v, "scale", 0, 1)
+        if s >= 1:
+            raise ConfigError(f"scale number must be < 1 (lower factor 1 - scale > 0): {v!r}")
+        return s
+
+    # 목록 형식: [하한, 상한] 배율
+    if len(v) != 2:
+        raise ConfigError(f"scale list must be [low, high]: {v!r}")
+    low, high = (_bounded_real(x, "scale[]", 0, 10) for x in v)
+    if not 0 < low <= high:
+        raise ConfigError(f"scale list must satisfy 0 < low <= high: {v!r}")
+
+    return [low, high]
 
 
 def _as_float(v) -> float | None:
@@ -217,12 +251,15 @@ def common_from_dict(d) -> CommonConfig:
             raise ConfigError(f"fraction must be in (0, 1]: {f}")
         train["fraction"] = f
     if "hsv_v" in t:
-        # 밝기(V) 증강 폭: bool 제외 유한 실수, ultralytics 분수 키와 같은 [0, 1].
-        # 범위 비교를 isfinite보다 먼저 한다: 거대 정수(10**400)는 float 변환 없이 걸러진다
-        v = t["hsv_v"]
-        if isinstance(v, bool) or not isinstance(v, Real) or not 0 <= v <= 1 or not math.isfinite(v):
-            raise ConfigError(f"hsv_v must be a finite number in [0, 1]: {v!r}")
-        train["hsv_v"] = float(v)
+        # 밝기(V) 증강 폭: ultralytics 분수 키와 같은 [0, 1]
+        train["hsv_v"] = _bounded_real(t["hsv_v"], "hsv_v", 0, 1)
+
+    if "degrees" in t:
+        # 무작위 회전 최대 각도(°): 매 표본 U(−degrees, +degrees). 볼트 축은 180° 주기라 180이 상한
+        train["degrees"] = _bounded_real(t["degrees"], "degrees", 0, 180)
+
+    if "scale" in t:
+        train["scale"] = _scale_value(t["scale"])
 
     data = d["data"]
     _exact_keys(data, ("data_yaml", "split_lists", "class_names", "expected_fingerprint"), "data")
