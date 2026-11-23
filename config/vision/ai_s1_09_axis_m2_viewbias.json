@@ -29,8 +29,8 @@
     "by_spec": {
       "BOLT_A": {
         "label": "M3x20",
-        "k_mm": 0.63,
-        "fit_plane_z_m": 0.102
+        "k_mm": 0.18,
+        "fit_plane_z_m": 0.1027
       },
       "BOLT_B": {
         "label": "M6x40",
