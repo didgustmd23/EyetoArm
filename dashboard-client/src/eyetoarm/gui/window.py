@@ -177,8 +177,8 @@ class MainWindow(QMainWindow):
         if self.display is not None:
             self.view.display_session.connect(self.display.begin_session)
             self.view.display_frame.connect(self._on_display_frame)
-            if hasattr(self.view, "display_result"):   # C 중계는 결과를 보내지 않는다. 결과를 지어내지 않는다
-                self.view.display_result.connect(lambda result, generation, order: self.display.ingest_result(result, generation=generation, order=order))
+            if hasattr(self.view, "display_result"):   # C 중계는 center 프레임에 실린 B 결과만 보낸다. 결과를 지어내지 않는다
+                self.view.display_result.connect(self._on_display_result)
             self.display.changed.connect(self._update_display)
             self.view.state_changed.connect(lambda state: self.display.set_connected(state == "connected"))
         if self.sort_demo is not None:
@@ -302,7 +302,7 @@ class MainWindow(QMainWindow):
 
         input_card = Card("입력·보정", "D 모의" if self.demo else "A·B 결과 미수신")
         self.input_values = self._rows(input_card, [("소스 · 모드", NO_VALUE), ("보정", NO_VALUE), ("상태 · 사유", NO_VALUE)])
-        input_card.body.addWidget(label("D 내부 모의 값입니다. 실제 A·B 측정값이 아닙니다." if self.demo else "A·B 값은 C 표시 연결로 옵니다. 연결 방식이 정해지기 전에는 비워 둡니다.", "Caption", wrap=True))
+        input_card.body.addWidget(label("D 내부 모의 값입니다. 실제 A·B 측정값이 아닙니다." if self.demo else "B 값은 C 중계 center 영상에 실려 옵니다(시제품). 그 프레임과 일치할 때만 보이고 그 외에는 비워 둡니다.", "Caption", wrap=True))
         input_card.body.addStretch(1)
         grid.addWidget(input_card, 2, 0)
 
@@ -1021,6 +1021,11 @@ class MainWindow(QMainWindow):
                 return   # 고르지 않은 종류의 링크 프레임은 순서·표시에 넣지 않는다(전환 직전 이동 중 프레임 포함)
         self.display.ingest_frame(channel, image, **envelope)
 
+    def _on_display_result(self, result, generation, order):
+        if self.relay and self.display.mode != "center":
+            return   # 고르지 않은 종류의 결과는 받지 않는다(전환 직전 이동 중 center 결과 포함)
+        self.display.ingest_result(result, generation=generation, order=order)
+
     def _update_display(self):
         if self.display is None:
             return
@@ -1056,8 +1061,9 @@ class MainWindow(QMainWindow):
             "theta": show(result.get("theta_deg")) if result and result.get("theta_valid") else NO_VALUE,
             "calibration": show(result.get("calibration_id")) if result else NO_VALUE,
             "frame": f"{result['source_id']} · {result['image_seq']}" if result else NO_VALUE,
-            "detail": (f"D 모의 · {show(result.get('spec'))}" if result else
-                       "C 시제품은 영상만 보냄 · 측정 결과 없음" if self.relay else self.display.reason),
+            "detail": (f"{'B · C 중계' if self.relay else 'D 모의'} · {show(result.get('spec'))}" if result else
+                       "링크 center 를 고르면 B 결과 표시(C 시제품)" if self.relay and self.display.mode != "center"
+                       else self.display.reason),
         }
         for key, text in contents.items():
             self._set_elided(values[key], text)
@@ -1231,7 +1237,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--view", choices=("relay", "window", "camera"), default="relay",
                         help="메인 디스플레이 원본. relay(기본): C display_relay 의 3채널 원본 영상(시제품 ETV1, "
-                             "측정 결과 없음). window: 화면에 떠 있는 Gazebo 창을 그대로. "
+                             "center 프레임에 실린 B 결과만 표시). window: 화면에 떠 있는 Gazebo 창을 그대로. "
                              "camera: Gazebo 카메라 영상 중계(2 Hz, WSL 에서 브리지와 gz_view_relay.py 필요)")
     parser.add_argument("--view-host", default=None,
                         help="중계 숫자 IP. 생략하면 relay 는 명령 서버 주소(--host 또는 client.json), camera 는 127.0.0.1")

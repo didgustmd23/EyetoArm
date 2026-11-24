@@ -1,7 +1,7 @@
 """--view relay: MainWindow + RelayViewReceiver against an in-process loopback QTcpServer fixture.
 
-Packets are made by the UNCHANGED C pack_packet. The fixture's link detect/center packets are test data only;
-the current C relay sends raw for all three channels. No real C relay, WSL, Gazebo or robot is used; the
+Packets are made by the UNCHANGED C pack_packet. The fixture's link detect/center packets (and the B result on
+center) are test data only, not captured from a live C relay. No real C relay, WSL, Gazebo or robot is used; the
 command link never opens a socket. Every server/socket/window is closed in tearDown.
 """
 import json
@@ -135,7 +135,7 @@ class RelayWindow(unittest.TestCase):
         self.assertEqual([self.mode_of(c) for c in ("fixed", "gripper", "link")], ["live"] * 3)
         self.assertEqual(self.window.chip_view._level, "ok")
         self.assertTrue(all(value.text() == NO_VALUE for value in self.window.measure_values))   # no results
-        self.assertIn("측정 결과 없음", self.window.stage.popup.values["detail"].toolTip())
+        self.assertIn("center 를 고르면 B 결과", self.window.stage.popup.values["detail"].toolTip())
         self.assertEqual(self.clients[0].bytesAvailable(), 0)      # D sends nothing until the user picks a link variant
 
     def test_link_selection_is_display_only_synced_and_never_falls_back_to_raw(self):
@@ -297,6 +297,42 @@ class RelayWindow(unittest.TestCase):
         self.assertNotEqual(self.mode_of("link"), "live")
         self.feed(vpacket(505, "detect", "#c03030", job=44, **a))
         self.assertEqual(self.mode_of("link"), "live")
+
+    def test_center_frames_carry_matching_b_results_into_the_measure_card_only(self):
+        """C 2026-11-23 display_relay: the selected B result rides on its own center frame's metadata."""
+        def center(seq, result=True, **change):
+            value = {"channel": "link", "variant": "center", "source_id": "gz_link", "image_seq": seq,
+                     "generation": 2, "calibration_id": "calib-1", "run_id": "run-A", "capture_generation": 5,
+                     "detector_config_id": "b-det-1", "job_seq": seq, "producer_run_id": "b-run",
+                     "capture_stamp_ns": 1_000 + seq, "timestamp_base": "sim_time", "stamp_sec": 1, "stamp_nanosec": 2}
+            if result:
+                value["result"] = {**{k: value[k] for k in relay_view.RESULT_FRAME_KEYS}, "producer_run_id": "b-run",
+                                   "valid": True, "spec": "BOLT_A", "center_px": [320, 240],
+                                   "center_w_mm": [12.5, -3.0], "theta_deg": 30.0, "theta_valid": True,
+                                   "selected": True, "secret": "dropped", **change}
+            return pack_packet(value, jpeg("#30c030"))
+        mm, detail = self.window.measure_values[1], self.window.input_values[2]
+        self.feed(center(1), center(2))                                     # confirmed, but raw is selected
+        self.assertIsNone(self.window.display.result)                       # the window gate drops it
+        self.assertIn("center", detail.toolTip())
+        self.click("center")
+        self.feed(center(3))                                                # first after the switch: C cache?
+        self.assertIsNone(self.window.display.result)                       # unconfirmed frame: no result
+        self.feed(center(4))
+        self.assertIn("12.5", mm.toolTip())
+        self.assertIn("BOLT_A", detail.toolTip())
+        self.assertNotIn("secret", self.window.display.result)              # only known result keys pass
+        drops = self.view.result_drops
+        self.feed(center(5, image_seq=99))                                  # result of another frame
+        self.assertEqual(self.view.result_drops, drops + 1)
+        self.assertEqual((self.mode_of("link"), self.window.display.frame("link")["image_seq"]), ("live", 5))
+        self.assertEqual(mm.toolTip(), NO_VALUE)                               # old result no longer matches
+        self.feed(center(6, producer_run_id="other"), center(7, result=False))
+        self.assertEqual((self.view.result_drops, mm.toolTip()), (drops + 2, NO_VALUE))
+        self.feed(center(8))
+        self.assertIn("12.5", mm.toolTip())
+        self.assertIn("B 결과", self.view.error_summary())
+        self.assertEqual((self.view.packet_errors, self.view.decode_errors), (0, 0))
 
     def test_producer_restart_low_sequence_and_new_generation_are_confirmed_through_the_receiver(self):
         def detect(seq, run, color="#c03030", generation=3, capture=7):
