@@ -1,7 +1,7 @@
 {
- "note": "#347: outputs/(Git 제외) results.csv 원본 값을 그대로 옮긴 것. 열 이름은 Ultralytics 8.4 그대로, 실험마다 없는 열(YOLO26의 dfl, 그 밖의 l1)은 빈칸.",
+ "note": "#347: outputs/(Git 제외) results.csv 원본 값을 그대로 옮긴 것. 열 이름은 Ultralytics 8.4 그대로, 실험마다 없는 열(YOLO26의 dfl, 그 밖의 l1)은 빈칸. #386: S1-10a·b·c(회전 실험, 학습 기록의 번호는 셋 다 S1-10) 줄을 같은 방식으로 덧붙임. 기존 S1-01~09 줄은 바이트 그대로.",
  "file": "s1_train_curves.csv",
- "sha256": "5c7fdcc33a53334acc67ffe9d2778a10d9eaf9129a6549ae7fb2e16f22b96606",
+ "sha256": "aca2e15507b2a9730e8252d2cc64a68bb31b444e88c25c4aec56d3517232e315",
  "columns": [
   "exp",
   "epoch",
@@ -40,7 +40,8 @@
    "registered_sha256": {
     "s1_legacy/run_set.json": "68ed4d1139d4d19fa009e20b037e052924574d6429c61f20ec7bdd81dc26f2c6"
    },
-   "same_training": true
+   "same_training": true,
+   "best_pt_epoch": 46
   },
   "S1-02": {
    "results_csv": "outputs/s1_candidates/S1-02_yolo11n-seg/results.csv",
@@ -51,7 +52,8 @@
    "registered_sha256": {
     "s1_legacy/run_set.json": "b889a77c1e55f153f80070aaa7a6452b154481a583f8e148cae4e6befb3b9704"
    },
-   "same_training": true
+   "same_training": true,
+   "best_pt_epoch": 50
   },
   "S1-03": {
    "results_csv": "outputs/s1_candidates/S1-03_yolo26n-seg/results.csv",
@@ -62,7 +64,8 @@
    "registered_sha256": {
     "s1_legacy/run_set.json": "f5b44d31533d6455ad4dd2a4dca59d8e2c75e774eed5df9c4129f29400488b2c"
    },
-   "same_training": true
+   "same_training": true,
+   "best_pt_epoch": 50
   },
   "S1-04": {
    "results_csv": "outputs/training/s1_b64/S1-04_yolov8n-seg/results.csv",
@@ -74,7 +77,8 @@
     "eval.json": "c5ffc46e986e5bea0bdd28324a57fa97a93daef2fa8ff8d43d2271629232681c",
     "outputs/training/s1_b64/SHA256SUMS": "c5ffc46e986e5bea0bdd28324a57fa97a93daef2fa8ff8d43d2271629232681c"
    },
-   "same_training": true
+   "same_training": true,
+   "best_pt_epoch": 48
   },
   "S1-05": {
    "results_csv": "outputs/training/s1_b64/S1-05_yolo11n-seg/results.csv",
@@ -86,7 +90,8 @@
     "eval.json": "0fcf8dbfde3ed5ab93d48bae6fec66a02e695bc6cb37ee1c3f66bce1f849ebf1",
     "outputs/training/s1_b64/SHA256SUMS": "0fcf8dbfde3ed5ab93d48bae6fec66a02e695bc6cb37ee1c3f66bce1f849ebf1"
    },
-   "same_training": true
+   "same_training": true,
+   "best_pt_epoch": 49
   },
   "S1-06": {
    "results_csv": "outputs/training/s1_b64/S1-06_yolo26n-seg/results.csv",
@@ -98,7 +103,8 @@
     "eval.json": "51d72409e18c8a08b149bd89180b7c1a6d1af23109607d24969b79ef19451012",
     "outputs/training/s1_b64/SHA256SUMS": "51d72409e18c8a08b149bd89180b7c1a6d1af23109607d24969b79ef19451012"
    },
-   "same_training": true
+   "same_training": true,
+   "best_pt_epoch": 49
   },
   "S1-07": {
    "results_csv": "outputs/training/s1_clean_r1/S1-07_yolov8n-seg/results.csv",
@@ -110,7 +116,8 @@
     "eval.json": "f921ae2dc9d2bc70b24672b3c892716d5c1a6e5562cbdf14cceea5f4f8ee4766",
     "outputs/training/s1_clean_r1/SHA256SUMS": "f921ae2dc9d2bc70b24672b3c892716d5c1a6e5562cbdf14cceea5f4f8ee4766"
    },
-   "same_training": true
+   "same_training": true,
+   "best_pt_epoch": 49
   },
   "S1-08": {
    "results_csv": "outputs/training/s1_clean_hsvv06_r1/S1-08_yolov8n-seg/results.csv",
@@ -124,7 +131,8 @@
     "models/vision/s1_08/MODEL_CARD.json": "99be54c285cd05a70ab70b22de676a6ab443cbaa8fd633aecc1dc54c421bc972",
     "models/vision/s1_08/best.pt (파일)": "99be54c285cd05a70ab70b22de676a6ab443cbaa8fd633aecc1dc54c421bc972"
    },
-   "same_training": true
+   "same_training": true,
+   "best_pt_epoch": 49
   },
   "S1-09": {
    "results_csv": "outputs/training/s1_gz_r1/S1-09_yolov8n-seg/results.csv",
@@ -138,7 +146,48 @@
     "models/vision/s1_09/MODEL_CARD.json": "ac4176ee492dc97e6b0bd275240b0a18b9f967fb15475ca03fc075ea75037807",
     "models/vision/s1_09/best.pt (파일)": "ac4176ee492dc97e6b0bd275240b0a18b9f967fb15475ca03fc075ea75037807"
    },
-   "same_training": true
+   "same_training": true,
+   "best_pt_epoch": 46
+  },
+  "S1-10a": {
+   "results_csv": "outputs/training/s1_rot_r1_a/S1-10_yolov8n-seg/results.csv",
+   "results_csv_sha256": "98ac6030e2f8abb1b620dc96bd40acbb456286a6e44d6b919aac29eb5e073b75",
+   "rows": 50,
+   "weights": "outputs/training/s1_rot_r1_a/S1-10_yolov8n-seg/weights/best.pt",
+   "weights_sha256": "8b41d4fcd5cc462fccfcb9296ddfb1f3bfb8087632a95865efe67df69d7b4771",
+   "registered_sha256": {
+    "eval.json": "8b41d4fcd5cc462fccfcb9296ddfb1f3bfb8087632a95865efe67df69d7b4771",
+    "outputs/training/s1_rot_r1_a/SHA256SUMS": "8b41d4fcd5cc462fccfcb9296ddfb1f3bfb8087632a95865efe67df69d7b4771"
+   },
+   "same_training": true,
+   "best_pt_epoch": 49
+  },
+  "S1-10b": {
+   "results_csv": "outputs/training/s1_rot_r1_b_try2/S1-10_yolov8n-seg/results.csv",
+   "results_csv_sha256": "8bf54e118b6d639d8f4ebfa6ffc4c40b21a2ac65ed90501d5d6e1589c35e0d65",
+   "rows": 50,
+   "weights": "outputs/training/s1_rot_r1_b_try2/S1-10_yolov8n-seg/weights/best.pt",
+   "weights_sha256": "67854c557828b7b14f0fed3902ac924a542453ba4db690bc835742300d2f9f81",
+   "registered_sha256": {
+    "eval.json": "67854c557828b7b14f0fed3902ac924a542453ba4db690bc835742300d2f9f81",
+    "outputs/training/s1_rot_r1_b_try2/SHA256SUMS": "67854c557828b7b14f0fed3902ac924a542453ba4db690bc835742300d2f9f81"
+   },
+   "same_training": true,
+   "best_pt_epoch": 43
+  },
+  "S1-10c": {
+   "results_csv": "outputs/training/s1_rot_r1_c/S1-10_yolov8n-seg/results.csv",
+   "results_csv_sha256": "6f0b7920eb57af10c3cb33581c1e0da59a95e12ac36ef41585080c99f40b6734",
+   "rows": 50,
+   "weights": "outputs/training/s1_rot_r1_c/S1-10_yolov8n-seg/weights/best.pt",
+   "weights_sha256": "edec8bc51ad9e473cf603d0a92621591dc56d51f180985fa4508729b7a4c4771",
+   "registered_sha256": {
+    "eval.json": "edec8bc51ad9e473cf603d0a92621591dc56d51f180985fa4508729b7a4c4771",
+    "outputs/training/s1_rot_r1_c/SHA256SUMS": "edec8bc51ad9e473cf603d0a92621591dc56d51f180985fa4508729b7a4c4771"
+   },
+   "same_training": true,
+   "best_pt_epoch": 39
   }
- }
+ },
+ "best_pt_epoch_note": "#386: best.pt에 저장된 학습 지표(train_metrics)의 박스·마스크 mAP50-95와 같은 results.csv 에포크. 12개 모두 박스 mAP50-95 + 마스크 mAP50-95(Ultralytics 8.4.211 SegmentMetrics.fitness)가 가장 큰 에포크와 같음."
 }
