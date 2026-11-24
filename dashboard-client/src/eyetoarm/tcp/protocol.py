@@ -289,8 +289,6 @@ RUN_STATES = {"IDLE", "RUNNING", "STOP_REQUESTED", "STOPPED", "RECOVERY_REQUIRED
 ALLOWED_BY_STATE = {
     "IDLE": ((), ("START",)), "STOPPED": ((), ("START",)),
     "RUNNING": (("STOP",),), "STOP_REQUESTED": (("STOP",),),
-    # E-STOP pause uses this state with an explicit START option: the user may
-    # resume the preserved run or choose RECOVER. Other recovery locks omit START.
     "RECOVERY_REQUIRED": (("STOP",), ("STOP", "RECOVER"), ("START", "STOP", "RECOVER")),
     "RECOVERING": ((),), "UNAVAILABLE": ((),),
 }
@@ -403,7 +401,8 @@ def check_snapshot(snapshot: Any, field: str = "snapshot") -> None:
         raise ProtocolError("allowed 는 문자열 배열")
     if tuple(allowed) not in ALLOWED_BY_STATE[state]:
         raise ProtocolError(f"allowed {allowed} 가 {state} 에 맞지 않음(값·순서·중복)")
-    estop_resume = (state == "RECOVERY_REQUIRED" and tuple(allowed) == ("START", "STOP", "RECOVER")
+    estop_resume = (state == "RECOVERY_REQUIRED" and cause == "E_STOP"
+                    and tuple(allowed) == ("START", "STOP", "RECOVER")
                     and snapshot["hold_state"] == "HOLD_UNKNOWN"
                     and snapshot["slot_owner"] == {"kind": "LOCKED", "id": None})
     if "START" in allowed and not estop_resume and (snapshot["hold_state"] != "DETACHED" or snapshot["slot_owner"] is not None):

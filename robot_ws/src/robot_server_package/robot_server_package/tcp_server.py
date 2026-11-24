@@ -70,9 +70,11 @@ class TcpServer:
         self._run_snapshot = None
         self._run_refresh_task: asyncio.Task | None = None
         self._run_refresh_next_at = 0.0
+        self._purge_required = False
         self._run_override = None
         self._last_sort_job_id = None
         self._e_stop_latched = False
+        self._e_stop_confirmed = False
         self._run_action_pending = False
         self._run_requests: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
         self._run_lock = asyncio.Lock()
@@ -121,6 +123,7 @@ class TcpServer:
             return
 
         job_id = source.sort_job_id or self._last_sort_job_id
+        self._purge_required = bool(getattr(source, "purge_required", False))
         if source.sort_job_id:
             self._last_sort_job_id = source.sort_job_id
         state = "RUNNING" if source.active else ("STOPPED" if job_id else "IDLE")
@@ -128,19 +131,20 @@ class TcpServer:
             state = self._run_override
         if self._e_stop_latched:
             state = "RECOVERY_REQUIRED"
-        elif getattr(source, "purge_required", False) and state != "STOP_REQUESTED":
-            state = "PURGE_REQUIRED"
+        elif self._purge_required and state != "STOP_REQUESTED":
+            state = "RECOVERY_REQUIRED"
         epoch = max(0, int(source.run_epoch))
-        active_job = source.sort_job_id or (job_id if state in {"STOPPED", "RECOVERY_REQUIRED", "STOP_REQUESTED", "PURGE_REQUIRED"} else None)
+        active_job = source.sort_job_id or (job_id if state in {"STOPPED", "RECOVERY_REQUIRED", "STOP_REQUESTED"} else None)
         hold_state = "HOLD_UNKNOWN" if self._e_stop_latched else "DETACHED"
         if state == "RUNNING":
             owner = {"kind": "SORT_RUN", "id": active_job}
             allowed = ["STOP"]
         elif state in {"STOP_REQUESTED", "RECOVERY_REQUIRED"}:
             owner = {"kind": "LOCKED", "id": None} if state == "RECOVERY_REQUIRED" else {"kind": "SORT_RUN", "id": active_job}
-            allowed = (["START", "STOP", "RECOVER"] if self._e_stop_latched else ["STOP", "RECOVER"]) if state == "RECOVERY_REQUIRED" else ["STOP"]
-        elif state == "PURGE_REQUIRED":
-            owner, allowed = {"kind": "LOCKED", "id": None}, ["STOP"]
+            allowed = ((["START", "STOP", "RECOVER"]
+                        if self._e_stop_latched and self._e_stop_confirmed and not self._purge_required else
+                        ["STOP", "RECOVER"] if self._e_stop_latched else ["STOP"])
+                       if state == "RECOVERY_REQUIRED" else ["STOP"])
         elif state == "UNAVAILABLE":
             owner, allowed = None, []
         else:
@@ -259,7 +263,11 @@ class TcpServer:
             response = self._run_status(request_id, "REJECTED", "BUSY", None, snapshot)
             self._run_requests[request_id] = (copy.deepcopy(request), response)
             return response
-        if action == "START" and snapshot is not None and snapshot["run_state"] == "PURGE_REQUIRED":
+        if action == "START" and self._e_stop_latched and not self._e_stop_confirmed:
+            response = self._run_status(request_id, "REJECTED", "RECOVERY_REQUIRED", None, snapshot)
+            self._run_requests[request_id] = (copy.deepcopy(request), response)
+            return response
+        if action == "START" and self._purge_required:
             response = self._run_status(request_id, "REJECTED", "A_B_DISCARD_REQUIRED", None, snapshot)
             self._run_requests[request_id] = (copy.deepcopy(request), response)
             return response
@@ -303,6 +311,7 @@ class TcpServer:
         status = {"version": "1.2", "type": "E_STOP_STATUS", "request_id": request["request_id"],
                   "state": "REQUESTED", "detail": None, "server_time_ms": self._now_ms()}
         self._e_stop_latched = True
+        self._e_stop_confirmed = False
         self._run_action_pending = True
         self._queue(session, status)
         session.direct_response_queued = True
@@ -318,12 +327,14 @@ class TcpServer:
         action = request["type"]
         async with self._run_lock:
             try:
-                result = await asyncio.to_thread(self.run_control.call, action, 35.0 if action == "STOP" else 8.0)
+                timeout = 40.0 if action in {"STOP", "E_STOP", "RECOVER"} else 8.0
+                result = await asyncio.to_thread(self.run_control.call, action, timeout)
                 success = bool(result.success)
                 detail = str(result.message or "")[:256] or None
                 if action == "E_STOP":
-                    # C latches recovery before trying to stop, even when confirmation fails.
+                    # C keeps the stop latched even when confirmation fails.
                     self._e_stop_latched = True
+                    self._e_stop_confirmed = success
                 elif action == "START" and success:
                     self._e_stop_latched = False
                     self._run_override = None
@@ -364,10 +375,7 @@ class TcpServer:
         if action == "E_STOP":
             notice = self._run_status(None, None, None, None, snapshot)
             for client in tuple(self._sessions.values()):
-                # The requester correlates only E_STOP_STATUS with its request_id.
-                # Keep the uncorrelated run snapshot notification on other sessions.
-                if client.connection_id != connection_id:
-                    self._queue(client, notice)
+                self._queue(client, notice)
             estop_state = "CONFIRMED" if success else "UNCONFIRMED"
             estop = {"version": "1.2", "type": "E_STOP_STATUS", "request_id": request_id,
                      "state": estop_state, "detail": detail, "server_time_ms": self._now_ms()}

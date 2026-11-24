@@ -97,6 +97,7 @@ class SortGoalReceiver(Node):
         self._job_id = ""
         self._run_paused = True
         self._estop_latched = False
+        self._paused_goal = None
         self._has_started = False
         self._purge_required = False
         self._seen = set()
@@ -206,12 +207,15 @@ class SortGoalReceiver(Node):
                 self._server_guard = None
 
     def _feed(self):
-        if self._job_id and not self._run_paused and not self._recovery_required:
-            try:
-                self._feeder.tick()
-            except Exception as exc:
-                self.get_logger().error(f"Part supply failed: {exc}")
-                self._stop_run(None, Trigger.Response())
+        if self._feeder is None:
+            return
+        spawn_enabled = bool(self._job_id and not self._run_paused and not self._recovery_required)
+        try:
+            # Keep bin cleanup running while paused, but only spawn during an active run.
+            self._feeder.tick(spawn_enabled=spawn_enabled)
+        except Exception as exc:
+            self.get_logger().error(f"Part supply failed: {exc}")
+            self._stop_run(None, Trigger.Response())
 
     def _stop_run(self, request, response):
         with self._control_lock:
@@ -221,6 +225,7 @@ class SortGoalReceiver(Node):
                 response.success = False
                 response.message = reason
                 return response
+            self._paused_goal = None
             try:
                 if self._backend is None:
                     raise SortFailure("EXECUTION_NOT_CONFIGURED")
@@ -273,6 +278,8 @@ class SortGoalReceiver(Node):
             self._recovery_required = True
             return False, "STOP_UNCONFIRMED"
         self._execution_lock.release()
+        if self._recovery_required:
+            return False, "STOP_UNCONFIRMED"
         return True, "STOPPED_IN_PLACE"
 
     def _discard_vision_detections(self, reason):
@@ -304,6 +311,10 @@ class SortGoalReceiver(Node):
                     return response
                 if self._purge_required:
                     response.message = "A_B_DISCARD_REQUIRED"
+                    return response
+                if (self._estop_latched and self._paused_goal is None
+                        and getattr(self._backend, "holding_object", False)):
+                    response.message = "HOLDING_OBJECT_USE_RECOVER"
                     return response
                 if self._job_id and not self._run_paused:
                     response.success = True
@@ -341,6 +352,7 @@ class SortGoalReceiver(Node):
                 response.message = "BUSY"
                 return response
             try:
+                self._paused_goal = None
                 self._stop_run_requested.set()
                 try:
                     self._backend.recover_home()
@@ -415,6 +427,27 @@ class SortGoalReceiver(Node):
 
         Thread(target=wait_then_stop, daemon=True).start()
 
+    def _wait_for_estop_resume(self, goal_handle, publish):
+        if (not self._estop_latched or not self._stop_run_requested.is_set()
+                or self._shutdown.is_set() or goal_handle.is_cancel_requested):
+            return False
+        token = object()
+        self._paused_goal = token
+        self._execution_lock.release()
+        try:
+            publish("PAUSED")
+            while (self._paused_goal is token and self._estop_latched
+                   and not self._shutdown.is_set() and not goal_handle.is_cancel_requested):
+                self._shutdown.wait(.05)
+        finally:
+            self._execution_lock.acquire()
+            resumed = (self._paused_goal is token and not self._estop_latched
+                       and not self._stop_run_requested.is_set() and not self._shutdown.is_set()
+                       and not goal_handle.is_cancel_requested)
+            if self._paused_goal is token:
+                self._paused_goal = None
+        return resumed
+
     def _execute(self, goal_handle):
         """Count running goals for the shutdown wait (#394), then run the C goal callback."""
         with self._active_cond:
@@ -486,7 +519,7 @@ class SortGoalReceiver(Node):
                 goal_handle.publish_feedback(SortPart.Feedback(stage=stage))
 
             try:
-                if self._managed and (self._run_paused or not self._job_id):
+                if self._managed and (self._run_paused or self._paused_goal is not None or not self._job_id):
                     raise SortFailure("SORT_RUN_PAUSED")
                 if self._recovery_required:
                     raise SortFailure("RECOVERY_REQUIRED")
@@ -508,11 +541,14 @@ class SortGoalReceiver(Node):
                     if request.goal_id in self._seen:
                         raise SortFailure("DUPLICATE_GOAL")
                     self._seen.add(request.goal_id)
+                resume = {}
+                if isinstance(self._backend, GazeboSortExecutor):
+                    resume["wait_for_resume"] = lambda: self._wait_for_estop_resume(goal_handle, publish)
                 result.arrived_stamp_ns = self._backend.execute(
                     request, publish, lambda: goal_handle.is_cancel_requested or self._stop_run_requested.is_set(),
                     # #394: only a cancel from A/B ends at home here; stop_run homes in C's _stop_run, e-stop stays
                     lambda: (goal_handle.is_cancel_requested and not self._stop_run_requested.is_set()
-                             and not self._estop_latched))
+                             and not self._estop_latched), **resume)
                 result.status = "SUCCEEDED"
                 sent = finish_goal(goal_handle, "succeed", self.get_logger())
                 record_result(result.status, arrived_stamp_ns=result.arrived_stamp_ns, result_sent=sent)

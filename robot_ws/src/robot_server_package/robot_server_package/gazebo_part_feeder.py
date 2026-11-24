@@ -2,6 +2,7 @@
 from gz.msgs10.double_pb2 import Double
 import math
 import random
+import logging
 from pathlib import Path
 import subprocess
 import time
@@ -18,9 +19,20 @@ X, Y = 0.55, -0.55
 # Model, spawn height in metres.
 FEED_SEQUENCE = (
     ("bolt_m3x20", 0.108),
-    # ("bolt_m6x40", 0.108),
-    # ("nut_m6", 0.1005),
+    ("bolt_m6x40", 0.108),
+    ("nut_m6", 0.1005),
 )
+
+# World-space bin centers and interior half-extents. Bolt bins are rotated 90°
+# in sort_cell.sdf, so their X/Y half-extents are swapped from the model frame.
+BIN_REGIONS = (
+    ((0.55, 0.70), (0.075, 0.055), 5.0),   # orange bin_nut
+    ((0.72, -0.05), (0.055, 0.075), 10.0), # blue bin_bolt_a
+    ((0.72, 0.17), (0.055, 0.075), 10.0),  # green bin_bolt_b
+)
+BIN_FLOOR_Z = 0.003
+BIN_TOP_Z = 0.075
+LOG = logging.getLogger(__name__)
 
 
 def gz(*args):
@@ -55,6 +67,10 @@ class InletMonitor:
             return all(abs(x - X) > 0.06 or abs(y - Y) > 0.06 or z > 0.17
                        for x, y, z in self.parts.values())
 
+    def snapshot(self):
+        with self.lock:
+            return dict(self.parts)
+
 
 class GazeboPartFeeder:
     def __init__(self, root, speed=0.012, interval=20.0):
@@ -70,13 +86,50 @@ class GazeboPartFeeder:
         self.index = 0
         self.previous = None
         self.next_spawn = 0.0
+        self.bin_entered = {}
 
     def set_running(self, running):
         if not self.belt.publish(Double(data=self.speed if running else 0.0)):
             raise RuntimeError("Gazebo belt command publish failed")
 
-    def tick(self):
-        if time.monotonic() < self.next_spawn or not self.inlet.clear(self.previous):
+    def _remove(self, name):
+        request = f'name: "{name}" type: MODEL'
+        try:
+            reply = gz("service", "-s", "/world/sort_cell/remove", "--reqtype",
+                       "gz.msgs.Entity", "--reptype", "gz.msgs.Boolean",
+                       "--timeout", "5000", "--req", request)
+        except (subprocess.SubprocessError, OSError) as exc:
+            LOG.warning("Gazebo could not remove expired part %s: %s", name, exc)
+            return False
+        if "data: true" not in reply:
+            LOG.warning("Gazebo refused to remove expired part %s: %s", name, reply.strip())
+            return False
+        with self.inlet.lock:
+            self.inlet.parts.pop(name, None)
+        return True
+
+    def tick(self, spawn_enabled=True):
+        now = time.monotonic()
+        # Only feeder-created parts are eligible. Start the clock when a part
+        # enters a sorting bin, and reset it if the part leaves.
+        for name, (x, y, z) in self.inlet.snapshot().items():
+            if not name.startswith(f"part_supply_{self.run}_"):
+                continue
+            delay = next((delay for (cx, cy), (hx, hy), delay in BIN_REGIONS
+                          if abs(x - cx) <= hx and abs(y - cy) <= hy
+                          and BIN_FLOOR_Z <= z <= BIN_TOP_Z), None)
+            if delay is None:
+                self.bin_entered.pop(name, None)
+                continue
+            entry = self.bin_entered.get(name)
+            if entry is None or entry[1] != delay:
+                entry = (now, delay)
+                self.bin_entered[name] = entry
+            entered = entry[0]
+            if now - entered >= delay and self._remove(name):
+                self.bin_entered.pop(name, None)
+
+        if not spawn_enabled or now < self.next_spawn or not self.inlet.clear(self.previous):
             return
         model, height = FEED_SEQUENCE[self.index % len(FEED_SEQUENCE)]
         qx, qy, qz, qw = 0.0, 0.0, 0.0, 1.0
