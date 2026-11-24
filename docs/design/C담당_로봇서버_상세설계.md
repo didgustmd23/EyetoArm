@@ -544,12 +544,15 @@ DetachableJoint는 로드 직후 부착 상태로 시작합니다(§16.7.3). 부
 
 | 항목 | 동작 |
 |---|---|
-| `/c_sort_goal_receiver/start_run` (`std_srvs/Trigger`) | 새 `sort_job_id`(UUID)를 만들고 처리한 `goal_id` 기록을 비웁니다. 이전 실행이 있으면 `run_epoch`를 올립니다. 실행 중이면 `BUSY`, 복구 필요 상태면 `RECOVERY_REQUIRED`로 거절합니다 |
-| `/c_sort_goal_receiver/get_run` (`GetSortRun`) | `active`·`sort_job_id`·`run_epoch`를 돌려줍니다. `active`는 실행이 시작됐고 복구 필요 상태가 아닐 때 참입니다 |
+| `/c_sort_goal_receiver/start_run` (`std_srvs/Trigger`) | 최초 시작 또는 일반 STOP 뒤 새 `sort_job_id`를 만듭니다. E-STOP 뒤 START는 기존 `sort_job_id`·`run_epoch`·분류 기억을 유지해 같은 관리 실행을 다시 활성화합니다. 실행 중이면 `ALREADY_RUNNING`, 복구·A/B 폐기 미완료면 거절합니다. 관리 실행이면 컨베이어 벨트 이동과 볼트 생성을 시작합니다 |
+| `/c_sort_goal_receiver/stop_run` (`std_srvs/Trigger`) | 볼트 생성·벨트를 멈추고 진행 중 goal을 정지시킨 뒤 팔을 홈으로 이동합니다. 이어 A/B 추적·B 대기 데이터를 비우고 A/B 화면에 보이는 이전 detect/center 프레임도 무효화합니다. 성공하면 실행 ID를 폐기해 다음 START는 새 실행입니다. 정지·홈·폐기 중 확인 실패는 성공으로 응답하지 않습니다 |
+| `/c_sort_goal_receiver/e_stop` (`std_srvs/Trigger`) | 볼트 생성·벨트를 멈추고 진행 중 goal을 취소해 팔을 현 관절 위치에서 정지시킵니다. 홈 이동과 A/B 데이터 폐기는 하지 않으며 실행 ID를 유지합니다. 이후 START가 같은 실행을 재개합니다 |
+| `/c_sort_goal_receiver/recover` (`std_srvs/Trigger`) | E-STOP 래치 상태에서만 호출합니다. 그리퍼가 물체를 잡았다는 제어기 피드백이 있으면 현 위치에서 그리퍼를 열고, 팔을 홈으로 이동합니다. A/B 이전 데이터를 폐기하고 계속 정지 상태를 유지합니다. 다음 START는 새 실행입니다 |
+| `/c_sort_goal_receiver/get_run` (`GetSortRun`) | `active`·`sort_job_id`·`run_epoch`를 돌려줍니다. E-STOP pause 중에는 `active=false`지만 ID·epoch를 보존해 START 때 같은 실행을 다시 활성화합니다. 일반 STOP/RECOVER는 ID를 비워 다음 START를 새 실행으로 만듭니다 |
 | 목표 검사 | 목표의 `sort_job_id`·`run_epoch`가 현재 값과 다르거나 실행이 시작되지 않았으면 `SORT_RUN_MISMATCH`. 이어서 `timestamp_base`가 `SIM_TIME`이 아니거나 `0 < capture_stamp_ns < valid_until_ns`가 아니면 `INVALID_GOAL_TIME`, 같은 `goal_id`는 `DUPLICATE_GOAL` |
 | A 목표 채움 | A `live_sort_part`는 설정 `sort_part.run_source`가 있으면 `get_run`으로 `sort_job_id`·`run_epoch`를 받아 목표에 넣습니다(커밋 `5099e65`). 설정이 없으면 빈 값·0으로 보내며 비관리 실행과 같습니다 |
 
-`--run-state`가 없으면 두 서비스를 만들지 않고 목표의 `sort_job_id`·`run_epoch`를 검사하지 않습니다(기존 동작).
+`--run-state`가 없으면 관리 실행 서비스(`start_run`·`stop_run`·`recover`·`get_run`)를 만들지 않고 목표의 `sort_job_id`·`run_epoch`를 검사하지 않습니다(기존 동작).
 
 ### 16.7 집기와 배출
 
