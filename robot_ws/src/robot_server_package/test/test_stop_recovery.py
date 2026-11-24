@@ -114,6 +114,7 @@ class FakeBackend:
         self.calls = []
         self.home_error = None
         self.holding_object = False
+        self.plan = None
 
     def at_home(self):
         self.calls.append("at_home")
@@ -129,7 +130,13 @@ class FakeBackend:
 
     def execute(self, request, publish, cancel_requested, *args, **kwargs):
         self.calls.append("execute")
+        if self.plan is not None:
+            return self.plan(cancel_requested, *args)
         return 5
+
+    def refresh_hold_from_joint(self):
+        self.calls.append("refresh_hold")
+        return self.holding_object
 
 
 class FakeHandle:
@@ -184,9 +191,9 @@ def test_start_check_moves_an_off_home_arm_once(ros):
     try:
         node._start_check()
         node._start_check()
-        assert backend.calls == ["at_home", "move_home"] and node._home_checked
+        assert backend.calls == ["at_home", "move_home", "refresh_hold"] and node._home_checked
         assert node._execute(FakeHandle(request())).status == "SUCCEEDED"
-        assert backend.calls == ["at_home", "move_home", "execute"]
+        assert backend.calls == ["at_home", "move_home", "refresh_hold", "execute"]
     finally:
         node.destroy_node()
 
@@ -215,6 +222,165 @@ def test_goal_before_start_check_checks_home_first(ros):
     try:
         assert node._execute(FakeHandle(request())).status == "SUCCEEDED"
         assert node._execute(FakeHandle(request())).status == "SUCCEEDED"
-        assert backend.calls == ["at_home", "move_home", "execute", "execute"]
+        assert backend.calls == ["at_home", "move_home", "refresh_hold", "execute", "execute"]
+    finally:
+        node.destroy_node()
+
+
+# ---------------------------------------------------------------- piece ③: cancel → home, holding, latch
+
+def _follow_checking_cancel(ex):
+    """Wrap _follow so a follow checks the cancel like the real controller dispatch does."""
+    original = ex._follow
+
+    def follow(path, seconds):
+        original(path, seconds)
+        ex._check_cancel()
+    return follow
+
+
+def test_cancel_from_ab_ends_at_home(monkeypatch):
+    """A cancel from A/B (home_after_cancel true): stop confirmed, rise, C's move_home → fixed home (C item 10)."""
+    ex, world = base.make(NEW, monkeypatch=monkeypatch)
+    ex.cancel_requested = lambda: sum(1 for e in ex.arm.log if e[0] == "follow") >= 2
+    ex.home_after_cancel = lambda: True
+    monkeypatch.setattr(ex, "_follow", _follow_checking_cancel(ex))
+    result, _ = base.run_pick(ex, world, base.goal(world))
+    assert result[0] == "SortCanceled"
+    assert np.allclose(ex.arm.q, NEW.HOME_JOINTS)
+    assert any("CANCEL_HOME done" in str(line) for line in ex.node.logs)
+
+
+def test_cancel_from_run_stop_or_estop_stays(monkeypatch):
+    """A cancel caused by stop_run or e-stop (home_after_cancel false) stays in place: C handles it."""
+    ex, world = base.make(NEW, monkeypatch=monkeypatch)
+    ex.cancel_requested = lambda: sum(1 for e in ex.arm.log if e[0] == "follow") >= 2
+    monkeypatch.setattr(ex, "_follow", _follow_checking_cancel(ex))
+    result, _ = base.run_pick(ex, world, base.goal(world))
+    assert result[0] == "SortCanceled"
+    assert not np.allclose(ex.arm.q, NEW.HOME_JOINTS)
+    assert not any("CANCEL_HOME" in str(line) for line in ex.node.logs)
+
+
+def test_cancel_holding_goes_home_closed(monkeypatch):
+    """Cancel after the grasp: the fingers stopped short (a bolt), holding_object true, home with the gripper
+    closed (no opening); C's stalled flag is not needed for this."""
+    ex, world = base.make(NEW, monkeypatch=monkeypatch)
+    grip = ex.arm.grip
+
+    def grip_short(position, settle=.5):
+        grip(position, settle)
+        if position == ex.demo.GRIP_CLOSED:
+            ex.arm.state[ex.demo.GRIPPER_JOINT] = .745   # stopped on a small bolt
+    ex.arm.grip = grip_short
+    ex.cancel_requested = lambda: any(e[0] == "grip" and e[1] == ex.demo.GRIP_CLOSED for e in ex.arm.log)
+    ex.home_after_cancel = lambda: True
+    monkeypatch.setattr(ex, "_follow", _follow_checking_cancel(ex))
+    result, log = base.run_pick(ex, world, base.goal(world))
+    assert result[0] == "SortCanceled" and ex.holding_object
+    assert np.allclose(ex.arm.q, NEW.HOME_JOINTS)
+    closed_at = max(i for i, e in enumerate(log) if e[0] == "grip" and e[1] == ex.demo.GRIP_CLOSED)
+    assert not any(e[0] == "grip" and e[1] == ex.demo.GRIP_OPEN for e in log[closed_at:])
+
+
+def test_closed_short_judgement(monkeypatch):
+    """Short of the command beyond 3 mrad = holding; a full close or an opening command = not holding."""
+    ex, _ = base.make(NEW, monkeypatch=monkeypatch)
+    ex.arm.state[ex.demo.GRIPPER_JOINT] = .745
+    assert ex._closed_short(.8) and not ex._closed_short(.747) and not ex._closed_short(0.)
+    ex.arm.state[ex.demo.GRIPPER_JOINT] = .799
+    assert not ex._closed_short(.8)
+    assert not ex._closed_short(None)
+
+
+def managed_receiver(backend, tmp_path):
+    """Managed SortGoalReceiver (run-state file) on a private action name; start timer stopped; run started."""
+    from std_srvs.srv import Trigger
+    node = SM.SortGoalReceiver(f"/sort_part_test_{os.getpid()}_{uuid.uuid4().hex[:8]}", backend,
+                               tmp_path / "run.sqlite")
+    node._start_timer.cancel()
+    node._home_checked = True
+    assert node._start_run(None, Trigger.Response()).message == "RUN_STARTED"
+    return node
+
+
+def managed_request(node):
+    """A valid goal for the node's current managed run."""
+    goal = request()
+    goal.sort_job_id, goal.run_epoch = node._job_id, node._epoch
+    goal.timestamp_base, goal.capture_stamp_ns, goal.valid_until_ns = "SIM_TIME", 1, 2
+    return goal
+
+
+def test_receiver_passes_home_after_cancel_only_for_ab_cancel(ros, tmp_path):
+    """home_after_cancel is true for an A/B cancel, false once stop_run or e-stop is in effect."""
+    backend = FakeBackend()
+    node = managed_receiver(backend, tmp_path)
+    try:
+        handle = FakeHandle(managed_request(node))
+        seen = {}
+
+        def plan(cancel, home_after_cancel):
+            handle.is_cancel_requested = True
+            seen["ab"] = home_after_cancel()
+            node._stop_run_requested.set()
+            seen["stop"] = home_after_cancel()
+            node._stop_run_requested.clear()
+            node._estop_latched = True
+            seen["estop"] = home_after_cancel()
+            node._estop_latched = False
+            raise SM.SortCanceled()
+        backend.plan = plan
+        out = node._execute(handle)
+        assert (out.status, handle.state) == ("CANCELED", "canceled")
+        assert seen == {"ab": True, "stop": False, "estop": False}
+    finally:
+        node.destroy_node()
+
+
+def test_holding_after_cancel_latches_until_recover(ros, tmp_path):
+    """Canceled with a part held (after the home move): e-stop latch and pause, so goals are rejected and
+    C's ~/recover is the way out (A decision 2)."""
+    backend = FakeBackend()
+    node = managed_receiver(backend, tmp_path)
+    try:
+        handle = FakeHandle(managed_request(node))
+
+        def plan(cancel, home_after_cancel):
+            handle.is_cancel_requested = True
+            backend.holding_object = True
+            raise SM.SortCanceled()
+        backend.plan = plan
+        node._execute(handle)
+        assert node._estop_latched and node._run_paused
+        from rclpy.action import GoalResponse
+        assert node._goal_request(managed_request(node)) == GoalResponse.REJECT
+    finally:
+        node.destroy_node()
+
+
+def test_restart_holding_latches(ros):
+    """Start home check with the gripper closed (part held after a restart): moved home, then latched."""
+    backend = FakeBackend(at_home=False)
+    backend.holding_object = True
+    node = receiver(backend)
+    try:
+        node._start_check()
+        assert backend.calls == ["at_home", "move_home", "refresh_hold"] and node._estop_latched
+    finally:
+        node.destroy_node()
+
+
+def test_holding_after_stop_run_home_latches(ros, tmp_path):
+    """C's stop_run homes with the gripper untouched; a held part then latches (no data discard yet:
+    C's ~/recover does it) instead of being dropped by the next goal's opening."""
+    from std_srvs.srv import Trigger
+    backend = FakeBackend()
+    backend.holding_object = True
+    node = managed_receiver(backend, tmp_path)
+    try:
+        reply = node._stop_run(None, Trigger.Response())
+        assert (reply.success, reply.message) == (False, "HOLDING_OBJECT_AT_HOME: E_STOP_LATCHED_USE_RECOVER")
+        assert node._estop_latched and node._run_paused and backend.calls[-1] == "move_home"
     finally:
         node.destroy_node()

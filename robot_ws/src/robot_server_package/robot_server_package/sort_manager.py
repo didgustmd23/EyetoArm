@@ -123,6 +123,19 @@ class SortGoalReceiver(Node):
             f"B→C SortPart {action_name}; mode={'gazebo' if backend is not None else 'receive-only'}"
         )
 
+    def _latch_if_holding(self, why):
+        """#394 (A decision 2, separable): at home with a part still held, latch like an e-stop and pause,
+        so the part is released only through C's ~/recover after a person checks (no automatic opening at
+        the next goal). Returns True when it latched."""
+        if not getattr(self._backend, "holding_object", False):
+            return False
+        self._estop_latched = True
+        self._run_paused = True
+        self.get_logger().warning(f"SortPart holding a part after {why}: E-STOP latched, use ~/recover")
+        if self._event_log:
+            self._event_log.record("holding_latched", reason=why)
+        return True
+
     def _home_check(self, why):
         """#394 (C item 9②): after a (re)start the arm may be in a carry pose where the link camera cannot
         see the belt. If it is not at the fixed home, use C's move_home (gripper untouched). A failed move
@@ -139,6 +152,8 @@ class SortGoalReceiver(Node):
                 return False
             self.get_logger().info(f"SortPart home check ({why}) MOVED_HOME")
         self._home_checked = True
+        self._backend.refresh_hold_from_joint()
+        self._latch_if_holding(f"home check ({why})")
         if self._start_timer is not None:
             self._start_timer.cancel()
         return True
@@ -196,6 +211,10 @@ class SortGoalReceiver(Node):
                 self._estop_latched = True
                 response.success = False
                 response.message = f"HOME_FAILED: {type(exc).__name__}: {exc}"
+                return response
+            if self._latch_if_holding("stop_run"):
+                response.success = False
+                response.message = "HOLDING_OBJECT_AT_HOME: E_STOP_LATCHED_USE_RECOVER"
                 return response
             discarded, detail = self._discard_vision_detections("STOP")
             if not discarded:
@@ -431,7 +450,10 @@ class SortGoalReceiver(Node):
                         raise SortFailure("DUPLICATE_GOAL")
                     self._seen.add(request.goal_id)
                 result.arrived_stamp_ns = self._backend.execute(
-                    request, publish, lambda: goal_handle.is_cancel_requested or self._stop_run_requested.is_set())
+                    request, publish, lambda: goal_handle.is_cancel_requested or self._stop_run_requested.is_set(),
+                    # #394: only a cancel from A/B ends at home here; stop_run homes in C's _stop_run, e-stop stays
+                    lambda: (goal_handle.is_cancel_requested and not self._stop_run_requested.is_set()
+                             and not self._estop_latched))
                 result.status = "SUCCEEDED"
                 goal_handle.succeed()
                 record_result(result.status, arrived_stamp_ns=result.arrived_stamp_ns)
@@ -439,6 +461,7 @@ class SortGoalReceiver(Node):
                 return result
             except SortCanceled:
                 result.status, result.reason = "CANCELED", "ROBOT_STOP_CONFIRMED"
+                self._latch_if_holding("cancel")
                 if goal_handle.is_cancel_requested:
                     goal_handle.canceled()
                 else:
