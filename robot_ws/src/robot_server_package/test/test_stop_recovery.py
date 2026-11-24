@@ -384,3 +384,101 @@ def test_holding_after_stop_run_home_latches(ros, tmp_path):
         assert node._estop_latched and node._run_paused and backend.calls[-1] == "move_home"
     finally:
         node.destroy_node()
+
+
+# ---------------------------------------------------------------- piece ④: shutdown order, records
+
+import threading  # noqa: E402
+import time  # noqa: E402
+
+
+class Records:
+    """SortEventLog stand-in."""
+
+    def __init__(self):
+        self.rows = []
+
+    def record(self, event, **fields):
+        self.rows.append({"event": event, **fields})
+
+
+class FailingHandle(FakeHandle):
+    """Goal handle whose terminal sends raise like a closed ROS context."""
+
+    def _fail(self):
+        raise RuntimeError("Failed get goal status array: feedback publisher is invalid")
+
+    succeed = canceled = abort = _fail
+
+
+def recording_receiver(backend, tmp_path):
+    """Managed receiver with a recording event log."""
+    from std_srvs.srv import Trigger
+    events = Records()
+    node = SM.SortGoalReceiver(f"/sort_part_test_{os.getpid()}_{uuid.uuid4().hex[:8]}", backend,
+                               tmp_path / "run.sqlite", None, events)
+    node._start_timer.cancel()
+    node._home_checked = True
+    node._start_run(None, Trigger.Response())
+    return node, events
+
+
+def results(events):
+    """Recorded goal results (status, reason, result_sent)."""
+    return [(r["status"], r["reason"], r.get("result_sent")) for r in events.rows if r["event"] == "goal_result"]
+
+
+def test_shutdown_lets_the_goal_stop_and_send_then_stops(ros, tmp_path):
+    """First signal: new goals rejected, the running goal sees C's pause flag, its result is recorded and
+    sent before the executor stops (after the flush)."""
+    backend = FakeBackend()
+    node, events = recording_receiver(backend, tmp_path)
+    try:
+        handle = FakeHandle(managed_request(node))
+
+        def plan(cancel, home_after_cancel):
+            while not cancel():
+                time.sleep(.01)
+            assert not home_after_cancel()       # shutdown: stop in place, no home move
+            raise SM.SortCanceled()
+        backend.plan = plan
+        worker = threading.Thread(target=node._execute, args=(handle,))
+        worker.start()
+        time.sleep(.1)
+        stopped = threading.Event()
+        node.begin_shutdown(SimpleNamespace(shutdown=stopped.set), wait_s=5., flush_s=.2)
+        worker.join(5.)
+        assert stopped.wait(5.)
+        assert handle.state == "abort" and results(events)[-1] == ("CANCELED", "SHUTDOWN", True)
+        from rclpy.action import GoalResponse
+        assert node._goal_request(managed_request(node)) == GoalResponse.REJECT
+    finally:
+        node.destroy_node()
+
+
+def test_send_failure_and_cancel_paths_are_recorded(ros, tmp_path):
+    """A failing result send is recorded (result_sent false) instead of raising; the cancel path and the
+    STOP_UNCONFIRMED-after-cancel path, which had no record, are recorded."""
+    backend = FakeBackend()
+    node, events = recording_receiver(backend, tmp_path)
+    try:
+        backend.plan = lambda cancel, home: 7
+        assert node._execute(FailingHandle(managed_request(node))).status == "SUCCEEDED"
+        handle = FakeHandle(managed_request(node))
+
+        def canceled(cancel, home):
+            handle.is_cancel_requested = True
+            raise SM.SortCanceled()
+        backend.plan = canceled
+        node._execute(handle)
+        handle = FakeHandle(managed_request(node))
+
+        def unconfirmed(cancel, home):
+            handle.is_cancel_requested = True
+            raise SM.SortFailure("STOP_UNCONFIRMED")
+        backend.plan = unconfirmed
+        node._execute(handle)
+        assert results(events) == [("SUCCEEDED", "", False), ("CANCELED", "ROBOT_STOP_CONFIRMED", True),
+                                   ("FAILED", "STOP_UNCONFIRMED", True)]
+    finally:
+        node.destroy_node()
