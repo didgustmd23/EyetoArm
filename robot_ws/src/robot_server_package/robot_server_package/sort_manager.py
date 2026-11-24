@@ -573,6 +573,8 @@ def main(args=None) -> int:
                         help="A TrackStateArray topic for --pose-source track")
     parser.add_argument("--sim-truth-log", type=Path,
                         help="With --pose-source track, append track minus simulation pose lines (evaluation only)")
+    parser.add_argument("--m3-grasp-offset-mm", type=float, default=None,
+                        help="BOLT_A (M3) grasp height offset in mm (default -2, executor constant; #380 comparison)")
     parser.add_argument("--execution-log", type=Path,
                         help="JSONL runtime log (default: <gazebo-project-root>/logs/sort_runs.jsonl)")
     parsed, ros_args = parser.parse_known_args(args)
@@ -604,7 +606,9 @@ def main(args=None) -> int:
             ])
             backend = GazeboSortExecutor(arm_node, parsed.gazebo_project_root.resolve(),
                                          moving=parsed.moving_belt, pose_source=parsed.pose_source,
-                                         track_topic=parsed.track_topic, sim_truth_log=parsed.sim_truth_log)
+                                         track_topic=parsed.track_topic, sim_truth_log=parsed.sim_truth_log,
+                                         grasp_height_offset_m=(None if parsed.m3_grasp_offset_mm is None else
+                                                                {"BOLT_A": parsed.m3_grasp_offset_mm / 1000.}))
             backend.event_log = event_log
         feeder = None
         if parsed.feed_parts:

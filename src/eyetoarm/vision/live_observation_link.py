@@ -321,7 +321,8 @@ class LiveObservationLink:
                           LiveSortPartSender(run_id, config.sort_part, sort_part_runtime, str(self.dir),
                                              is_failed=lambda: self.state.failed is not None, tracking=self.tracking,
                                              release_target=self.release_proxy,
-                                             run_target=self._apply_run if config.sort_part.run_source is not None else None))
+                                             run_target=self._apply_run if config.sort_part.run_source is not None else None,
+                                             track_ids=None if self.world is None else self.world.recent_track_ids))
         hooked = self.sort_part is not None or self.tracking
         hook_kw = {} if not hooked else {"on_accepted": self._on_accepted}
 
@@ -707,6 +708,11 @@ class LiveObservationLink:
                     and isinstance(outcome.display_result, AiSegResult) and frame.calibration_id == self._calibration_id
                     and self.ended is None and not self.reset_pending):
                 self.world.offer(outcome.context, outcome.display_result, self._track_camera)
+
+        # 목록 후보 공백 감시(#401): 기록만 한다. 실행 끝·초기화 대기 중 사진은 넣지 않는다
+        if (self.sort_part is not None and self.b_input == B_INPUT_LIST and self.ended is None
+                and not self.reset_pending):
+            self.sort_part.note_list_frame(frame, outcome.display_result, skip_reason)
 
         if skip_reason is not None:
             return self._record_skip("runner", skip_reason, frame, ids)

@@ -337,6 +337,7 @@ class World:
         self.dropped = None
         self.executor = None
         self.no_attach = False          # closing grabs nothing (MISSED after the lift)
+        self.contact_rad = .645         # #380: gripper joint where the fingers stop on the bolt (M6 contact)
         self.roll = None                # roll(seconds since start) -> extra xyz m of the free part
         self.kick = np.zeros(3)         # extra step of the free part set by a test
         self.offset = demo.FINGER_REACH + demo.TIP_CLEARANCE - .003
@@ -488,8 +489,19 @@ def make(module, *, moving=False, track=False, world_kw=None, truth_out=None, mo
         R = ex.demo.quaternion_matrix(0, 1, 0, 0)
         _SEED = ex.demo.solve_ik(ex.chain, ex.demo.transform(R, [.55, .1, .3]), [0, -1.57, 1.57, -1.57, -1.57, 0])
     ex.arm = FakeArm(world, ex.demo, _SEED)
-    # f18cd7d added the closing position argument (BOLT_A 0.75); the fake accepts and ignores it.
-    ex._start_grip = lambda position=None: (ex.arm.log.append(("start_grip",)), world.attach())[0]
+    # The fake starts a close (#380: always toward 0.8) and stops on the bolt at world.contact_rad, or
+    # closes fully when nothing is grabbed; an opening start just opens.
+    def start_grip(position=None):
+        ex.arm.log.append(("start_grip",))
+        target = ex.demo.GRIP_CLOSED if position is None else float(position)
+        if target <= ex.demo.GRIP_OPEN + 1e-6:
+            ex.arm.state[ex.demo.GRIPPER_JOINT] = target
+            world.release()
+            return None
+        world.attach()
+        ex.arm.state[ex.demo.GRIPPER_JOINT] = target if world.attached is None else min(target, world.contact_rad)
+        return None
+    ex._start_grip = start_grip
     ex._confirm_stopped = lambda: None
     world.executor = ex
     if track:
@@ -525,6 +537,16 @@ def run_pick(ex, world, g):
         return (type(exc).__name__, str(exc)), ex.arm.log
 
 
+def closes(log):
+    """Closing gripper commands in an arm log: a started close or a grip above open."""
+    return [e for e in log if e[0] == "start_grip" or (e[0] == "grip" and e[1] > 1e-6)]
+
+
+def arm_moves(log):
+    """Arm commands only (gripper commands left out)."""
+    return [e for e in log if e[0] == "follow"]
+
+
 def home_entry(ex):
     """Arm log entry of the home return move."""
     return ("follow", 1, 3., tuple(np.round(ex.home, 5)))
@@ -547,9 +569,20 @@ def test_sim_mode_same_as_baseline(monkeypatch, moving):
         if module is NEW:
             new_ex = ex
     (new_result, new_log), (old_result, old_log) = results
-    assert new_result == old_result and new_result[0] == "ok"
-    assert new_log[:-1] == old_log
+    assert new_result[0] == old_result[0] == "ok"
+    # #380: the stationary close waits 0.1 s of SIM time for the contact stall before re-commanding,
+    # so the arrival comes at most that much (plus one 0.1 s fake step) later.
+    assert 0 <= new_result[1] - old_result[1] <= (0 if moving else 200_000_000)
+    # #380 (A request a): only the gripper commands may differ; the arm path is exactly the baseline's.
+    assert arm_moves(new_log)[:-1] == arm_moves(old_log)
     assert new_log[-1] == home_entry(new_ex)
+    opens = lambda log: [e for e in log if e[0] == "grip" and e[1] <= 1e-6]
+    assert opens(new_log) == opens(old_log)
+    if moving:      # same pre-close and asynchronous start; the fake arm never re-commands while moving
+        assert closes(new_log) == closes(old_log)
+    else:           # baseline grip(0.8); new: start toward 0.8, then contact + 0.005 within the M6 cap
+        assert closes(old_log) == [("grip", new_ex.demo.GRIP_CLOSED)]
+        assert closes(new_log) == [("start_grip",), ("grip", pytest.approx(world.contact_rad + .005))]
 
 
 @pytest.mark.parametrize("over", [{"observed_position_mm": [550., 140., 100.]}, {"grasp_pose_candidates": []}])
@@ -661,8 +694,16 @@ def test_failure_after_motion_returns_home(monkeypatch, moving):
         results.append((ex, run_pick(ex, world, goal(world))))
     (new_ex, (new_result, new_log)), (_, (old_result, old_log)) = results
     assert new_result == old_result == ("SortFailure", "MISSED")
-    assert new_log[:len(old_log)] == old_log
-    extra = new_log[len(old_log):]
+    # #380: arm path the same as the baseline up to the failure; the stationary close commands differ
+    # (start toward 0.8; nothing grabbed, so the fingers pass the M6 cap and are re-commanded to it).
+    new_arm, old_arm = arm_moves(new_log), arm_moves(old_log)
+    assert new_arm[:len(old_arm)] == old_arm
+    if not moving:
+        assert closes(old_log) == [("grip", new_ex.demo.GRIP_CLOSED)]
+        assert closes(new_log) == [("start_grip",), ("grip", pytest.approx(.849 - .031 * 6))]
+    else:
+        assert closes(new_log) == closes(old_log)
+    extra = new_arm[len(old_arm):]
     assert extra[-1] == home_entry(new_ex)
     if moving:
         assert [e[:3] for e in extra] == [("follow", 20, 1.5), ("follow", 1, 3.)]
@@ -838,7 +879,7 @@ def test_static_track_never_still_is_part_moved(monkeypatch):
     timeout = logged(ex, "STILL_WAIT timeout")
     assert len(timeout) == 1
     assert NEW.STILL_WAIT_MAX_S < float(timeout[0].split("waited_s=")[1].split()[0]) < NEW.STILL_WAIT_MAX_S + 1.
-    assert not any(e[0] == "grip" and e[1] == ex.demo.GRIP_CLOSED for e in log)
+    assert not closes(log)
 
 
 @pytest.mark.parametrize("kicks, expected", [(1, "ok"), (3, "PART_MOVED")])
@@ -866,7 +907,7 @@ def test_static_track_moves_during_descent(monkeypatch, kicks, expected):
         assert result == ("SortFailure", "PART_MOVED")
         assert len(descents) == NEW.REDESCEND_MAX + 1 and len(redescend) == NEW.REDESCEND_MAX + 1
         assert log[-1] == home_entry(ex)
-        assert not any(e[0] == "grip" and e[1] == ex.demo.GRIP_CLOSED for e in log)
+        assert not closes(log)
 
 
 def test_static_track_lost_while_waiting(monkeypatch):

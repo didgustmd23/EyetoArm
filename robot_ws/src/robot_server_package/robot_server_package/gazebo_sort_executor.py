@@ -12,11 +12,16 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from sensor_msgs.msg import JointState
 
+from .contact_closer import CLOSE_LIMIT_NS, CLOSE_REAL_FACTOR, CLOSE_TARGET, ContactCloser
 from .stop_detector import STOP_LIMIT_NS, STOP_REAL_FACTOR, StopDetector
 from .track_stream_tracker import STILL_M, SimExecutionFeedback, SimTruthLog, TrackStreamTracker
 
 PARTS = {"BOLT_A": ("part_00", 0.0015, (0.72, -0.05)),
          "BOLT_B": ("part_01", 0.003, (0.72, 0.17))}
+# Grasp height offset per part (m), kept in the executor (#380, A decision 1); the same values as
+# pick_bolt_demo.GRASP_HEIGHT_OFFSET (C demo), which is no longer read here. BOLT_A (M3) -2 mm stays the
+# default until A decides on -1 mm after the Gazebo comparison.
+GRASP_HEIGHT_OFFSET_M = {"BOLT_A": -.002, "BOLT_B": 0.}
 DOWN = np.array([0., 0., -1.])
 POSE_SOURCES = ("sim", "track")
 NO_HOME_AFTER = ("STOP_UNCONFIRMED",)   # stop not confirmed: recovery first, no automatic motion
@@ -24,6 +29,11 @@ NO_HOME_AFTER = ("STOP_UNCONFIRMED",)   # stop not confirmed: recovery first, no
 # It used to be the joints seen first, so a restart in a carry pose made that pose "home" (A #374, #394).
 HOME_JOINTS = (0.0, -1.57, 1.57, -1.57, -1.57, 0.0)
 GRIP_SHORT_RAD = .003                  # #394: closed short of the command by more than this = something is held
+EMPTY_NEAR_M = .030                    # #380 (a): no simulation part this close to the fingertips = empty hand
+EMPTY_CLOSED_RAD = .1                  # gripper joint above this counts as closed (not DETACHED)
+OPEN_GRACE_MAX_NS = 2_500_000_000      # #380 (b): goal-start opening time added to the deadline, at most this
+START_OPEN_SETTLE_S = .1               # A decision 4: wait after the goal-start opening (placing keeps 0.5 s)
+BLOCKED_RISE_M = .001                  # #380 (A decision 2): rise this much and close once more after a belt block
 TRACK_TOPIC = "/a/track_states"
 PICK_X_M = (.46, .64)                  # pick region in base_link
 PICK_ABS_Y_M = .53
@@ -82,7 +92,7 @@ class GazeboSortExecutor:
     """Use B's static pick target and verify it against the simulation."""
 
     def __init__(self, node, project_root: Path, *, moving=False, pose_source="sim",
-                 track_topic=TRACK_TOPIC, sim_truth_log=None):
+                 track_topic=TRACK_TOPIC, sim_truth_log=None, grasp_height_offset_m=None):
         if pose_source not in POSE_SOURCES:
             raise ValueError(f"pose_source must be one of {POSE_SOURCES}: {pose_source!r}")
         self.node = node
@@ -91,11 +101,20 @@ class GazeboSortExecutor:
         self.demo = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.demo)
         self.chain = self.demo.load_chain()
+        self.grasp_height_offset = dict(GRASP_HEIGHT_OFFSET_M)
+        for part, value in (grasp_height_offset_m or {}).items():
+            if part not in PARTS or not np.isfinite(value) or abs(value) > .005:
+                raise ValueError(f"grasp height offset must be a part in {tuple(PARTS)} within 5 mm: {part}={value}")
+            self.grasp_height_offset[part] = float(value)
         self.arm = None
         self.moving = moving
         self.cancel_requested = lambda: False
         self.home_after_cancel = lambda: False   # #394: set per goal; a cancel from A/B ends at home
         self._active_grip_target = None
+        self._contact_seen = False             # #380: the last close stopped on contact (fingers on a part)
+        self._grip_watch = None                # #380: (closer, first result future) watched while the arm moves
+        self.grip_outcome = None               # #380: last close decision, for the event log
+        self._goal_tracker = None              # #380 (a): sim-mode pose tracker of the running goal
         self.stop_detector = StopDetector(self.demo.JOINTS)   # arm joints only, SIM-time window (#394)
         self.active_grip = None
         self._active_grip_revision = 0
@@ -118,7 +137,8 @@ class GazeboSortExecutor:
             self.sim_poses = SimPoses()
             if sim_truth_log is not None:
                 self.truth_log = SimTruthLog(self.sim_poses, open(sim_truth_log, "a", encoding="utf-8"))
-        self.node.get_logger().info(f"SortPart executor pose_source={pose_source} moving={moving}")
+        self.node.get_logger().info(f"SortPart executor pose_source={pose_source} moving={moving} "
+                                    f"grasp_height_offset_mm={ {k: v * 1000. for k, v in self.grasp_height_offset.items()} }")
         if pose_source == "track" and not moving:
             self.node.get_logger().info(
                 f"SortPart static settle window_s={STILL_WINDOW_S} still_mm={STILL_M * 1000.:g} "
@@ -223,6 +243,7 @@ class GazeboSortExecutor:
             raise SortCanceled()
 
     def _finish_grip(self):
+        self._grip_watch = None
         if self.active_grip is None:
             return
         handle, self.active_grip = self.active_grip, None
@@ -236,7 +257,8 @@ class GazeboSortExecutor:
         if self._active_grip_revision == self._grip_command_revision:
             if getattr(reply, "status", None) == GoalStatus.STATUS_SUCCEEDED:
                 self.holding_object = (bool(getattr(reply.result, "stalled", False))
-                                       or self._closed_short(self._active_grip_target))
+                                       or self._closed_short(self._active_grip_target)
+                                       or self._closing_contact(self._active_grip_target))
             else:
                 self.holding_object = (self.arm is not None and
                                        self.arm.state.get(self.demo.GRIPPER_JOINT, self.demo.GRIP_OPEN)
@@ -248,9 +270,16 @@ class GazeboSortExecutor:
         result = self.arm.grip(position, settle=settle)
         if float(position) <= self.demo.GRIP_OPEN + 1e-6:
             self.holding_object = False
+            self._contact_seen = False
         else:
-            self.holding_object = bool(getattr(result, "stalled", False)) or self._closed_short(position)
+            self.holding_object = (bool(getattr(result, "stalled", False)) or self._closed_short(position)
+                                   or self._closing_contact(position))
         return result
+
+    def _closing_contact(self, target):
+        """#380: a closing command after the fingers stopped on contact (ContactCloser "stall") holds a
+        part even when the re-command is reached exactly (contact + 0.005 leaves no shortfall)."""
+        return self._contact_seen and target is not None and float(target) > self.demo.GRIP_OPEN + 1e-6
 
     def _closed_short(self, target):
         """#394: the gripper stopped short of a closing command, so a part is between the fingers. The
@@ -273,6 +302,8 @@ class GazeboSortExecutor:
         end = time.monotonic() + limit
         while not result.done() and not self.cancel_requested() and time.monotonic() < end:
             rclpy.spin_once(self.node, timeout_sec=.05)
+            if self._grip_watch is not None:
+                self._watch_grip()
         if not result.done():
             handle.cancel_goal_async()
             rclpy.spin_until_future_complete(self.node, result, timeout_sec=5.)
@@ -388,22 +419,25 @@ class GazeboSortExecutor:
             self._track = tracker
         else:
             tracker = PoseTracker("sort_cell", name)
+        self._goal_tracker = tracker
         try:
             return self._pick_and_place(goal, feedback, tracker, observed,
                                         place, place_rotation, heights, radius, bin_xy)
         finally:
+            self._goal_tracker = None
             self._track = None
             tracker.close()
             self._finish_grip()
 
-    def _deadline(self, goal):
+    def _deadline(self, goal, grace_ns=0):
+        """GOAL_EXPIRED when the SIM clock reached valid_until_ns (+ grace_ns, #380 (b))."""
         if goal.valid_until_ns:
             now = self.node.get_clock().now().nanoseconds
             if now <= 0:
                 raise SortFailure("SIM_CLOCK_UNAVAILABLE")
             if goal.capture_stamp_ns > now + 50_000_000:
                 raise SortFailure("CAPTURE_IN_FUTURE")
-            if now >= goal.valid_until_ns:
+            if now >= goal.valid_until_ns + grace_ns:
                 raise SortFailure("GOAL_EXPIRED")
 
     def _pick_and_place(self, goal, feedback, tracker, observed, place,
@@ -483,7 +517,7 @@ class GazeboSortExecutor:
         # Stationary grasps use the planned descent path, so apply it to that path's
         # pick height here. This also covers the stopped-belt track-settle path.
         grasp_height_offset = (0.0 if self.moving else
-                               self.demo.GRASP_HEIGHT_OFFSET[PARTS[goal.part_class][0]])
+                               self.grasp_height_offset[goal.part_class])
         for candidate in goal.grasp_pose_candidates:
             pick = np.asarray(candidate.position_mm) / 1000.
             if (not np.all(np.isfinite(pick)) or np.linalg.norm(pick - observed) > .035
@@ -513,9 +547,15 @@ class GazeboSortExecutor:
                     target_heights_m=heights.tolist(), grasp_height_offset_m=grasp_height_offset,
                     gripper_opening_mm=goal.opening_width_mm)
         feedback("EXECUTING")
-        if abs(self.arm.state[self.demo.GRIPPER_JOINT] - self.demo.GRIP_OPEN) > .015:
-            self._grip(self.demo.GRIP_OPEN)
+        # #380 (b): check the deadline before opening a gripper left closed; the opening time does not
+        # count against the goal (at most OPEN_GRACE_MAX_NS), and the wait after it is 0.1 s.
         self._deadline(goal)
+        if abs(self.arm.state[self.demo.GRIPPER_JOINT] - self.demo.GRIP_OPEN) > .015:
+            opened_from = self._now_ns()
+            self._grip(self.demo.GRIP_OPEN, settle=START_OPEN_SETTLE_S)
+            spent = min(max(0, self._now_ns() - opened_from), OPEN_GRACE_MAX_NS)
+            self._event(goal, "start_open", spent_ns=spent)
+            self._deadline(goal, spent)
         self._follow([approach], 3.)
         if self.moving:
             result, base_z = self._moving_grasp(tracker, initial, initial_orientation, at_pick, raised,
@@ -531,8 +571,7 @@ class GazeboSortExecutor:
             lift, carry, lowering = self._settle_and_descend(
                 goal, tracker, plan, (approach, descent, lift, carry, lowering, rotation, at_pick),
                 heights, offset, place, place_rotation)
-            self._grip(self.demo.GRIP_CLOSED, settle=.1)
-            self._event(goal, "gripper_closed", joint_position_rad=float(self.arm.state[self.demo.GRIPPER_JOINT]))
+            self._close_on_part(goal)
             result, base_z = self._result_source(tracker, initial, offset)
             self._follow(lift, 2.)
         else:
@@ -543,8 +582,7 @@ class GazeboSortExecutor:
             except SortFailure:
                 self._follow(list(reversed(descent[:-1])) + [approach], 2.)
                 raise
-            self._grip(self.demo.GRIP_CLOSED, settle=.1)
-            self._event(goal, "gripper_closed", joint_position_rad=float(self.arm.state[self.demo.GRIPPER_JOINT]))
+            self._close_on_part(goal)
             result, base_z = self._result_source(tracker, initial, offset)
             self._follow(lift, 2.)
         lifted_pose = result.pose()[0]
@@ -555,6 +593,8 @@ class GazeboSortExecutor:
         if lift_delta_m < .025:
             self._grip(self.demo.GRIP_OPEN)
             raise SortFailure("MISSED")
+        self.holding_object = True             # #380: the part came up with the fingers (simulation feedback)
+        self._contact_seen = True              # kept until the gripper opens (a later grip result cannot clear it)
         feedback("PLACING")
         self._follow([carry], 3.)
         self._follow(lowering, 1.5)
@@ -701,6 +741,10 @@ class GazeboSortExecutor:
         log.info(f"SortPart HOME_RETURN start goal={goal.goal_id} after={why}")
         try:
             self._finish_grip()
+            opening = retreat and self._empty_and_closed()
+            if opening:      # #380 (a): open on the way home so the next goal starts open
+                log.info(f"SortPart HOME_RETURN opening empty gripper goal={goal.goal_id}")
+                self._start_grip(self.demo.GRIP_OPEN)
             if retreat and self._retreat_z is not None:
                 current = self.arm.joints()
                 pose = self.demo.forward(self.chain, current)
@@ -714,10 +758,37 @@ class GazeboSortExecutor:
                     if up is not None:
                         self._follow(up, 1.5)
             self._follow([self.home], 3.)
+            if opening:
+                self._finish_grip()
         except RuntimeError as exc:   # SortFailure/SortCanceled included: keep the original result
             log.warning(f"SortPart HOME_RETURN failed goal={goal.goal_id} after={why}: {type(exc).__name__}: {exc}")
             return
         log.info(f"SortPart HOME_RETURN done goal={goal.goal_id}")
+
+    def _part_positions(self):
+        """Simulation part positions near which the fingers may hold something: all parts in track mode,
+        the goal part in sim mode, None when unknown (#380 (a); simulation truth, no real-robot sensor)."""
+        if self.sim_poses is not None:
+            return [np.asarray(p) for p, _ in self.sim_poses().values()]
+        if self._goal_tracker is not None:
+            return [np.asarray(self._goal_tracker.pose()[0])]
+        return None
+
+    def _empty_and_closed(self):
+        """#380 (a): the gripper is closed (not DETACHED) and no part is within EMPTY_NEAR_M of the
+        fingertips. Unknown parts or a failed check keep it closed (a held part is never dropped)."""
+        joint = self.arm.state.get(self.demo.GRIPPER_JOINT, self.demo.GRIP_OPEN)
+        if joint <= EMPTY_CLOSED_RAD:
+            return False
+        try:
+            parts = self._part_positions()
+            if parts is None:
+                return False
+            tip = self.demo.forward(self.chain, self.arm.joints())[:3, 3] - [0., 0., self.demo.FINGER_REACH]
+        except Exception as exc:   # noqa: BLE001 - a missing pose keeps the gripper as it is
+            self.node.get_logger().warning(f"SortPart empty-hand check skipped: {type(exc).__name__}: {exc}")
+            return False
+        return all(np.linalg.norm(p - tip) > EMPTY_NEAR_M for p in parts)
 
     def _plan_from_track(self, goal, tracker, observed):
         """Track mode planning: position, motion and identity all come from the A track.
@@ -791,11 +862,11 @@ class GazeboSortExecutor:
             yaw = np.array([[c, -s], [s, c]])
             target = at_pick.copy()
             target[:2] = sample[0][:2] + yaw @ (at_pick[:2] - initial[:2]) + np.clip(velocity, -.05, .05) * .36
-            target[2] += clearance + self.demo.GRASP_HEIGHT_OFFSET[PARTS[part][0]]
+            target[2] += clearance + self.grasp_height_offset[part]
             if not clearance:
                 self._event(goal, "final_grasp_target", target_tool_position_m=target.tolist(),
                             clearance_m=clearance,
-                            height_offset_m=self.demo.GRASP_HEIGHT_OFFSET[PARTS[part][0]],
+                            height_offset_m=self.grasp_height_offset[part],
                             part_position_m=sample[0].tolist(), part_velocity_mps=velocity.tolist())
             # Track z is the A projection plane, not the simulation part origin; only xy is checked there.
             if not (PICK_X_M[0] <= target[0] <= PICK_X_M[1] and abs(target[1]) <= PICK_ABS_Y_M
@@ -808,7 +879,7 @@ class GazeboSortExecutor:
             rotation = np.column_stack([closing, np.cross(DOWN, closing), DOWN])
             self._follow(self._line(start, target, rotation, current), .32)
             if not clearance and grasp_goal is None:
-                grasp_goal = self._start_grip(.75 if part == "BOLT_A" else None)
+                grasp_goal = self._start_watched_close(part)
         self._check_cancel()
         result, _ = self._result_source(tracker, initial, offset)
         grasping_position = result.pose()[0]
@@ -817,15 +888,121 @@ class GazeboSortExecutor:
         probe = start + np.array([0., 0., .020])
         self._follow(self._line(start, probe, rotation, current), .55)
         moved = result.pose()[0] - grasping_position
+        self._event(goal, "gripper_closed", joint_position_rad=float(self.arm.state[self.demo.GRIPPER_JOINT]),
+                    **(self.grip_outcome or {"trigger": "pending"}))
         if moved[2] < .014 or np.linalg.norm(moved - [0., 0., .020]) > .008:
             self._finish_grip()
             self._grip(self.demo.GRIP_OPEN)
             raise SortFailure("MISSED")
+        self.holding_object = True             # #380: the probe lift moved the part with the fingers
+        self._contact_seen = True              # kept until the gripper opens (a later grip result cannot clear it)
         current = self.arm.joints()
         probe = self.demo.forward(self.chain, current)[:3,3]
         target = np.r_[probe[:2], raised[2]]
         self._follow(self._line(probe, target, rotation, current), 1.2)
         return result, initial[2] if not track else grasping_position[2]
+
+    def _closer(self, part_class):
+        return ContactCloser(PARTS[part_class][1] * 2000.)
+
+    def _grip_sample(self, closer):
+        joint = self.arm.state.get(self.demo.GRIPPER_JOINT)
+        closer.add(self._now_ns(), joint)
+
+    def _close_on_part(self, goal):
+        """Stationary close (#380, A decision 2): close on contact; after a belt block open, rise
+        BLOCKED_RISE_M and close once more; blocked again is GRIPPER_BLOCKED_LOW."""
+        for attempt in (0, 1):
+            outcome = self._close_once(goal.part_class)
+            if outcome["trigger"] != "blocked_low":
+                break
+            self._event(goal, "gripper_blocked_low", attempt=attempt, **outcome)
+            self.node.get_logger().warning(f"SortPart GRIPPER_BLOCKED_LOW goal={goal.goal_id} attempt={attempt} "
+                                           f"joint={outcome['joint_rad']}")
+            self._grip(self.demo.GRIP_OPEN, settle=.1)
+            if attempt:
+                raise SortFailure("GRIPPER_BLOCKED_LOW")
+            self._rise(BLOCKED_RISE_M)
+        self._event(goal, "gripper_closed", joint_position_rad=float(self.arm.state[self.demo.GRIPPER_JOINT]),
+                    attempts=attempt + 1, **outcome)
+
+    def _close_once(self, part_class):
+        """Start toward CLOSE_TARGET and re-command on the ContactCloser decision. Returns the outcome
+        record; GRIP_TIMEOUT after CLOSE_LIMIT_NS of samples (wall guard x CLOSE_REAL_FACTOR)."""
+        closer = self._closer(part_class)
+        self._contact_seen = False
+        handle = self._start_grip(CLOSE_TARGET)
+        first = handle.get_result_async() if handle is not None else None
+        wall_end = time.monotonic() + CLOSE_LIMIT_NS / 1e9 * CLOSE_REAL_FACTOR
+        while True:
+            self._check_cancel()
+            self._grip_sample(closer)
+            action, value, trigger = closer.decide(first is not None and first.done())
+            if action == "wait" and time.monotonic() >= wall_end:
+                action, value, trigger = "timeout", closer.latest(), "timeout"
+            if action != "wait":
+                break
+            rclpy.spin_once(self.node, timeout_sec=.01)
+        outcome = {"trigger": trigger, "contact_rad": closer.contact, "joint_rad": value if action != "recommand"
+                   else closer.latest(), "cap_rad": round(closer.cap, 4), "k_min_rad": round(closer.k_min, 4),
+                   "ignored_stalls_rad": closer.ignored_stalls}
+        if action == "recommand":
+            self.active_grip = None                 # preempted by the re-command; its end is not a failure
+            self._contact_seen = trigger == "stall"
+            outcome["target_rad"] = round(value, 4)
+            self._grip(value, settle=.1)
+        elif action == "no_contact":
+            self._finish_grip()
+        elif action == "blocked":
+            self.active_grip = None                 # the caller opens, which preempts it
+        else:
+            self._finish_grip()
+            self._grip(self.demo.GRIP_OPEN, settle=.1)
+            raise SortFailure("GRIP_TIMEOUT")
+        self.grip_outcome = outcome
+        return outcome
+
+    def _start_watched_close(self, part_class):
+        """Moving close (#380): start toward CLOSE_TARGET (replaces f18cd7d's fixed 0.75 for BOLT_A) and
+        let _dispatch re-command on contact while the arm keeps moving."""
+        closer = self._closer(part_class)
+        self._contact_seen = False
+        self.grip_outcome = None
+        handle = self._start_grip(CLOSE_TARGET)
+        self._grip_watch = (closer, handle.get_result_async() if handle is not None else None)
+        return handle
+
+    def _watch_grip(self):
+        """One check of the moving close; a decision ends the watch. Re-command asynchronously (the arm
+        is moving); a belt block or no contact is left to the lift probe (MISSED)."""
+        if self._grip_watch is None:
+            return
+        closer, first = self._grip_watch
+        self._grip_sample(closer)
+        action, value, trigger = closer.decide(first is not None and first.done())
+        if action == "wait":
+            return
+        self._grip_watch = None
+        self.grip_outcome = {"trigger": trigger, "contact_rad": closer.contact, "cap_rad": round(closer.cap, 4),
+                             "k_min_rad": round(closer.k_min, 4), "ignored_stalls_rad": closer.ignored_stalls,
+                             "joint_rad": closer.latest()}
+        if action == "recommand":
+            self._contact_seen = trigger == "stall"
+            self.grip_outcome["target_rad"] = round(value, 4)
+            self._start_grip(value)
+
+    def _rise(self, dz):
+        """Straight up by dz from the current tool pose (same orientation)."""
+        current = self.arm.joints()
+        pose = self.demo.forward(self.chain, current)
+        start = pose[:3, 3]
+        try:
+            path = self._line(start, start + [0., 0., dz], pose[:3, :3], current)
+        except SortFailure:
+            raise
+        except RuntimeError:
+            raise SortFailure("IK_NO_SOLUTION")
+        self._follow(path, .3)
 
     def _start_grip(self, position=None):
         from control_msgs.action import ParallelGripperCommand
