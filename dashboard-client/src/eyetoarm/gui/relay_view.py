@@ -4,7 +4,7 @@
 │ [C 시제품] robot_server_package/display_relay.py (기본 포트 47092) 의 ETV1   │
 │   패킷만 받는다. 승인된 C↔D 계약이 아니며 C README 도 "pending agreement".  │
 │   명령·상태 TCP(47090)·D 임시 단일 영상(47091 EAV1)과 별개다.               │
-│ [보내는 것] 사용자가 링크 raw/detect/center 를 누를 때만 이 연결로 한 줄   │
+│ [보내는 것] 링크 선택 시와 재접속 시 마지막 명시 선택을 한 줄로 보낸다.   │
 │   {"type":"SET_DISPLAY_VARIANT","channel":"link","variant":...} + LF 를    │
 │   보낸다(임시 형식, C 와 합의 전). 해당 영상 수신으로 확인한다: 고른 종류의│
 │   ETV1 JPEG 프레임이 와야 화면에 보인다(다른 종류 링크 프레임 무시).        │
@@ -203,6 +203,7 @@ class RelayViewReceiver(QObject):
         self.socket_error = ""   # 마지막 연결 오류(Qt errorString). 오류 수에는 넣지 않는다
         self._last_error = ""
         self.run_id: str | None = None
+        self._selected_variant: str | None = None  # 연결이 끊겨도 마지막 사용자 선택은 유지한다
         self.requested_variant: str | None = None   # 이 연결에서 마지막으로 보낸 링크 요청(송신만, C 적용 미확인)
         self._retired: deque[str] = deque(maxlen=RETIRED_RUNS)
         # 링크 생산자 실행(source_run_id) 추적. 연결·종류·relay run 리셋과 따로 두고 주소 변경에서만 버린다
@@ -286,15 +287,17 @@ class RelayViewReceiver(QObject):
         self._connect_deadline.stop()
         self._flush_timer.stop()
         self._pending.clear()
+        self.requested_variant = None
         self._set_state("disconnected")   # 먼저 바꿔야 abort() 뒤 재접속이 예약되지 않는다
         self._socket.abort()
 
     def request_variant(self, variant: str) -> bool:
-        """연결된 이 영상 소켓으로 링크 표시 종류 요청 한 줄을 보낸다. 연결 안 됨·쓰기 실패면 False(재시도 없음).
+        """링크 선택을 기억하고 연결됐으면 즉시 보낸다. 미연결·쓰기 실패면 False.
 
         shortcut: C 와 합의된 요청 형식이 없어 UTF-8 compact JSON + LF 를 임시로 쓴다. 합의되면 형식만 바꾼다."""
         if variant not in VARIANTS:
             raise ValueError(f"variant {variant!r} 불허")
+        self._selected_variant = variant
         self.requested_variant = None   # 실패하면 이전 요청을 「송신됨」으로 남기지 않는다
         if self.state != "connected":
             return False
@@ -331,7 +334,7 @@ class RelayViewReceiver(QObject):
         self._parser.reset()   # 재접속해도 누적 오류 수와 마지막 오류는 남긴다
         self._pending.clear()
         self._reset_confirmation()   # 새 연결의 첫 패킷은 C 캐시일 수 있다
-        self.requested_variant = None   # 요청은 연결마다. 새 연결에 자동으로 다시 보내지 않는다
+        self.requested_variant = None
         self._set_state("connecting")
         self._connect_deadline.start()
         self._socket.connectToHost(QHostAddress(self.host), self.port)
@@ -339,6 +342,8 @@ class RelayViewReceiver(QObject):
     def _on_connected(self) -> None:
         self._connect_deadline.stop()
         self._set_state("connected")
+        if self._selected_variant is not None and self.requested_variant is None:
+            self.request_variant(self._selected_variant)
 
     def _on_connect_timeout(self) -> None:
         if self.state == "connecting":
@@ -357,6 +362,7 @@ class RelayViewReceiver(QObject):
         self._connect_deadline.stop()
         self._flush_timer.stop()
         self._pending.clear()
+        self.requested_variant = None
         self._set_state("disconnected")
         self._socket.abort()
         if not self._retry.isActive():

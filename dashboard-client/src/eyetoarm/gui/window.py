@@ -38,7 +38,7 @@
 [공통 상태] 연결 객체(StatusLink 와 화면 수신기 GzWindowCapture/GzViewReceiver)는 창에 하나씩만 있고 세 화면이 함께 쓴다.
   화면을 바꿔도 연결·수신·기록이 초기화되지 않는다(D 상세설계 §A.2).
 [보내는 신호] 준비/명령 GET_STATUS, 사용자 확정 수동 MOVE, 기존 ID의 CANCEL. 모의 분류는 TCP를 사용하지 않는다.
-  영상 연결(relay)에는 사용자가 링크 종류를 누를 때만 SET_DISPLAY_VARIANT 한 줄을 보낸다(명령 TCP 아님).
+  영상 연결(relay)에는 링크 종류 선택 시와 재접속 시 마지막 명시 선택을 SET_DISPLAY_VARIANT로 보낸다.
 """
 
 from __future__ import annotations
@@ -696,7 +696,7 @@ class MainWindow(QMainWindow):
                 self.display.reset_source(self.display.link_source_id, f"링크 {mode} 선택 · 해당 영상 대기")
         self.display.set_mode(mode)   # 화면은 고른 종류만 보이고, 그 영상이 올 때까지 수신 대기다
         if self.relay:
-            self.view.request_variant(mode)   # 실패·미연결은 _display_wait 가 「미송신」으로 보인다. 자동 재시도 없음
+            self.view.request_variant(mode)
         for button in self.mode_buttons:   # 조작·설정과 운영 화면의 선택을 같게 맞춘다
             button.setChecked(button._mode == mode)
 
@@ -1082,7 +1082,7 @@ class MainWindow(QMainWindow):
             return "empty", "C 영상 중계 연결 안 됨"
         if channel == "link" and variant != "raw":
             sent = ("요청 송신됨 · C 적용 미확인" if self.view.requested_variant == variant
-                    else "요청 미송신(다시 누르면 송신)")
+                    else "요청 송신 대기")
             return "waiting", f"링크 {variant} {sent} · 수신 대기(raw 로 대신 보이지 않음)"
         return "waiting", f"{CHANNEL_NAMES[channel]} 새 프레임 수신 대기 또는 노후"
 
