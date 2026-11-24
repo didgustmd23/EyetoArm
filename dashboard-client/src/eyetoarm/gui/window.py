@@ -211,7 +211,7 @@ class MainWindow(QMainWindow):
         for action, button in (("START", self.start_button), ("STOP", self.stop_button), ("RECOVER", self.recover_button)):
             button.clicked.connect(lambda _checked=False, command=action: self._request_sort(command))
         # [C 연동 · TCP 1.1] 현재 명령 ID의 취소 요청. 정지 확인과 구분한다.
-        self.cancel_button = pill("CANCEL 수동 이동 취소", "", "현재 ID로 취소 요청. 전송만으로 정지 완료가 되지 않습니다.")
+        self.cancel_button = pill("CANCEL 취소 · 미구현", "", "현재 ID로 취소 요청. 전송만으로 정지 완료가 되지 않습니다.")
         self.cancel_button.clicked.connect(lambda: self.link.cancel() if hasattr(self.link, "cancel") else None)
         for button in (self.start_button, self.stop_button, self.recover_button, self.cancel_button):
             button.setEnabled(False)   # 비활성 사유는 툴팁과 「조작·설정」의 명령 계약 표에 있다
@@ -271,7 +271,7 @@ class MainWindow(QMainWindow):
         if not self.demo:
             rows = [
                 ("GET_STATUS (준비 조회)", "사용 중 · TCP 1.1"),
-                ("MOVE · CANCEL", "수동 확정 목표 · TCP 1.1"),
+                ("MOVE · CANCEL", "미구현"),
                 ("START · STOP · RECOVER", "부록 A 미승인 · 미전송"),
                 ("링크 채널 선택", "누를 때 영상 연결로 요청 · 임시 형식 · 프레임 도착으로 확인" if self.relay else "부록 B 미승인 · 미전송"),
             ]
@@ -306,7 +306,7 @@ class MainWindow(QMainWindow):
         input_card.body.addStretch(1)
         grid.addWidget(input_card, 2, 0)
 
-        target_card = Card("수동 명령 목표", "PLANAR · mm / °")
+        target_card = Card("수동 이동", "미구현")
         self.target_inputs = []
         for name, lower, upper in (("X mm", -10000, 10000), ("Y mm", -10000, 10000), ("θ °", 0, 179.999)):
             line = QHBoxLayout()
@@ -334,9 +334,8 @@ class MainWindow(QMainWindow):
         target_card.body.addStretch(1)
         grid.addWidget(target_card, 2, 1)
 
-        shape_card = Card("로봇 외형", "D 자산 · C 적용 확인 전")
-        self._rows(shape_card, [("모델 이름 · 버전", NO_VALUE), ("Gazebo 적용 확인", "미실행")])
-        shape_card.body.addWidget(label("정적 미리보기는 실제 관절 자세가 아닙니다. 움직임은 메인 디스플레이의 Gazebo 화면으로 봅니다.", "Caption", wrap=True))
+        shape_card = Card("로봇 외형")
+        self._rows(shape_card, [("모델명", "UR5e")])
         shape_card.body.addStretch(1)
         grid.addWidget(shape_card, 2, 2)
 
@@ -391,11 +390,11 @@ class MainWindow(QMainWindow):
         cards = QHBoxLayout()
         cards.setSpacing(10)
 
-        measure_card = Card("현재 측정", "D 모의" if self.demo else "A·B 미수신")
+        measure_card = Card("현재 측정", "D 모의" if self.demo else "미구현")
         self.measure_values = self._rows(measure_card, [("(u, v) px", NO_VALUE), ("(X, Y) mm", NO_VALUE), ("θ °", NO_VALUE)])
         measure_card.body.addStretch(1)
 
-        stage_card = Card("공정 단계", "모의 · 실제 아님" if self.demo else "C 확인 전")
+        stage_card = Card("공정 단계", "모의 · 실제 아님" if self.demo else "미구현")
         stage_card.body.setSpacing(8)
         self.bolt_caption = label("볼트 · 단계 미확인", "Caption")
         self.bolt_caption.setMinimumWidth(40)   # 긴 부품 ID가 카드를 넓히지 않게. 말줄임은 _fit_line
@@ -419,7 +418,7 @@ class MainWindow(QMainWindow):
         stage_card.body.addWidget(self.stage_note)
         stage_card.body.addStretch(1)
 
-        count_card = Card("수량", "모의 · 미확인" if self.demo else "C 도착 확인 전")
+        count_card = Card("수량", "모의 · 미확인" if self.demo else "미구현")
         self.count_tag = count_card.findChild(QLabel, "Tag")
         self.count_values = dict(zip(("BOLT_A", "BOLT_B", "NUT", "QUARANTINE", "EXCEPTION"), self._rows(count_card, [
             ("볼트 A 상자", NO_VALUE), ("볼트 B 상자", NO_VALUE), ("너트 상자", NO_VALUE), ("격리", NO_VALUE),
