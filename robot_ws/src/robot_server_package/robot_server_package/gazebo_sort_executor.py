@@ -12,6 +12,7 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from sensor_msgs.msg import JointState
 
+from .stop_detector import STOP_LIMIT_NS, STOP_REAL_FACTOR, StopDetector
 from .track_stream_tracker import STILL_M, SimExecutionFeedback, SimTruthLog, TrackStreamTracker
 
 PARTS = {"BOLT_A": ("part_00", 0.0015, (0.72, -0.05)),
@@ -19,6 +20,9 @@ PARTS = {"BOLT_A": ("part_00", 0.0015, (0.72, -0.05)),
 DOWN = np.array([0., 0., -1.])
 POSE_SOURCES = ("sim", "track")
 NO_HOME_AFTER = ("STOP_UNCONFIRMED",)   # stop not confirmed: recovery first, no automatic motion
+# Fixed home = the simulation model's initial_positions (simulation/models/ur5e_2f85/ur5e_2f85.urdf.xacro).
+# It used to be the joints seen first, so a restart in a carry pose made that pose "home" (A #374, #394).
+HOME_JOINTS = (0.0, -1.57, 1.57, -1.57, -1.57, 0.0)
 TRACK_TOPIC = "/a/track_states"
 PICK_X_M = (.46, .64)                  # pick region in base_link
 PICK_ABS_Y_M = .53
@@ -89,12 +93,13 @@ class GazeboSortExecutor:
         self.arm = None
         self.moving = moving
         self.cancel_requested = lambda: False
-        self.stationary_samples = 0
+        self.stop_detector = StopDetector(self.demo.JOINTS)   # arm joints only, SIM-time window (#394)
         self.active_grip = None
         self._active_grip_revision = 0
         self._grip_command_revision = 0
         self.holding_object = False
-        self.home = None
+        self.home = np.array(HOME_JOINTS)
+        self._home_logged = False
         self._arm_moved = False
         self._retreat_z = None
         self.event_log = None
@@ -136,31 +141,35 @@ class GazeboSortExecutor:
                                   track_id=goal.part_track_id, pose_source=self.pose_source, **fields)
 
     def _observe_velocity(self, message):
-        joints = dict(zip(message.name, message.velocity))
-        names = [*self.demo.JOINTS, self.demo.GRIPPER_JOINT]
-        if all(name in joints and abs(joints[name]) <= .005 for name in names):
-            self.stationary_samples += 1
-        else:
-            self.stationary_samples = 0
+        """Feed arm joint positions with their SIM stamp to the stop detector. The gripper joint is not
+        used: while it holds a small bolt its velocity keeps jittering (A #354 D-13, #358)."""
+        stamp = message.header.stamp.sec * 1_000_000_000 + message.header.stamp.nanosec
+        self.stop_detector.add(stamp or self._now_ns(), dict(zip(message.name, message.position)))
 
     def _confirm_stopped(self):
-        self.stationary_samples = 0
-        stop = time.monotonic() + 5.
-        while self.stationary_samples < 5 and time.monotonic() < stop:
+        """Wait until the arm joints stay still for the detector window; SIM-time limit with a wall guard."""
+        self.stop_detector.reset()
+        start = self._now_ns()
+        wall_end = time.monotonic() + STOP_LIMIT_NS / 1e9 * STOP_REAL_FACTOR
+        while not self.stop_detector.stopped() and time.monotonic() < wall_end:
+            if start > 0 and self._now_ns() - start >= STOP_LIMIT_NS:
+                break
             rclpy.spin_once(self.node, timeout_sec=.05)
-        if self.stationary_samples < 5:
+        if not self.stop_detector.stopped():
             raise SortFailure("STOP_UNCONFIRMED")
 
     def _ensure_arm_home(self):
         if self.arm is None:
             self.arm = self.demo.Arm(self.node)
             self.arm._call = self._dispatch
-        if self.home is None:
-            # Before the first sort goal, the current verified joint pose is the
-            # only available initial-pose reference.
-            self.home = self.arm.joints().copy()
-            self.node.get_logger().info(
-                f"SortPart RECOVER saved initial joints={np.round(self.home, 4).tolist()}")
+        self._log_home()
+
+    def _log_home(self):
+        """Log the fixed home and the joints seen first, once."""
+        if not self._home_logged:
+            self._home_logged = True
+            self.node.get_logger().info(f"SortPart HOME fixed joints={np.round(self.home, 4).tolist()} "
+                                        f"current={np.round(self.arm.joints(), 4).tolist()}")
 
     def move_home(self):
         """Move the arm to its saved initial pose without touching the gripper."""
@@ -406,9 +415,7 @@ class GazeboSortExecutor:
         if self.arm is None:
             self.arm = self.demo.Arm(self.node)
             self.arm._call = self._dispatch
-        if self.home is None:
-            self.home = self.arm.joints()
-            self.node.get_logger().info(f"SortPart HOME saved joints={np.round(self.home, 4).tolist()}")
+        self._log_home()
         current = self.arm.joints()
         offset = self.demo.FINGER_REACH + self.demo.TIP_CLEARANCE - radius
         self._retreat_z = heights[0] + offset
