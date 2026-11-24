@@ -198,6 +198,13 @@ class BStage:
         """C 결과(성공·실패·만료·MISSED)를 받으면 부른다. 그 부품을 다시 보낼 수 있게 된다."""
         self._pending.pop(part_track_id, None)
 
+    def discard_detections(self) -> None:
+        """STOP/RECOVER 경계에서 이전 B 결과와 중복 방지 기록을 버린다."""
+        self._pending.clear()
+        self._pending_epoch = self.run_epoch
+        self.last = None
+        self.last_frame.clear()
+
     def _center_px(self, result: WorkPlanarResult, T_W_C: np.ndarray | None) -> list[float] | None:
         """작업 좌표 중심 → 원본 사진 픽셀 [u, v] (D 표시용). 계산 못 하면 None."""
         x, y = result.center_w_m

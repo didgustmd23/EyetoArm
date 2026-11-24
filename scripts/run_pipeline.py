@@ -1021,6 +1021,8 @@ class _RosSortPartRuntime:
         self._run_first = threading.Event()
         self.run_service_seen = None
         self.run_first_answer = None
+        self._discard_listener = None
+        self._discard_ready = threading.Event()
 
         try:
             self._node = rclpy.create_node(self.NODE_NAME, context=self._context)
@@ -1032,10 +1034,12 @@ class _RosSortPartRuntime:
 
             if self._run_cfg is not None:
                 from eyetoarm_interfaces.srv import GetSortRun   # 없으면 ImportError(진입점 종료 1)
+                from std_srvs.srv import Trigger
 
                 self._run_request = GetSortRun.Request
                 self._run_client = self._node.create_client(GetSortRun, self._run_cfg.service)
                 self._node.create_timer(self._run_cfg.poll_s, self._poll_run)
+                self._node.create_service(Trigger, "~/discard_detections", self._discard_detections)
 
             self._executor = SingleThreadedExecutor(context=self._context)
             self._executor.add_node(self._node)
@@ -1082,6 +1086,26 @@ class _RosSortPartRuntime:
 
         if listener is not None and last is not None:
             listener.on_run_snapshot(*last)
+
+    def set_discard_listener(self, listener) -> None:
+        """A/B link의 operator discard 함수를 ROS control service에 연결한다."""
+        self._discard_listener = listener
+        self._discard_ready.set()
+
+    def _discard_detections(self, _request, response):
+        if not self._discard_ready.wait(5.0):
+            response.success = False
+            response.message = "live A/B link is not ready"
+            return response
+        try:
+            ok = bool(self._discard_listener("operator"))
+        except Exception as exc:
+            response.success = False
+            response.message = f"discard failed: {type(exc).__name__}: {exc}"
+            return response
+        response.success = ok
+        response.message = "A/B detections discarded" if ok else "A/B worker did not drain"
+        return response
 
     def request_run_refresh(self) -> None:
         """지금 한 번 조회한다(진행 중인 조회가 있으면 그것을 기다림). 주기 타이머도 이것을 부른다."""
@@ -1663,6 +1687,19 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
 
         if link.sort_part.managed and callable(set_run):
             set_run(link.sort_part)
+
+        set_discard = getattr(sort_rt, "set_discard_listener", None)
+
+        if link.sort_part.managed and callable(set_discard):
+            def discard_operator_data(reason):
+                if not link.discard_detections(reason):
+                    return False
+                handoff.clear(f"operator_{reason}")
+                if center_pub is not None:
+                    center_pub.invalidate(link.run_id)
+                return True
+
+            set_discard(discard_operator_data)
 
         from eyetoarm.vision.live_sort_part import DEFAULT_FAILURE_GAP_S
 

@@ -352,6 +352,17 @@ class LiveWorldTracking:
             self.counts["reset_requests"] += 1
             self._cond.notify_all()
 
+    def discard_pending(self, reason: str) -> None:
+        """기존 A 추적 입력·결과를 버리고 다음 입력 전 tracker reset을 예약한다."""
+        with self._cond:
+            self._queue.clear()
+            self._grip_queue.clear()
+            self._grip_in.clear()
+            self._grip_epoch += 1
+            self._reset_reason = reason
+            self.counts["reset_requests"] += 1
+            self._cond.notify_all()
+
     # ------------------------------------------------------------------ worker
 
     def wait(self, context, timeout_s: float | None = None):
@@ -580,6 +591,8 @@ class LiveWorldTracking:
         self._clear_display_prev()
         self._bump_gripper_epoch()
         self._tracker.reset(reason)
+        with self._cond:
+            self._results.clear()
         self.last_reset = reason
         self._stream_reset(reason)
         self._write({"kind": "reset", "reason": reason, "t_mono_ns": self._clock_ns()})

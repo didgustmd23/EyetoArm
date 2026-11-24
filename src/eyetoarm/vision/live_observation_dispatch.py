@@ -124,6 +124,17 @@ class LiveObservationDispatcher:
             self._pending_camera = camera
             self._cond.notify_all()
 
+    def discard_pending(self, reason: str) -> None:
+        """대기 칸을 비운다. 실행 중 계산은 상태 토큰 무효화로 수락되지 않는다."""
+        with self._cond:
+            dropped, self._slot = self._slot, None
+            if dropped is not None:
+                self._count(f"discarded:{reason}")
+            self._cond.notify_all()
+
+        if dropped is not None:
+            self._skip(dropped, f"discarded:{reason}")
+
     def start(self) -> None:
         """worker를 시작한다."""
         if self._thread is not None:

@@ -160,6 +160,16 @@ class CenterOverlayPublisher:
         with self._lock:
             self._results_pub.publish(msg)
 
+    def invalidate(self, run_id: str) -> None:
+        """Publish a marker so C clears the cached B center frame for this run."""
+        if self._overlay_pub is None:
+            return
+        marker = self._overlay_cls()
+        marker.kind = "marker"
+        marker.run_id = str(run_id)
+        with self._lock:
+            self._overlay_pub.publish(marker)
+
     def subscriber_count(self) -> int:
         return self._pub.get_subscription_count()
 
