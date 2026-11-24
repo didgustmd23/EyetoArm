@@ -26,7 +26,7 @@ DEFAULTS = {"host": "127.0.0.1", "port": 47090, "max_line_bytes": 4096, "readine
             "readiness_timeout_ms": 1000, "ack_timeout_ms": 1000, "max_resend": 2, "target_validity_ms": 5000,
             # TCP 1.2 후보(부록 A.6.11 후보값, C 미확정). --tcp-version 1.2 에서만 쓴다
             "run_reply_timeout_ms": 3000, "run_max_resend": 2,
-            # E-Stop 응용 요청(D 제안). 보낸 뒤 이 시간 안에 C 최종 보고가 없으면 미확인으로 닫는다. 자동 재전송 없음
+            # E-STOP 응용 요청(D 제안). 보낸 뒤 이 시간 안에 C 최종 보고가 없으면 미확인으로 닫는다. 자동 재전송 없음
             "e_stop_timeout_ms": 10000}
 
 
@@ -137,7 +137,7 @@ HISTORY = "이전 연결 기록(현재 상태 아님) · "
 
 @dataclass
 class EStopRequest:
-    """E-Stop 응용 요청 한 건(D 제안 · C 미합의). C 가 보고한 state 만 적는다. D 는 정지를 추정하지 않는다."""
+    """E-STOP 응용 요청 한 건(D 제안 · C 미합의). C 가 보고한 state 만 적는다. D 는 정지를 추정하지 않는다."""
     request_id: str
     raw: bytes
     conn_id: int
@@ -204,7 +204,7 @@ class StatusLink(QObject):
         self.sort_requests: dict[str, SortRequest] = {}
         self.last_request = None
         self.e_stop_available = False   # 지금 연결의 최신 유효 1.2 준비 STATUS 의 e_stop_available (생략 = false)
-        self.e_stop = None              # 마지막 E-Stop 요청(EStopRequest)
+        self.e_stop = None              # 마지막 E-STOP 요청(EStopRequest)
         self.config = load_tcp_config()
         if config:
             self.config.update(config)
@@ -759,7 +759,7 @@ class StatusLink(QObject):
         record.result = f"{record.action} {reason}"
         self._log("EV", "요청 결과 미확인", record.result, request_id=record.request_id, attempts=record.attempts)
 
-    # ── E-Stop 응용 요청(D 제안 · C 미합의). 분류 스냅샷·allowed 와 별개 ───────────
+    # ── E-STOP 응용 요청(D 제안 · C 미합의). 분류 스냅샷·allowed 와 별개 ───────────
 
     def e_stop_allowed(self):
         """(보낼 수 있는지, 사유). 지금 연결의 최신 유효 준비 STATUS 가 e_stop_available=true 일 때만. 분류 상태·robot_ready 는 보지 않는다."""
@@ -768,10 +768,10 @@ class StatusLink(QObject):
         if self.state != "connected":
             return False, "연결 끊김"
         if self.is_stale() or not self.e_stop_available:
-            return False, "C 가 E-Stop 요청 가능을 알리지 않음(e_stop_available)"
+            return False, "C 가 E-STOP 요청 가능을 알리지 않음(e_stop_available)"
         if self.e_stop is not None and not self.e_stop.final:
-            return False, "앞선 E-Stop 요청 결과 대기 중"
-        return True, "C 에 E-Stop 요청 가능 · 실제 동작은 C 가 정함"
+            return False, "앞선 E-STOP 요청 결과 대기 중"
+        return True, "C 에 E-STOP 요청 가능 · 실제 동작은 C 가 정함"
 
     def e_stop_request(self):
         """사용자가 누를 때 한 줄만 보낸다. 재전송·재접속 재송신 없음."""
@@ -780,8 +780,8 @@ class StatusLink(QObject):
         request_id = protocol.new_command_id()
         raw = protocol.build_e_stop(request_id)
         self.e_stop = EStopRequest(request_id, raw, self._conn_id, _now_ms() + self.config["e_stop_timeout_ms"])
-        if self._send(raw, "E_STOP", request_id=request_id, note="E-Stop 응용 요청 · C 결과 대기"):
-            self.e_stop.result = "E-Stop 요청 송신 · C 응답 대기 · 정지 확인 아님"
+        if self._send(raw, "E_STOP", request_id=request_id, note="E-STOP 응용 요청 · C 결과 대기"):
+            self.e_stop.result = "E-STOP 요청 송신 · C 응답 대기 · 정지 확인 아님"
         self._update_run_timer()
         self.run_changed.emit()
         return request_id
@@ -791,25 +791,25 @@ class StatusLink(QObject):
         self._log("RX", "E_STOP_STATUS", f"{request_id[:8]} {state}", raw, request_id=request_id)
         record = self.e_stop
         if record is None or record.request_id != request_id or record.conn_id != self._conn_id:
-            self._log("EV", "E-Stop 대응 요청 없음", "다른 ID 또는 이전 연결의 응답 · 반영 안 함", request_id=request_id)
+            self._log("EV", "E-STOP 대응 요청 없음", "다른 ID 또는 이전 연결의 응답 · 반영 안 함", request_id=request_id)
             return
         if record.final and state == "REQUESTED":   # 기한 뒤 늦은 접수 통지로 미확인 결과를 가리지 않는다
-            self._log("EV", "E-Stop 늦은 접수 무시", "이미 미확인으로 닫힌 요청의 REQUESTED · 반영 안 함", request_id=request_id)
+            self._log("EV", "E-STOP 늦은 접수 무시", "이미 미확인으로 닫힌 요청의 REQUESTED · 반영 안 함", request_id=request_id)
             return
         terminal = record.state in ("CONFIRMED", "REJECTED", "UNCONFIRMED")
         if terminal or (state == "REQUESTED" and record.state == "REQUESTED"):
             if state != record.state:   # C 최종 보고는 되돌리지 않는다
-                self._log("EV", "E-Stop 결과 불일치", f"기존 {record.state} 유지 · 받은 {state}", request_id=request_id)
+                self._log("EV", "E-STOP 결과 불일치", f"기존 {record.state} 유지 · 받은 {state}", request_id=request_id)
             return
         late = record.final
         record.state, record.detail = state, message["detail"]
-        record.result = {"REQUESTED": "E-Stop C 접수(REQUESTED) · 정지 확인 아님",
-                         "CONFIRMED": "E-Stop C 확인 보고(CONFIRMED) · C 가 로봇·컨베이어 정지를 보고(D 제안 의미, D 검증 아님)",
-                         "REJECTED": "E-Stop C 거부(REJECTED)",
-                         "UNCONFIRMED": "E-Stop C 미확인 보고(UNCONFIRMED) · 정지 확인 아님"}[state]
+        record.result = {"REQUESTED": "E-STOP C 접수(REQUESTED) · 정지 확인 아님",
+                         "CONFIRMED": "E-STOP C 확인 보고(CONFIRMED) · C 가 로봇·컨베이어 정지를 보고(D 제안 의미, D 검증 아님)",
+                         "REJECTED": "E-STOP C 거부(REJECTED)",
+                         "UNCONFIRMED": "E-STOP C 미확인 보고(UNCONFIRMED) · 정지 확인 아님"}[state]
         record.final = record.final or state != "REQUESTED"
         record.result += " · 늦은 응답" if late else ""
-        self._log("EV", "E-Stop 결과", record.result, request_id=request_id)
+        self._log("EV", "E-STOP 결과", record.result, request_id=request_id)
         self._update_run_timer()
         self.run_changed.emit()
 
@@ -841,8 +841,8 @@ class StatusLink(QObject):
 
     def _close_e_stop(self, record, reason):
         record.final = True
-        record.result = f"E-Stop {reason}" + (" (마지막 C 보고 REQUESTED: 접수만)" if record.state == "REQUESTED" else "")
-        self._log("EV", "E-Stop 결과 미확인", record.result, request_id=record.request_id)
+        record.result = f"E-STOP {reason}" + (" (마지막 C 보고 REQUESTED: 접수만)" if record.state == "REQUESTED" else "")
+        self._log("EV", "E-STOP 결과 미확인", record.result, request_id=record.request_id)
 
     def _reset_run(self, reason):
         """끊김·종료·주소 변경: 조작 관문을 닫고 스냅샷을 버린다. 대기 요청은 미확인으로 닫고 다시 보내지 않는다."""

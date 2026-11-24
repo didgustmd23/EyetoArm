@@ -135,7 +135,7 @@ class RelayWindow(unittest.TestCase):
         self.assertEqual([self.mode_of(c) for c in ("fixed", "gripper", "link")], ["live"] * 3)
         self.assertEqual(self.window.chip_view._level, "ok")
         self.assertTrue(all(value.text() == NO_VALUE for value in self.window.measure_values))   # no results
-        self.assertIn("center 를 고르면 B 결과", self.window.stage.popup.values["detail"].toolTip())
+        self.assertIn("Center 를 고르면 B 결과", self.window.stage.popup.values["detail"].toolTip())
         self.assertEqual(self.clients[0].bytesAvailable(), 0)      # D sends nothing until the user picks a link variant
 
     def test_link_selection_is_display_only_synced_and_never_falls_back_to_raw(self):
@@ -152,7 +152,7 @@ class RelayWindow(unittest.TestCase):
         self.assertEqual(sum(b.isChecked() for b in buttons), 2)        # both pages show the same selection
         self.assertEqual(self.mode_of("link"), "waiting")
         self.assertIn("수신 대기", self.views()["link"]._reason)
-        self.assertIn("raw 로 대신 보이지 않음", self.views()["link"]._reason)
+        self.assertIn("Raw 로 대신 보이지 않음", self.views()["link"]._reason)
         self.assertEqual((self.mode_of("fixed"), self.mode_of("gripper")), ("live", "live"))   # unaffected
         self.assertEqual(self.window.chip_view._level, "warn")
         self.send(packet("link", 1, variant="detect", data=jpeg("#c03030")))   # fixture-only detect packet
@@ -161,7 +161,7 @@ class RelayWindow(unittest.TestCase):
         self.send(packet("link", 2, variant="detect", data=jpeg("#c03030")))
         self.settle(lambda: self.view.frame_count == 8)
         self.assertEqual(self.mode_of("link"), "live")
-        self.assertIn("detect", self.views()["link"]._footer)
+        self.assertIn("Detect", self.views()["link"]._footer)
         [b for b in buttons if b._mode == "center"][0].click()          # setup-page selector
         self.window._update_status()
         self.assertEqual(self.mode_of("link"), "waiting")
@@ -174,7 +174,7 @@ class RelayWindow(unittest.TestCase):
         self.send(packet("link", 4))
         self.settle(lambda: self.view.frame_count == 10)
         self.assertEqual(self.mode_of("link"), "live")
-        self.assertIn("raw", self.views()["link"]._footer)
+        self.assertIn("Raw", self.views()["link"]._footer)
         self.assertEqual(self.requests(3), [self.request(m) for m in ("detect", "center", "raw")])   # one line per click
 
     def request(self, variant):
@@ -351,7 +351,7 @@ class RelayWindow(unittest.TestCase):
         mm, detail = self.window.measure_values[1], self.window.input_values[2]
         self.feed(center(1), center(2))                                     # confirmed, but raw is selected
         self.assertIsNone(self.window.display.result)                       # the window gate drops it
-        self.assertIn("center", detail.toolTip())
+        self.assertIn("Center", detail.toolTip())
         self.click("center")
         self.feed(center(3))                                                # first after the switch: C cache?
         self.assertIsNone(self.window.display.result)                       # unconfirmed frame: no result

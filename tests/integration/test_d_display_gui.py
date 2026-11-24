@@ -48,7 +48,7 @@ class DisplayGuiTest(unittest.TestCase):
             self.assertIn("12.0", window.stage.popup.values["mm"].text())
             self.assertEqual(window.measure_values[1].text(), window.stage.popup.values["mm"].text())
             self.assertIn("mock-link", window.input_values[0].text())
-            next(b for b in window.findChildren(QAbstractButton) if b.text() == "center 중심점").click()
+            next(b for b in window.findChildren(QAbstractButton) if b.text() == "Center 중심점").click()
             self.assertEqual(window.display.mode, "center")
             window.display.frame("gripper")["received"] -= 10
             window._update_display()
@@ -63,7 +63,7 @@ class DisplayGuiTest(unittest.TestCase):
             self.assertIsNotNone(window.display.frames.get(("link", "raw")))
             self.assertEqual(window.stage.main._mode, "live")
             self.assertEqual(window.stage.gripper._mode, "empty")  # 위에서 노후 처리한 상태 유지
-            next(b for b in window.findChildren(QAbstractButton) if b.text() == "raw 원본").click()
+            next(b for b in window.findChildren(QAbstractButton) if b.text() == "Raw 원본").click()
             self.assertEqual(window.stage.link._mode, "live")
             window.display.set_connected(False)
             self.assertEqual(window.stage.link._mode, "empty")

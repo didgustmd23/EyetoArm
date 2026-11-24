@@ -305,7 +305,7 @@ class RelayViewReceiver(QObject):
                           separators=(",", ":")).encode("utf-8") + b"\n"
         if self._socket.write(line) != len(line):
             # Qt 는 쓰기 버퍼에 통째로 넣거나 -1 이다. 그래도 일부만 들어갔다면 다음 줄과 붙지 않게 끊고 재접속한다
-            self._last_error = f"링크 {variant} 요청 송신 실패"
+            self._last_error = f"링크 {variant.capitalize()} 요청 송신 실패"
             self._parser.last_error = ""
             self._drop()
             return False
