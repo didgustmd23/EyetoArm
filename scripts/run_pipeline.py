@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import dataclasses
 import importlib.util
 import math
 import signal
@@ -382,28 +384,56 @@ def _live_factory(source_id: str, reliability: str | None, boundary_hook=None):
 
 
 class _StopSignals:
-    """실시간 실행 신호 처리: 첫 SIGINT·SIGTERM은 정지 요청, 두 번째는 KeyboardInterrupt. 끝나면 원래대로."""
+    """실시간 실행 신호 처리. 끝나면 원래 처리기로 되돌린다.
 
-    def __init__(self) -> None:
-        """정지 표지를 만든다."""
+    - 첫 SIGINT·SIGTERM·SIGHUP: 정지 요청(`stop`).
+    - 첫 신호 뒤 `repeat_window_s` 안에 온 신호: 같은 사건의 중복으로 보고 무시한다(터미널 Ctrl+C가 그룹 전체에 가고
+      감독 스크립트도 같은 신호를 넘기면 A는 거의 동시에 두 번 받는다).
+    - 그 뒤 실행 중에 온 신호: KeyboardInterrupt(강제 중단). `finally` 정리는 그대로 돈다.
+    - `begin_cleanup()` 뒤에 온 신호: 세기만 하고 무시한다(정리를 끝까지 한다. 강제 종료는 SIGKILL).
+    """
+
+    SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+    def __init__(self, repeat_window_s: float = 1.0, clock=time.monotonic) -> None:
+        """정지 표지·중복 창·시계."""
         self.stop = threading.Event()
         self._hits = 0
+        self._first_at: float | None = None
+        self._repeat_window_s = float(repeat_window_s)
+        self._clock = clock
+        self._cleanup = False
+        self.ignored = {"repeat": 0, "cleanup": 0}
         self._old: dict = {}
 
     def _on_signal(self, signum, frame) -> None:
         """신호 처리기."""
         self._hits += 1
+        now = self._clock()
 
         if self._hits == 1:
+            self._first_at = now
             self.stop.set()
+            return
+
+        if self._cleanup:
+            self.ignored["cleanup"] += 1
+            return
+
+        if now - self._first_at <= self._repeat_window_s:
+            self.ignored["repeat"] += 1
             return
 
         raise KeyboardInterrupt
 
+    def begin_cleanup(self) -> None:
+        """정리 시작: 이후 신호는 정리를 끊지 않는다."""
+        self._cleanup = True
+
     def __enter__(self) -> "_StopSignals":
         """주 스레드에서만 처리기를 설치한다."""
         if threading.current_thread() is threading.main_thread():
-            for sig in (signal.SIGINT, signal.SIGTERM):
+            for sig in self.SIGNALS:
                 self._old[sig] = signal.signal(sig, self._on_signal)
 
         return self
@@ -412,6 +442,8 @@ class _StopSignals:
         """원래 처리기로 되돌린다."""
         for sig, handler in self._old.items():
             signal.signal(sig, handler)
+
+        self._old = {}
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -742,32 +774,39 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
     probe.start(handoff)
     infer_failed = infer_record_ok = None
 
-    try:
-        with stream:
-            log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
-                              log_geometry=args.log_instance_geometry, infer_process=proxy is not None,
-                              infer_process_source=args.infer_process_source)
-            if args.ros_link:
-                with _StopSignals() as signals:
+    # 실시간이면 신호 처리기를 정리 끝까지 둔다(정리 중 신호가 정리를 끊지 않게, D-9)
+    signals = _StopSignals() if args.ros_link else None
+
+    with signals if signals is not None else contextlib.nullcontext():
+        try:
+            with stream:
+                log = PipelineLog(JsonlRecorder(stream), eval_run_id=args.eval_run_id,
+                                  log_geometry=args.log_instance_geometry, infer_process=proxy is not None,
+                                  infer_process_source=args.infer_process_source)
+                if signals is not None:
                     result = run(source_factory, settings, log, config=runner_config, stderr=err,
                                  versions={"opencv": cv2.__version__},
                                  should_stop=_stop_or_infer_failed(proxy, signals.stop.is_set),
                                  handoff_sink=handoff, **detector_kw)
-            else:
-                result = run(source_factory, settings, log, config=runner_config, stderr=err,
-                             versions={"opencv": cv2.__version__}, handoff_sink=handoff,
-                             should_stop=_stop_or_infer_failed(proxy), **detector_kw)
+                    signals.begin_cleanup()
+                else:
+                    result = run(source_factory, settings, log, config=runner_config, stderr=err,
+                                 versions={"opencv": cv2.__version__}, handoff_sink=handoff,
+                                 should_stop=_stop_or_infer_failed(proxy), **detector_kw)
 
-            infer_failed, infer_summary = _finish_infer_process(proxy, err, args)
+                infer_failed, infer_summary = _finish_infer_process(proxy, err, args)
 
-            if infer_summary is not None:
-                infer_record_ok = _write_infer_record(log, infer_summary, err)
-    finally:
-        probe.stop()
-        handoff.close()
+                if infer_summary is not None:
+                    infer_record_ok = _write_infer_record(log, infer_summary, err)
+        finally:
+            if signals is not None:
+                signals.begin_cleanup()
 
-        if proxy is not None:
-            proxy.close()   # 실행 중 예외로 위 정리를 건너뛴 경우(두 번 불러도 됨)
+            probe.stop()
+            handoff.close()
+
+            if proxy is not None:
+                proxy.close()   # 실행 중 예외로 위 정리를 건너뛴 경우(두 번 불러도 됨)
 
     exit_code = result.exit_code
 
@@ -1286,10 +1325,20 @@ class _ArmRegionRecords:
             self._fh.close()
 
 
-def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_stage_hook, live_source_factory,
-                          live_tf_factory, controller, list_consumer_factory=None,
-                          live_sort_part_factory=None, live_conveyor_probe=None, live_handoff_factory=None,
-                          center_publisher_factory=None, live_gripper_factory=None, live_track_stream_factory=None) -> int:
+def _run_live_observation(*args, **kw) -> int:
+    """`_run_live_observation_body`를 신호 처리기 안에서 부른다. 처리기는 정리가 끝날 때까지 둔다(D-9).
+
+    정지 신호는 실행 중에는 정지 요청이고, 본문이 정리에 들어가면(`begin_cleanup`) 정리를 끊지 않는다.
+    """
+    with _StopSignals() as signals:
+        return _run_live_observation_body(*args, signals=signals, **kw)
+
+
+def _run_live_observation_body(args, settings, runner_config, detector_kw, err, *, b_stage_hook, live_source_factory,
+                               live_tf_factory, controller, list_consumer_factory=None,
+                               live_sort_part_factory=None, live_conveyor_probe=None, live_handoff_factory=None,
+                               center_publisher_factory=None, live_gripper_factory=None,
+                               live_track_stream_factory=None, signals=None) -> int:
     """실시간 A→B 기록 전용 시험. 리셋이면 실행을 멈추고 정리한다(자동 재시작 없음).
 
     경로: LiveLinkSource → 실행기 → AiSegDetector → 코어 → `live_observation_sink` → 디스패처 → TF → B → 기록기.
@@ -1731,7 +1780,7 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
             gripper_rx.start()
         stream = open(args.log, "x", encoding="utf-8")
 
-        with stream, _StopSignals() as signals:
+        with stream:
             log_kw = {"b_input": B_INPUT_LIST} if listed else {}
 
             if sort_on:   # C 목표 송신 재시도 정책(설정 블록 또는 기본 제한 상수)을 run_meta에 남긴다
@@ -1745,6 +1794,9 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
                               belt_region_filter=belt_mark,
                               **log_kw)
             run_kw = {"live_observation_b_input": "list"} if listed else {}
+            # 멈춤 때 스레드 호출 위치를 실행 기록 폴더에도 남긴다(D-11)
+            runner_config = dataclasses.replace(runner_config,
+                                                stall_dump_path=str(Path(args.live_observation_out) / "stall_threads.txt"))
             result = run(source_factory, settings, log, run_id=run_id, config=runner_config, stderr=err,
                          versions={"opencv": cv2.__version__},
                          should_stop=_stop_or_infer_failed(infer_proxy, lambda: (
@@ -1757,6 +1809,9 @@ def _run_live_observation(args, settings, runner_config, detector_kw, err, *, b_
         err.write(f"run_pipeline: live observation run failed before/while running: {failure}\n")
         exit_code = 1
     finally:
+        if signals is not None:
+            signals.begin_cleanup()   # 정리 중 신호는 정리를 끊지 않는다
+
         reset = link.reset_pending
         gripper_problem = None
 

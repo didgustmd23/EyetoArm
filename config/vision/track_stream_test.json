@@ -1,8 +1,13 @@
 {
   "status": "test_only",
-  "note": "A track stream (/a/track_states) development values. Off unless a run passes this file. Stale limit is decided by the receiver (C).",
+  "note": "A track stream (/a/track_states) development values. Off unless a run passes this file. Stale limit is decided by the receiver (C). class_lock (#368, D-5): once a confirmed track has a bolt kind, frames whose candidate center is within the arm/gripper occlusion capsules + near_arm_mm (same margin as visibility.velocity_exclude_mm) or whose endpoint length is more than drop_mm shorter than the last counted frame do not change it; the kind changes only after switch_frames consecutive counted frames of the new kind. Values from #354 replay (288 confirmed tracks): 3 of 4 TRACK_CLASS_MISMATCH flips were near the arm, 1 was a single 7.7 mm drop, normal frame-to-frame spread within 2.3 mm, longest counted wrong-kind run 1 frame.",
   "topic": "/a/track_states",
   "max_rate_hz": 20,
   "qos_depth": 10,
-  "queue_capacity": 4
+  "queue_capacity": 4,
+  "class_lock": {
+    "switch_frames": 3,
+    "near_arm_mm": 30,
+    "drop_mm": 5
+  }
 }

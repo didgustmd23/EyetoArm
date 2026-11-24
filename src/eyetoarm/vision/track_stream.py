@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from eyetoarm.vision.track_class_lock import ClassLockConfig, ClassLockConfigError, parse_class_lock
+
 TOPIC = "/a/track_states"
 STATES = ("VISIBLE", "PREDICTED", "OCCLUDED", "GRIPPER")
 VELOCITY_SOURCES = ("TRACK", "BELT_COMMON", "NONE")
@@ -33,25 +35,31 @@ class TrackStreamConfigError(ValueError):
 
 @dataclass(frozen=True)
 class TrackStreamConfig:
-    """발행 설정. `max_rate_hz`: `frame` 상한(촬영 시각 기준), `qos_depth`: ROS KEEP_LAST 깊이, `queue_capacity`: 발행 큐."""
+    """발행 설정. `max_rate_hz`: `frame` 상한(촬영 시각 기준), `qos_depth`: ROS KEEP_LAST 깊이, `queue_capacity`: 발행 큐.
+
+    `class_lock`: 확정 트랙 종류 고정(#368). `None`이면 사진마다 종류를 덮어쓰는 이전 동작.
+    """
 
     topic: str
     max_rate_hz: float
     qos_depth: int
     queue_capacity: int
+    class_lock: ClassLockConfig | None = None
 
     def to_json(self) -> dict:
         """요약용 사전."""
         return {"topic": self.topic, "max_rate_hz": self.max_rate_hz, "qos_depth": self.qos_depth,
-                "queue_capacity": self.queue_capacity}
+                "queue_capacity": self.queue_capacity,
+                "class_lock": None if self.class_lock is None else self.class_lock.to_json()}
 
 
 def parse_track_stream(doc) -> TrackStreamConfig:
-    """설정 사전 → `TrackStreamConfig`. 키는 `status`(반드시 `test_only`)·`note`(선택)·`topic`·`max_rate_hz`·`qos_depth`·`queue_capacity`."""
+    """설정 사전 → `TrackStreamConfig`. 키는 `status`(반드시 `test_only`)·`note`(선택)·`topic`·`max_rate_hz`·`qos_depth`·`queue_capacity`
+    ·`class_lock`(선택, `track_class_lock.parse_class_lock`)."""
     keys = {"status", "topic", "max_rate_hz", "qos_depth", "queue_capacity"}
 
-    if not isinstance(doc, dict) or not keys <= set(doc) or set(doc) - keys - {"note"}:
-        raise TrackStreamConfigError(f"track stream config must have exactly {sorted(keys)} (+ optional note)")
+    if not isinstance(doc, dict) or not keys <= set(doc) or set(doc) - keys - {"note", "class_lock"}:
+        raise TrackStreamConfigError(f"track stream config must have exactly {sorted(keys)} (+ optional note, class_lock)")
 
     if doc["status"] != "test_only":
         raise TrackStreamConfigError("track stream config status must be 'test_only' (development values)")
@@ -72,8 +80,16 @@ def parse_track_stream(doc) -> TrackStreamConfig:
         if isinstance(v, bool) or not isinstance(v, int) or v < 1:
             raise TrackStreamConfigError(f"{name} must be an int >= 1: {v!r}")
 
+    lock = None
+
+    if "class_lock" in doc:
+        try:
+            lock = parse_class_lock(doc["class_lock"])
+        except ClassLockConfigError as exc:
+            raise TrackStreamConfigError(str(exc)) from exc
+
     return TrackStreamConfig(topic=topic, max_rate_hz=float(rate), qos_depth=doc["qos_depth"],
-                             queue_capacity=doc["queue_capacity"])
+                             queue_capacity=doc["queue_capacity"], class_lock=lock)
 
 
 def load_track_stream_config(path: str) -> tuple[TrackStreamConfig, str]:

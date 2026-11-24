@@ -16,7 +16,9 @@ import mmap
 import statistics
 from collections import deque
 import os
+import re
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -128,6 +130,118 @@ class ShmSlots:
                 pass
 
 
+_SLOT_NAME = re.compile(rf"^{SHM_PREFIX}(\d+)_[0-9a-f]{{12}}$")   # `_slots_for`가 만드는 이름
+
+
+def _pid_alive(pid: int, proc_dir: str = "/proc") -> bool:
+    """pid가 살아 있는가. 좀비(끝났고 회수만 안 됨)는 죽은 것, 남의 프로세스(권한 없음)는 살아 있는 것으로 본다."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+    try:
+        with open(os.path.join(proc_dir, str(pid), "stat"), encoding="utf-8", errors="replace") as fh:
+            state = fh.read().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):   # 사이에 끝남·형식 다름: kill 결과대로 살아 있다고 본다
+        return True
+
+    return state != "Z"
+
+
+def _open_paths(proc_dir: str = "/proc") -> set[str]:
+    """읽을 수 있는 모든 프로세스가 열었거나(fd) 매핑한(maps) 파일 경로. 읽지 못하는 프로세스는 건너뛴다."""
+    paths: set[str] = set()
+
+    for entry in os.listdir(proc_dir):
+        if not entry.isdigit():
+            continue
+
+        base = os.path.join(proc_dir, entry)
+
+        try:
+            for fd in os.listdir(os.path.join(base, "fd")):
+                try:
+                    paths.add(os.readlink(os.path.join(base, "fd", fd)))
+                except OSError:   # 사이에 닫힘
+                    pass
+        except OSError:   # 권한 없음·프로세스 끝남
+            pass
+
+        try:
+            with open(os.path.join(base, "maps"), encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    parts = line.split(None, 5)
+
+                    if len(parts) == 6:
+                        paths.add(parts[5].strip())
+        except OSError:
+            pass
+
+    return paths
+
+
+def sweep_orphan_slots(shm_dir: str = SHM_DIR, *, uid: int | None = None, own_pid: int | None = None,
+                       is_alive=_pid_alive, open_paths=_open_paths) -> dict:
+    """남은 영상 슬롯 파일 정리(D-9 안전망). 지우는 것은 다음을 모두 만족하는 파일뿐이다.
+
+    이름이 `eyetoarm_infer_{pid}_{12자 16진}` 형식, 이 사용자 소유의 일반 파일, 이름의 pid가 이 프로세스가 아니고 죽었음,
+    읽을 수 있는 어느 프로세스도 열거나 매핑하지 않음. 반환: {"removed": [...], "kept": {이름: 사유}}.
+    """
+    uid = os.getuid() if uid is None else uid
+    own_pid = os.getpid() if own_pid is None else own_pid
+    removed, kept, candidates = [], {}, []
+
+    try:
+        names = sorted(os.listdir(shm_dir))
+    except OSError as exc:
+        return {"removed": [], "kept": {}, "error": f"{type(exc).__name__}: {exc}"}
+
+    for name in names:
+        match = _SLOT_NAME.match(name)
+
+        if match is None:   # 다른 형식(남의 시험·다른 프로그램)은 보지도 않는다
+            continue
+
+        path = os.path.join(shm_dir, name)
+
+        try:
+            st = os.lstat(path)
+        except OSError:   # 사이에 지워짐
+            continue
+
+        pid = int(match.group(1))
+
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != uid:
+            kept[name] = "other_owner"
+        elif pid == own_pid:
+            kept[name] = "own_pid"
+        elif is_alive(pid):
+            kept[name] = "pid_alive"
+        else:
+            candidates.append((name, path))
+
+    if candidates:
+        in_use = open_paths()
+
+        for name, path in candidates:
+            if path in in_use:
+                kept[name] = "in_use"
+                continue
+
+            try:
+                os.unlink(path)
+                removed.append(name)
+            except FileNotFoundError:   # 다른 프로세스가 먼저 지움
+                pass
+            except OSError as exc:
+                kept[name] = f"unlink_failed: {type(exc).__name__}"
+
+    return {"removed": removed, "kept": kept}
+
+
 class ProcessAiSegDetector:
     """자식 프로세스에서 추론하는 `AiSegDetector` 대리 객체. 호출은 실행기 detector worker 스레드 하나에서만 한다.
 
@@ -139,8 +253,12 @@ class ProcessAiSegDetector:
     def __init__(self, config: AiSegConfig, config_path: str, *, factory: str = DEFAULT_FACTORY,
                  torch_threads: int | None = None, child_log: str | None = None,
                  env: dict[str, str] | None = None, python: str | None = None, poll_interval_s: float = 0.005,
-                 stall_after_s: float = 5.0, stop_grace_s: float = 2.0, kill_grace_s: float = 1.0) -> None:
-        """설정·설정 파일 경로(자식이 다시 읽어 sha256을 맞춘다)와 수명 한도. I/O·프로세스 시작은 하지 않는다."""
+                 stall_after_s: float = 5.0, stop_grace_s: float = 2.0, kill_grace_s: float = 1.0,
+                 sweep=None) -> None:
+        """설정·설정 파일 경로(자식이 다시 읽어 sha256을 맞춘다)와 수명 한도. I/O·프로세스 시작은 하지 않는다.
+
+        `sweep`: 준비 때 부르는 남은 슬롯 정리 함수(기본 `sweep_orphan_slots`, 시험 주입용).
+        """
         if not isinstance(config, AiSegConfig):
             raise TypeError(f"config must be AiSegConfig: {type(config).__name__}")
 
@@ -175,6 +293,8 @@ class ProcessAiSegDetector:
         self._times = {name: _TimeStat() for name in ("copy_ms", "roundtrip_ms", "child_process_ms", "ipc_overhead_ms")}
         self._ready: dict = {}
         self._exit: dict | None = None
+        self._orphans: dict | None = None
+        self._sweep = sweep if sweep is not None else sweep_orphan_slots
 
     @property
     def config(self) -> AiSegConfig:
@@ -197,7 +317,7 @@ class ProcessAiSegDetector:
         with self._lock:
             return {"pid": self.pid, "factory": self._factory, "torch_threads_requested": self._torch_threads,
                     **self._ready, "failed": self._failed, "exit": self._exit,
-                    "pending_abandoned": len(self._abandoned), **dict(self._stats),
+                    "pending_abandoned": len(self._abandoned), "orphan_shm": self._orphans, **dict(self._stats),
                     "times": {name: t.as_dict() for name, t in self._times.items()}}
 
     # ------------------------------------------------------------------ 준비
@@ -226,6 +346,15 @@ class ProcessAiSegDetector:
 
         t0 = time.monotonic_ns()
         env = self._child_env()
+
+        # 이전 실행이 남긴 슬롯 파일(만든 프로세스가 죽었고 아무도 안 연 자기 파일)만 지운다
+        try:
+            orphans = self._sweep()
+        except Exception as exc:   # 정리 실패는 준비를 막지 않는다(기록만)
+            orphans = {"removed": [], "kept": {}, "error": f"{type(exc).__name__}: {exc}"}
+
+        with self._lock:
+            self._orphans = orphans
         parent_sock, child_sock = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
 
         try:
@@ -504,6 +633,24 @@ class ProcessAiSegDetector:
             proc.kill()
             proc.wait(self._kill_grace_s)
 
+    def _release_resources(self) -> None:
+        """소켓·영상 슬롯(만든 파일 삭제)·자식 기록 파일을 닫는다. 하나가 실패해도 나머지를 한다."""
+        if self._conn is not None:   # 참조는 남긴다(남은 worker 호출은 닫힌 연결로 OSError → 실패 처리)
+            try:
+                self._conn.close()
+            except OSError:   # 이미 닫힘
+                pass
+
+        for slots in [self._slots, *self._retired]:
+            if slots is not None:
+                try:
+                    slots.close()
+                except OSError:   # 삭제 실패는 다음 시작의 고아 정리가 맡는다
+                    pass
+
+        if self._log_fh is not None:
+            self._log_fh.close()
+
     def close(self) -> dict:
         """자식에게 종료를 요청하고(stop_grace_s), 안 끝나면 SIGTERM·SIGKILL. 소켓·슬롯을 정리한다. 두 번 불러도 된다."""
         if self._closed:
@@ -513,29 +660,23 @@ class ProcessAiSegDetector:
         forced = None
         proc = self._proc
 
-        if proc is not None:
-            if proc.poll() is None and self._conn is not None:
+        # 자식 대기 중 KeyboardInterrupt 등이 나도 소켓·슬롯(공유 메모리 파일)·기록 파일 정리는 반드시 한다(D-9)
+        try:
+            if proc is not None:
+                if proc.poll() is None and self._conn is not None:
+                    try:
+                        self._conn.send(("stop", {}))
+                    except OSError:   # 이미 끊긴 자식: 아래에서 신호로 끝낸다
+                        pass
+
                 try:
-                    self._conn.send(("stop", {}))
-                except OSError:   # 이미 끊긴 자식: 아래에서 신호로 끝낸다
-                    pass
-
-            try:
-                proc.wait(self._stop_grace_s)
-                forced = False
-            except subprocess.TimeoutExpired:
-                forced = True
-                self._terminate()
-
-        if self._conn is not None:
-            self._conn.close()
-
-        for slots in [self._slots, *self._retired]:
-            if slots is not None:
-                slots.close()
-
-        if self._log_fh is not None:
-            self._log_fh.close()
+                    proc.wait(self._stop_grace_s)
+                    forced = False
+                except subprocess.TimeoutExpired:
+                    forced = True
+                    self._terminate()
+        finally:
+            self._release_resources()
 
         exit_info = {"returncode": None if proc is None else proc.returncode, "forced": forced}
 
@@ -545,4 +686,5 @@ class ProcessAiSegDetector:
         return dict(exit_info)
 
 
-__all__ = ["DEFAULT_FACTORY", "InferJobError", "InferProcessError", "ProcessAiSegDetector", "ShmSlots"]
+__all__ = ["DEFAULT_FACTORY", "InferJobError", "InferProcessError", "ProcessAiSegDetector", "ShmSlots",
+           "sweep_orphan_slots"]

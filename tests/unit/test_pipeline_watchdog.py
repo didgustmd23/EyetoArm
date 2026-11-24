@@ -632,5 +632,53 @@ class WatchdogConfigTest(unittest.TestCase):
         self.assertEqual(detector_threads(), [])
 
 
+
+class StallThreadDumpTest(unittest.TestCase):
+    """멈춤(worker_stalled) 판정 때 모든 스레드의 호출 위치를 stderr와 설정한 파일에 남긴다(D-11)."""
+
+    def test_stall_writes_thread_dump_with_stuck_frame(self):
+        """취소를 무시하고 멈춘 검출기: stderr와 파일에 덤프가 있고, 멈춘 함수 이름이 그 안에 보인다."""
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def stuck_detector(job, token):
+            """취소 표지를 보지 않고 풀릴 때까지 기다린다."""
+            release.wait(10)
+            return observation(job), None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "stall_threads.txt")
+            res, _, err, _ = run_bounded(frames_factory(2), stuck_detector,
+                                         watch(0.1, 0.1, grace=0.05, cleanup=0.05, stall_dump_path=path))
+
+            with open(path, encoding="utf-8") as fh:
+                saved = fh.read()
+
+        release.set()
+        text = err.getvalue()
+
+        self.assertEqual((res.exit_code, res.stop_reason, res.stalled), (1, "worker_stalled", True))
+        self.assertIn("=== thread dump (worker_stalled job_seq=0 after timeout)", text)
+        self.assertIn("stuck_detector", text)
+        self.assertIn(WORKER_NAME, text)
+        self.assertEqual(text.count("=== thread dump"), 1)   # 정리 단계에서 다시 남기지 않는다
+        self.assertIn("stuck_detector", saved)
+
+    def test_thread_dump_lists_every_thread(self):
+        """`thread_dump`는 살아 있는 스레드마다 이름과 호출 위치를 한 묶음씩 적는다."""
+        gate = threading.Event()
+        t = threading.Thread(target=gate.wait, name="dump-probe-thread", daemon=True)
+        t.start()
+        self.addCleanup(gate.set)
+
+        text = pr.thread_dump("probe")
+        gate.set()
+        t.join(2)
+
+        self.assertIn("=== thread dump (probe)", text)
+        self.assertIn("--- thread dump-probe-thread daemon", text)
+        self.assertIn("MainThread", text)
+        self.assertTrue(text.endswith("=== end thread dump ===\n"))
+
 if __name__ == "__main__":
     unittest.main()
