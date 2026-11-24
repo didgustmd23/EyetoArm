@@ -1164,7 +1164,53 @@ C §16.4.3을 그대로 따르며 새 동작을 정의하지 않습니다.
 1. **C 결정:** A.6.3 순번·조건부 요청·반복 `STOP` 규칙(또는 같은 성질의 대안)과 서비스 형태, A.6.7 스냅샷 전달 방식(토픽 QoS·조회 대체 경로), A.4 슬롯 소유자 표현, A.6.4 상태·전이, A.6.6 이름·코드·`not_ready_reasons`, A.6.8 확인 항목, A.6.9 재기동 주체·범위와 잠금 저장, A.6.11 값, `HELD` 정지 후 처리 절차, `RECOVERING` 중 `STOP` 처리, `sort_job_id` 이력 범위(A.6.10), 정지 확인 식별 방식(A.6.8). **D 결정의 공동 확인:** A.6.4 `allowed`·순번 증가, A.6.5 정수·`user_confirmed`, A.6.6 응답 검증·`detail` 길이, A.6.10 ID 충돌.
 2. **C 확인(현재 동작):** 공급기 없는 구성의 실행 중 `start_run`, 복구 필요 상태의 `stop_run` 응답, `BUSY`의 두 원인, 복구 필요 표시의 비저장, 분류 중 `MOVE`의 실제 판정(A.6.2), `--run-state` 없는 구성의 분류 goal과 `MOVE` 경합.
 3. **C 승인 뒤 C·D·A 확인(§0.1).** A는 시험 관점.
-4. **그 뒤에만** 스키마·시험 벡터·서버·클라이언트 구현과 동시 배포. 지금은 미승인이며 구현·실통신이 없습니다.
+4. **그 뒤에만** 스키마·시험 벡터·서버·클라이언트 구현과 동시 배포. 지금은 미승인이며 C 구현·실통신이 없습니다. D 클라이언트 후보 구현(`--tcp-version 1.2`, 기본 1.1)은 루프백 대역으로만 시험했습니다.
+
+#### A.6.16 `E_STOP` 응용 요청 확장 (D 후보 2026-11-24 · 미승인 · C 회신 대기)
+
+> **규범이 아닙니다.** D 클라이언트 후보 구현(`--tcp-version 1.2`, 루프백 시험만)의 송수신 형식을 C 검토용으로 적은 것입니다. 기준 원본은 D 코드(`dashboard-client/src/eyetoarm/tcp/protocol.py`의 `build_e_stop`·`parse_v12`, `dashboard-client/src/eyetoarm/gui/client.py`의 `e_stop_allowed`·`e_stop_request`)입니다. 아래 예시는 순서대로 능력 알림 → 요청 → 접수 → 최종 보고입니다. 1.1 본문·스키마·시험 벡터, A.6의 `allowed`·`RECOVER` 규칙은 바꾸지 않습니다. 현재 C(1.1)는 이 요청을 처리하지 않습니다.
+
+**범위.** `START`·`STOP`·`E_STOP`은 모두 **로봇과 컨베이어 벨트**를 함께 다룹니다(사용자 지정 2026-11-24).
+
+- `START`: C가 정한 순서로 둘을 운전합니다. 벨트 연속 운전을 약속하지 않습니다.
+- `STOP`(화면 「정리」): 둘의 정지 요청이며, 정지 확인은 C 스냅샷 `STOPPED`(A.6.8)로만 합니다. 볼트 해제는 포함하지 않으며 미구현입니다(별도 C 결정).
+- `E_STOP`: 둘의 비상 정지를 C에 **요청만** 합니다. 실제 동작은 C가 허용된 안전 경로로만 정합니다. D 화면은 안전 장치가 아니며, 리셋·잠금 해제·자동 해제 명령은 두지 않습니다.
+- `RECOVER`의 홈 복귀·재개와 일반 해제는 별도 C 결정이며 이 절에서 정하지 않습니다.
+
+**전송.** 기존 명령 TCP 서버·포트·연결·프레이밍(JSON 한 줄 + LF)을 그대로 씁니다.
+
+```json
+{"version":"1.2","type":"STATUS","robot_ready":true,"not_ready_reasons":[],"active_command_id":null,"server_time_ms":5540000,"slot_owner":null,"run":{"c_session_id":"c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f","run_revision":15,"run_state":"STOPPED","sort_job_id":"5a1c9e2b-3d4f-4a6b-8c0d-1e2f3a4b5c6d","run_epoch":7,"hold_state":"DETACHED","stop_cause":"USER_STOP","slot_owner":null,"allowed":["START"]},"e_stop_available":true}
+{"version":"1.2","type":"E_STOP","request_id":"6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"}
+{"version":"1.2","type":"E_STOP_STATUS","request_id":"6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f","state":"REQUESTED","detail":null,"server_time_ms":5540100}
+{"version":"1.2","type":"E_STOP_STATUS","request_id":"6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f","state":"CONFIRMED","detail":null,"server_time_ms":5541300}
+```
+
+| 항목 | 규칙 (D 후보) |
+|---|---|
+| `E_STOP` | 필드는 `version`·`type`·`request_id`만. `request_id`는 클릭마다 새 UUID v4 |
+| `e_stop_available` | 무ID 1.2 `STATUS`의 선택 bool. 생략·`false`·bool 아님(응답 전체 폐기)·연결 끊김·오래된 `STATUS`(`status_watchdog_ms` 초과)면 D 버튼 비활성. `run_state`·`allowed`·`robot_ready`와 무관 |
+| `E_STOP_STATUS` | 필드는 정확히 `version`·`type`·`request_id`·`state`·`detail`·`server_time_ms` |
+| `state` | `REQUESTED` = C 접수만(정지 확인 아님). `CONFIRMED` = C가 로봇·컨베이어 정지를 보고(D는 표시만, 검증 아님). `REJECTED` = C 거부. `UNCONFIRMED` = C가 정지를 확인하지 못함. 마지막 셋이 최종 |
+| `detail` | `null` 또는 해석 뒤 코드 포인트 256개 이하 |
+| `server_time_ms` | A.6.5 정수 규칙(0~2^53−1 JSON 정수) |
+| 상관 | 같은 연결의 마지막 요청 `request_id`만 반영. 다른 ID·이전 연결의 응답은 기록만 |
+| 순서 | 최종 상태는 되돌리지 않음. 기한 뒤 늦은 `REQUESTED`는 무시, 같은 요청의 늦은 최종 보고는 「늦은 응답」으로 반영 |
+| 재전송 | 없음. 한 번에 하나만 대기. 재접속·주소 변경 뒤 다시 보내지 않음 |
+| 기한 | D 설정 후보 `e_stop_timeout_ms` 10000. 최종 보고가 없으면 D가 「결과 미확인」으로 닫음(실행되지 않았다는 뜻 아님) |
+| 끊김 | 대기 요청은 미확인으로 닫음. 끝난 결과는 「이전 연결 기록」으로 표시해 현재 상태처럼 보이지 않게 함 |
+| 분리 | 분류 스냅샷·`allowed`·`STOP` 요청과 별개. `E_STOP_STATUS`는 `run_revision`을 바꾸지 않음(C가 정지 결과를 스냅샷에도 반영할지는 C 결정) |
+
+**D 시험(루프백, 실제 C 아님).** `tests/integration/test_d_client_v12.py` `EStop`: 능력 없음·거짓·형식 오류 시 미송신, `E_STOP` 한 줄과 별개 `STOP`, `REQUESTED`→`CONFIRMED`, 최종 뒤 `REJECTED` 무시, 다른 ID·형식 위반 폐기, 능력 해제 중 대기 결과 유지, 기한 초과 미확인, 끊김 후 재전송 없음, 이전 결과 기록 표시, 늦은 `REQUESTED` 무시, 화면 문구.
+
+**C 회신 점검표.**
+
+1. 지원 여부와 시점: `E_STOP` 수신 구현 계획, 이름·필드·상태 값 수용 또는 대안.
+2. 안전 경로: C가 쓸 실제 비상정지 경로(로봇·컨베이어 각각), 소프트웨어 요청이 허용되는 조건, 리셋·해제 절차(D 명령 없음).
+3. 확인 기준: `CONFIRMED`를 보낼 근거(로봇 관절 정지·벨트 정지 관측 등)와 `UNCONFIRMED` 조건, 기한 10000 ms의 적정성.
+4. 능력 알림: `e_stop_available`을 언제 `true`로 보내는지(기동·정지·복구 중 포함).
+5. 순서: 기동·정상 정지·비상 정지 뒤 재기동 순서와 `START`·`RECOVER`와의 관계(`RECOVER` 홈 복귀·재개는 별도 결정).
+6. 계약: A.6 1.2 후보와 함께 승인할지, 별도 개정으로 둘지.
 
 
 ## 부록 B. 영상 표시 경로 (A 초안 · 미승인 · 프로토콜 1.1 아님)
