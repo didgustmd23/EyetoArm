@@ -106,20 +106,60 @@ class CliArgsTest(unittest.TestCase):
 
 
 class StopSignalsTest(unittest.TestCase):
-    """신호 처리: 첫 신호는 정지 요청, 두 번째는 KeyboardInterrupt, 끝나면 원래 처리기."""
+    """신호 처리: 첫 신호는 정지 요청, 같은 사건의 중복은 무시, 그 뒤는 KeyboardInterrupt, 정리 중에는 무시."""
 
-    def test_first_signal_requests_stop_second_interrupts(self):
-        """SIGTERM 한 번 → stop 표지, 두 번째 → KeyboardInterrupt. 나온 뒤 처리기가 원래대로."""
+    def setUp(self):
+        """시험이 움직이는 시계."""
+        self.now = [100.0]
+
+    def signals(self):
+        """시험 시계를 쓰는 처리기(중복 창 1 s)."""
+        return cli._StopSignals(repeat_window_s=1.0, clock=lambda: self.now[0])
+
+    def test_first_signal_requests_stop_later_signal_interrupts(self):
+        """SIGTERM 한 번 → stop 표지, 창(1 s) 뒤 두 번째 → KeyboardInterrupt. 나온 뒤 처리기가 원래대로."""
         before = signal.getsignal(signal.SIGTERM)
 
-        with cli._StopSignals() as sig:
+        with self.signals() as sig:
             signal.raise_signal(signal.SIGTERM)
             self.assertTrue(sig.stop.is_set())
+            self.now[0] += 1.5
 
             with self.assertRaises(KeyboardInterrupt):
                 signal.raise_signal(signal.SIGINT)
 
         self.assertIs(signal.getsignal(signal.SIGTERM), before)
+
+    def test_repeat_within_window_is_ignored(self):
+        """그룹 Ctrl+C와 감독 스크립트 전달처럼 거의 동시에 온 두 번째 신호는 중복으로 세고 무시한다."""
+        with self.signals() as sig:
+            signal.raise_signal(signal.SIGINT)
+            self.now[0] += 0.2
+            signal.raise_signal(signal.SIGINT)
+
+        self.assertTrue(sig.stop.is_set())
+        self.assertEqual(sig.ignored, {"repeat": 1, "cleanup": 0})
+
+    def test_signal_during_cleanup_does_not_interrupt(self):
+        """`begin_cleanup` 뒤에는 창이 지난 신호도 정리를 끊지 않는다(세기만 함)."""
+        with self.signals() as sig:
+            signal.raise_signal(signal.SIGINT)
+            sig.begin_cleanup()
+            self.now[0] += 5.0
+            signal.raise_signal(signal.SIGTERM)
+            signal.raise_signal(signal.SIGHUP)
+
+        self.assertEqual(sig.ignored, {"repeat": 0, "cleanup": 2})
+
+    def test_sighup_requests_stop_and_is_restored(self):
+        """SIGHUP(창 닫기)도 정지 요청이고, 나온 뒤 원래 처리기로 돌아간다."""
+        before = signal.getsignal(signal.SIGHUP)
+
+        with self.signals() as sig:
+            signal.raise_signal(signal.SIGHUP)
+
+        self.assertTrue(sig.stop.is_set())
+        self.assertIs(signal.getsignal(signal.SIGHUP), before)
 
 
 if __name__ == "__main__":

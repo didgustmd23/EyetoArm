@@ -36,8 +36,13 @@ def child_env(**extra):
 
 
 def options(**kw):
-    """`infer_process_options` 시험값: 가짜 공장·환경."""
-    return {"factory": "ai_process_fake:make", "env": child_env(), **kw}
+    """`infer_process_options` 시험값: 가짜 공장·환경·남은 슬롯 정리 끔(실제 /dev/shm을 건드리지 않음)."""
+    return {"factory": "ai_process_fake:make", "env": child_env(), "sweep": no_sweep, **kw}
+
+
+def no_sweep():
+    """남은 슬롯 정리 대역: 아무것도 지우지 않는다."""
+    return {"removed": [], "kept": {}}
 
 
 def shm_entries():

@@ -8,6 +8,7 @@ import io
 import threading
 import json
 import os
+import signal
 import tempfile
 import time
 import unittest
@@ -237,6 +238,27 @@ class Base(unittest.TestCase):
     def summary(self, out):
         """요약."""
         return json.loads((Path(out) / "summary.json").read_text(encoding="utf-8"))
+
+
+class CleanupSignalTest(Base):
+    """정리 중에 온 정지 신호가 정리를 끊지 않는다(D-9: 신호 처리기를 정리 끝까지 둔다)."""
+
+    def test_sigint_during_tf_close_keeps_cleanup(self):
+        """TF 닫기 중 SIGINT: 기본 처리기였다면 KeyboardInterrupt로 끊겼을 정리가 끝나 요약이 남고 종료 0이다."""
+        class SignalOnCloseTf(FakeTf):
+            """닫을 때 자기 프로세스에 SIGINT를 보낸다(창 닫기·Ctrl+C가 정리 중에 온 경우)."""
+
+            def close(self, limit_s):
+                """SIGINT 뒤 원래 닫기."""
+                signal.raise_signal(signal.SIGINT)
+                return super().close(limit_s)
+
+        before = signal.getsignal(signal.SIGINT)
+        code, err, out = self.run_cli(Scenario(2), tf=SignalOnCloseTf())
+
+        self.assertEqual(code, 0, err)
+        self.assertTrue((Path(out) / "summary.json").exists())
+        self.assertIs(signal.getsignal(signal.SIGINT), before)
 
 
 class NormalPathTest(Base):

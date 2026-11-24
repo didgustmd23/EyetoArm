@@ -20,7 +20,7 @@ import numpy as np
 from eyetoarm.common.types import InvalidationKind
 from eyetoarm.vision.ai_config import load_ai_config
 from eyetoarm.vision.ai_process import (SHM_DIR, SHM_PREFIX, InferJobError, InferProcessError,
-                                        ProcessAiSegDetector)
+                                        ProcessAiSegDetector, sweep_orphan_slots)
 from eyetoarm.vision.ai_result import AiJobConfigError, ModelPrepareError
 from eyetoarm.vision.pipeline_records import JsonlRecorder, PipelineLog
 from eyetoarm.vision.pipeline_runner import CancelToken, JobCancelled, run
@@ -67,6 +67,11 @@ def image(code=fake.NORMAL, pos=0, w=W, h=H):
     img[0, 0, 0], img[0, 0, 1] = code, pos
 
     return img
+
+
+def no_sweep():
+    """남은 슬롯 정리 대역: 아무것도 지우지 않는다."""
+    return {"removed": [], "kept": {}}
 
 
 def shm_entries():
@@ -118,6 +123,7 @@ class Base(unittest.TestCase):
 
     def proxy(self, factory="ai_process_fake:make", cfg=None, cfg_path=None, env=None, **kw):
         """대리 객체(시험 종료 때 닫음)."""
+        kw.setdefault("sweep", no_sweep)   # 실제 /dev/shm의 남은 파일을 시험이 지우지 않게 한다
         p = ProcessAiSegDetector(cfg or self.cfg, cfg_path or self.cfg_path, factory=factory,
                                  env=env if env is not None else self.env(), **kw)
         self.proxies.append(p)
@@ -191,6 +197,130 @@ class RoundTripTest(Base):
         self.assertEqual(px.close(), {"returncode": 0, "forced": False})
         self.assertEqual(shm_entries(), self.shm_before)
 
+
+class CloseInterruptTest(Base):
+    """닫는 도중 KeyboardInterrupt(정리 중 두 번째 신호)가 나도 소켓·슬롯 파일 정리는 끝난다(D-9)."""
+
+    def test_interrupt_while_waiting_child_still_removes_slots(self):
+        """자식 대기에서 KeyboardInterrupt: 예외는 올라가지만 슬롯 파일이 지워지고, 자식은 연결 끊김으로 끝난다."""
+        px = self.proxy()
+        px.prepare()
+        _, job = self.job(image())
+        px(job, CancelToken())
+        self.assertEqual(len(shm_entries()), len(self.shm_before) + 1)
+
+        proc = px._proc
+        real_wait = proc.wait
+
+        def interrupted(timeout=None):
+            """첫 대기에서 신호가 온 것처럼 KeyboardInterrupt."""
+            proc.wait = real_wait
+            raise KeyboardInterrupt
+
+        proc.wait = interrupted
+
+        with self.assertRaises(KeyboardInterrupt):
+            px.close()
+
+        self.assertEqual(shm_entries(), self.shm_before)
+        self.assertEqual(real_wait(5), 0)   # 연결이 닫혀 자식이 스스로 끝남
+
+
+    def test_prepare_records_sweep_and_survives_sweep_error(self):
+        """준비 때 정리를 한 번 부르고 요약에 남긴다. 정리 함수 오류는 준비를 막지 않는다."""
+        calls = []
+
+        def broken():
+            """정리 실패 대역."""
+            calls.append(1)
+            raise OSError("boom")
+
+        px = self.proxy(sweep=broken)
+        px.prepare()
+
+        self.assertEqual(calls, [1])
+        self.assertEqual(px.summary()["orphan_shm"], {"removed": [], "kept": {}, "error": "OSError: boom"})
+
+
+class SweepOrphanSlotsTest(unittest.TestCase):
+    """남은 슬롯 정리: 죽은 pid·아무도 안 연·자기 소유·정해진 이름 형식만 지운다(D-9 안전망)."""
+
+    def setUp(self):
+        """임시 폴더(실제 /dev/shm 대신)."""
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+
+    def touch(self, name):
+        """빈 파일 하나."""
+        path = os.path.join(self.dir.name, name)
+        open(path, "wb").close()
+
+        return path
+
+    def test_removes_only_dead_unused_own_files(self):
+        """죽은 pid만 지우고 살아 있는 pid·자기 pid·열린 파일·다른 형식 이름은 남긴다."""
+        dead = self.touch(f"{SHM_PREFIX}111_0123456789ab")
+        alive = self.touch(f"{SHM_PREFIX}222_0123456789ab")
+        own = self.touch(f"{SHM_PREFIX}333_0123456789ab")
+        used = self.touch(f"{SHM_PREFIX}444_0123456789ab")
+        other_format = self.touch(f"{SHM_PREFIX}362repro_555_x")
+        unrelated = self.touch("other_program_shm")
+
+        res = sweep_orphan_slots(self.dir.name, own_pid=333, is_alive=lambda pid: pid == 222,
+                                 open_paths=lambda: {used})
+
+        self.assertEqual(res["removed"], [os.path.basename(dead)])
+        self.assertEqual(res["kept"], {os.path.basename(alive): "pid_alive", os.path.basename(own): "own_pid",
+                                       os.path.basename(used): "in_use"})
+        self.assertEqual([os.path.exists(p) for p in (dead, alive, own, used, other_format, unrelated)],
+                         [False, True, True, True, True, True])
+
+    def test_other_users_files_are_kept(self):
+        """다른 사용자 소유(여기서는 uid를 바꿔 흉내)는 pid가 죽었어도 지우지 않는다."""
+        path = self.touch(f"{SHM_PREFIX}111_0123456789ab")
+
+        res = sweep_orphan_slots(self.dir.name, uid=os.getuid() + 1, own_pid=1, is_alive=lambda pid: False,
+                                 open_paths=lambda: set())
+
+        self.assertEqual((res["removed"], res["kept"]), ([], {os.path.basename(path): "other_owner"}))
+        self.assertTrue(os.path.exists(path))
+
+    def test_real_open_and_mapped_files_are_seen(self):
+        """기본 `open_paths`: 이 프로세스가 열어 둔 파일은 사용 중으로 보고 남긴다."""
+        path = self.touch(f"{SHM_PREFIX}111_0123456789ab")
+
+        with open(path, "rb"):
+            res = sweep_orphan_slots(self.dir.name, own_pid=1, is_alive=lambda pid: False)
+
+        self.assertEqual(res["kept"], {os.path.basename(path): "in_use"})
+        self.assertTrue(os.path.exists(path))
+
+    def test_zombie_pid_counts_as_dead(self):
+        """끝났지만 아직 회수하지 않은 자식(좀비)의 파일도 지운다(부모가 회수하기 전에 다음 A가 시작한 경우)."""
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        self.addCleanup(child.wait, 10)
+        deadline = time.monotonic() + 10
+
+        while time.monotonic() < deadline and open(f"/proc/{child.pid}/stat").read().rsplit(")", 1)[1].split()[0] != "Z":
+            time.sleep(0.02)
+
+        path = self.touch(f"{SHM_PREFIX}{child.pid}_0123456789ab")
+
+        res = sweep_orphan_slots(self.dir.name)
+
+        self.assertEqual(res["removed"], [os.path.basename(path)])
+
+    def test_real_dead_pid_file_is_removed_and_live_pid_kept(self):
+        """기본 `is_alive`: 끝난 자식 pid의 파일은 지우고, 살아 있는 이 프로세스의 부모 pid 파일은 남긴다."""
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait(10)
+        dead = self.touch(f"{SHM_PREFIX}{child.pid}_0123456789ab")
+        alive = self.touch(f"{SHM_PREFIX}{os.getppid()}_0123456789ab")
+
+        res = sweep_orphan_slots(self.dir.name)
+
+        self.assertEqual(res["removed"], [os.path.basename(dead)])
+        self.assertEqual(res["kept"], {os.path.basename(alive): "pid_alive"})
 
 class PrepareFailureTest(Base):
     """준비 실패 분류."""
@@ -512,7 +642,8 @@ import os, sys, time, json, numpy as np
 from eyetoarm.vision.ai_config import load_ai_config
 from eyetoarm.vision.ai_process import ProcessAiSegDetector
 cfg_path = sys.argv[1]
-px = ProcessAiSegDetector(load_ai_config(cfg_path), cfg_path, factory="ai_process_fake:make")
+px = ProcessAiSegDetector(load_ai_config(cfg_path), cfg_path, factory="ai_process_fake:make",
+                          sweep=lambda: {"removed": [], "kept": {}})
 px.prepare()
 print(json.dumps({"child": px.pid, "torch": "torch" in sys.modules, "ultralytics": "ultralytics" in sys.modules}),
       flush=True)

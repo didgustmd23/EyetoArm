@@ -86,6 +86,7 @@ class RunnerConfig:
     stop_check_interval_s: float = 0.02
     live_transition_limit: int = 10
     live_transition_window_s: float = 1.0
+    stall_dump_path: str | None = None   # 멈춤 때 스레드 호출 위치를 덧붙일 파일(없으면 stderr만, D-11)
 
     @property
     def watchdog(self) -> bool:
@@ -527,6 +528,47 @@ def _await_return(worker: _DetectorWorker, limit_s: float, interval_s: float):
                 return _NO_RESULT
 
 
+def thread_dump(where: str) -> str:
+    """지금 모든 스레드의 이름·번호와 호출 위치(가장 안쪽이 마지막). 멈춤 원인을 찾는 진단용(D-11)."""
+    frames = sys._current_frames()
+    lines = [f"=== thread dump ({where}) monotonic={time.monotonic():.3f} threads={len(frames)} ==="]
+    names = {t.ident: t for t in threading.enumerate()}
+
+    for ident, frame in sorted(frames.items()):
+        t = names.get(ident)
+        label = "unknown" if t is None else f"{t.name}{' daemon' if t.daemon else ''}"
+        lines.append(f"--- thread {label} ident={ident} native_id={getattr(t, 'native_id', None)}")
+        lines.extend(line.rstrip("\n") for line in traceback.format_stack(frame))
+
+    lines.append("=== end thread dump ===")
+
+    return "\n".join(lines) + "\n"
+
+
+def _write_thread_dump(err, path: str | None, where: str) -> None:
+    """스레드 호출 위치를 stderr(와 설정한 파일)에 남긴다. 쓰기 실패는 실행 결과를 바꾸지 않는다."""
+    try:
+        text = thread_dump(where)
+    except Exception as exc:   # 진단 실패는 무시하고 사유만 남긴다
+        text = f"=== thread dump ({where}) failed: {type(exc).__name__}: {exc} ===\n"
+
+    try:
+        err.write(text)
+        err.flush()
+    except Exception:   # stderr가 닫혔어도 실행 정리를 계속한다
+        pass
+
+    if path is not None:
+        try:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(text)
+        except OSError as exc:
+            try:
+                err.write(f"run_pipeline: cannot write thread dump to {path}: {exc}\n")
+            except Exception:   # 위와 같음
+                pass
+
+
 def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], settings: PipelineSettings,
         log: PipelineLog, *, run_id: str | None = None,
         detector: Callable[[JobContext], tuple[PlanarObservation, object]] = process_opencv,
@@ -882,6 +924,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         if late is _NO_RESULT:
             fail_run("worker_stalled", f"detector worker stalled: job_seq={job.job_seq} did not return within "
                                        f"cancel grace {config.cancel_grace_s} s after {what}; no new detection")
+            _write_thread_dump(err, config.stall_dump_path, f"worker_stalled job_seq={job.job_seq} after {what}")
             result.stalled = True
             return "stalled"
 
@@ -962,6 +1005,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
         if late is _NO_RESULT:
             fail_run("worker_stalled", f"detector worker stalled: prepare did not return within cancel grace "
                                        f"{config.cancel_grace_s} s after {what}; no detection")
+            _write_thread_dump(err, config.stall_dump_path, f"worker_stalled prepare after {what}")
             result.stop_reason = "worker_stalled"   # 시간 초과 사건을 남겼어도 멈춤이 최종 정지 사유
             result.stalled = True
             return False
@@ -1167,6 +1211,9 @@ def _finish(pipeline, log, tracker, source, config, clock_ns, result, log_ok, er
         result.worker = report
 
         if report["stalled"]:
+            if not result.stalled:   # 위 두 곳에서 이미 남겼으면 다시 남기지 않는다
+                _write_thread_dump(err, config.stall_dump_path, "worker still running at cleanup")
+
             result.stalled = True
             result.exit_code = 1
             result.stop_reason = result.stop_reason or "worker_stalled"
@@ -1305,4 +1352,5 @@ def stored_source_factory(kind: str, paths: list[str], source_id: str):
     return factory
 
 
-__all__ = ["CancelToken", "JobCancelled", "RunnerConfig", "RunResult", "apply_seek", "b_admit", "b_gate", "b_list_gate", "b_list_skip_reason", "b_skip_reason", "display_gate", "run", "stored_source_factory"]
+__all__ = ["CancelToken", "JobCancelled", "RunnerConfig", "RunResult", "apply_seek", "b_admit", "b_gate", "b_list_gate",
+           "b_list_skip_reason", "b_skip_reason", "display_gate", "run", "stored_source_factory", "thread_dump"]
