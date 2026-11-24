@@ -263,23 +263,16 @@ def test_cancel_from_run_stop_or_estop_stays(monkeypatch):
 
 
 def test_cancel_holding_goes_home_closed(monkeypatch):
-    """Cancel after the grasp: the fingers stopped short (a bolt), holding_object true, home with the gripper
-    closed (no opening); C's stalled flag is not needed for this."""
+    """Cancel after the grasp: the fingers stopped on the bolt (#380 contact re-command), holding_object
+    true, home with the gripper closed (no opening); C's stalled flag is not needed for this."""
     ex, world = base.make(NEW, monkeypatch=monkeypatch)
-    grip = ex.arm.grip
-
-    def grip_short(position, settle=.5):
-        grip(position, settle)
-        if position == ex.demo.GRIP_CLOSED:
-            ex.arm.state[ex.demo.GRIPPER_JOINT] = .745   # stopped on a small bolt
-    ex.arm.grip = grip_short
-    ex.cancel_requested = lambda: any(e[0] == "grip" and e[1] == ex.demo.GRIP_CLOSED for e in ex.arm.log)
+    ex.cancel_requested = lambda: any(e[0] == "grip" and e[1] > ex.demo.GRIP_OPEN for e in ex.arm.log)
     ex.home_after_cancel = lambda: True
     monkeypatch.setattr(ex, "_follow", _follow_checking_cancel(ex))
     result, log = base.run_pick(ex, world, base.goal(world))
     assert result[0] == "SortCanceled" and ex.holding_object
     assert np.allclose(ex.arm.q, NEW.HOME_JOINTS)
-    closed_at = max(i for i, e in enumerate(log) if e[0] == "grip" and e[1] == ex.demo.GRIP_CLOSED)
+    closed_at = max(i for i, e in enumerate(log) if e[0] == "grip" and e[1] > ex.demo.GRIP_OPEN)
     assert not any(e[0] == "grip" and e[1] == ex.demo.GRIP_OPEN for e in log[closed_at:])
 
 
