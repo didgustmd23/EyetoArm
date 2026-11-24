@@ -287,6 +287,7 @@ class SortGoalReceiver(Node):
         response.sort_job_id = self._job_id
         response.run_epoch = self._epoch
         response.active = bool(response.sort_job_id) and not self._run_paused and not self._recovery_required
+        response.purge_required = self._purge_required
         return response
 
     def _goal_request(self, request) -> GoalResponse:
