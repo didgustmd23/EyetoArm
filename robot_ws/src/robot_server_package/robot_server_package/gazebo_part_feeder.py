@@ -57,7 +57,7 @@ class InletMonitor:
 
 
 class GazeboPartFeeder:
-    def __init__(self, root, speed=0.012, interval=8.0):
+    def __init__(self, root, speed=0.012, interval=20.0):
         self.models = Path(root) / "simulation" / "models"
         for model, _ in FEED_SEQUENCE:
             if not (self.models / model / "model.sdf").is_file():
