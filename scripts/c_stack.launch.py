@@ -33,6 +33,7 @@ from launch_ros.substitutions import FindPackageShare
 ROOT = Path(__file__).resolve().parent.parent
 SIM_LAUNCH = ROOT / "scripts" / "sim_sort_cell.launch.py"
 # M2 live A input feeds the B list consumer; B publishes center overlays from this same process.
+# 운영 모델(S1-08) 설정. ai_config 런처 옵션의 기본값이다.
 AI_CONFIG = ROOT / "config" / "vision" / "ai_s1_08_axis_m2_viewbias.json"
 LIVE_CONFIG = ROOT / "config" / "vision" / "live_observation_test.json"
 GUARD_SCRIPT = ROOT / "scripts" / "stack_guard.py"
@@ -80,7 +81,35 @@ def _guard_and_watch(context, marker, stamp):
     return [LogInfo(msg=f"종료 정리 감시 시작(표식 {marker}, 기록 {log})")]
 
 
-def _live_pipeline_actions(context, root, ai_config, live_config, ai_log, stamp):
+def resolve_ai_config(value, root=ROOT):
+    """ai_config 옵션 값을 실제 파일 경로로 바꾼다.
+
+    상대 경로는 저장소 맨 위 폴더(root) 기준, 절대 경로는 그대로 쓴다. 값이 비었거나 파일이 없으면
+    받은 값과 찾아본 경로를 담은 FileNotFoundError를 낸다. 가중치 sha 검사는 A가 시작 때 하므로 여기서 하지 않는다.
+    """
+    text = str(value).strip()
+    if not text:
+        raise FileNotFoundError("ai_config 값이 비어 있습니다")
+
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = Path(root) / path
+
+    if not path.is_file():
+        raise FileNotFoundError(f"ai_config 파일이 없습니다: 받은 값 {text!r}, 찾아본 경로 {path}")
+    return path
+
+
+def _check_ai_config(context):
+    """start_a:=true일 때만 ai_config 파일을 Gazebo·노드보다 먼저 확인하고, 어떤 설정으로 띄우는지 한 줄 남긴다."""
+    if LaunchConfiguration("start_a").perform(context).lower() != "true":
+        return []
+
+    path = resolve_ai_config(LaunchConfiguration("ai_config").perform(context))
+    return [LogInfo(msg=f"A AI 설정: {path}")]
+
+
+def _live_pipeline_actions(context, root, live_config, ai_log, stamp):
     start_a = LaunchConfiguration("start_a").perform(context).lower() == "true"
     start_b = LaunchConfiguration("start_b").perform(context).lower() == "true"
     sorting = LaunchConfiguration('auto_sort').perform(context).lower() == 'true'
@@ -94,6 +123,7 @@ def _live_pipeline_actions(context, root, ai_config, live_config, ai_log, stamp)
         return []
 
     python = LaunchConfiguration("a_python").perform(context)
+    ai_config = resolve_ai_config(LaunchConfiguration("ai_config").perform(context), root)
     cmd = [
         python, str(root / "scripts" / "run_pipeline_supervisor.py"), "--",
         python, str(root / "scripts" / "run_pipeline.py"),
@@ -142,11 +172,17 @@ def generate_launch_description():
                               description="MoveGroup 실행 여부"),
         DeclareLaunchArgument("moveit_gui", default_value="false",
                               description="MoveIt RViz GUI 실행 여부 (start_moveit:=true일 때만 적용)"),
+        DeclareLaunchArgument("ai_config", default_value=str(AI_CONFIG),
+                              description="A AI 설정 JSON(기본: 운영 모델 S1-08). 상대 경로는 저장소 맨 위 기준, "
+                                          "start_a:=true일 때 파일이 없으면 아무것도 띄우지 않고 멈춤"),
         DeclareLaunchArgument("a_python", default_value=str(ROOT / ".venv" / "bin" / "python"),
                               description="A 파이프라인에 사용할 Python 실행 파일"),
         DeclareLaunchArgument("run_mode", default_value="single",
                               description="single(기본): 같은 ROS_DOMAIN_ID·GZ_PARTITION의 남은 Gazebo·노드를 정리 후 시작, "
                                           "기본 포트를 남이 쓰면 거부 / multi: 경고만 하고 시작"),
+
+        # AI 설정 파일이 없으면 남은 프로세스 정리·Gazebo보다 먼저 멈춘다.
+        OpaqueFunction(function=_check_ai_config),
 
         # 이 실행이 띄우는 모든 프로세스에 표식을 물려주고, 시작 전 검사·종료 정리 감시를 가장 먼저 한다.
         SetEnvironmentVariable(stack_guard.MARKER_ENV, marker),
@@ -186,6 +222,6 @@ def generate_launch_description():
         ExecuteProcess(cmd=[str(c_executables / "tcp_server")], output="screen"),
         ExecuteProcess(cmd=[str(c_executables / "display_relay")], output="screen"),
         OpaqueFunction(function=lambda context: _live_pipeline_actions(
-            context, ROOT, AI_CONFIG, LIVE_CONFIG, ai_log, stamp
+            context, ROOT, LIVE_CONFIG, ai_log, stamp
         )),
     ])
