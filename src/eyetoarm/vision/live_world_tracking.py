@@ -281,6 +281,7 @@ class LiveWorldTracking:
         self._grip_epoch = 0                     # 재설정 회차(조건변수 안). 넣을 때와 다르면 버린다
         self._link_generation: int | None = None   # 마지막 링크 항목 세대(추적 스레드)
         self._last_gripper_ts: int | None = None   # 마지막 그리퍼 처리 시각(추적 스레드)
+        self._recent_ids: tuple = ()               # 마지막 링크 추적 결과의 번호(`_cond` 안, 기록용 #401)
         self.gripper_counts = {k: 0 for k in ("offered", "dropped_old", "processed", "old_epoch", "no_link_yet", "no_track_in_view",
                                               "observed", "updated", "late", "stale_after_gripper")}
         self._observe_ms: collections.deque[float] = collections.deque(maxlen=4096)
@@ -418,6 +419,11 @@ class LiveWorldTracking:
                 self.display_prev_miss[miss] = self.display_prev_miss.get(miss, 0) + 1
 
         return value
+
+    def recent_track_ids(self) -> list:
+        """마지막으로 처리한 링크 추적 결과의 번호(오름차순). 기록용이며 추적 판정에는 쓰지 않는다(#401)."""
+        with self._cond:
+            return list(self._recent_ids)
 
     @staticmethod
     def _k(key: FrameKey) -> tuple:
@@ -593,6 +599,7 @@ class LiveWorldTracking:
         self._tracker.reset(reason)
         with self._cond:
             self._results.clear()
+            self._recent_ids = ()
         self.last_reset = reason
         self._stream_reset(reason)
         self._write({"kind": "reset", "reason": reason, "t_mono_ns": self._clock_ns()})
@@ -684,9 +691,15 @@ class LiveWorldTracking:
         # 갱신한 결과면 확정 번호의 표시용 박스 사본을 둔다(추적 판정·송신에는 쓰지 않음)
         snap = snapshot(value, item.display) if isinstance(value, TrackFrame) else None
 
+        ids = (None if not isinstance(value, TrackFrame) else
+               tuple(sorted({a.part_track_id for a in value.assignments if a.part_track_id is not None})))
+
         with self._cond:
             self.counts["processed"] += 1
             self._results[self._k(key)] = value
+
+            if ids is not None:
+                self._recent_ids = ids
 
             if snap is not None:
                 self._display_prev = snap

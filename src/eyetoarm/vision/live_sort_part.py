@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from eyetoarm.transforms.sort_part_client import SEND_KINDS, SortPartClient
+from eyetoarm.vision.candidate_gap import (DEFAULT_CANDIDATE_GAP, CandidateGapConfig, CandidateGapConfigError,
+                                          CandidateGapWatch, classify_frame, parse_candidate_gap)
 
 _CONFIG_KEYS = {"server_wait_s", "result_wait_s", "close_limit_s", "spin_timeout_s"}
 _RETRY_KEYS = {"max_failures_per_track", "failed_point_block_s", "failed_point_block_mm"}
@@ -119,6 +121,7 @@ class SortPartConfig:
     require_track_id: bool | None = None   # 참이면 확정 번호 없는 PICK_PLACE를 보내지 않음
     run_source: RunSourceConfig | None = None   # 없으면 비관리(빈 job·epoch 0, 지금 동작)
     result_watch: ResultWatchConfig | None = None   # 없으면 기본값으로 켬(`result_watch_of`)
+    candidate_gap: CandidateGapConfig | None = None   # 없으면 기본값으로 켬(#401, 기록만)
 
     def to_json(self) -> dict:
         """요약용 사전. `require_track_id`는 설정에 있을 때만 넣는다(없으면 형식 그대로)."""
@@ -134,6 +137,9 @@ class SortPartConfig:
         if self.result_watch is not None:   # 없으면 형식 그대로(기본값은 송신기 요약에 남김)
             doc["result_watch"] = self.result_watch.to_json()
 
+        if self.candidate_gap is not None:   # 없으면 형식 그대로(기본값은 송신기 요약에 남김)
+            doc["candidate_gap"] = self.candidate_gap.to_json()
+
         return doc
 
 
@@ -142,7 +148,7 @@ def parse_sort_part(doc) -> SortPartConfig:
     if not isinstance(doc, dict):
         raise SortPartConfigError("sort_part must be an object")
 
-    unknown = set(doc) - _CONFIG_KEYS - {"retry", "require_track_id", "run_source", "result_watch"}
+    unknown = set(doc) - _CONFIG_KEYS - {"retry", "require_track_id", "run_source", "result_watch", "candidate_gap"}
     missing = _CONFIG_KEYS - set(doc)
 
     if unknown or missing:
@@ -176,9 +182,16 @@ def parse_sort_part(doc) -> SortPartConfig:
 
     run_source = _parse_run_source(doc["run_source"]) if "run_source" in doc else None
     watch = _parse_result_watch(doc["result_watch"]) if "result_watch" in doc else None
+    gap = None
+
+    if "candidate_gap" in doc:
+        try:
+            gap = parse_candidate_gap(doc["candidate_gap"], "sort_part.candidate_gap")
+        except CandidateGapConfigError as exc:
+            raise SortPartConfigError(str(exc)) from exc
 
     return SortPartConfig(**{k: float(doc[k]) for k in _CONFIG_KEYS}, retry=retry, require_track_id=require,
-                          run_source=run_source, result_watch=watch)
+                          run_source=run_source, result_watch=watch, candidate_gap=gap)
 
 
 def _parse_result_watch(r) -> ResultWatchConfig:
@@ -436,8 +449,11 @@ class LiveSortPartSender:
     def __init__(self, run_id: str, config: SortPartConfig, runtime, out_dir: str, *,
                  is_failed: Callable[[], bool] | None = None, clock_ns: Callable[[], int] = time.monotonic_ns,
                  tracking: bool = False, release_target=None,
-                 run_target: Callable[[str | None, int | None], None] | None = None) -> None:
+                 run_target: Callable[[str | None, int | None], None] | None = None,
+                 track_ids: Callable[[], list] | None = None) -> None:
         """새 기록 파일 `sort_part.jsonl`을 연다. `tracking`이면 모든 줄에 `part_track_id`를 붙인다.
+
+        `track_ids()`는 목록 후보 공백 줄(#401)에 실을 최근 추적 번호(없으면 그 줄의 번호는 null).
 
         클라이언트를 부르지 않은 번호 있는 `PICK_PLACE`는 `release_target.release(번호)`로 B 기록을 푼다.
         관리 실행(`config.run_source`)이면 실행 번호가 바뀔 때 `run_target(job, epoch)`로 B 단계에 넣는다
@@ -484,6 +500,12 @@ class LiveSortPartSender:
         self.run_counts = {"snapshots": 0, "query_failed": 0, "state_changes": 0, "run_changes": 0,
                            "retry_cleared": 0, "refresh_requests": 0}
         self.run_query_failures: dict[str, int] = {}
+
+        # 목록 후보 공백 감시(#401). 기록만 하고 판정·송신은 바꾸지 않는다
+        self.candidate_gap = CandidateGapWatch(config.candidate_gap or DEFAULT_CANDIDATE_GAP,
+                                               lambda event, detail: self._record(event, None, None, **detail),
+                                               track_ids=track_ids,
+                                               source="config" if config.candidate_gap is not None else "default")
 
     @property
     def managed(self) -> bool:
@@ -843,8 +865,18 @@ class LiveSortPartSender:
 
     # ------------------------------------------------------------------ 닫기
 
+    def note_list_frame(self, frame, display, skip_reason: str | None) -> None:
+        """목록 경로 사진 하나의 후보 판정(실행기 건너뜀 사유)을 공백 감시에 넣는다. 송신·게이트와 무관."""
+        kind = classify_frame(display, skip_reason)
+
+        if kind is not None:
+            self.candidate_gap.observe(getattr(frame, "ros_stamp_ns", None), *kind)
+
     def close_run(self, reason: str) -> None:
-        """게이트를 닫는다. 진행 중 송신 한 번이 끝날 때까지 기다린 뒤 돌아온다(그 뒤 송신 0)."""
+        """게이트를 닫는다. 진행 중 송신 한 번이 끝날 때까지 기다린 뒤 돌아온다(그 뒤 송신 0).
+
+        열린 목록 후보 공백은 먼저 `run_end`로 닫는다(알린 공백이면 풀림 줄)."""
+        self.candidate_gap.finish("run_end")
         t0 = time.monotonic_ns()
 
         with self._gate:
@@ -950,7 +982,7 @@ class LiveSortPartSender:
                    {"require_track_id": self.config.require_track_id,
                     "no_track_id_states": no_track_states}),
                 **({} if not self.managed else {"run_source": self._run_summary()}),
-                "result_watch": watch, "events": counts, "unresolved_at_close": list(self.unresolved), "close_reason": self.close_reason,
+                "result_watch": watch, "candidate_gap": self.candidate_gap.summary(), "events": counts, "unresolved_at_close": list(self.unresolved), "close_reason": self.close_reason,
                 "gate_wait_max_ms": round(self.gate_wait_max_ms, 3), "write_error": self.write_error, "crash": self.crash,
                 "client_stats_reference_only": _stats_copy(getattr(self.runtime, "stats", {}))}
 
