@@ -23,7 +23,11 @@ CONFIG_PATH = _ROOT / "config" / "gui" / "client.json"
 # client.json 을 읽지 못할 때 쓰는 값. TCP 명세 §9 초기값과 같다
 DEFAULTS = {"host": "127.0.0.1", "port": 47090, "max_line_bytes": 4096, "readiness_poll_ms": 1000,
             "status_watchdog_ms": 2000, "connect_timeout_ms": 2000, "reconnect_ms": 1500,
-            "readiness_timeout_ms": 1000, "ack_timeout_ms": 1000, "max_resend": 2, "target_validity_ms": 5000}
+            "readiness_timeout_ms": 1000, "ack_timeout_ms": 1000, "max_resend": 2, "target_validity_ms": 5000,
+            # TCP 1.2 후보(부록 A.6.11 후보값, C 미확정). --tcp-version 1.2 에서만 쓴다
+            "run_reply_timeout_ms": 3000, "run_max_resend": 2,
+            # E-Stop 응용 요청(D 제안). 보낸 뒤 이 시간 안에 C 최종 보고가 없으면 미확인으로 닫는다. 자동 재전송 없음
+            "e_stop_timeout_ms": 10000}
 
 
 def load_tcp_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
@@ -41,7 +45,7 @@ def load_tcp_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
         return config
     for key, default in DEFAULTS.items():
         if type(loaded.get(key)) is type(default):
-            if isinstance(default, int) and (loaded[key] < (0 if key == "max_resend" else 1)
+            if isinstance(default, int) and (loaded[key] < (0 if key.endswith("max_resend") else 1)
                                              or key == "port" and loaded[key] > 65535):
                 continue
             config[key] = loaded[key]
@@ -111,6 +115,39 @@ class CommandRecord:
         return None, ACK_METRIC_EXCLUDED.get(self.acceptance, "ACK 대기 중")
 
 
+@dataclass
+class SortRequest:
+    """TCP 1.2 후보 START·STOP·RECOVER 한 건. 요청 결과일 뿐 실행 상태가 아니다(상태는 스냅샷으로만)."""
+    request_id: str
+    action: str
+    raw: bytes
+    conn_id: int
+    base: tuple | None            # 보낼 때 반영 중이던 (c_session_id, run_revision). 없으면 None
+    attempts: int = 0
+    deadline_ms: int = 0
+    outcome: str | None = None    # 서버가 확정한 ACCEPTED·REJECTED·UNKNOWN, 또는 PENDING
+    code: str | None = None
+    detail: str | None = None
+    final: bool = False           # 더 기다리지 않음(서버 확정 또는 D 가 미확인으로 닫음)
+    result: str = "응답 대기"
+
+
+HISTORY = "이전 연결 기록(현재 상태 아님) · "
+
+
+@dataclass
+class EStopRequest:
+    """E-Stop 응용 요청 한 건(D 제안 · C 미합의). C 가 보고한 state 만 적는다. D 는 정지를 추정하지 않는다."""
+    request_id: str
+    raw: bytes
+    conn_id: int
+    deadline_ms: int
+    state: str | None = None      # C 보고: REQUESTED(접수만)·CONFIRMED·REJECTED·UNCONFIRMED
+    detail: str | None = None
+    final: bool = False
+    result: str = "응답 대기"
+
+
 # 사용자 실행→ACK 지표의 경계. 화면 툴팁과 세션 JSONL 에 같은 문장을 쓴다
 ACK_METRIC_BOUNDARY = ("시작: 사용자가 확정한 MOVE 실행 요청이 수락된 시각(새 GET_STATUS 준비 응답 대기 포함). "
                        "끝: 같은 연결·첫 송신(재전송 없음)에 대한 첫 ACK 수신. "
@@ -150,9 +187,24 @@ class StatusLink(QObject):
     traffic = Signal(object)
     command_changed = Signal(object)
     log_error = Signal(str)
+    run_changed = Signal()   # 1.2 후보: 스냅샷·요청 결과·서버 확인 여부가 바뀜
 
-    def __init__(self, host=None, port=None, parent=None, *, log_path=_DEFAULT_LOG, stable_count=3, stable_ms=5000, config=None):
+    def __init__(self, host=None, port=None, parent=None, *, log_path=_DEFAULT_LOG, stable_count=3, stable_ms=5000, config=None,
+                 version=protocol.VERSION):
         super().__init__(parent)
+        if version not in (protocol.VERSION, protocol.VERSION_12):
+            raise ValueError(f"지원하지 않는 TCP 버전 {version!r}")
+        # "1.2" 는 부록 A.6 후보(미승인)를 고른 명시적 호환 모드. 현재 C 서버(1.1)는 이 줄을 거부한다
+        self.version = version
+        self.run_snapshot = None      # 마지막으로 반영한 유효 스냅샷(A.6.7 4). None = 유효 스냅샷 없음
+        self._run_high = None         # 지금 연결에서 본 가장 높은 (c_session_id, run_revision)
+        self._retired_sessions = set()  # 지금 연결에서 새 세션으로 교체된 c_session_id
+        self.run_verified = False     # 지금 연결에서 검사를 통과한 1.2 응답을 받았는지(조작 관문)
+        self.peer_mismatch = False    # 지금 연결의 상대가 1.1 STATUS 로 답함 = 1.2 후보 미지원
+        self.sort_requests: dict[str, SortRequest] = {}
+        self.last_request = None
+        self.e_stop_available = False   # 지금 연결의 최신 유효 1.2 준비 STATUS 의 e_stop_available (생략 = false)
+        self.e_stop = None              # 마지막 E-Stop 요청(EStopRequest)
         self.config = load_tcp_config()
         if config:
             self.config.update(config)
@@ -192,6 +244,8 @@ class StatusLink(QObject):
         self._ready_deadline.timeout.connect(self._ready_timeout)
         self._ack_deadline = QTimer(self, interval=self.config["ack_timeout_ms"], singleShot=True)
         self._ack_deadline.timeout.connect(self._ack_timeout)
+        self._run_timer = QTimer(self, interval=50)   # 1.2 후보 요청 응답 기한 검사. 대기 요청이 있을 때만 돈다
+        self._run_timer.timeout.connect(self._run_tick)
 
     def _new_socket(self):
         sock = QTcpSocket(self)
@@ -275,6 +329,7 @@ class StatusLink(QObject):
             timer.stop()
         self._ready_pending = False
         self._pending_move = False
+        self._reset_run("연결 종료")
         if self.current_record and not self.current_record.finished:
             self.current_record.result = "연결 종료 · 실행 결과 미확인"
             self.command_changed.emit(self.current_record)
@@ -291,7 +346,8 @@ class StatusLink(QObject):
         return self.state != "connected" or age is None or age > self.config["status_watchdog_ms"]
 
     def can_execute(self):
-        return (self.state == "connected" and not self.is_stale() and bool(self.last_status and self.last_status["robot_ready"])
+        # 1.2 후보 모드에서는 수동 MOVE·CANCEL 을 쓰지 않는다: 1.2 명령 STATUS 의 slot_owner 일관성 규칙이 명세에 없다
+        return (self.version == protocol.VERSION and self.state == "connected" and not self.is_stale() and bool(self.last_status and self.last_status["robot_ready"])
                 and not self._pending_move and (self.current_record is None or self.current_record.finished))
 
     def _target_valid(self, target):
@@ -404,6 +460,7 @@ class StatusLink(QObject):
         for timer in (self._poll, self._connect_deadline, self._ready_deadline, self._ack_deadline):
             timer.stop()
         self._ready_pending = False
+        self._reset_run("연결 끊김")
         record = self.current_record
         if record and not record.finished:
             if self._pending_move and not record.attempts:
@@ -430,11 +487,11 @@ class StatusLink(QObject):
             self.state = state
             self.state_changed.emit(state)
 
-    def _send(self, raw, kind, command_id=None, *, visible=True, note=""):
+    def _send(self, raw, kind, command_id=None, *, visible=True, note="", **fields):
         written = self._socket.write(raw) if self.state == "connected" else -1
         sent = written == len(raw)
         self._log("TX", kind, note or ("소켓 기록" if sent else "쓰기 실패 또는 일부 기록"), raw,
-                  visible=visible, command_id=command_id,
+                  visible=visible, command_id=command_id, **fields,
                   send_state="queued" if sent else "partial" if written > 0 else "unsent", written=written,
                   delivery="qt_buffered" if sent else "unconfirmed")
         if not sent and self.state == "connected":
@@ -444,7 +501,7 @@ class StatusLink(QObject):
     def _send_get_status(self):
         if self.state != "connected" or self._ready_pending:
             return
-        if self._send(protocol.build_get_status(), "준비 조회", visible=not self._suppressing):
+        if self._send(protocol.build_get_status(version=self.version), "준비 조회", visible=not self._suppressing):
             self._ready_pending = True
             self._ready_deadline.start()
         record = self.current_record
@@ -486,12 +543,28 @@ class StatusLink(QObject):
             self._drop("수신 한도 초과")
 
     def _handle_line(self, raw):
+        line = raw.removesuffix(b"\n")
+        v12 = self.version == protocol.VERSION_12
         try:
-            message = protocol.parse_status(raw.removesuffix(b"\n"))
+            message = protocol.parse_v12(line) if v12 else protocol.parse_status(line)
         except protocol.ProtocolError as error:
+            # 응답 전체를 버린다. 요청 결과·스냅샷·준비 상태 어느 것도 일부 반영하지 않는다(A.6.6)
             self._log("RX", "형식 오류", safe_text(error), raw)
+            if v12:
+                self._note_peer_mismatch(line)
+            return
+        if message["type"] == "RUN_STATUS":
+            self._on_run_status(message, raw)
+            return
+        if message["type"] == "E_STOP_STATUS":
+            self._on_e_stop_status(message, raw)
             return
         kind = protocol.status_kind(message)
+        if v12:   # parse_v12 는 무ID 준비 STATUS 만 통과시킨다. 아래 1.1 준비 경로를 그대로 쓴다
+            self._mark_verified()
+            self.e_stop_available = message.get("e_stop_available") is True
+            self._apply_snapshot(message["run"])
+            self.run_changed.emit()
         if kind == "ready":
             self._ready_deadline.stop()
             was_pending = self._ready_pending
@@ -544,7 +617,252 @@ class StatusLink(QObject):
 
     @staticmethod
     def _ready_key(message):
-        return (message["robot_ready"], tuple(sorted(message["not_ready_reasons"])), message["active_command_id"])
+        # 1.2 후보는 slot_owner·run 변화도 표시 변화다. 1.1 STATUS 에는 두 필드가 없어 키가 예전과 같다
+        return (message["robot_ready"], tuple(sorted(message["not_ready_reasons"])), message["active_command_id"],
+                json.dumps(message.get("slot_owner"), sort_keys=True), json.dumps(message.get("run"), sort_keys=True),
+                message.get("e_stop_available"))
+
+    # ── TCP 1.2 후보 START·STOP·RECOVER (부록 A.6, 미승인) ─────────────────
+
+    def sort_allowed(self, action):
+        """(보낼 수 있는지, 사유). 버튼은 스냅샷 allowed 로만 켠다. 유효 스냅샷이 없을 때 연결 중 STOP 만 예외(A.6.12)."""
+        if self.version != protocol.VERSION_12:
+            return False, "TCP 1.2 후보 모드 아님(--tcp-version 1.2)"
+        if self.state != "connected":
+            return False, "연결 끊김"
+        if not self.run_verified:
+            return False, ("상대가 1.1 STATUS 로 답함 · 1.2 후보 미지원 서버" if self.peer_mismatch
+                           else "1.2 후보 응답 확인 전")
+        snapshot = None if self.is_stale() else self.run_snapshot
+        if action == "STOP":
+            if any(r.action == "STOP" and not r.final for r in self.sort_requests.values()):
+                return False, "앞선 STOP 응답 대기 중 · 같은 바이트 재전송만 함"
+            if snapshot is None:
+                return True, "유효 스냅샷 없음 · 연결 중 STOP 예외"
+        elif snapshot is None:
+            return False, "유효 스냅샷 없음"
+        elif self._unresolved():
+            return False, "이전 요청 결과 미확인 · 새 스냅샷 대기"
+        if action in snapshot["allowed"]:
+            return True, "allowed 에 있음"
+        return False, f"allowed {snapshot['allowed']} 에 없음"
+
+    def sort_request(self, action, confirmed=False):
+        """사용자가 누른 분류 명령 한 건을 새 request_id 로 보낸다. 상태는 바꾸지 않는다(스냅샷으로만)."""
+        if not self.sort_allowed(action)[0] or (action == "RECOVER" and confirmed is not True):
+            return ""
+        snapshot = None if self.is_stale() else self.run_snapshot
+        base = (snapshot["c_session_id"], snapshot["run_revision"]) if snapshot else None
+        request_id = protocol.new_command_id()
+        raw = protocol.build_run_request(action, request_id, *(base or (None, None)), user_confirmed=confirmed is True)
+        record = SortRequest(request_id, action, raw, self._conn_id, base, attempts=1,
+                             deadline_ms=_now_ms() + self.config["run_reply_timeout_ms"])
+        self.sort_requests[request_id] = record
+        self.last_request = record
+        if self._send(raw, action, request_id=request_id, note="1.2 후보 요청 · 응답 대기"):
+            record.result = f"{action} 송신 · 응답 대기"
+        self._update_run_timer()
+        self.run_changed.emit()
+        return request_id
+
+    def _unresolved(self):
+        """결과가 정해지지 않은 요청이 있는가. UNKNOWN·PENDING 은 그 뒤 스냅샷이 새로 오면 풀린다."""
+        for record in self.sort_requests.values():
+            if not record.final:
+                return True
+            if record.outcome not in ("ACCEPTED", "REJECTED") and not self._advanced(record.base):
+                return True
+        return False
+
+    def _advanced(self, base):
+        snapshot = self.run_snapshot
+        return snapshot is not None and (base is None or snapshot["c_session_id"] != base[0]
+                                         or snapshot["run_revision"] > base[1])
+
+    def _mark_verified(self):
+        if not self.run_verified:
+            self.run_verified = True
+            self._log("EV", "1.2 후보 응답 확인", "검사를 통과한 1.2 응답 수신 · 이 연결에서 분류 조작 관문 열림")
+
+    def _note_peer_mismatch(self, line):
+        try:
+            old = protocol.parse_status(line)
+        except protocol.ProtocolError:
+            return
+        if not self.peer_mismatch:
+            self.peer_mismatch = True
+            self._log("EV", "1.2 후보 미지원 서버",
+                      f"상대가 TCP {old['version']} STATUS(code={old.get('code')})로 답함 · 분류 명령을 보내지 않음")
+            self.run_changed.emit()
+
+    def _apply_snapshot(self, snapshot):
+        """A.6.7 4: 같은 세션에서 순번이 클 때만 반영, 같으면 무시, 작으면 기록만. 세션이 바뀌면 교체."""
+        if snapshot is None:
+            if self.run_snapshot is not None:
+                self.run_snapshot = None
+                self._log("EV", "실행 상태 미확인", "서버가 유효 스냅샷 없음(null)으로 보고 · 마지막 상태로 추정하지 않음")
+            return
+        key = (snapshot["c_session_id"], snapshot["run_revision"])
+        high = self._run_high
+        if key[0] in self._retired_sessions:
+            # A → B 로 바뀐 뒤 늦게 온 A 스냅샷. 세션 ID 에는 순서가 없으므로 이 연결에서 버린 세션은 다시 받지 않는다
+            self._log("EV", "이전 세션 스냅샷", f"세션 {key[0][:8]} rev {key[1]} · 이미 교체된 세션 · 반영 안 함")
+            return
+        if high is not None and key[0] != high[0]:
+            self._retired_sessions.add(high[0])
+        if high is not None and key[0] == high[0] and (key[1] < high[1] or key[1] == high[1] and self.run_snapshot is not None):
+            if key[1] < high[1]:
+                self._log("EV", "이전 순번 스냅샷", f"rev {key[1]} < {high[1]} · 반영 안 함")
+            return
+        self.run_snapshot, self._run_high = snapshot, key
+        self._log("EV", "실행 상태", safe_text(f"{snapshot['run_state']} · rev {key[1]} · 세션 {key[0][:8]} · "
+                                              f"보유 {snapshot['hold_state']} · allowed {snapshot['allowed']}"),
+                  run_state=snapshot["run_state"], run_revision=key[1], c_session_id=key[0])
+
+    def _on_run_status(self, message, raw):
+        request_id = message["request_id"]
+        self._log("RX", "RUN_STATUS", safe_text(f"{(request_id or '알림')[:8]} {message['outcome']} {message['code']}"),
+                  raw, request_id=request_id)
+        self._mark_verified()
+        record = self.sort_requests.get(request_id) if request_id else None
+        if request_id and record is None:
+            self._log("EV", "대응 요청 없음", "이전 연결이나 다른 클라이언트의 요청 · 요청 결과에 반영 안 함", request_id=request_id)
+        elif record is not None:
+            self._apply_outcome(record, message)
+        self._apply_snapshot(message["snapshot"])
+        self._update_run_timer()
+        self.run_changed.emit()
+
+    def _apply_outcome(self, record, message):
+        outcome, code = message["outcome"], message["code"]
+        if outcome == "PENDING":   # 서버 기록만 있음. 기한·재전송은 그대로
+            if record.outcome is None and not record.final:
+                record.outcome, record.result = "PENDING", f"{record.action} 서버 기록됨 · 결과 대기(PENDING)"
+            return
+        if record.outcome in ("ACCEPTED", "REJECTED", "UNKNOWN"):   # 처음 확정한 값은 바뀌지 않는다
+            if (record.outcome, record.code) != (outcome, code):
+                self._log("EV", "요청 결과 불일치", f"기존 {record.outcome}/{record.code} 유지 · 받은 {outcome}/{code}",
+                          request_id=record.request_id)
+            return
+        late = record.final
+        record.outcome, record.code, record.detail, record.final = outcome, code, message["detail"], True
+        text = f"{record.action} 요청 결과 {outcome} · {code}"
+        if record.action == "STOP" and outcome == "ACCEPTED":
+            text += " · 정지 확인 아님(상태로 확인)"
+        elif outcome == "UNKNOWN":
+            text += " · 실행되지 않았다는 뜻 아님"
+        record.result = text + (" · 늦은 응답" if late else "")
+        self._log("EV", "요청 결과", record.result, request_id=record.request_id)
+
+    def _close_unknown(self, record, reason):
+        record.final = True
+        record.result = f"{record.action} {reason}"
+        self._log("EV", "요청 결과 미확인", record.result, request_id=record.request_id, attempts=record.attempts)
+
+    # ── E-Stop 응용 요청(D 제안 · C 미합의). 분류 스냅샷·allowed 와 별개 ───────────
+
+    def e_stop_allowed(self):
+        """(보낼 수 있는지, 사유). 지금 연결의 최신 유효 준비 STATUS 가 e_stop_available=true 일 때만. 분류 상태·robot_ready 는 보지 않는다."""
+        if self.version != protocol.VERSION_12:
+            return False, "TCP 1.2 후보 모드 아님"
+        if self.state != "connected":
+            return False, "연결 끊김"
+        if self.is_stale() or not self.e_stop_available:
+            return False, "C 가 E-Stop 요청 가능을 알리지 않음(e_stop_available)"
+        if self.e_stop is not None and not self.e_stop.final:
+            return False, "앞선 E-Stop 요청 결과 대기 중"
+        return True, "C 에 E-Stop 요청 가능 · 실제 동작은 C 가 정함"
+
+    def e_stop_request(self):
+        """사용자가 누를 때 한 줄만 보낸다. 재전송·재접속 재송신 없음."""
+        if not self.e_stop_allowed()[0]:
+            return ""
+        request_id = protocol.new_command_id()
+        raw = protocol.build_e_stop(request_id)
+        self.e_stop = EStopRequest(request_id, raw, self._conn_id, _now_ms() + self.config["e_stop_timeout_ms"])
+        if self._send(raw, "E_STOP", request_id=request_id, note="E-Stop 응용 요청 · C 결과 대기"):
+            self.e_stop.result = "E-Stop 요청 송신 · C 응답 대기 · 정지 확인 아님"
+        self._update_run_timer()
+        self.run_changed.emit()
+        return request_id
+
+    def _on_e_stop_status(self, message, raw):
+        request_id, state = message["request_id"], message["state"]
+        self._log("RX", "E_STOP_STATUS", f"{request_id[:8]} {state}", raw, request_id=request_id)
+        record = self.e_stop
+        if record is None or record.request_id != request_id or record.conn_id != self._conn_id:
+            self._log("EV", "E-Stop 대응 요청 없음", "다른 ID 또는 이전 연결의 응답 · 반영 안 함", request_id=request_id)
+            return
+        if record.final and state == "REQUESTED":   # 기한 뒤 늦은 접수 통지로 미확인 결과를 가리지 않는다
+            self._log("EV", "E-Stop 늦은 접수 무시", "이미 미확인으로 닫힌 요청의 REQUESTED · 반영 안 함", request_id=request_id)
+            return
+        terminal = record.state in ("CONFIRMED", "REJECTED", "UNCONFIRMED")
+        if terminal or (state == "REQUESTED" and record.state == "REQUESTED"):
+            if state != record.state:   # C 최종 보고는 되돌리지 않는다
+                self._log("EV", "E-Stop 결과 불일치", f"기존 {record.state} 유지 · 받은 {state}", request_id=request_id)
+            return
+        late = record.final
+        record.state, record.detail = state, message["detail"]
+        record.result = {"REQUESTED": "E-Stop C 접수(REQUESTED) · 정지 확인 아님",
+                         "CONFIRMED": "E-Stop C 확인 보고(CONFIRMED) · C 가 로봇·컨베이어 정지를 보고(D 제안 의미, D 검증 아님)",
+                         "REJECTED": "E-Stop C 거부(REJECTED)",
+                         "UNCONFIRMED": "E-Stop C 미확인 보고(UNCONFIRMED) · 정지 확인 아님"}[state]
+        record.final = record.final or state != "REQUESTED"
+        record.result += " · 늦은 응답" if late else ""
+        self._log("EV", "E-Stop 결과", record.result, request_id=request_id)
+        self._update_run_timer()
+        self.run_changed.emit()
+
+    def _update_run_timer(self):
+        if any(not r.final for r in self.sort_requests.values()) or (self.e_stop is not None and not self.e_stop.final):
+            if not self._run_timer.isActive():
+                self._run_timer.start()
+        else:
+            self._run_timer.stop()
+
+    def _run_tick(self):
+        now = _now_ms()
+        for record in list(self.sort_requests.values()):
+            if record.final or now < record.deadline_ms or record.request_id not in self.sort_requests:
+                continue
+            if (self.state == "connected" and record.conn_id == self._conn_id
+                    and record.attempts < 1 + self.config["run_max_resend"]):
+                record.attempts += 1   # 같은 request_id·같은 바이트. 서버가 중복으로 판정한다(A.6.10)
+                record.deadline_ms = now + self.config["run_reply_timeout_ms"]
+                self._send(record.raw, record.action, note="동일 바이트 재전송", request_id=record.request_id)
+            else:
+                self._close_unknown(record, "응답 시간 초과 · 결과 미확인 · 재시도 끝")
+            self.run_changed.emit()
+        record = self.e_stop
+        if record is not None and not record.final and now >= record.deadline_ms:
+            self._close_e_stop(record, "C 최종 보고 없음 · 시간 초과 · 결과 미확인")
+            self.run_changed.emit()
+        self._update_run_timer()
+
+    def _close_e_stop(self, record, reason):
+        record.final = True
+        record.result = f"E-Stop {reason}" + (" (마지막 C 보고 REQUESTED: 접수만)" if record.state == "REQUESTED" else "")
+        self._log("EV", "E-Stop 결과 미확인", record.result, request_id=record.request_id)
+
+    def _reset_run(self, reason):
+        """끊김·종료·주소 변경: 조작 관문을 닫고 스냅샷을 버린다. 대기 요청은 미확인으로 닫고 다시 보내지 않는다."""
+        for record in list(self.sort_requests.values()):
+            if not record.final:
+                self._close_unknown(record, f"{reason} · 결과 미확인 · 자동 재전송 없음")
+        self.sort_requests.clear()
+        if self.e_stop is not None:
+            if not self.e_stop.final:
+                self._close_e_stop(self.e_stop, f"{reason} · 결과 미확인 · 재전송 없음")
+            if not self.e_stop.result.startswith(HISTORY):
+                # 방금 닫은 것도, 이미 끝난 것도 이전 연결 기록이다. 새 연결·주소에서 현재 상태처럼 보이지 않게 한다
+                self.e_stop.result = HISTORY + self.e_stop.result
+        self.e_stop_available = False
+        self._run_timer.stop()
+        self.run_snapshot = self._run_high = None
+        self._retired_sessions = set()
+        self.run_verified = self.peer_mismatch = False
+        if self.version == protocol.VERSION_12:
+            self.run_changed.emit()
 
     def _complete_pending(self, status):
         record = self.current_record
