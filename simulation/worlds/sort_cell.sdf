@@ -54,6 +54,25 @@
     <include><uri>model://sort_bin_bolt_b</uri><name>bin_bolt_b</name><pose>0.72 0.17 0 0 0 1.5708</pose></include>
     <include><uri>model://sort_bin_nut</uri><name>bin_nut</name><pose>0.55 0.70 0 0 0 0</pose></include>
 
+    <!-- 벨트 끝 경사판(#375, A 결정 2026-11-24): 벨트 끝(y 0.63)과 너트 상자 벽(y 0.640) 사이 틈·벨트 아래로
+         작은 부품이 떨어지지 않게 상자 안으로 미끄러뜨린다. 35°, 두께 3 mm, 폭 140 mm, 마찰 0.3.
+         윗면은 y 0.628·z 0.0985(벨트 윗면 1.5 mm 아래)에서 y 0.680·z 0.062(상자 안)로 내려가고, 상자 벽 위(z 0.08)와 닿지 않는다.
+         팔 집는 구간(|y| <= 0.45) 밖이라 C 계획 장면에는 넣지 않는다(A 결정). -->
+    <model name="bin_chute">
+      <static>true</static>
+      <pose>0.55 0.65314 0.07907 -0.610865 0 0</pose>
+      <link name="link">
+        <collision name="plate">
+          <geometry><box><size>0.14 0.06348 0.003</size></box></geometry>
+          <surface><friction><ode><mu>0.3</mu><mu2>0.3</mu2></ode></friction></surface>
+        </collision>
+        <visual name="plate">
+          <geometry><box><size>0.14 0.06348 0.003</size></box></geometry>
+          <material><ambient>0.45 0.46 0.48 1</ambient><diffuse>0.70 0.71 0.73 1</diffuse><specular>0.3 0.3 0.3 1</specular></material>
+        </visual>
+      </link>
+    </model>
+
     <!-- 외형 확인용 부품(벨트 위). 볼트는 옆으로 눕힌 자세(축이 X) -->
     <include><uri>model://bolt_m3x20</uri><name>part_00</name><pose>0.55 -0.30 0.105 0 1.5708 0</pose></include>
     <include><uri>model://bolt_m6x40</uri><name>part_01</name><pose>0.55 -0.15 0.105 0 1.5708 0</pose></include>
