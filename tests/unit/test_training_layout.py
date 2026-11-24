@@ -309,3 +309,33 @@ class HsvVIdentityTest(unittest.TestCase):
         self.assertTrue(any("hsv_v" in r for r in reasons), reasons)
         ok, _ = check_completion(evidence(best=stripped(train_args=bad), last=stripped(sha256="b" * 64, train_args=bad)))
         self.assertTrue(ok)
+
+
+class DegreesScaleIdentityTest(unittest.TestCase):
+    """선택 공통 키 degrees·scale도 설정에 있을 때만 체크포인트 train_args와 대조한다(hsv_v와 같은 규칙)."""
+
+    def resume_with(self, ckpt_over, common):
+        """체크포인트 train_args에 ckpt_over를 넣은 재개 입력(hsv_v 시험의 입력 구성을 그대로 씀)."""
+        r = HsvVIdentityTest.resume_args(self, None, common)
+        r["last"]["train_args"] = {**r["last"]["train_args"], **ckpt_over}
+        return r
+
+    def test_resume_degrees_mismatch_rejected(self):
+        """설정 degrees 180인데 체크포인트가 0(ultralytics 기본)이면 재개 거부, 180이면 허용."""
+        common = {**COMMON, "degrees": 180.0}
+
+        self.assertEqual(check_resume(**self.resume_with({"degrees": 180.0}, common)), [])
+        reasons = check_resume(**self.resume_with({"degrees": 0.0}, common))
+        self.assertTrue(any("degrees" in r for r in reasons), reasons)
+
+    def test_resume_scale_list_compared(self):
+        """설정 scale [0.1, 1.5]이면 체크포인트 scale 0.5는 거부, 같은 목록은 허용."""
+        common = {**COMMON, "scale": [0.1, 1.5]}
+
+        self.assertEqual(check_resume(**self.resume_with({"scale": [0.1, 1.5]}, common)), [])
+        reasons = check_resume(**self.resume_with({"scale": 0.5}, common))
+        self.assertTrue(any("scale" in r for r in reasons), reasons)
+
+    def test_unconfigured_degrees_not_compared(self):
+        """설정에 degrees·scale이 없으면 체크포인트 값(기본 0·0.5)은 비교하지 않는다(기존 동작)."""
+        self.assertEqual(check_resume(**self.resume_with({"degrees": 0.0, "scale": 0.5}, COMMON)), [])

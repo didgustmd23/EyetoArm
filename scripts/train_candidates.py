@@ -276,7 +276,7 @@ def child_inspect(args) -> int:
     """체크포인트 메타 자식(torch.load, CPU)."""
     import torch
     keys = ("data", "imgsz", "batch", "epochs", "seed", "deterministic", "workers", "device", "project", "name",
-            "model", "hsv_v")
+            "model", "hsv_v", "degrees", "scale")
     try:
         ck = torch.load(args.path, map_location="cpu", weights_only=False)
         ta = ck.get("train_args") or {}

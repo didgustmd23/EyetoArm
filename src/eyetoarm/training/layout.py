@@ -16,7 +16,7 @@ _RUN_SET_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
 # 완료·재개에서 같아야 하는 공통 학습 키(train_args 기준)
 COMMON_KEYS = ("data", "imgsz", "batch", "epochs", "seed", "deterministic", "workers", "device")
 # 설정에 있을 때만 대조하는 선택 공통 키. 없으면 체크포인트 값(ultralytics 기본)을 비교하지 않는다
-OPTIONAL_COMMON_KEYS = ("hsv_v",)
+OPTIONAL_COMMON_KEYS = ("hsv_v", "degrees", "scale")
 
 
 def _compared_keys(common: dict) -> list:

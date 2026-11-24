@@ -72,6 +72,12 @@ ros2 launch scripts/c_stack.launch.py gui:=false start_a:=true start_b:=true
 ```
 
 - `c_stack.launch.py`는 Gazebo 분류 셀, C TCP 서버·영상 중계기, A 실시간 검출(AI 추론은 별도 프로세스), B 목록 처리·중심점 발행을 함께 띄웁니다. 실시간 경로에서는 팔·그리퍼 영역의 오검출 제외가 기본으로 켜집니다.
+- **실행 방식 `run_mode`**(기본 `single`): 같은 `ROS_DOMAIN_ID`·`GZ_PARTITION`에 이전 실행에서 남은 Gazebo·노드가 있으면 섞여서 컨트롤러 오류·검출 중단이 납니다.
+  - `run_mode:=single`(기본): 시작 전에 같은 도메인·파티션의 남은 Gazebo·노드를 정리(SIGINT → 10초 → SIGTERM → 5초 → SIGKILL)한 뒤 실행합니다. 기본 포트(47090·47092·47093)를 다른 프로세스가 쓰고 있으면 그 프로세스는 끄지 않고 시작을 거부합니다. 다른 도메인·파티션의 실행은 건드리지 않습니다.
+  - `run_mode:=multi`: 남은 Gazebo가 있어도 경고만 출력하고 실행합니다(여러 실행을 일부러 함께 띄울 때).
+  - 끌 때(Ctrl+C·`kill`·터미널 창 닫기) 이 실행이 띄운 프로세스만 정리합니다. 처리 기록은 `logs/c_stack_guard_<시각>.log`에 남습니다.
+  - 예: `ros2 launch scripts/c_stack.launch.py auto_sort:=true`(단일) / `ros2 launch scripts/c_stack.launch.py auto_sort:=true run_mode:=multi`
+  - 이 처리는 `c_stack.launch.py`에만 있습니다. `sim_sort_cell.launch.py`·`dashboard_up.sh`로 띄운 뒤에는 `pgrep -af "gz sim"`으로 남은 Gazebo가 없는지 확인합니다.
 - 컨베이어를 움직이려면 `ros2 run ros_gz_bridge parameter_bridge /world/sort_cell/set_pose@ros_gz_interfaces/srv/SetEntityPose`를 따로 띄웁니다. 모든 터미널의 `ROS_DOMAIN_ID`·`GZ_PARTITION`이 같아야 합니다.
 - Windows 대시보드 실행과 외부 PC 연결은 [서버-대시보드 실행](docs/design/서버-대시보드%20실행.md)과 [대시보드 한 번에 실행](docs/design/대시보드_한번에_실행.md)을 따릅니다.
 - A 파이프라인 단독 실행(저장 영상·실시간·옵션)은 `scripts/run_pipeline.py --help`와 [A 상세설계](docs/design/A담당_비전_상세설계.md) §3·§6·§9를 봅니다.
