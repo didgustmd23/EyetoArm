@@ -42,8 +42,12 @@ class LagConfigError(ValueError):
 class LiveWorldConfig:
     """추적 스레드 설정. 모두 필수.
 
-    `lag_ms` > `lag_limit_ms`이거나 대기 실패 비율 > `pending_ratio_limit`인 밀림이 `lag_persist_n`회 이어지면
-    전 트랙을 종료한다(`lag_cooldown_ms` 동안 다시 하지 않음).
+    추적 큐 대기 `lag_ms` > `lag_limit_ms`인 밀림이 `lag_persist_n`회 이어지면 전 트랙을 종료한다
+    (`lag_cooldown_ms` 동안 다시 하지 않음). 밀림은 추적기 자신의 처리 지연으로만 판정한다.
+
+    `pending_ratio_limit`은 진단 한도다. B가 결과를 기다리다 못 받은 비율(`wait` 실패, 창 `window_n`)이 이 값을
+    넘는 구간을 `pending_high`로 세기만 하고 트랙은 건드리지 않는다. B가 추적기보다 먼저 물어도 생기는 값이라
+    밀림의 근거로 쓰지 않는다(#372: 기록된 밀림 초기화가 모두 이 값 때문이었고 큐 대기는 최대 22 ms).
     """
 
     queue_capacity: int
@@ -252,7 +256,8 @@ class LiveWorldTracking:
         self.crash: str | None = None
         self.write_error: str | None = None
         self.counts = {k: 0 for k in ("offered", "dropped_full", "processed", "updated", "handoff_ok", "handoff_pending",
-                                      "stale_skipped", "lag_resets", "reset_requests")}
+                                      "stale_skipped", "lag_resets", "reset_requests", "pending_high")}
+        self._pending_high = False   # 추적 스레드: 지금 B 기다림 실패 비율이 진단 한도를 넘는 구간인가
         self.not_updated: dict[str, int] = {}
         # `peek` 계수. 밀림 규칙 입력(handoff_*·대기 창)과 섞지 않는다
         self.display_counts = {"found": 0, "prev": 0, "pending": 0, "reason": 0}
@@ -484,7 +489,13 @@ class LiveWorldTracking:
                     self._lag_ms_samples.append(lag_ms)
                     window = list(self._handoff_window)
                     pending_ratio = (window.count(False) / len(window)) if len(window) >= self.config.window_n else 0.0
-                    lagging = lag_ms > self.config.lag_limit_ms or pending_ratio > self.config.pending_ratio_limit
+                    lagging = lag_ms > self.config.lag_limit_ms   # 추적 큐 대기만(B 기다림 실패는 진단)
+                    pending_high = pending_ratio > self.config.pending_ratio_limit
+
+                    if pending_high and not self._pending_high:   # 진단: 한도를 넘는 구간 시작마다 1회
+                        self.counts["pending_high"] += 1
+
+                    self._pending_high = pending_high
                     self._lag_streak = self._lag_streak + 1 if lagging else 0
                     cooled = (self._last_lag_reset_ns is None
                               or (now - self._last_lag_reset_ns) / 1e6 >= self.config.lag_cooldown_ms)
@@ -500,6 +511,7 @@ class LiveWorldTracking:
                         self._last_lag_reset_ns = now
                         self._lag_streak = 0
                         self._handoff_window.clear()
+                        self._pending_high = False
                         lag_reset = {"t_mono_ns": now, "lag_ms": round(lag_ms, 3), "pending_ratio": round(pending_ratio, 3),
                                      "queue_len": skipped, "skipped": skipped}
                         self.lag_reset_log.append(lag_reset)
@@ -994,7 +1006,8 @@ class LiveWorldTracking:
                    "tf_wait_ms_p95": _pct(list(self._tf_wait_samples), 0.95),
                    "handoff_pending_ratio": None if total == 0 else round(counts["handoff_pending"] / total, 4),
                    "dropped_full": counts["dropped_full"], "stale_skipped": counts["stale_skipped"],
-                   "lag_resets": counts["lag_resets"], "lag_reset_log": list(self.lag_reset_log)}
+                   "lag_resets": counts["lag_resets"], "lag_reset_log": list(self.lag_reset_log),
+                   "pending_high": counts["pending_high"]}
             # detect 영상 W 번호 조회 계수(found·prev·pending·reason)와 prev 실패 사유
             display = {**self.display_counts, "prev_miss": dict(sorted(self.display_prev_miss.items()))}
             counts["queue_left"] = len(self._queue)   # offered = processed + dropped + stale + left
