@@ -232,9 +232,32 @@ class GazeboSortExecutor:
         self._confirm_stopped()
         if self.holding_object:
             self.node.get_logger().info("SortPart RECOVER releasing held object at current pose")
-            self.arm.release()
-            self.holding_object = False
+            current = self.arm.joints()
+            pose = self.demo.forward(self.chain, current)
+            x, y, z = pose[:3, 3]
+            if np.linalg.norm(pose[:3, 2] - DOWN) > .02:
+                raise SortFailure("RECOVERY_TOOL_NOT_VERTICAL")
+            if .47 <= x <= .63 and abs(y) <= .60:
+                surface = .100  # sort_cell conveyor top, with clearance from the edges
+            elif any(abs(x - bx) <= .025 and abs(y - by) <= .045
+                     for _, _, (bx, by) in PARTS.values()):
+                surface = .004  # bottom of a bolt bin, well inside its walls
+            else:
+                raise SortFailure("RECOVERY_NO_KNOWN_SUPPORT")
+            release_z = surface + self.demo.FINGER_REACH + self.demo.TIP_CLEARANCE
+            if z < release_z - .002:
+                raise SortFailure("RECOVERY_BELOW_RELEASE_HEIGHT")
+            self._move_vertical(release_z, 2.)
+            self._grip(self.demo.GRIP_OPEN)
+            self._move_vertical(max(z, release_z + .09), 1.5)
         self.move_home()
+
+    def _move_vertical(self, z, seconds):
+        current = self.arm.joints()
+        pose = self.demo.forward(self.chain, current)
+        start = pose[:3, 3]
+        if abs(z - start[2]) > .001:
+            self._follow(self._line(start, np.r_[start[:2], z], pose[:3, :3], current), seconds)
 
     def _check_cancel(self):
         if self.cancel_requested():
@@ -267,7 +290,16 @@ class GazeboSortExecutor:
     def _grip(self, position, settle=0.5):
         """Command the gripper and retain its controller's stalled/holding indication."""
         self._grip_command_revision += 1
-        result = self.arm.grip(position, settle=settle)
+        try:
+            result = self.arm.grip(position, settle=settle)
+        except SortCanceled:
+            joint = self.arm.state.get(self.demo.GRIPPER_JOINT)
+            if joint is not None:
+                if float(position) <= self.demo.GRIP_OPEN + 1e-6:
+                    self.holding_object = self.holding_object and joint > self.demo.GRIP_OPEN + .015
+                elif float(position) >= self.demo.GRIP_CLOSED - .01:
+                    self.holding_object = joint > self.demo.GRIP_OPEN + .05 and self._closed_short(position)
+            raise
         if float(position) <= self.demo.GRIP_OPEN + 1e-6:
             self.holding_object = False
             self._contact_seen = False
@@ -359,7 +391,8 @@ class GazeboSortExecutor:
             raise SortFailure("PART_MOVED")
 
     def execute(self, goal, feedback: Callable[[str], None], cancel_requested: Callable[[], bool],
-                home_after_cancel: Callable[[], bool] = lambda: False):
+                home_after_cancel: Callable[[], bool] = lambda: False,
+                *, wait_for_resume: Callable[[], bool] = lambda: False):
         self.cancel_requested = cancel_requested
         self.home_after_cancel = home_after_cancel
         self._check_cancel()
@@ -422,7 +455,7 @@ class GazeboSortExecutor:
         self._goal_tracker = tracker
         try:
             return self._pick_and_place(goal, feedback, tracker, observed,
-                                        place, place_rotation, heights, radius, bin_xy)
+                                        place, place_rotation, heights, radius, bin_xy, wait_for_resume)
         finally:
             self._goal_tracker = None
             self._track = None
@@ -441,22 +474,34 @@ class GazeboSortExecutor:
                 raise SortFailure("GOAL_EXPIRED")
 
     def _pick_and_place(self, goal, feedback, tracker, observed, place,
-                        place_rotation, heights, radius, bin_xy):
+                        place_rotation, heights, radius, bin_xy, wait_for_resume=lambda: False):
         """Run one goal. After a failure once the arm has moved, return home (not after a cancel
         or an unconfirmed stop); the failure reason is raised unchanged."""
         self._arm_moved = False
         self._retreat_z = None
-        try:
-            return self._pick_and_place_steps(goal, feedback, tracker, observed, place,
-                                              place_rotation, heights, radius, bin_xy)
-        except SortFailure as exc:
-            if self._arm_moved and str(exc) not in NO_HOME_AFTER:
-                self._return_home(goal, f"failure:{exc}", retreat=True)
-            raise
-        except SortCanceled:
-            if self._arm_moved and self.home_after_cancel():
-                self._home_after_cancel(goal)
-            raise
+        checkpoint = {}
+        while True:
+            try:
+                if self.holding_object and "part" not in checkpoint and "bind_part" in checkpoint:
+                    checkpoint["part"] = checkpoint["bind_part"]()
+                if "part" in checkpoint and (self.holding_object or checkpoint.get("release_started")):
+                    return self._place_part(goal, feedback, checkpoint, place, place_rotation, bin_xy, resuming=True)
+                if self._retreat_z is not None:
+                    self._deadline(goal)
+                    self._move_vertical(max(self._retreat_z, self.demo.forward(self.chain, self.arm.joints())[2, 3]), 1.5)
+                checkpoint.clear()
+                return self._pick_and_place_steps(goal, feedback, tracker, observed, place,
+                                                  place_rotation, heights, radius, bin_xy, checkpoint)
+            except SortFailure as exc:
+                if self._arm_moved and str(exc) not in NO_HOME_AFTER:
+                    self._return_home(goal, f"failure:{exc}", retreat=True)
+                raise
+            except SortCanceled:
+                if wait_for_resume():
+                    continue
+                if self._arm_moved and self.home_after_cancel():
+                    self._home_after_cancel(goal)
+                raise
 
     def _home_after_cancel(self, goal):
         """#394 (A decision, C item 10): after a confirmed cancel from A/B, rise straight up if low and
@@ -485,7 +530,7 @@ class GazeboSortExecutor:
         log.info(f"SortPart CANCEL_HOME done goal={goal.goal_id} holding={self.holding_object}")
 
     def _pick_and_place_steps(self, goal, feedback, tracker, observed, place,
-                              place_rotation, heights, radius, bin_xy):
+                              place_rotation, heights, radius, bin_xy, checkpoint):
         feedback("PLANNING")
         if self.pose_source == "track":
             initial, initial_orientation, still, velocity, correction = self._plan_from_track(goal, tracker, observed)
@@ -559,7 +604,7 @@ class GazeboSortExecutor:
         self._follow([approach], 3.)
         if self.moving:
             result, base_z = self._moving_grasp(tracker, initial, initial_orientation, at_pick, raised,
-                                                rotation, goal, offset)
+                                                rotation, goal, offset, checkpoint)
             # The transport endpoints are derived from B's placement, with IK seeded
             # from the actual lift pose after the moving grasp.
             over_pose = self.demo.forward(self.chain, carry)
@@ -571,8 +616,10 @@ class GazeboSortExecutor:
             lift, carry, lowering = self._settle_and_descend(
                 goal, tracker, plan, (approach, descent, lift, carry, lowering, rotation, at_pick),
                 heights, offset, place, place_rotation)
+            checkpoint["bind_part"] = lambda: self._result_source(tracker, initial, offset)[0]
             self._close_on_part(goal)
             result, base_z = self._result_source(tracker, initial, offset)
+            checkpoint["part"] = result
             self._follow(lift, 2.)
         else:
             self._check_stationary(tracker, still)
@@ -582,8 +629,10 @@ class GazeboSortExecutor:
             except SortFailure:
                 self._follow(list(reversed(descent[:-1])) + [approach], 2.)
                 raise
+            checkpoint["bind_part"] = lambda: self._result_source(tracker, initial, offset)[0]
             self._close_on_part(goal)
             result, base_z = self._result_source(tracker, initial, offset)
+            checkpoint["part"] = result
             self._follow(lift, 2.)
         lifted_pose = result.pose()[0]
         lift_delta_m = float(lifted_pose[2] - base_z)
@@ -595,18 +644,47 @@ class GazeboSortExecutor:
             raise SortFailure("MISSED")
         self.holding_object = True             # #380: the part came up with the fingers (simulation feedback)
         self._contact_seen = True              # kept until the gripper opens (a later grip result cannot clear it)
+        checkpoint["part"] = result
+        return self._place_part(goal, feedback, checkpoint, place, place_rotation, bin_xy,
+                                planned=(carry, lowering))
+
+    def _place_part(self, goal, feedback, checkpoint, place, place_rotation, bin_xy,
+                    *, planned=None, resuming=False):
+        result = checkpoint["part"]
         feedback("PLACING")
-        self._follow([carry], 3.)
-        self._follow(lowering, 1.5)
-        held = result.pose()[0]
-        if np.any(np.abs(held[:2] - bin_xy) >= [.05, .07]) or held[2] <= .08:
-            raise SortFailure("PART_LOST_BEFORE_RELEASE")
-        self._grip(self.demo.GRIP_OPEN)
-        arrival = self._wait_for_bin(result, bin_xy)
-        self._event(goal, "bin_arrival", arrived_stamp_ns=arrival, final_part_position_m=result.pose()[0].tolist())
-        self._follow([carry], 1.5)
+        release_z = place[2] + self.demo.FINGER_REACH
+        clearance = max(release_z, self._retreat_z or release_z)
+        if resuming and "arrival" not in checkpoint and not checkpoint.get("release_started"):
+            tool = self.demo.forward(self.chain, self.arm.joints())[:3, 3]
+            if np.linalg.norm(result.pose()[0] - (tool - [0., 0., self.demo.FINGER_REACH])) > .025:
+                raise SortFailure("PART_LOST_BEFORE_RESUME")
+        if "arrival" not in checkpoint and (not checkpoint.get("release_started") or self.holding_object):
+            if planned is None:
+                tool_z = self.demo.forward(self.chain, self.arm.joints())[2, 3]
+                clearance = max(clearance, tool_z)
+                self._move_vertical(clearance, 1.5)
+                above = np.r_[place[:2], clearance]
+                carry = self._solve(above, place_rotation, self.arm.joints())
+                lowering = self._line(above, np.r_[place[:2], release_z], place_rotation, carry)
+            else:
+                carry, lowering = planned
+            self._follow([carry], 3.)
+            self._follow(lowering, 1.5)
+            held = result.pose()[0]
+            if np.any(np.abs(held[:2] - bin_xy) >= [.05, .07]) or held[2] <= .08:
+                raise SortFailure("PART_LOST_BEFORE_RELEASE")
+            checkpoint["release_started"] = True
+            self._grip(self.demo.GRIP_OPEN)
+        if "arrival" not in checkpoint:
+            arrival = self._wait_for_bin(result, bin_xy)
+            checkpoint["arrival"] = arrival
+            self._event(goal, "bin_arrival", arrived_stamp_ns=arrival, final_part_position_m=result.pose()[0].tolist())
+        if planned is None:
+            self._move_vertical(max(clearance, self.demo.forward(self.chain, self.arm.joints())[2, 3]), 1.5)
+        else:
+            self._follow([carry], 1.5)
         self._return_home(goal, "success")
-        return arrival
+        return checkpoint["arrival"]
 
     def _paths(self, pick_xy, z, lead, rotation, heights, offset, place, place_rotation, seed):
         """Joint paths for one grasp point: (approach, descent, lift, carry, lowering, at_pick, raised).
@@ -760,7 +838,11 @@ class GazeboSortExecutor:
             self._follow([self.home], 3.)
             if opening:
                 self._finish_grip()
-        except RuntimeError as exc:   # SortFailure/SortCanceled included: keep the original result
+        except SortCanceled:
+            if why == "success":
+                raise
+            return
+        except RuntimeError as exc:
             log.warning(f"SortPart HOME_RETURN failed goal={goal.goal_id} after={why}: {type(exc).__name__}: {exc}")
             return
         log.info(f"SortPart HOME_RETURN done goal={goal.goal_id}")
@@ -832,7 +914,7 @@ class GazeboSortExecutor:
         while not done() and time.monotonic() < stop:
             rclpy.spin_once(self.node, timeout_sec=.05)
 
-    def _moving_grasp(self, tracker, initial, initial_orientation, at_pick, raised, rotation, goal, offset):
+    def _moving_grasp(self, tracker, initial, initial_orientation, at_pick, raised, rotation, goal, offset, checkpoint):
         # B's candidate sets the point and direction. Pose increments (Gazebo in sim
         # mode, the A track in track mode) supply relative XY corrections while a goal
         # is already executing.
@@ -879,9 +961,11 @@ class GazeboSortExecutor:
             rotation = np.column_stack([closing, np.cross(DOWN, closing), DOWN])
             self._follow(self._line(start, target, rotation, current), .32)
             if not clearance and grasp_goal is None:
+                checkpoint["bind_part"] = lambda: self._result_source(tracker, initial, offset)[0]
                 grasp_goal = self._start_watched_close(part)
         self._check_cancel()
         result, _ = self._result_source(tracker, initial, offset)
+        checkpoint["part"] = result
         grasping_position = result.pose()[0]
         current = self.arm.joints()
         start = self.demo.forward(self.chain, current)[:3,3]
