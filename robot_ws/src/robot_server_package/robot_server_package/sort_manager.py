@@ -20,6 +20,7 @@ from eyetoarm_interfaces.action import SortPart
 from eyetoarm_interfaces.srv import GetSortRun
 from .gazebo_sort_executor import POSE_SOURCES, TRACK_TOPIC, GazeboSortExecutor, SortCanceled, SortFailure
 from .action_server_guard import ActionServerConflict, acquire_action_server_guard
+from .sort_event_log import SortEventLog
 
 
 ACTION_NAME = "/sort_part"
@@ -63,11 +64,12 @@ def _goal_summary(goal) -> str:
 class SortGoalReceiver(Node):
     """Validate goals and dispatch them to the configured executor."""
 
-    def __init__(self, action_name: str = ACTION_NAME, backend=None, epoch_file=None, feeder=None) -> None:
+    def __init__(self, action_name: str = ACTION_NAME, backend=None, epoch_file=None, feeder=None, event_log=None) -> None:
         super().__init__("c_sort_goal_receiver")
         self._feeder = feeder
         self._stop_run_requested = Event()
         self._backend = backend
+        self._event_log = event_log
         self._execution_lock = Lock()
         self._epoch_file = epoch_file
         self._epoch = next_epoch(epoch_file) if epoch_file is not None else 0
@@ -178,6 +180,26 @@ class SortGoalReceiver(Node):
         except (ValueError, AttributeError):
             ros_goal_id = "<invalid>"
         self.get_logger().info(f"B_GOAL_RECEIVED ros_goal_id={ros_goal_id} {_goal_summary(request)}")
+        if self._event_log:
+            self._event_log.record("goal_received", goal_id=request.goal_id, ros_goal_id=ros_goal_id,
+                                   part_class=request.part_class, goal_kind=request.goal_kind,
+                                   track_id=request.part_track_id, frame_id=request.frame_id,
+                                   timestamp_base=request.timestamp_base,
+                                   observed_position_mm=list(request.observed_position_mm),
+                                   grasp_candidates=[{"position_mm": list(c.position_mm),
+                                                      "orientation_xyzw": list(c.orientation_xyzw),
+                                                      "closing_yaw_deg": c.closing_yaw_deg}
+                                                     for c in request.grasp_pose_candidates],
+                                   opening_width_mm=request.opening_width_mm,
+                                   approach_height_mm=request.approach_height_mm,
+                                   lift_height_mm=request.lift_height_mm, place_bin=request.place_bin,
+                                   place_position_mm=list(request.place_position_mm),
+                                   calibration_id=request.calibration_id)
+
+        def record_result(status, reason="", **fields):
+            if self._event_log:
+                self._event_log.record("goal_result", goal_id=request.goal_id, part_class=request.part_class,
+                                       status=status, reason=reason, **fields)
 
         feedback = SortPart.Feedback()
         feedback.stage = "ACCEPTED"
@@ -189,6 +211,7 @@ class SortGoalReceiver(Node):
             goal_handle.canceled()
             result.status = "CANCELED"
             result.reason = "CANCELED_BEFORE_EXECUTION"
+            record_result(result.status, result.reason)
             return result
 
         if request.goal_id != ros_goal_id:
@@ -198,6 +221,7 @@ class SortGoalReceiver(Node):
             self.get_logger().error(
                 f"B goal_id와 ROS goal UUID가 다릅니다: payload={request.goal_id!r} ros={ros_goal_id}"
             )
+            record_result(result.status, result.reason, ros_goal_id=ros_goal_id)
             return result
 
         if self._backend is None:
@@ -224,6 +248,7 @@ class SortGoalReceiver(Node):
                     request, publish, lambda: goal_handle.is_cancel_requested or self._stop_run_requested.is_set())
                 result.status = "SUCCEEDED"
                 goal_handle.succeed()
+                record_result(result.status, arrived_stamp_ns=result.arrived_stamp_ns)
                 self.get_logger().info(f"B_GOAL_ARRIVED goal_id={request.goal_id} stamp={result.arrived_stamp_ns}")
                 return result
             except SortCanceled:
@@ -244,10 +269,12 @@ class SortGoalReceiver(Node):
             except Exception as exc:
                 self.get_logger().error(f"SortPart execution error: {type(exc).__name__}: {exc}")
                 result.status, result.reason = "FAILED", "EXECUTION_ERROR"
+                record_result(result.status, result.reason, exception=f"{type(exc).__name__}: {exc}")
             finally:
                 self._execution_lock.release()
         goal_handle.abort()
         self.get_logger().warning(f"SortPart goal={request.goal_id} status={result.status} reason={result.reason}")
+        record_result(result.status, result.reason)
         return result
 
 
@@ -267,6 +294,8 @@ def main(args=None) -> int:
                         help="A TrackStateArray topic for --pose-source track")
     parser.add_argument("--sim-truth-log", type=Path,
                         help="With --pose-source track, append track minus simulation pose lines (evaluation only)")
+    parser.add_argument("--execution-log", type=Path,
+                        help="JSONL runtime log (default: <gazebo-project-root>/logs/sort_runs.jsonl)")
     parsed, ros_args = parser.parse_known_args(args)
     if parsed.feed_parts and (not parsed.moving_belt or parsed.pose_source != 'track'):
         parser.error('--feed-parts requires --moving-belt --pose-source track')
@@ -284,6 +313,10 @@ def main(args=None) -> int:
     executor = MultiThreadedExecutor(num_threads=2)
     try:
         backend = None
+        log_path = parsed.execution_log or ((parsed.gazebo_project_root / "logs" / "sort_runs.jsonl")
+                                            if parsed.gazebo_project_root else
+                                            (Path.cwd() / "logs" / "sort_runs.jsonl"))
+        event_log = SortEventLog(log_path)
         if parsed.gazebo_project_root is not None:
             arm_node = Node("c_sort_gazebo_arm", parameter_overrides=[
                 Parameter("use_sim_time", value=True),
@@ -291,11 +324,13 @@ def main(args=None) -> int:
             backend = GazeboSortExecutor(arm_node, parsed.gazebo_project_root.resolve(),
                                          moving=parsed.moving_belt, pose_source=parsed.pose_source,
                                          track_topic=parsed.track_topic, sim_truth_log=parsed.sim_truth_log)
+            backend.event_log = event_log
         feeder = None
         if parsed.feed_parts:
             from .gazebo_part_feeder import GazeboPartFeeder
             feeder = GazeboPartFeeder(parsed.gazebo_project_root)
-        node = SortGoalReceiver(parsed.action, backend, parsed.run_state, feeder)
+        node = SortGoalReceiver(parsed.action, backend, parsed.run_state, feeder, event_log)
+        node.get_logger().info(f"SortPart runtime log: {event_log.path}")
         executor.add_node(node)
         executor.spin()
     except ActionServerConflict as exc:

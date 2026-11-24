@@ -222,7 +222,9 @@ def track_label(a: TrackAssignment | None) -> str:
 
 def draw_detections(image: np.ndarray, result: AiSegResult, tracks: TrackFrame | None = None, *,
                     mode_text: str | None = None) -> tuple[np.ndarray, int]:
-    """원본을 복사해 in_scope 인스턴스를 그린 영상과 그린 대상 수를 돌려준다(원본 배열은 바꾸지 않음).
+    """원본 복사본에 표시 대상 검출을 그리고 그린 대상 수를 돌려준다.
+
+    유효 인스턴스가 하나도 없으면 왜 전부 제외됐는지 보이도록 범위 밖 검출도 함께 그린다.
 
     `tracks`는 결과와 같은 인스턴스 index 집합이어야 하며(아니면 ValueError) 라벨과 실험 배너를 붙인다.
     `mode_text`를 주면 배너의 모드 자리에 쓰고, 아니면 `tracks.mode` 값. 좌표는 ROI 반영된 원본 픽셀 그대로다.
@@ -239,12 +241,12 @@ def draw_detections(image: np.ndarray, result: AiSegResult, tracks: TrackFrame |
     fill = canvas.copy()
     drawn = 0
     polys = []
+    show_rejected = result.eligible_count == 0 and bool(result.instances)
+    visible = [inst for inst in result.instances if show_rejected or inst.in_scope]
 
-    for inst in result.instances:
-        if not inst.in_scope:
-            continue
-
-        color = _color(inst.class_index) if inst.rejected is None else REJECTED_COLOR_BGR
+    for inst in visible:
+        color = (REJECTED_COLOR_BGR if inst.rejected is not None or (show_rejected and inst.clipped)
+                 else _color(inst.class_index))
 
         if inst.polygon is not None:
             pts = np.round(inst.polygon).astype(np.int32).reshape(-1, 1, 2)
@@ -258,17 +260,20 @@ def draw_detections(image: np.ndarray, result: AiSegResult, tracks: TrackFrame |
     for pts, color in polys:
         cv2.polylines(canvas, [pts], True, color, 2, cv2.LINE_AA)
 
-    for inst in result.instances:
-        if not inst.in_scope:
-            continue
-
-        color = _color(inst.class_index) if inst.rejected is None else REJECTED_COLOR_BGR
+    for inst in visible:
+        color = (REJECTED_COLOR_BGR if inst.rejected is not None or (show_rejected and inst.clipped)
+                 else _color(inst.class_index))
         x1, y1, x2, y2 = (int(round(v)) for v in inst.box_xyxy)
         cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
-        label = f"{inst.class_name} {inst.confidence:.2f}" + (f" {inst.rejected}" if inst.rejected else "")
+        reason = inst.rejected or ("CLIPPED" if show_rejected and inst.clipped else None)
+        label = f"{inst.class_name} {inst.confidence:.2f}" + (f" {reason}" if reason else "")
         tag = track_label(None if by_index is None else by_index.get(inst.index))
         label += f" {tag}" if tag else ""
         _label(canvas, label, (x1, max(y1 - 4, 14)), color)
+
+    if show_rejected:
+        _label(canvas, "NO ELIGIBLE CANDIDATES - showing rejected detections",
+               (4, 36 if tracks is not None else 16), REJECTED_COLOR_BGR, 0.45)
 
     if tracks is not None:
         _label(canvas, f"TRACKING EXPERIMENTAL ({mode_text or tracks.mode.value}) - ids display-only, no identity guarantee",
