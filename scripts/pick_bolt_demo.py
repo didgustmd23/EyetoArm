@@ -10,12 +10,16 @@
 ROS_DOMAIN_ID·GZ_PARTITION은 Gazebo를 실행한 터미널과 같아야 한다.
 """
 import argparse
+from datetime import datetime, timezone
+import json
 import math
 import subprocess
 import threading
 import time
+import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from threading import Lock
 
 import numpy as np
 import rclpy
@@ -205,7 +209,19 @@ def main():
     parser.add_argument('--world', default='sort_cell')
     parser.add_argument('--lift', type=float, default=0.15, help='들어 올리는 높이(m)')
     parser.add_argument('--hold', type=float, default=3.0, help='들어 올린 채 머무는 시간(초)')
+    parser.add_argument('--execution-log', type=Path, default=Path('logs/pick_bolt_demo.jsonl'),
+                        help='append run events as JSONL')
     args = parser.parse_args()
+    args.execution_log.parent.mkdir(parents=True, exist_ok=True)
+    log_lock = Lock()
+    run_id = str(uuid.uuid4())
+    print(f'실행 로그: {args.execution_log.resolve()}', flush=True)
+
+    def log_event(event, **fields):
+        row = {'time_utc': datetime.now(timezone.utc).isoformat(), 'run_id': run_id,
+               'event': event, 'part': args.part, **fields}
+        with log_lock, args.execution_log.open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps(row, ensure_ascii=False, separators=(',', ':'), default=str) + '\n')
     if not 0.02 <= args.lift <= 0.4: parser.error('--lift must be between 0.02 and 0.4')
 
     chain = load_chain()
@@ -223,6 +239,9 @@ def main():
     # B 시험 서버와 같은 규칙: 축 중심 높이 - 해당 볼트 축 반지름 + 손끝 여유 + 손끝 길이.
     support = center[2] - SHANK_RADIUS[args.part]                          # 축 아래 받침면 높이
     grasp_z = support + TIP_CLEARANCE + FINGER_REACH + GRASP_HEIGHT_OFFSET[args.part]
+    log_event('target', part_position_m=position.tolist(), quaternion_wxyz=list(quaternion),
+              grasp_position_m=center.tolist(), grasp_z_m=float(grasp_z), support_z_m=float(support),
+              height_offset_m=GRASP_HEIGHT_OFFSET[args.part], lift_m=args.lift)
     print(f'{args.part}: 위치 ({position[0]:.3f}, {position[1]:.3f}, {position[2]:.3f}) m, '
           f'잡는 점 ({center[0]:.3f}, {center[1]:.3f}, {center[2]:.3f}) m', flush=True)
 
@@ -258,13 +277,21 @@ def main():
     start_z = bolt_z()
     try:
         print('1/8 그리퍼 열기', flush=True); arm.grip(GRIP_OPEN)
+        log_event('gripper_opened', joint_position_rad=float(arm.state[GRIPPER_JOINT]))
         print('2/8 볼트 위로 이동', flush=True); arm.follow([above], 4.0)
+        log_event('approach_complete', joint_positions_rad=arm.joints().tolist())
         print('3/8 내려가기', flush=True); arm.follow(down, 3.0)
+        log_event('descent_complete', joint_positions_rad=arm.joints().tolist())
         print('4/8 잡기', flush=True); result = arm.grip(GRIP_CLOSED)
         knuckle = arm.state[GRIPPER_JOINT]
+        log_event('gripper_closed', joint_position_rad=float(knuckle), stalled=bool(result.stalled),
+                  commanded_position_rad=GRIP_CLOSED)
         print(f'    그리퍼 관절 {knuckle:.3f} rad (완전히 닫히면 {GRIP_CLOSED}), stalled={result.stalled}', flush=True)
         print(f'5/8 {args.lift * 100:.0f} cm 들어 올리기', flush=True); arm.follow(up, 3.0); arm.wait(args.hold)
         lifted = bolt_z() - start_z
+        log_event('lift_check', start_part_z_m=start_z, final_part_z_m=bolt_z(),
+                  lift_delta_m=lifted, required_lift_m=args.lift * .8,
+                  success=bool(lifted > args.lift * .8))
         print(f'    볼트 높이 변화 {lifted * 1000:+.1f} mm → {"들어 올림 성공" if lifted > args.lift * 0.8 else "들어 올리지 못함"}', flush=True)
         print('6/8 내리기', flush=True); arm.follow(back, 3.0)
         print(f'    놓기 직전 볼트 높이 {bolt_z() * 1000:.1f} mm (처음 {start_z * 1000:.1f} mm)', flush=True)
@@ -276,9 +303,17 @@ def main():
         moved = np.linalg.norm(final[:2] - position[:2])
         print(f'끝: 볼트 최종 위치 ({final[0]:.3f}, {final[1]:.3f}, {final[2]:.3f}) m, 처음 자리에서 {moved * 1000:.1f} mm, '
               f'팔 복귀 오차 {error:.4f} rad', flush=True)
+        log_event('run_result', status='SUCCEEDED' if lifted > args.lift * .8 else 'FAILED',
+                  reason='' if lifted > args.lift * .8 else 'INSUFFICIENT_LIFT',
+                  final_part_position_m=final.tolist(), horizontal_displacement_m=float(moved),
+                  arm_return_error_rad=error)
         return 0 if lifted > args.lift * 0.8 else 1
     except KeyboardInterrupt:
+        log_event('run_result', status='CANCELED', reason='KEYBOARD_INTERRUPT')
         print('중단: 팔은 현재 궤적 지점에서 멈춘다', flush=True); return 130
+    except Exception as exc:
+        log_event('run_result', status='FAILED', reason=f'{type(exc).__name__}: {exc}')
+        raise
     finally:
         node.destroy_node(); rclpy.try_shutdown()
 

@@ -94,6 +94,7 @@ class GazeboSortExecutor:
         self.home = None
         self._arm_moved = False
         self._retreat_z = None
+        self.event_log = None
         self.node.create_subscription(JointState, "/joint_states", self._observe_velocity, 10)
         self.pose_source = pose_source
         self.sim_poses = None
@@ -125,6 +126,11 @@ class GazeboSortExecutor:
     def _record_truth(self, stage, goal, xyz):
         if self.truth_log is not None:
             self.truth_log.record(stage, goal.goal_id, goal.part_track_id, xyz, self._now_ns())
+
+    def _event(self, goal, event, **fields):
+        if self.event_log is not None:
+            self.event_log.record(event, goal_id=goal.goal_id, part_class=goal.part_class,
+                                  track_id=goal.part_track_id, pose_source=self.pose_source, **fields)
 
     def _observe_velocity(self, message):
         joints = dict(zip(message.name, message.velocity))
@@ -348,6 +354,11 @@ class GazeboSortExecutor:
         offset = self.demo.FINGER_REACH + self.demo.TIP_CLEARANCE - radius
         self._retreat_z = heights[0] + offset
         candidates = []
+        # Moving grasps apply the per-part correction incrementally in _moving_grasp.
+        # Stationary grasps use the planned descent path, so apply it to that path's
+        # pick height here. This also covers the stopped-belt track-settle path.
+        grasp_height_offset = (0.0 if self.moving else
+                               self.demo.GRASP_HEIGHT_OFFSET[PARTS[goal.part_class][0]])
         for candidate in goal.grasp_pose_candidates:
             pick = np.asarray(candidate.position_mm) / 1000.
             if (not np.all(np.isfinite(pick)) or np.linalg.norm(pick - observed) > .035
@@ -359,7 +370,8 @@ class GazeboSortExecutor:
                 pick_xy = pick[:2] + correction[:2]
                 lead = velocity[:2] * 2. if self.moving else 0
                 approach, descent, lift, carry, lowering, at_pick, raised = self._paths(
-                    pick_xy, pick[2] + offset, lead, rotation, heights, offset, place, place_rotation, current)
+                    pick_xy, pick[2] + grasp_height_offset + offset, lead, rotation, heights, offset,
+                    place, place_rotation, current)
             except RuntimeError:
                 continue
             cost = np.max(np.abs(approach - current))
@@ -369,6 +381,12 @@ class GazeboSortExecutor:
         _, approach, descent, lift, carry, lowering, rotation, at_pick, raised = min(
             candidates, key=lambda plan: plan[0])
         self._deadline(goal)
+        self._event(goal, "pick_plan", observed_position_m=observed.tolist(),
+                    part_position_m=initial.tolist(), correction_m=correction.tolist(),
+                    candidate_count=len(goal.grasp_pose_candidates), valid_candidate_count=len(candidates),
+                    tool_pick_position_m=at_pick.tolist(), finger_offset_m=offset,
+                    target_heights_m=heights.tolist(), grasp_height_offset_m=grasp_height_offset,
+                    gripper_opening_mm=goal.opening_width_mm)
         feedback("EXECUTING")
         if abs(self.arm.state[self.demo.GRIPPER_JOINT] - self.demo.GRIP_OPEN) > .015:
             self.arm.grip(self.demo.GRIP_OPEN)
@@ -389,6 +407,7 @@ class GazeboSortExecutor:
                 goal, tracker, plan, (approach, descent, lift, carry, lowering, rotation, at_pick),
                 heights, offset, place, place_rotation)
             self.arm.grip(self.demo.GRIP_CLOSED, settle=.1)
+            self._event(goal, "gripper_closed", joint_position_rad=float(self.arm.state[self.demo.GRIPPER_JOINT]))
             result, base_z = self._result_source(tracker, initial, offset)
             self._follow(lift, 2.)
         else:
@@ -400,9 +419,15 @@ class GazeboSortExecutor:
                 self._follow(list(reversed(descent[:-1])) + [approach], 2.)
                 raise
             self.arm.grip(self.demo.GRIP_CLOSED, settle=.1)
+            self._event(goal, "gripper_closed", joint_position_rad=float(self.arm.state[self.demo.GRIPPER_JOINT]))
             result, base_z = self._result_source(tracker, initial, offset)
             self._follow(lift, 2.)
-        if result.pose()[0][2] - base_z < .025:
+        lifted_pose = result.pose()[0]
+        lift_delta_m = float(lifted_pose[2] - base_z)
+        self._event(goal, "lift_check", before_position_m=[float(v) for v in initial],
+                    after_position_m=lifted_pose.tolist(), lift_delta_m=lift_delta_m,
+                    required_lift_m=.025)
+        if lift_delta_m < .025:
             self.arm.grip(self.demo.GRIP_OPEN)
             raise SortFailure("MISSED")
         feedback("PLACING")
@@ -413,6 +438,7 @@ class GazeboSortExecutor:
             raise SortFailure("PART_LOST_BEFORE_RELEASE")
         self.arm.grip(self.demo.GRIP_OPEN)
         arrival = self._wait_for_bin(result, bin_xy)
+        self._event(goal, "bin_arrival", arrived_stamp_ns=arrival, final_part_position_m=result.pose()[0].tolist())
         self._follow([carry], 1.5)
         self._return_home(goal, "success")
         return arrival
@@ -641,6 +667,11 @@ class GazeboSortExecutor:
             target = at_pick.copy()
             target[:2] = sample[0][:2] + yaw @ (at_pick[:2] - initial[:2]) + np.clip(velocity, -.05, .05) * .36
             target[2] += clearance + self.demo.GRASP_HEIGHT_OFFSET[PARTS[part][0]]
+            if not clearance:
+                self._event(goal, "final_grasp_target", target_tool_position_m=target.tolist(),
+                            clearance_m=clearance,
+                            height_offset_m=self.demo.GRASP_HEIGHT_OFFSET[PARTS[part][0]],
+                            part_position_m=sample[0].tolist(), part_velocity_mps=velocity.tolist())
             # Track z is the A projection plane, not the simulation part origin; only xy is checked there.
             if not (PICK_X_M[0] <= target[0] <= PICK_X_M[1] and abs(target[1]) <= PICK_ABS_Y_M
                     and (track or .097 <= sample[0][2] <= .12)):
@@ -652,7 +683,7 @@ class GazeboSortExecutor:
             rotation = np.column_stack([closing, np.cross(DOWN, closing), DOWN])
             self._follow(self._line(start, target, rotation, current), .32)
             if not clearance and grasp_goal is None:
-                grasp_goal = self._start_grip()
+                grasp_goal = self._start_grip(.75 if part == "BOLT_A" else None)
         self._check_cancel()
         result, _ = self._result_source(tracker, initial, offset)
         grasping_position = result.pose()[0]
@@ -671,10 +702,10 @@ class GazeboSortExecutor:
         self._follow(self._line(probe, target, rotation, current), 1.2)
         return result, initial[2] if not track else grasping_position[2]
 
-    def _start_grip(self):
+    def _start_grip(self, position=None):
         from control_msgs.action import ParallelGripperCommand
         goal = ParallelGripperCommand.Goal()
-        goal.command = JointState(name=[self.demo.GRIPPER_JOINT], position=[self.demo.GRIP_CLOSED])
+        goal.command = JointState(name=[self.demo.GRIPPER_JOINT], position=[self.demo.GRIP_CLOSED if position is None else position])
         future = self.arm.gripper.send_goal_async(goal)
         rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.)
         if not future.done():

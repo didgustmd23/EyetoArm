@@ -504,10 +504,10 @@ class TestEndpointInput(unittest.TestCase):
         self.assertEqual({c["position_mm"][2] for c in g["grasp_candidates"]}, {105.0})
 
     def test_bolt_length_ranges_b12(self):
-        """B-12·B-14: BOLT_A 17~27 mm, BOLT_B 36~52 mm (A 끝점 실측 범위), 사이·밖은 판정 불가."""
+        """B-12·B-14: BOLT_A 14~27 mm(비스듬한 육각 M3x20 끝점 16.3 mm, 2026-11-24), BOLT_B 36~52 mm, 사이·밖은 판정 불가."""
         from eyetoarm.transforms.work_result import _classify
         cases = {0.017: "BOLT_A", 0.019: "BOLT_A", 0.027: "BOLT_A", 0.030: "UNRESOLVED",
-                 0.035: "UNRESOLVED", 0.036: "BOLT_B", 0.039: "BOLT_B", 0.0409: "BOLT_B", 0.052: "BOLT_B", 0.0165: "UNRESOLVED", 0.053: "UNRESOLVED"}
+                 0.035: "UNRESOLVED", 0.036: "BOLT_B", 0.039: "BOLT_B", 0.0409: "BOLT_B", 0.052: "BOLT_B", 0.0165: "BOLT_A", 0.014: "BOLT_A", 0.0135: "UNRESOLVED", 0.053: "UNRESOLVED"}
         for length, want in cases.items():
             with self.subTest(length=length):
                 self.assertEqual(_classify("bolt", length, 0.0, float("inf"), SPECS)[0], want)

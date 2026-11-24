@@ -181,7 +181,7 @@ class RelayWindow(unittest.TestCase):
         return {"type": "SET_DISPLAY_VARIANT", "channel": "link", "variant": variant}
 
     def requests(self, count):
-        client = self.clients[0]
+        client = self.clients[-1]
         self.assertTrue(until(lambda: client.bytesAvailable() and bytes(client.peek(1 << 16)).count(b"\n") >= count))
         data = bytes(client.readAll())
         self.assertTrue(data.endswith(b"\n"))
@@ -201,7 +201,7 @@ class RelayWindow(unittest.TestCase):
         self.send(packet("link", 2))
         self.settle(lambda: self.view.frame_count == 2)
         self.assertEqual(self.mode_of("link"), "waiting")
-        with patch.object(self.view._socket, "write", return_value=-1) as write:   # failed write: no retry
+        with patch.object(self.view._socket, "write", return_value=-1) as write:
             [b for b in self.window.mode_buttons if b._mode == "center"][0].click()   # same variant again
             self.window._update_status()
         self.assertEqual(write.call_count, 1)
@@ -209,13 +209,49 @@ class RelayWindow(unittest.TestCase):
         self.assertEqual(self.view.state, "disconnected")                 # dropped so no partial line can join the next
         self.assertIn("요청 송신 실패", self.view.last_error)
         self.assertNotIn("요청 송신됨", self.views()["link"]._reason)
-        self.assertFalse(self.view.request_variant("raw"))                # disconnected: nothing is sent
-        self.assertTrue(until(lambda: self.view.state == "connected" and len(self.clients) == 2))   # normal reconnect
-        self.assertIsNone(self.view.requested_variant)                   # no carried-over or automatic resend
-        self.assertIn("요청 미송신", self.views()["link"]._reason)
-        self.assertFalse(until(lambda: self.clients[1].bytesAvailable() > 0, timeout=0.3))
+        self.settle(lambda: self.view.state == "connected" and len(self.clients) == 2)
+        self.assertEqual(self.requests(1), [self.request("center")])
+        self.assertEqual(self.view.requested_variant, "center")
+        self.assertIn("요청 송신됨 · C 적용 미확인", self.views()["link"]._reason)
         with self.assertRaises(ValueError):
             self.view.request_variant("bogus")
+
+    def test_relay_restart_restores_center_and_waits_for_a_fresh_center_frame(self):
+        self.window._select_link_mode("center")
+        self.assertEqual(self.requests(1), [self.request("center")])
+        self.send(packet("link", 1, variant="center"))
+        self.settle(lambda: self.view.frame_count == 1)
+        self.clients[-1].abort()
+        self.settle(lambda: self.view.state == "connected" and len(self.clients) == 2)
+        self.assertEqual(self.requests(1), [self.request("center")])
+        self.send(packet("link", 1, run="run-B"))
+        self.settle(lambda: self.view.frame_count == 2)
+        self.assertEqual(self.mode_of("link"), "waiting")
+        self.send(packet("link", 1, run="run-B", variant="center"))
+        self.settle(lambda: self.view.frame_count == 3)
+        self.assertNotEqual(self.mode_of("link"), "live")
+        self.send(packet("link", 2, run="run-B", variant="center"))
+        self.settle(lambda: self.view.frame_count == 4)
+        self.assertEqual(self.mode_of("link"), "live")
+        self.assertFalse(until(lambda: self.clients[-1].bytesAvailable() > 0, timeout=0.2))
+
+    def test_first_connection_restores_only_the_last_offline_selection(self):
+        # Reset to a disconnected receiver that has never sent a link choice.
+        self.view.stop()
+        self.window._select_link_mode("center")
+        self.assertIsNone(self.view.requested_variant)
+        self.view.start()
+        self.settle(lambda: self.view.state == "connected" and len(self.clients) == 2)
+        self.assertEqual(self.requests(1), [self.request("center")])
+        self.view.stop()
+        for mode in ("center", "detect", "raw"):
+            self.window._select_link_mode(mode)
+        self.assertIsNone(self.view.requested_variant)
+        self.view.start()
+        self.settle(lambda: self.view.state == "connected" and len(self.clients) == 3)
+        self.assertEqual(self.requests(1), [self.request("raw")])
+        self.assertEqual(self.window.display.mode, "raw")
+        self.link._send.assert_not_called()
 
     def link_color(self):
         frame = self.window.display.frame("link")
@@ -291,7 +327,8 @@ class RelayWindow(unittest.TestCase):
         self.assertEqual(self.requests(1), [self.request("detect")])
         self.clients[0].abort()
         self.assertTrue(until(lambda: self.view.state == "connected" and len(self.clients) == 2))
-        self.assertEqual(self.window.display.mode, "detect")              # D keeps the user's choice, sends nothing
+        self.assertEqual(self.window.display.mode, "detect")
+        self.assertEqual(self.requests(1), [self.request("detect")])
         self.assertFalse(until(lambda: self.clients[1].bytesAvailable() > 0, timeout=0.3))
         self.feed(vpacket(504, "detect", "#c03030", job=43, **a))         # resent cache after reconnect
         self.assertNotEqual(self.mode_of("link"), "live")
