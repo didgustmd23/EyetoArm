@@ -989,7 +989,7 @@ class _RosSortPartRuntime:
         from rclpy.executors import SingleThreadedExecutor
         from rclpy.signals import SignalHandlerOptions
 
-        from eyetoarm.vision.live_sort_part import RecordingSortPartClient
+        from eyetoarm.vision.live_sort_part import RecordingSortPartClient, result_watch_of
 
         self._config = config
         self._sink = None
@@ -1017,7 +1017,11 @@ class _RosSortPartRuntime:
 
         try:
             self._node = rclpy.create_node(self.NODE_NAME, context=self._context)
-            self.client = RecordingSortPartClient(self._node, self._emit, stage=None)
+            watch = result_watch_of(config)
+            self.client = RecordingSortPartClient(self._node, self._emit, stage=None, watch=watch)
+            self.watch_errors = 0
+            # 진행 중 목표 결과 감시(#373 D-14): spin 스레드 타이머, 시각은 단조 시계
+            self._node.create_timer(watch.check_s, self._watch_results)
 
             if self._run_cfg is not None:
                 from eyetoarm_interfaces.srv import GetSortRun   # 없으면 ImportError(진입점 종료 1)
@@ -1043,6 +1047,24 @@ class _RosSortPartRuntime:
         except BaseException:
             self.close(1.0)
             raise
+
+    # ---------- 결과 감시(spin 스레드) ----------
+    def _watch_results(self) -> None:
+        """타이머 콜백: 서버 보임 여부와 단조 시각으로 클라이언트 감시를 돌린다. 예외는 세고 사건으로 남긴다(spin을 죽이지 않음)."""
+        try:
+            self.client.watch(time.monotonic_ns(), bool(self.client.client.server_is_ready()))
+        except Exception as exc:  # noqa: BLE001 - 타이머 최상단: spin 스레드를 살려 두고 사유를 남긴다
+            self.watch_errors += 1
+            self._emit("result_watch_error", None, {"error": f"{type(exc).__name__}: {exc}"})
+
+    def abandon(self, gid: str, reason: str) -> bool:
+        """진행 중 목표를 「모름」으로 끝낸다(송신기의 실행 번호 변경 처리가 부름)."""
+        return self.client.abandon(gid, reason)
+
+    @property
+    def watch_counts(self) -> dict:
+        """감시 계수(참고용, 요약)."""
+        return {**self.client.watch_counts, "errors": self.watch_errors}
 
     # ---------- 실행 번호 조회(관리 실행) ----------
     def set_run_listener(self, listener) -> None:

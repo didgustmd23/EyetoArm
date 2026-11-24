@@ -22,7 +22,12 @@ _FAIL_STATUSES = ("FAILED", "EXPIRED", "ERROR", "REJECTED")
 _RUN_SOURCE_KEYS = {"service", "poll_s", "call_timeout_s", "stale_s"}
 _RUN_BLOCK_EVENTS = ("skip:run_unknown", "skip:run_inactive", "skip:run_changed")
 _NO_CALL_RELEASE = ("gate_closed", "state_failed", "skip:track_retry_limit", "skip:failed_point_block",
-                    "skip:failure_gap", *_RUN_BLOCK_EVENTS)
+                    "skip:failure_gap", "skip:result_unknown_track", *_RUN_BLOCK_EVENTS)
+_RESULT_WATCH_KEYS = {"check_s", "reask_after_s", "result_limit_s"}
+# 결과를 「모름」으로 끝낸 사유(#373 D-14). C가 죽었다 다시 뜨면 원래 결과 future는 영원히 끝나지 않는다(재현)
+UNKNOWN_STATUS = "UNKNOWN"
+SERVER_LOST, RUN_CHANGED, RESULT_TIMEOUT = "SERVER_LOST", "RUN_CHANGED", "RESULT_TIMEOUT"
+GOAL_STATUS_UNKNOWN = 0   # action_msgs/GoalStatus.STATUS_UNKNOWN: 그 목표를 모르는 서버(새 C)의 결과 답
 # `retry` 블록이 없을 때의 기본 제한: 실패한 목표의 촬영 시각부터 이 SIM 시간 안에 찍힌 같은 번호(번호 없으면 모든)
 # `PICK_PLACE`는 보내지 않는다. 실패가 곧바로 돌아올 때 프레임마다 다시 보내는 폭주를 막는다(블록이 있으면 블록 값)
 DEFAULT_FAILURE_GAP_S = 1.0
@@ -77,6 +82,32 @@ class RunSourceConfig:
 
 
 @dataclass(frozen=True)
+class ResultWatchConfig:
+    """진행 중 목표 결과 감시(#373 D-14). 블록이 없으면 `DEFAULT_RESULT_WATCH`로 켠다(A 결정).
+
+    `check_s`마다 점검한다. 보낸 뒤 `reask_after_s` 넘게 결과가 없거나, 서버가 사라졌다 다시 보이면 결과를 한 번 다시 묻는다.
+    답이 「그 목표 모름」이면 `SERVER_LOST`로 끝낸다. `result_limit_s`를 넘기면 `RESULT_TIMEOUT`으로 끝낸다.
+    시간은 모두 단조 시계(벽시계 경과) 기준이다.
+    """
+
+    check_s: float
+    reask_after_s: float
+    result_limit_s: float
+
+    def to_json(self) -> dict:
+        """요약용 사전."""
+        return {k: getattr(self, k) for k in sorted(_RESULT_WATCH_KEYS)}
+
+
+DEFAULT_RESULT_WATCH = ResultWatchConfig(check_s=1.0, reask_after_s=30.0, result_limit_s=120.0)
+
+
+def result_watch_of(config) -> ResultWatchConfig:
+    """설정의 감시 값(블록이 없으면 기본값)."""
+    return config.result_watch if config.result_watch is not None else DEFAULT_RESULT_WATCH
+
+
+@dataclass(frozen=True)
 class SortPartConfig:
     """송신 설정(기본값 없음, 모두 필수)."""
 
@@ -87,6 +118,7 @@ class SortPartConfig:
     retry: RetryConfig | None = None   # 없으면 제한 없음
     require_track_id: bool | None = None   # 참이면 확정 번호 없는 PICK_PLACE를 보내지 않음
     run_source: RunSourceConfig | None = None   # 없으면 비관리(빈 job·epoch 0, 지금 동작)
+    result_watch: ResultWatchConfig | None = None   # 없으면 기본값으로 켬(`result_watch_of`)
 
     def to_json(self) -> dict:
         """요약용 사전. `require_track_id`는 설정에 있을 때만 넣는다(없으면 형식 그대로)."""
@@ -99,6 +131,9 @@ class SortPartConfig:
         if self.run_source is not None:   # 없으면 형식 그대로
             doc["run_source"] = self.run_source.to_json()
 
+        if self.result_watch is not None:   # 없으면 형식 그대로(기본값은 송신기 요약에 남김)
+            doc["result_watch"] = self.result_watch.to_json()
+
         return doc
 
 
@@ -107,7 +142,8 @@ def parse_sort_part(doc) -> SortPartConfig:
     if not isinstance(doc, dict):
         raise SortPartConfigError("sort_part must be an object")
 
-    unknown, missing = set(doc) - _CONFIG_KEYS - {"retry", "require_track_id", "run_source"}, _CONFIG_KEYS - set(doc)
+    unknown = set(doc) - _CONFIG_KEYS - {"retry", "require_track_id", "run_source", "result_watch"}
+    missing = _CONFIG_KEYS - set(doc)
 
     if unknown or missing:
         raise SortPartConfigError(f"sort_part: unknown keys {sorted(unknown)}, missing keys {sorted(missing)}")
@@ -139,9 +175,23 @@ def parse_sort_part(doc) -> SortPartConfig:
         raise SortPartConfigError(f"sort_part.require_track_id must be true or false: {require!r}")
 
     run_source = _parse_run_source(doc["run_source"]) if "run_source" in doc else None
+    watch = _parse_result_watch(doc["result_watch"]) if "result_watch" in doc else None
 
     return SortPartConfig(**{k: float(doc[k]) for k in _CONFIG_KEYS}, retry=retry, require_track_id=require,
-                          run_source=run_source)
+                          run_source=run_source, result_watch=watch)
+
+
+def _parse_result_watch(r) -> ResultWatchConfig:
+    """`sort_part.result_watch`: 세 키 모두 양수, `reask_after_s < result_limit_s`."""
+    if not isinstance(r, dict) or set(r) != _RESULT_WATCH_KEYS:
+        raise SortPartConfigError(f"sort_part.result_watch must have exactly {sorted(_RESULT_WATCH_KEYS)}")
+
+    w = ResultWatchConfig(**{k: _positive(r[k], f"sort_part.result_watch.{k}") for k in sorted(_RESULT_WATCH_KEYS)})
+
+    if w.reask_after_s >= w.result_limit_s:
+        raise SortPartConfigError(f"sort_part.result_watch.reask_after_s must be < result_limit_s: {r!r}")
+
+    return w
 
 
 def _parse_run_source(r) -> RunSourceConfig:
@@ -167,16 +217,47 @@ def _positive(v, name: str) -> float:
 
 
 class RecordingSortPartClient(SortPartClient):
-    """B 클라이언트의 비공개 콜백을 덮어써 사건을 `event_sink(event, goal_id, detail)`로 넘긴다.
+    """B 클라이언트의 비공개 콜백을 덮어써 사건을 `event_sink(event, goal_id, detail)`로 넘기고, 결과를 감시한다.
 
-    사건은 spin 스레드(콜백)나 worker(송신 오류)에서 온다.
+    사건은 spin 스레드(콜백·감시 타이머)나 worker(송신 오류)에서 온다.
+
+    결과 감시(#373 D-14): C가 실행 중에 죽었다 다시 뜨면 원래 결과 future는 끝나지 않고, `server_is_ready()`도
+    SIGKILL 뒤 약 20 s 참으로 남는다(재현). 그래서 `watch`가 오래된 목표의 결과를 다시 묻는다. 새 서버는 곧바로
+    「그 목표 모름」(상태 0)으로 답하므로 `UNKNOWN`/`SERVER_LOST`로 끝내 `busy`를 푼다.
+    B 내부(`inflight`·`_lock`·`_finish`·`_on_accepted`·`_on_result`)에 기대므로 그 모양은 단위시험으로 고정한다.
+    감시 상태(`_watch`)는 B `_lock` 안에서만 바꾼다.
     """
 
-    def __init__(self, node, event_sink: Callable[[str, str, dict], None], stage=None, **kw) -> None:
-        """B 생성자(rclpy·인터페이스 지연 import) 뒤 기록 함수를 둔다."""
+    def __init__(self, node, event_sink: Callable[[str, str, dict], None], stage=None, *,
+                 watch: ResultWatchConfig | None = None, **kw) -> None:
+        """B 생성자(rclpy·인터페이스 지연 import) 뒤 기록 함수와 감시 상태를 둔다."""
         super().__init__(node, stage, **kw)
         self.event_sink = event_sink
         self._arrived: dict[str, int] = {}
+        self._init_watch(watch)
+
+    def _init_watch(self, watch: ResultWatchConfig | None) -> None:
+        """감시 상태(시험은 B 생성자 없이 이것만 부른다)."""
+        self.watch_config = watch or DEFAULT_RESULT_WATCH
+        self._watch: dict[str, dict] = {}       # goal_id → {since_ns, handle, goal, reask(future|None), reask_ns}
+        self._closed_ids: set[str] = set()       # 결과를 낸 goal_id(늦은 결과·두 번째 결과는 기록만)
+        self._abandoned: set[str] = set()        # 「모름」으로 끝낸 goal_id
+        self._server_lost = False
+        self.watch_counts = {"checks": 0, "reasks": 0, "unknown": 0, "late_results": 0, "server_lost": 0, "server_back": 0}
+
+    def send(self, out) -> bool:
+        """B 송신 뒤 새로 생긴 진행 중 목표의 보낸 시각(단조)을 남긴다."""
+        ok = super().send(out)
+
+        if ok:
+            now = time.monotonic_ns()
+
+            with self._lock:
+                for gid in self.inflight:
+                    self._watch.setdefault(gid, {"since_ns": now, "handle": None, "goal": None, "reask": None,
+                                                 "reask_ns": None})
+
+        return ok
 
     def _on_feedback(self, gid: str, fb) -> None:
         super()._on_feedback(gid, fb)
@@ -184,16 +265,26 @@ class RecordingSortPartClient(SortPartClient):
 
     def _on_accepted(self, gid: str, goal: dict, fut) -> None:
         try:
-            accepted = bool(fut.result().accepted)
+            handle = fut.result()
+            accepted = bool(handle.accepted)
         except Exception:   # 실패는 super가 `_finish(ERROR)`로 남긴다
-            accepted = False
+            handle, accepted = None, False
 
         if accepted:
+            with self._lock:   # 다시 묻기에 쓸 핸들과 목표(B는 보관하지 않음)
+                w = self._watch.get(gid)
+
+                if w is not None:
+                    w["handle"], w["goal"] = handle, goal
+
             self.event_sink("accepted", gid, {})
 
         super()._on_accepted(gid, goal, fut)
 
     def _on_result(self, gid: str, goal: dict, fut) -> None:
+        if self._already_closed(gid, fut):
+            return
+
         try:
             self._arrived[gid] = int(fut.result().result.arrived_stamp_ns)
         except Exception:   # 결과 받기 실패는 super가 `_finish(ERROR)`로 남긴다
@@ -201,7 +292,36 @@ class RecordingSortPartClient(SortPartClient):
 
         super()._on_result(gid, goal, fut)
 
+    def _already_closed(self, gid: str, fut) -> bool:
+        """이미 결과를 낸 목표면 늦은 결과로 기록만 하고 참(두 번째 `_finish`를 막는다)."""
+        with self._lock:
+            closed = gid in self._closed_ids
+            abandoned = gid in self._abandoned
+
+        if not closed:
+            return False
+
+        if abandoned:   # 「모름」 뒤 원래 결과가 늦게 옴: 기록만
+            try:
+                status = str(fut.result().result.status or "UNKNOWN")
+            except Exception as exc:   # 늦은 결과 받기 실패도 기록만 한다
+                status = f"ERROR:{type(exc).__name__}"
+
+            with self._lock:
+                self.watch_counts["late_results"] += 1
+
+            self.event_sink(f"late_result:{status}", gid, {})
+
+        return True
+
     def _finish(self, gid: str, goal: dict, status: str, reason: str) -> None:
+        with self._lock:
+            if gid in self._closed_ids:   # 원래 결과와 다시 묻기 답이 겹치면 처음 것만
+                return
+
+            self._closed_ids.add(gid)
+            self._watch.pop(gid, None)
+
         super()._finish(gid, goal, status, reason)
         self.event_sink(f"result:{status}", gid, {"reason": reason, "arrived_stamp_ns": self._arrived.pop(gid, None)})
 
@@ -209,6 +329,102 @@ class RecordingSortPartClient(SortPartClient):
         """결과 대기 중인 goal_id(잠금 안에서 복사)."""
         with self._lock:
             return list(self.inflight)
+
+    # ---------- 결과 감시(spin 스레드) ----------
+    def abandon(self, gid: str, reason: str) -> bool:
+        """진행 중 목표를 「모름」으로 끝낸다(`result:UNKNOWN`, 사유). 이미 끝났으면 거짓."""
+        with self._lock:
+            if gid not in self.inflight or gid in self._closed_ids:
+                return False
+
+            w = self._watch.get(gid) or {}
+            goal = w.get("goal") or {"part_track_id": self.inflight[gid].get("part_track_id")}
+            self._abandoned.add(gid)
+            self.watch_counts["unknown"] += 1
+
+        self._finish(gid, goal, UNKNOWN_STATUS, reason)
+
+        return True
+
+    def watch(self, now_ns: int, server_ready: bool) -> None:
+        """점검 한 번(spin 스레드 타이머). 서버 사라짐·재등장, 다시 묻기, 대기 한도."""
+        cfg = self.watch_config
+        timeouts, reasks, edge = [], [], None
+
+        with self._lock:
+            self.watch_counts["checks"] += 1
+
+            if not server_ready and not self._server_lost:
+                self._server_lost, edge = True, "server_lost"
+            elif server_ready and self._server_lost:
+                self._server_lost, edge = False, "server_back"
+
+            if edge is not None:
+                self.watch_counts[edge] += 1
+
+            for gid in list(self.inflight):
+                w = self._watch.setdefault(gid, {"since_ns": now_ns, "handle": None, "goal": None, "reask": None,
+                                                 "reask_ns": None})
+                age_s = (now_ns - w["since_ns"]) / 1e9
+
+                if age_s >= cfg.result_limit_s:
+                    timeouts.append(gid)
+                    continue
+
+                if w["handle"] is None or w["reask"] is not None or not server_ready:
+                    continue
+
+                last = w["reask_ns"] if w["reask_ns"] is not None else w["since_ns"]
+                due = (now_ns - last) / 1e9 >= cfg.reask_after_s
+
+                if due or edge == "server_back":
+                    reasks.append((gid, w["handle"], "server_back" if edge == "server_back" else "after_s"))
+
+        if edge is not None:
+            self.event_sink(edge, None, {})
+
+        for gid in timeouts:
+            self.abandon(gid, RESULT_TIMEOUT)
+
+        for gid, handle, why in reasks:
+            self._reask(gid, handle, why, now_ns)
+
+    def _reask(self, gid: str, handle, why: str, now_ns: int) -> None:
+        """그 목표의 결과를 한 번 다시 묻는다(살아 있는 서버면 답이 미뤄질 뿐)."""
+        fut = handle.get_result_async()
+
+        with self._lock:
+            w = self._watch.get(gid)
+
+            if w is None:   # 그 사이 끝남
+                return
+
+            w["reask"], w["reask_ns"] = fut, now_ns
+            self.watch_counts["reasks"] += 1
+
+        self.event_sink("reask_result", gid, {"why": why})
+        fut.add_done_callback(lambda f: self._on_reask(gid, f))
+
+    def _on_reask(self, gid: str, fut) -> None:
+        """다시 묻기 답: 상태 0(그 목표 모름)이면 `SERVER_LOST`, 진짜 결과면 원래 결과처럼 처리한다."""
+        with self._lock:
+            w = self._watch.get(gid)
+
+            if w is not None:
+                w["reask"] = None
+
+            goal = (w or {}).get("goal") or {}
+
+        try:
+            status = int(fut.result().status)
+        except Exception as exc:   # 답 받기 실패: 다음 점검에서 다시 묻는다
+            self.event_sink("reask_error", gid, {"error": f"{type(exc).__name__}: {exc}"})
+            return
+
+        if status == GOAL_STATUS_UNKNOWN:
+            self.abandon(gid, SERVER_LOST)
+        else:
+            self._on_result(gid, goal, fut)
 
 
 class LiveSortPartSender:
@@ -236,6 +452,9 @@ class LiveSortPartSender:
         self._default_failures: dict = {}              # retry 블록 없음: 번호(없으면 None) → 실패한 목표의 촬영 stamp ns
         self.default_gap_counts = {"failures_recorded": 0, "blocked": 0}
         self.no_track_id_states: dict[str, int] = {}   # skip:no_track_id의 track_state 분포(기록 조건변수 안)
+        # 결과 「모름」으로 끝난 목표의 번호 → 사유. 그 실행이 끝날 때까지 다시 보내지 않는다(A 결정 Q2, 기록 조건변수 안)
+        self._unknown_tracks: dict = {}
+        self.unknown_counts = {"released": 0, "blocked": 0, "run_changed_abandoned": 0}
         self.config = config
         self.runtime = runtime
         self._is_failed = is_failed or (lambda: False)
@@ -305,6 +524,22 @@ class LiveSortPartSender:
 
         if changed:
             self._record("run_changed", None, None, **detail)
+            self._abandon_other_runs(new[1:])
+
+    def _abandon_other_runs(self, run_ids: tuple) -> None:
+        """실행 번호가 바뀌면(C 재시작·새 실행) 이전 실행으로 보낸 진행 중 목표를 「모름」(`RUN_CHANGED`)으로 끝낸다."""
+        abandon = getattr(self.runtime, "abandon", None)
+
+        if not callable(abandon):
+            return
+
+        for gid in self.runtime.inflight_ids():
+            with self._qcond:
+                meta = self._goal_meta.get(gid)
+
+            if meta is not None and meta[3] is not None and tuple(meta[3]) != tuple(run_ids) and abandon(gid, RUN_CHANGED):
+                with self._qcond:
+                    self.unknown_counts["run_changed_abandoned"] += 1
 
     def on_run_query_failed(self, reason: str) -> None:
         """조회 실패(서비스 없음·시간 초과·오류). 마지막 답은 그대로 두고(`stale_s`가 지나면 모름) 수만 센다."""
@@ -321,6 +556,7 @@ class LiveSortPartSender:
             self._track_failures.clear()
             self._failed_points.clear()
             self._default_failures.clear()
+            self._unknown_tracks.clear()   # 새 실행: 번호도 새로 매겨진다
 
     def _run_block(self, goal: dict) -> str | None:
         """관리 실행 송신 조건(#301 P2). 막으면 사건 이름, 보낼 수 있으면 None."""
@@ -381,6 +617,11 @@ class LiveSortPartSender:
                         self.retry_counts["points_recorded"] += 1
                 elif status == "SUCCEEDED" and track is not None:
                     self._track_failures.pop(track, None)
+
+            # 결과 「모름」: C가 놓았는지 모르므로 그 번호는 이 실행 동안 다시 보내지 않는다(이중 집기 방지). 실패로 세지 않음
+            if event == f"result:{UNKNOWN_STATUS}" and track is not None and same_run:
+                self._unknown_tracks[track] = detail.get("reason")
+                self.unknown_counts["released"] += 1
 
             # 기본 제한(retry 블록 없음): 실패한 목표의 촬영 시각을 번호별로 남긴다. 성공하면 지운다
             if event.startswith("result:") and self.config.retry is None and same_run:
@@ -516,6 +757,8 @@ class LiveSortPartSender:
                 event = blocked
             elif (limited := self._retry_block(goal.get("kind"), track, pos, stamp)) is not None:
                 event = limited
+            elif (unknown := self._unknown_block(goal.get("kind"), track)) is not None:
+                event = unknown
             else:
                 run_ids = (goal.get("sort_job_id"), goal.get("run_epoch")) if self.managed else None
 
@@ -569,6 +812,18 @@ class LiveSortPartSender:
                     if 0 <= stamp - fstamp <= window_ns and math.dist(pos, (fx, fy, fz)) <= r.failed_point_block_mm:
                         self.retry_counts["point_block"] += 1
                         return "skip:failed_point_block"
+
+        return None
+
+    def _unknown_block(self, kind, track) -> str | None:
+        """결과 「모름」으로 끝난 번호의 `PICK_PLACE`는 보내지 않는다."""
+        if kind != "PICK_PLACE" or track is None:
+            return None
+
+        with self._qcond:
+            if track in self._unknown_tracks:
+                self.unknown_counts["blocked"] += 1
+                return "skip:result_unknown_track"
 
         return None
 
@@ -683,6 +938,10 @@ class LiveSortPartSender:
                       "failed_points": len(self._failed_points)})
             no_track_states = dict(sorted(self.no_track_id_states.items()))
             default_gap = None if self.config.retry is not None else {**retry_policy(self.config), **self.default_gap_counts}
+            watch = {"source": "config" if self.config.result_watch is not None else "default",
+                     **result_watch_of(self.config).to_json(), **self.unknown_counts,
+                     "unknown_tracks": {str(k): v for k, v in sorted(self._unknown_tracks.items(), key=lambda kv: str(kv[0]))},
+                     "client": dict(getattr(self.runtime, "watch_counts", None) or {})}
 
         return {"config": self.config.to_json(), "server_seen": getattr(self.runtime, "server_seen", None),
                 "tracking": self.tracking, "retry": retry,
@@ -691,7 +950,7 @@ class LiveSortPartSender:
                    {"require_track_id": self.config.require_track_id,
                     "no_track_id_states": no_track_states}),
                 **({} if not self.managed else {"run_source": self._run_summary()}),
-                "events": counts, "unresolved_at_close": list(self.unresolved), "close_reason": self.close_reason,
+                "result_watch": watch, "events": counts, "unresolved_at_close": list(self.unresolved), "close_reason": self.close_reason,
                 "gate_wait_max_ms": round(self.gate_wait_max_ms, 3), "write_error": self.write_error, "crash": self.crash,
                 "client_stats_reference_only": _stats_copy(getattr(self.runtime, "stats", {}))}
 

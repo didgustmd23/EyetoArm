@@ -197,6 +197,7 @@ class RecordingClientTest(unittest.TestCase):
         c._lock = threading.Lock()
         c.event_sink = lambda e, g, d: events.append((e, g, d))
         c._arrived = {}
+        c._init_watch(None)   # 결과 감시 상태(#373, 생성자가 하는 일)
 
         return c, events
 
