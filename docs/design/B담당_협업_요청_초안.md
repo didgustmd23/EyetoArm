@@ -1,6 +1,6 @@
 # B 담당 협업 요청 초안 (A·C)
 
-문서 버전 0.18 · 작성 B담당 · 2026-11-23
+문서 버전 0.19 · 작성 B담당 · 2026-11-24
 **목적:** B(보정·좌표)가 A·C와 **무엇을 주고받는지**, **누가 무엇을 맡는지**를 확정하기 위한 요청서입니다.
 
 > ### ✍️ 답하는 방법
@@ -8,6 +8,8 @@
 >
 > **A가 답할 곳:** §8.2 (A-1·A-6·A-7). A-1·A-2·A-7은 A 답을 받아 B 선택을 회신했습니다(§8.2 「B 선택」). A-8은 A 구현(`4edf845`, PR #84로 main 반영)으로 해결했습니다.
 > **C가 답할 곳:** §8.3 (C-10~C-12, C-15·C-16), §0.1은 확인만. C-1~C-7은 C 답(2026-11-16)을 받아 §0에 반영했습니다. C-14(인터페이스 패키지)는 B가 만들었습니다.
+>
+> **v0.19(2026-11-24):** B-14 집는 높이 보정(BOLT_A −2 mm)을 B에서 빼고 C 한 곳에 둠(§8.5).
 >
 > **v0.18(2026-11-23):** A 요청 B-14(육각 머리 볼트 규격) 반영(§8.5).
 >
@@ -440,7 +442,7 @@ D 확인(DB-01 미회신 ①②)과 C 요청 CB-05, B→C 제안 1에 맞춰 B �
 
 | 요청 | B 반영 | 위치 |
 |---|---|---|
-| B-14 육각 머리 | A 제안 값 그대로 반영: 전체 길이 BOLT_A 22·BOLT_B 44 mm, 머리 높이 k 2·4 mm(Pb는 Pa에서 축 끝 쪽 1·2 mm), BOLT_B `length_min` 36 mm, BOLT_A `plane_z` 102.7 mm(BOLT_B 105 mm 그대로). `head_diameter`는 맞모서리 e(6.35·11.55 mm, 기록용, 계산에 안 씀). 정확도 도구 면적 중심 BOLT_A −8.1·BOLT_B −16.5 mm(A 계산과 같음). **A 확인 부탁:** `ai_s1_09_axis_m2_viewbias.json`의 BOLT_A `fit_plane_z_m` 0.102는 B 102.7 mm와 0.7 mm 차이라 허용(±0.5 mm)을 넘어 시작이 거부됩니다(A 시야 보정 재측정 몫). `config/robot/b_c_test_vectors.json` `bolt_a_along_x`도 보고 102.7·집기 100.7 mm로 바꿈. **집는 높이:** C 서버(`sort_goal_receiver`)로 육각 M3×20을 축 가운데 높이에서 집으면 MISSED·PART_LOST_BEFORE_RELEASE로 놓쳐(2026-11-23 B 시험), BOLT_A만 `grasp_z_offset` −2 mm(C `pick_bolt_demo` `GRASP_HEIGHT_OFFSET`과 같은 값)를 목표 `grasp_pose_candidates` 높이에 더함(100.7 mm). 보고 높이 `observed_position_mm`는 102.7 mm 그대로. **C 확인 부탁:** 서버에 같은 보정을 넣으면 4 mm가 빠지니 한쪽만 둡니다 | `part_specs.json`, `accuracy.py`, `grasp.py`, `b_c_test_vectors.json`, `test_b_transforms.py` |
+| B-14 육각 머리 | A 제안 값 그대로 반영: 전체 길이 BOLT_A 22·BOLT_B 44 mm, 머리 높이 k 2·4 mm(Pb는 Pa에서 축 끝 쪽 1·2 mm), BOLT_B `length_min` 36 mm, BOLT_A `plane_z` 102.7 mm(BOLT_B 105 mm 그대로). `head_diameter`는 맞모서리 e(6.35·11.55 mm, 기록용, 계산에 안 씀). 정확도 도구 면적 중심 BOLT_A −8.1·BOLT_B −16.5 mm(A 계산과 같음). **A 확인 부탁:** `ai_s1_09_axis_m2_viewbias.json`의 BOLT_A `fit_plane_z_m` 0.102는 B 102.7 mm와 0.7 mm 차이라 허용(±0.5 mm)을 넘어 시작이 거부됩니다(A 시야 보정 재측정 몫). `config/robot/b_c_test_vectors.json` `bolt_a_along_x`도 보고·집기 102.7 mm로 바꿈. **집는 높이:** 2026-11-23 C 서버(`sort_goal_receiver`, 벨트 정지 경로)로 육각 M3×20을 축 가운데 높이에서 집으면 MISSED·PART_LOST_BEFORE_RELEASE로 놓쳐 BOLT_A만 `grasp_z_offset` −2 mm를 넣었으나(`d91d48b`), C 이동·자동 분류 경로(`_moving_grasp`)가 C `pick_bolt_demo` `GRASP_HEIGHT_OFFSET` −2 mm를 또 더해 합쳐 −4 mm가 되므로 **2026-11-24 B에서 뺐습니다(0).** 보정은 C 한 곳에만 둡니다. **C 확인 부탁:** 벨트 정지 경로(`--moving-belt` 없음)에도 같은 −2 mm가 들어가야 작은 볼트가 잡힙니다(11-23 B 시험) | `part_specs.json`, `accuracy.py`, `grasp.py`, `b_c_test_vectors.json`, `test_b_transforms.py` |
 | B-12 M3×20 | BOLT_A M3×20(23 mm, 머리 Ø5×3, 축 Ø3), 길이 범위 BOLT_A 17~27·BOLT_B 39~52 mm(`length_min`·`length_max`), 기본 높이 105 mm로 종류를 고른 뒤 그 종류 높이(BOLT_A 102 mm)로 다시 계산, Pb의 머리 높이도 종류별. `length_tolerance`(0.006)는 A 코드 호환으로 남김 | `part_specs.json`, `work_result.py`, PR #137·#138 |
 | B-11 추적 번호 | 목록 후보의 A 추적 번호를 결과·목표 `part_track_id`로 싣고 같은 번호는 C 결과 전까지 한 번만 보냄 | `b_stage._candidate_view`, PR #137 |
 | B-1 (결과서) | B 시험 서버 축 반지름 BOLT_A 1.5 mm·BOLT_B 3 mm | `b_sim_sort_part_server.py`, PR #137 |

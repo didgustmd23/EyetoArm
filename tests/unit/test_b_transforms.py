@@ -490,8 +490,8 @@ class TestEndpointInput(unittest.TestCase):
         np.testing.assert_allclose(g["grasp_candidates"][0]["position_mm"][:2], pb, atol=0.15)
         np.testing.assert_allclose(g["observed_position_mm"][:2], [550.0, 50.0], atol=0.15)   # 위치 보고는 Pa
         self.assertAlmostEqual(g["observed_position_mm"][2], 102.7, places=1)                # 보고 높이는 plane_z 그대로
-        for c in g["grasp_candidates"]:                                                   # 집는 높이만 grasp_z_offset −2 mm
-            self.assertAlmostEqual(c["position_mm"][2], 100.7, places=1)
+        for c in g["grasp_candidates"]:                                                   # grasp_z_offset 0: 집는 높이도 plane_z (B-14, 2026-11-24)
+            self.assertAlmostEqual(c["position_mm"][2], 102.7, places=1)
 
     def test_bolt_b_grasp_height_has_no_offset(self):
         from eyetoarm.transforms.grasp import build_sort_goal
