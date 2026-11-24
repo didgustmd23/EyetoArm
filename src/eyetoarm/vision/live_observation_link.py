@@ -288,6 +288,8 @@ class LiveObservationLink:
         self._lock = threading.Lock()
         self._discard_lock = threading.Lock()
         self._discard_generation = 0
+        self._discard_rx_ns: int | None = None   # 마지막 폐기 시각(수신 시각과 같은 단조 시계). 그 전에 받은 사진은 버린다(#397)
+        self._clock_ns = clock_ns
         self._discarding = False
         self._stage_factory = stage_factory
         self.stages: list = []
@@ -689,7 +691,9 @@ class LiveObservationLink:
         ids = {"job_seq": outcome.context.job_seq, "generation": outcome.context.generation, "rx_epoch": rx_epoch}
 
         with self._discard_lock:
-            if self._discarding:
+            # 폐기 전에 받은 사진은 폐기 뒤에 검출이 끝나도 추적·B에 넣지 않는다(검출 대기 중 폐기·슬롯에 남은 사진, #397)
+            if self._discarding or (self._discard_rx_ns is not None
+                                    and frame.received_monotonic_ns <= self._discard_rx_ns):
                 return self._record_skip("link", "operator_discard", frame, ids)
             discard_generation = self._discard_generation
 
@@ -770,6 +774,7 @@ class LiveObservationLink:
         with self._discard_lock:
             self._discard_generation += 1
             self._discarding = True
+            self._discard_rx_ns = self._clock_ns()
             self.state.invalidate_current(reason)
             self.dispatcher.discard_pending(reason)
             if self.world is not None:

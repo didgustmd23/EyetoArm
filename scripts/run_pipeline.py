@@ -1247,6 +1247,7 @@ class _RosSortPartRuntime:
 
 
 CENTER_CONSUMER_KIND = "center_overlay(BStage.process_frame)"   # 기록·시작 줄의 목록 소비자 이름
+DISCARD_CLEAR_LIMIT_S = 5.0   # 운영자 폐기의 CLEAR 한도(#397): B 비우기 2 s + 5 s < C 호출 한도 8 s
 
 
 class _CenterOverlayStats:
@@ -1688,19 +1689,6 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
         if link.sort_part.managed and callable(set_run):
             set_run(link.sort_part)
 
-        set_discard = getattr(sort_rt, "set_discard_listener", None)
-
-        if link.sort_part.managed and callable(set_discard):
-            def discard_operator_data(reason):
-                if not link.discard_detections(reason):
-                    return False
-                handoff.clear_from_control_thread(f"operator_{reason}")
-                if center_pub is not None:
-                    center_pub.invalidate(link.run_id)
-                return True
-
-            set_discard(discard_operator_data)
-
         from eyetoarm.vision.live_sort_part import DEFAULT_FAILURE_GAP_S
 
         seen = getattr(sort_rt, "server_seen", None)
@@ -1852,6 +1840,22 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
 
         handoff_probe.start(handoff)
         link.start()
+
+        # 운영자 데이터 폐기(C stop_run·recover가 부름, ROS 서비스 스레드). 연결부·연결을 만든 뒤에 붙인다: 그 전 호출은
+        # `handoff`가 아직 없어 NameError였다(#397). 그 전 요청은 서비스가 `_discard_ready`로 기다린다.
+        # CLEAR 한도 5 s: B 비우기 2 s와 합쳐 C 호출 한도(sort_manager VISION_DISCARD_TIMEOUT_S 8 s)보다 작게
+        set_discard = getattr(sort_rt, "set_discard_listener", None)
+
+        if sort_on and link.sort_part.managed and callable(set_discard):
+            def discard_operator_data(reason):
+                if not link.discard_detections(reason):
+                    return False
+                handoff.clear_from_control_thread(f"operator_{reason}", timeout_s=DISCARD_CLEAR_LIMIT_S)
+                if center_pub is not None:
+                    center_pub.invalidate(link.run_id)
+                return True
+
+            set_discard(discard_operator_data)
 
         # 그리퍼 깊이 수신: 추적 스레드의 그리퍼 큐로만 넣는다(B 입력 무변)
         if gripper_on:

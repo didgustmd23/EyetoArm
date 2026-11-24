@@ -12,6 +12,7 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from sensor_msgs.msg import JointState
 
+from .stop_detector import STOP_LIMIT_NS, STOP_REAL_FACTOR, StopDetector
 from .track_stream_tracker import STILL_M, SimExecutionFeedback, SimTruthLog, TrackStreamTracker
 
 PARTS = {"BOLT_A": ("part_00", 0.0015, (0.72, -0.05)),
@@ -19,6 +20,10 @@ PARTS = {"BOLT_A": ("part_00", 0.0015, (0.72, -0.05)),
 DOWN = np.array([0., 0., -1.])
 POSE_SOURCES = ("sim", "track")
 NO_HOME_AFTER = ("STOP_UNCONFIRMED",)   # stop not confirmed: recovery first, no automatic motion
+# Fixed home = the simulation model's initial_positions (simulation/models/ur5e_2f85/ur5e_2f85.urdf.xacro).
+# It used to be the joints seen first, so a restart in a carry pose made that pose "home" (A #374, #394).
+HOME_JOINTS = (0.0, -1.57, 1.57, -1.57, -1.57, 0.0)
+GRIP_SHORT_RAD = .003                  # #394: closed short of the command by more than this = something is held
 TRACK_TOPIC = "/a/track_states"
 PICK_X_M = (.46, .64)                  # pick region in base_link
 PICK_ABS_Y_M = .53
@@ -89,12 +94,15 @@ class GazeboSortExecutor:
         self.arm = None
         self.moving = moving
         self.cancel_requested = lambda: False
-        self.stationary_samples = 0
+        self.home_after_cancel = lambda: False   # #394: set per goal; a cancel from A/B ends at home
+        self._active_grip_target = None
+        self.stop_detector = StopDetector(self.demo.JOINTS)   # arm joints only, SIM-time window (#394)
         self.active_grip = None
         self._active_grip_revision = 0
         self._grip_command_revision = 0
         self.holding_object = False
-        self.home = None
+        self.home = np.array(HOME_JOINTS)
+        self._home_logged = False
         self._arm_moved = False
         self._retreat_z = None
         self.event_log = None
@@ -136,31 +144,50 @@ class GazeboSortExecutor:
                                   track_id=goal.part_track_id, pose_source=self.pose_source, **fields)
 
     def _observe_velocity(self, message):
-        joints = dict(zip(message.name, message.velocity))
-        names = [*self.demo.JOINTS, self.demo.GRIPPER_JOINT]
-        if all(name in joints and abs(joints[name]) <= .005 for name in names):
-            self.stationary_samples += 1
-        else:
-            self.stationary_samples = 0
+        """Feed arm joint positions with their SIM stamp to the stop detector. The gripper joint is not
+        used: while it holds a small bolt its velocity keeps jittering (A #354 D-13, #358)."""
+        stamp = message.header.stamp.sec * 1_000_000_000 + message.header.stamp.nanosec
+        self.stop_detector.add(stamp or self._now_ns(), dict(zip(message.name, message.position)))
 
     def _confirm_stopped(self):
-        self.stationary_samples = 0
-        stop = time.monotonic() + 5.
-        while self.stationary_samples < 5 and time.monotonic() < stop:
+        """Wait until the arm joints stay still for the detector window. The SIM-time limit is measured on
+        the joint samples' own stamps, not the node clock (stale after an idle period, #394 H-ES); a wall
+        guard covers a stopped SIM clock."""
+        self.stop_detector.reset()
+        wall_end = time.monotonic() + STOP_LIMIT_NS / 1e9 * STOP_REAL_FACTOR
+        while not self.stop_detector.stopped() and time.monotonic() < wall_end:
+            if self.stop_detector.span_ns() >= STOP_LIMIT_NS:
+                break
             rclpy.spin_once(self.node, timeout_sec=.05)
-        if self.stationary_samples < 5:
+        if not self.stop_detector.stopped():
             raise SortFailure("STOP_UNCONFIRMED")
 
     def _ensure_arm_home(self):
         if self.arm is None:
             self.arm = self.demo.Arm(self.node)
             self.arm._call = self._dispatch
-        if self.home is None:
-            # Before the first sort goal, the current verified joint pose is the
-            # only available initial-pose reference.
-            self.home = self.arm.joints().copy()
-            self.node.get_logger().info(
-                f"SortPart RECOVER saved initial joints={np.round(self.home, 4).tolist()}")
+        self._log_home()
+
+    def _log_home(self):
+        """Log the fixed home and the joints seen first, once."""
+        if not self._home_logged:
+            self._home_logged = True
+            self.node.get_logger().info(f"SortPart HOME fixed joints={np.round(self.home, 4).tolist()} "
+                                        f"current={np.round(self.arm.joints(), 4).tolist()}")
+
+    def refresh_hold_from_joint(self):
+        """After a restart nothing was commanded yet: treat a gripper closed beyond open + 0.05 rad as
+        holding (the same fallback C uses when a grip goal did not succeed). Returns holding_object."""
+        self._ensure_arm_home()
+        joint = self.arm.state.get(self.demo.GRIPPER_JOINT, self.demo.GRIP_OPEN)
+        if joint > self.demo.GRIP_OPEN + .05:
+            self.holding_object = True
+        return self.holding_object
+
+    def at_home(self, tolerance=.01):
+        """True when every arm joint is within `tolerance` rad of the fixed home (connects the arm first)."""
+        self._ensure_arm_home()
+        return bool(np.max(np.abs(self.arm.joints() - self.home)) <= tolerance)
 
     def move_home(self):
         """Move the arm to its saved initial pose without touching the gripper."""
@@ -208,7 +235,8 @@ class GazeboSortExecutor:
         reply = result.result()
         if self._active_grip_revision == self._grip_command_revision:
             if getattr(reply, "status", None) == GoalStatus.STATUS_SUCCEEDED:
-                self.holding_object = bool(getattr(reply.result, "stalled", False))
+                self.holding_object = (bool(getattr(reply.result, "stalled", False))
+                                       or self._closed_short(self._active_grip_target))
             else:
                 self.holding_object = (self.arm is not None and
                                        self.arm.state.get(self.demo.GRIPPER_JOINT, self.demo.GRIP_OPEN)
@@ -221,8 +249,16 @@ class GazeboSortExecutor:
         if float(position) <= self.demo.GRIP_OPEN + 1e-6:
             self.holding_object = False
         else:
-            self.holding_object = bool(getattr(result, "stalled", False))
+            self.holding_object = bool(getattr(result, "stalled", False)) or self._closed_short(position)
         return result
+
+    def _closed_short(self, target):
+        """#394: the gripper stopped short of a closing command, so a part is between the fingers. The
+        controller's `stalled` is not reported while a small bolt makes the joint velocity jitter (A #358)."""
+        if target is None or self.arm is None or float(target) <= self.demo.GRIP_OPEN + 1e-6:
+            return False
+        joint = self.arm.state.get(self.demo.GRIPPER_JOINT)
+        return joint is not None and float(target) - joint > GRIP_SHORT_RAD
 
     def _dispatch(self, client, goal, limit):
         self._check_cancel()
@@ -291,8 +327,10 @@ class GazeboSortExecutor:
         elif np.linalg.norm(tracker.pose()[0] - initial) > .002:
             raise SortFailure("PART_MOVED")
 
-    def execute(self, goal, feedback: Callable[[str], None], cancel_requested: Callable[[], bool]):
+    def execute(self, goal, feedback: Callable[[str], None], cancel_requested: Callable[[], bool],
+                home_after_cancel: Callable[[], bool] = lambda: False):
         self.cancel_requested = cancel_requested
+        self.home_after_cancel = home_after_cancel
         self._check_cancel()
         if goal.goal_kind != "PICK_PLACE" or goal.part_class not in PARTS:
             raise SortFailure("UNSUPPORTED_GOAL_KIND")
@@ -381,6 +419,36 @@ class GazeboSortExecutor:
             if self._arm_moved and str(exc) not in NO_HOME_AFTER:
                 self._return_home(goal, f"failure:{exc}", retreat=True)
             raise
+        except SortCanceled:
+            if self._arm_moved and self.home_after_cancel():
+                self._home_after_cancel(goal)
+            raise
+
+    def _home_after_cancel(self, goal):
+        """#394 (A decision, C item 10): after a confirmed cancel from A/B, rise straight up if low and
+        use C's move_home (gripper untouched), so the link camera sees the belt again. Run stop and
+        e-stop are left to C (stop_run homes afterwards, e-stop stays in place). A failed move only logs."""
+        log = self.node.get_logger()
+        log.info(f"SortPart CANCEL_HOME start goal={goal.goal_id} holding={self.holding_object}")
+        self.cancel_requested = lambda: False
+        try:
+            self._finish_grip()
+            if self._retreat_z is not None:
+                current = self.arm.joints()
+                pose = self.demo.forward(self.chain, current)
+                start = pose[:3, 3]
+                if start[2] < self._retreat_z:
+                    try:
+                        self._follow(self._line(start, np.r_[start[:2], self._retreat_z], pose[:3, :3], current), 1.5)
+                    except SortFailure:
+                        raise
+                    except RuntimeError:
+                        log.warning(f"SortPart CANCEL_HOME no straight retreat path goal={goal.goal_id}")
+            self.move_home()
+        except RuntimeError as exc:
+            log.warning(f"SortPart CANCEL_HOME failed goal={goal.goal_id}: {type(exc).__name__}: {exc}")
+            return
+        log.info(f"SortPart CANCEL_HOME done goal={goal.goal_id} holding={self.holding_object}")
 
     def _pick_and_place_steps(self, goal, feedback, tracker, observed, place,
                               place_rotation, heights, radius, bin_xy):
@@ -406,9 +474,7 @@ class GazeboSortExecutor:
         if self.arm is None:
             self.arm = self.demo.Arm(self.node)
             self.arm._call = self._dispatch
-        if self.home is None:
-            self.home = self.arm.joints()
-            self.node.get_logger().info(f"SortPart HOME saved joints={np.round(self.home, 4).tolist()}")
+        self._log_home()
         current = self.arm.joints()
         offset = self.demo.FINGER_REACH + self.demo.TIP_CLEARANCE - radius
         self._retreat_z = heights[0] + offset
@@ -774,6 +840,7 @@ class GazeboSortExecutor:
             raise SortFailure("CONTROLLER_REJECTED_GOAL")
         self._grip_command_revision += 1
         self._active_grip_revision = self._grip_command_revision
+        self._active_grip_target = goal.command.position[0]
         self.active_grip = handle
         return handle
 

@@ -488,7 +488,8 @@ def make(module, *, moving=False, track=False, world_kw=None, truth_out=None, mo
         R = ex.demo.quaternion_matrix(0, 1, 0, 0)
         _SEED = ex.demo.solve_ik(ex.chain, ex.demo.transform(R, [.55, .1, .3]), [0, -1.57, 1.57, -1.57, -1.57, 0])
     ex.arm = FakeArm(world, ex.demo, _SEED)
-    ex._start_grip = lambda: (ex.arm.log.append(("start_grip",)), world.attach())[0]
+    # f18cd7d added the closing position argument (BOLT_A 0.75); the fake accepts and ignores it.
+    ex._start_grip = lambda position=None: (ex.arm.log.append(("start_grip",)), world.attach())[0]
     ex._confirm_stopped = lambda: None
     world.executor = ex
     if track:
@@ -711,7 +712,7 @@ def test_home_return_failure_keeps_result(monkeypatch, missed):
         return NEW.SortFailure("ARM_TRACKING_ERROR") if home is not None and np.allclose(path[-1], home) else None
 
     ex.arm.fail = fail
-    home = np.asarray(ex.arm.q)
+    home = np.asarray(ex.home)   # #394: home is the fixed HOME_JOINTS, no longer the arm's start joints
     result, _ = run_pick(ex, world, goal(world))
     assert result[0] == ("SortFailure" if missed else "ok")
     if missed:
