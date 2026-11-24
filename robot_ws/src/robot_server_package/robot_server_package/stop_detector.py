@@ -25,10 +25,12 @@ class StopDetector:
         self.window_ns = int(window_ns)
         self.tolerance_rad = float(tolerance_rad)
         self._samples = deque()
+        self._first_ns = None
 
     def reset(self):
         """Forget all samples (a new stop check starts from fresh feedback)."""
         self._samples.clear()
+        self._first_ns = None
 
     def add(self, stamp_ns, positions):
         """Add one sample. `positions` maps joint name to position; samples missing an arm joint,
@@ -43,9 +45,19 @@ class StopDetector:
         if self._samples and stamp_ns <= self._samples[-1][0]:
             return
         self._samples.append((stamp_ns, values))
+        if self._first_ns is None:
+            self._first_ns = stamp_ns
         # Keep one sample older than the window so the window is fully covered.
         while len(self._samples) > 2 and self._samples[1][0] <= stamp_ns - self.window_ns:
             self._samples.popleft()
+
+    def span_ns(self):
+        """SIM time covered by the kept samples since the last reset (0 without two samples). Used as the
+        stop-check clock: a node that was not spun for a while has a stale clock that jumps on the first
+        spin and would end the check before any sample arrived (#394 H-ES)."""
+        if len(self._samples) < 2:
+            return 0
+        return self._samples[-1][0] - self._first_ns
 
     def stopped(self):
         """True when the kept samples span the whole window and no arm joint moved more than the tolerance."""

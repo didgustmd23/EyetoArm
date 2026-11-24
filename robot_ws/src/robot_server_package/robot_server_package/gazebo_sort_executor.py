@@ -150,12 +150,13 @@ class GazeboSortExecutor:
         self.stop_detector.add(stamp or self._now_ns(), dict(zip(message.name, message.position)))
 
     def _confirm_stopped(self):
-        """Wait until the arm joints stay still for the detector window; SIM-time limit with a wall guard."""
+        """Wait until the arm joints stay still for the detector window. The SIM-time limit is measured on
+        the joint samples' own stamps, not the node clock (stale after an idle period, #394 H-ES); a wall
+        guard covers a stopped SIM clock."""
         self.stop_detector.reset()
-        start = self._now_ns()
         wall_end = time.monotonic() + STOP_LIMIT_NS / 1e9 * STOP_REAL_FACTOR
         while not self.stop_detector.stopped() and time.monotonic() < wall_end:
-            if start > 0 and self._now_ns() - start >= STOP_LIMIT_NS:
+            if self.stop_detector.span_ns() >= STOP_LIMIT_NS:
                 break
             rclpy.spin_once(self.node, timeout_sec=.05)
         if not self.stop_detector.stopped():

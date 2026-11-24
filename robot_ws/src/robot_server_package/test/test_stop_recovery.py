@@ -482,3 +482,23 @@ def test_send_failure_and_cancel_paths_are_recorded(ros, tmp_path):
                                    ("FAILED", "STOP_UNCONFIRMED", True)]
     finally:
         node.destroy_node()
+
+
+def test_stop_check_clock_is_the_samples_not_the_node(monkeypatch):
+    """#394 H-ES: after an idle period the node clock is stale and jumps on the first spin; the stop check
+    must not end on that jump. The limit runs on the joint samples' stamps, so a still arm is confirmed."""
+    from types import SimpleNamespace as N
+    ex, world = base.make(NEW, monkeypatch=monkeypatch)
+    del ex._confirm_stopped                       # use the real method (make() stubs it)
+    clock = {"ns": 1 * 1_000_000_000}
+    ex._now_ns = lambda: clock["ns"]
+    stamp = {"ns": 100 * 1_000_000_000}
+
+    def spin_once(node, timeout_sec=0):
+        clock["ns"] += 60 * 1_000_000_000        # the stale node clock jumps far ahead
+        stamp["ns"] += 20_000_000                 # joint_states every 20 ms of SIM time
+        ex._observe_velocity(N(header=N(stamp=N(sec=stamp["ns"] // 1_000_000_000,
+                                                 nanosec=stamp["ns"] % 1_000_000_000)),
+                               name=list(ex.demo.JOINTS), position=[0.] * len(ex.demo.JOINTS)))
+    monkeypatch.setattr(NEW, "rclpy", N(spin_once=spin_once))
+    ex._confirm_stopped()                         # does not raise STOP_UNCONFIRMED
