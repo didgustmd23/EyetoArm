@@ -445,7 +445,7 @@ class Window(V12Case):
 
     def test_cleanup_button_sends_stop_and_estop_is_inert(self):
         w = self.window
-        def holder(layout):   # 정리 버튼이 직접 들어 있는 레이아웃(제목줄)
+        def holder(layout):   # STOP 버튼이 직접 들어 있는 레이아웃(제목줄)
             if layout.indexOf(w.stop_button) >= 0:
                 return layout
             for i in range(layout.count()):
@@ -455,9 +455,9 @@ class Window(V12Case):
                     return found
             return None
         row = holder(w.centralWidget().layout())
-        self.assertEqual(w.stop_button.text(), "정리")
+        self.assertEqual(w.stop_button.text(), "Stop 정지")
         self.assertEqual(w.estop_button.text(), "E-Stop")
-        self.assertEqual(row.indexOf(w.estop_button), row.indexOf(w.stop_button) + 1)   # 정리 바로 오른쪽
+        self.assertEqual(row.indexOf(w.estop_button), row.indexOf(w.stop_button) + 1)   # STOP 버튼 바로 오른쪽
         self.assertIn("e_stop_available", w.estop_button.toolTip())   # C 가 알리지 않음 = 비활성
         self.peer.snapshot = snap("RUNNING", 13, ("STOP",))
         self.peer.push(run_status(snapshot=self.peer.snapshot))
@@ -466,7 +466,7 @@ class Window(V12Case):
         w.estop_button.click()                                  # 비활성 버튼: 아무것도 보내지 않음
         until(lambda: False, 0.1)
         self.assertEqual(self.peer.sort_requests(), [])
-        w.stop_button.click()                                   # 정리 = 기존 STOP 요청 그대로
+        w.stop_button.click()                                   # STOP 버튼 = 기존 STOP 요청 그대로
         self.assertTrue(until(lambda: self.peer.sort_requests()))
         self.assertEqual([r["type"] for r in self.peer.sort_requests()], ["STOP"])
         self.assertFalse(w.estop_button.isEnabled())
@@ -512,7 +512,7 @@ class EStop(V12Case):
         self.assertEqual(self.link.e_stop_request(), "")            # 결과 전 두 번째 요청 없음
         self.assertTrue(until(lambda: self.e_stops()))
         self.assertEqual(self.e_stops(), [{"version": "1.2", "type": "E_STOP", "request_id": request_id}])
-        stop_id = self.link.sort_request("STOP")                     # 정리(STOP)는 별개 요청
+        stop_id = self.link.sort_request("STOP")                     # 일반 STOP 은 별개 요청
         self.assertTrue(until(lambda: len(self.peer.sort_requests()) == 2))
         self.assertEqual(self.peer.sort_requests()[1], {"version": "1.2", "type": "STOP", "request_id": stop_id})
         self.peer.push(e_stop_status(str(uuid.uuid4()), "CONFIRMED"))   # 다른 ID: 무시
@@ -604,7 +604,7 @@ class EStop(V12Case):
                 self.assertIn("로봇+컨베이어", button.accessibleDescription())
             self.assertIn("벨트 연속 운전을 약속하지 않습니다", window.start_button.toolTip())
             self.assertIn("현재 C(1.1)는 이 요청을 처리하지 않으며", window.estop_button.toolTip())
-            self.assertEqual((window.stop_button.text(), window.estop_button.text()), ("정리", "E-Stop"))
+            self.assertEqual((window.stop_button.text(), window.estop_button.text()), ("Stop 정지", "E-Stop"))
         finally:
             window.close()
             window.deleteLater()
