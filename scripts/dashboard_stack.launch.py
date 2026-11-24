@@ -11,20 +11,30 @@
 순서는 docs/design/서버-대시보드 실행.md 와 같다: TCP 서버 → Gazebo → (지연) 중계기 → 대시보드 → YOLO.
 Ctrl+C 한 번으로 WSL 쪽은 모두 꺼진다.
 
+남은 Gazebo 처리(c_stack.launch.py와 같음, scripts/stack_guard.py):
+    run_mode:=single(기본)  같은 ROS_DOMAIN_ID·GZ_PARTITION의 남은 Gazebo·노드를 SIGINT → 10초 → SIGTERM → 5초 → SIGKILL로
+                           정리한 뒤 시작. 기본 포트(47090·47092·47093)를 다른 프로세스가 쓰면 죽이지 않고 시작하지 않음
+    run_mode:=multi         경고만 하고 시작
+    끝날 때(Ctrl+C·kill·창 닫기)는 이 실행이 띄운 WSL 프로세스만 정리한다. Windows 대시보드 창은 정리하지 못한다.
+
 Windows 대시보드 폴더(dashboard-client)는 자동으로 찾는다:
   1) 환경 변수 EYETOARM_DASHBOARD_DIR (예: 'C:\\...\\dashboard-client') 가 있으면 그것
   2) 지난번 찾은 폴더(~/.cache/eyetoarm/dashboard_dir) 가 아직 쓸 수 있으면 그것
   3) 없으면 /mnt/<드라이브> 를 5단계 깊이까지 찾음 (.venv/Scripts/Activate.ps1 + src/eyetoarm/gui/window.py 가 둘 다 있는 폴더,
      여럿이면 window.py 가 가장 최근인 것). 다시 찾게 하려면: rm ~/.cache/eyetoarm/dashboard_dir
 """
+import importlib.util
 import os
 import subprocess
+import sys
 import time
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, LogInfo, OpaqueFunction,
-                            TimerAction)
+                            SetEnvironmentVariable, TimerAction)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
@@ -40,6 +50,50 @@ SKIP = {"Windows", "Program Files", "Program Files (x86)", "ProgramData", "AppDa
         "Application Data", "Local Settings", "My Documents"}
 YOLO_PY = REPO / ".venv-a" / "bin" / "python"
 YOLO_CONFIG = "config/vision/ai_s1_08_axis.json"
+GUARD_SCRIPT = REPO / "scripts" / "stack_guard.py"
+_spec = importlib.util.spec_from_file_location("eyetoarm_stack_guard", GUARD_SCRIPT)
+stack_guard = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = stack_guard          # dataclass가 모듈을 찾을 수 있게
+_spec.loader.exec_module(stack_guard)
+
+
+def _guard_and_watch(context, marker, stamp):
+    """시작 전 처리(run_mode)와 종료 정리 감시 프로세스 실행(c_stack.launch.py `_guard_and_watch`와 같은 동작).
+
+    run_mode:=single(기본): 같은 ROS_DOMAIN_ID·GZ_PARTITION의 남은 gz sim·묶음 노드를 SIGINT → SIGTERM → SIGKILL로
+    정리한 뒤 시작한다. 기본 포트(47090·47092·47093)를 다른 프로세스가 잡고 있거나 정리가 끝까지 안 되면
+    예외로 launch를 멈춘다(뒤의 Gazebo·노드는 하나도 띄우지 않음). 다른 도메인·파티션은 건드리지 않는다.
+    run_mode:=multi: 중복·포트 점유를 경고만 하고 시작한다.
+    감시 프로세스는 따로 된 세션에서 이 launch가 끝나기를 기다렸다가 같은 표식의 프로세스만 정리한다
+    (SIGTERM·SIGHUP으로 launch만 끝나 Gazebo·노드가 남는 경우 대비). sim_sort_cell.launch.py에는 넣지 않는다
+    (이 런처가 포함하므로 검사가 겹친다).
+    """
+    mode = LaunchConfiguration("run_mode").perform(context).strip().lower()
+    domain, partition = os.environ.get("ROS_DOMAIN_ID"), os.environ.get("GZ_PARTITION")
+    log = REPO / "logs" / f"dashboard_stack_guard_{stamp}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(log, "a", encoding="utf-8") as f:
+        def record(msg):
+            """화면(표준 오류)과 기록 파일에 함께 남긴다."""
+            line = f"[{datetime.now().isoformat(timespec='milliseconds')}] prestart: {msg}"
+            print(f"[dashboard_stack guard] {msg}", file=sys.stderr, flush=True)
+            f.write(line + "\n")
+            f.flush()
+
+        record(f"run_mode={mode} ROS_DOMAIN_ID={stack_guard.norm_domain(domain)} "
+               f"GZ_PARTITION={stack_guard.norm_partition(partition) or '(없음)'}")
+        ok, _ = stack_guard.prestart(mode, domain, partition,
+                                     exclude=stack_guard.ancestors(Path("/proc"), os.getpid()), log=record)
+        if not ok:
+            record("시작하지 않음")
+            raise RuntimeError(f"dashboard_stack 시작 전 확인 실패(run_mode={mode}) — 위 메시지와 {log} 참고")
+
+    subprocess.Popen([sys.executable, str(GUARD_SCRIPT), "watch", "--launch-pid", str(os.getpid()),
+                      "--marker", marker, "--log", str(log)],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True, close_fds=True)
+    return [LogInfo(msg=f"종료 정리 감시 시작(표식 {marker}, 기록 {log})")]
 
 
 def _usable(d: Path) -> bool:
@@ -110,6 +164,9 @@ def _later(context, *_):
 
 
 def generate_launch_description():
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    marker = uuid.uuid4().hex
+
     return LaunchDescription([
         DeclareLaunchArgument("world", default_value=str(REPO / "simulation" / "worlds" / "sort_cell.sdf")),
         DeclareLaunchArgument("gui", default_value="true"),
@@ -117,6 +174,13 @@ def generate_launch_description():
         DeclareLaunchArgument("yolo", default_value="false", description="A 실시간 YOLO 검출(detect 영상)도 켤지"),
         DeclareLaunchArgument("yolo_config", default_value=YOLO_CONFIG, description="A AI 설정 JSON"),
         DeclareLaunchArgument("relay_delay_s", default_value="8.0", description="Gazebo 카메라가 뜰 때까지 기다림"),
+        DeclareLaunchArgument("run_mode", default_value="single",
+                              description="single(기본): 같은 ROS_DOMAIN_ID·GZ_PARTITION의 남은 Gazebo·노드를 정리 후 시작, "
+                                          "기본 포트를 남이 쓰면 거부 / multi: 경고만 하고 시작"),
+
+        # 0) 이 실행이 띄우는 모든 프로세스에 표식을 물려주고, 시작 전 검사·종료 정리 감시를 가장 먼저 한다.
+        SetEnvironmentVariable(stack_guard.MARKER_ENV, marker),
+        OpaqueFunction(function=lambda context: _guard_and_watch(context, marker, stamp)),
 
         # 1) C TCP 서버 (저장소 루트에서 실행 → config/gui/client.json 사용)
         # Node 대신 ros2 run: Node는 '--ros-args'를 붙이는데 tcp_server·display_relay의 argparse가 이를 거부함
