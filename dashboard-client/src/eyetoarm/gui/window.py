@@ -1,4 +1,4 @@
-"""D 운영 GUI 창: TCP 1.1 + 소켓 없는 4일차 분류 대역.
+"""D 운영 GUI 창: TCP 1.1 수동 이동과 TCP 1.2 실행 제어.
 
 실행 (Windows, conda 환경 eyetoarm, 저장소 루트에서):
   set PYTHONPATH=dashboard-client/src
@@ -10,9 +10,9 @@
                                            링크 raw/detect/center 를 누르면 영상 연결(47092)로 SET_DISPLAY_VARIANT 요청을
                                            보낸다(임시 형식). 해당 영상 수신으로 확인하며, 그 종류의 C 프레임이 오기 전에는 수신 대기다
   python -m eyetoarm.gui.window --demo     모의 분류 조작·상태 확인 (아무 것도 보내지 않음)
-  python -m eyetoarm.gui.window --tcp-version 1.2  TCP 1.2 후보(명세 부록 A.6, 미승인)로 실제 START/STOP/RECOVER 송수신.
-                                           같은 명령 TCP 연결을 쓴다. 현재 C 서버(1.1)는 1.2 를 거부하므로 조작이 열리지 않는다.
-                                           이 모드에서 수동 MOVE·CANCEL 은 비활성(1.2 명령 STATUS 규칙 미정)
+  python -m eyetoarm.gui.window --tcp-version 1.2  같은 TCP 연결로 START/STOP/E-STOP/RECOVER 송수신.
+                                           C의 TCP 1.2 지원과 관리 실행(auto_sort:=true)이 필요하다.
+                                           이 모드에서 수동 MOVE·CANCEL 은 비활성.
   python -m eyetoarm.gui.window --no-motion  모션 줄이기 상태로 시작
   python -m eyetoarm.gui.window --theme light  라이트 테마로 시작 (오른쪽 위 「다크 / 라이트」로 실행 중 전환)
   python -m eyetoarm.gui.window --no-cover  표지 화면(UR5e 인사, cover.py) 없이 바로 연다
@@ -32,7 +32,7 @@
 │ 링크 detect/center│ 요청 송신 · 그 종류 프레임 대기│ 영상 수신으로 확인 · 미합의│
 │ 측정·보정 상세    │ 실제 — / D 모의 값            │ A·B 결과 → C 중계 · 미결 │
 │ 공정 단계 · 수량  │ 실제 미확인 · — / 모의 사건 집계│ C 도착 확인 · 미결       │
-│ START/STOP/RECOVER│ 실제 비활성 / 모의에서만 조작  │ C · 부록 A 미승인        │
+│ START/STOP/RECOVER│ TCP 1.2 실행 제어             │ C ROS 관리 실행 필요    │
 │ CANCEL(수동 이동) │ 현재 명령 추적 중 활성         │ C · TCP 1.1              │
 │ TX/RX 기록        │ 실제 송수신(준비 조회)        │ C · TCP 1.1 확정         │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -100,7 +100,7 @@ class MainWindow(QMainWindow):
         self.mode_buttons: list = []
         self.sort_demo = self.tally = self.supplier = None
         self._sort_logged = None
-        # TCP 1.2 후보 실제 송수신(--tcp-version 1.2). 모의(--demo)와 함께 쓰지 않는다
+        # TCP 1.2 run-control 실제 송수신. 모의(--demo)와 함께 쓰지 않는다
         self.live_run = not demo and getattr(link, "version", None) == "1.2"
         if demo:
             from eyetoarm.gui.sort_demo import DemoProcessSupplier, DemoSortController, SortTally
@@ -113,7 +113,7 @@ class MainWindow(QMainWindow):
         # 송수신 카드 꼬리표. 모의 모드에서는 「실제」라고 적지 않는다
         self._live_tag = "모의 · 실제 아님" if demo else "실제 송수신"
         self.setWindowTitle("Eye To Arms · D 운영 GUI (모의 분류)" if demo else
-                            "Eye To Arms · D 운영 GUI (TCP 1.2 후보 · 미승인 · C 1.1 미지원)" if self.live_run else
+                            "Eye To Arms · D 운영 GUI (TCP 1.2 실행 제어)" if self.live_run else
                             "Eye To Arms · D 운영 GUI (TCP 1.1)")
         self.resize(1440, 960)
         self.setMinimumSize(1180, 760)
@@ -232,7 +232,7 @@ class MainWindow(QMainWindow):
         self.request_note = label("", "Caption", wrap=True)   # 제목줄 아래 별도 줄(작은 창에서 버튼을 밀지 않게)
         self.request_note.setAccessibleName("분류·E-Stop 요청 결과")
         self.request_note.setMinimumWidth(0)
-        # [C 연동 · 부록 A 미승인] 분류 시작·정지·복구. 계약 승인 뒤 4일차에 연결한다
+        # TCP 1.2 분류 시작·정지·복구 요청
         self.start_button = pill("START 시작", "primary", NOT_APPROVED + " " + START_HINT)
         self.start_button.setAccessibleDescription(START_HINT)
         # 「Stop 정지」 = 기존 분류 STOP 요청 그대로. 부품 해제·정지 완료를 뜻하지 않는다(정지 확인은 C 상태로만)
@@ -305,9 +305,9 @@ class MainWindow(QMainWindow):
         command_card = Card("모의 분류 조작" if self.demo else "명령 계약 상태", "실제 전송 없음" if self.demo else "D ↔ C")
         if self.live_run:
             rows = [
-                ("GET_STATUS (준비 조회)", "TCP 1.2 후보 · 실행 상태 포함"),
-                ("MOVE · CANCEL", "1.2 후보 모드에서 비활성 · 명세 미정"),
-                ("START · Stop 정지(STOP) · RECOVER", "1.2 후보 · 로봇+컨베이어 · C 1.1 은 거부"),
+                ("GET_STATUS (준비 조회)", "TCP 1.2 · 실행 상태 포함"),
+                ("MOVE · CANCEL", "1.2 모드에서 비활성"),
+                ("START · Stop 정지(STOP) · RECOVER", "TCP 1.2 · 로봇+컨베이어"),
                 ("E-Stop (응용 요청)", "미지원 · C 알림 없음"),
                 ("링크 채널 선택", "누를 때 영상 연결로 요청 · 임시 형식 · 프레임 도착으로 확인" if self.relay else "부록 B 미승인 · 미전송"),
             ]
@@ -1090,7 +1090,7 @@ class MainWindow(QMainWindow):
             reason = self._sort_block(action)
             button.setEnabled(connected)
             hint = {"START": START_HINT, "STOP": STOP_HINT}.get(action, "")
-            button.setToolTip("TCP 1.2 후보(부록 A.6, 미승인) · " + (hint + " · " if hint else "")
+            button.setToolTip("TCP 1.2 실행 제어 · " + (hint + " · " if hint else "")
                               + ("누르면 송신" if not reason else "누르면 미전송 · " + reason))
             plans.append(f"{ACTION_NAMES[action]} " + ("송신" if not reason else f"미전송({reason})"))
         allowed, reason = link.e_stop_allowed()
@@ -1124,7 +1124,8 @@ class MainWindow(QMainWindow):
             kind, text = "warn", "C 실행 상태 미확인"
         else:
             state = snapshot["run_state"]
-            text = self.RUN_LABELS[state]
+            text = ("E-STOP 일시정지" if state == "RECOVERY_REQUIRED" and snapshot["stop_cause"] == "E_STOP"
+                    else self.RUN_LABELS[state])
             if snapshot["hold_state"] == "HELD":
                 text += " · 부품 보유 중 — 해제 명령 미제공"
             elif snapshot["hold_state"] == "HOLD_UNKNOWN":
@@ -1424,8 +1425,7 @@ def main(argv: list[str] | None = None) -> int:
                         help=f"중계 포트 (기본: camera {VIEW_PORT}, relay {RELAY_PORT})")
     parser.add_argument("--demo", action="store_true", help="모의 분류 조작·상태·화면 확인. 소켓을 열지 않음")
     parser.add_argument("--tcp-version", choices=("1.1", "1.2"), default="1.1",
-                        help="명령 TCP 버전. 1.2 는 부록 A.6 후보(미승인): 실제 START/STOP/RECOVER 송수신, 수동 MOVE 비활성. "
-                             "현재 C 서버(1.1)는 1.2 를 거부한다")
+                        help="명령 TCP 버전. 1.1 은 MOVE/CANCEL, 1.2 는 START/STOP/E-STOP/RECOVER 실행 제어(서버 1.2 필요)")
     parser.add_argument("--no-motion", action="store_true", help="모션 줄이기 상태로 시작")
     parser.add_argument("--no-cover", action="store_true", help="표지 화면(UR5e 인사) 없이 바로 대시보드를 연다")
     parser.add_argument("--theme", choices=tuple(theme.PALETTES), default=None,

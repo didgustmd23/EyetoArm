@@ -893,7 +893,7 @@ A.5의 이전 미결 목록을 아래처럼 닫습니다. "권고"는 D 초안�
 
 | 위치 | 확인한 동작 |
 |---|---|
-| `robot_ws/src/robot_server_package/robot_server_package/tcp_server.py` `_handle_line`·`_readiness` | `GET_STATUS`·`MOVE`·`CANCEL`만 분기하고 그 밖의 `type`은 거부(§6.1 `BAD_FORMAT`). 준비 판정에 분류 실행을 참조하는 코드가 없음. 분류 중 `MOVE`가 실제로 어떻게 판정되는지는 **미검증** |
+| `robot_ws/src/robot_server_package/robot_server_package/tcp_server.py` `_handle_line`·`_readiness` | 기존 1.1 `GET_STATUS`·`MOVE`·`CANCEL` 경로를 유지하고 1.2 `GET_STATUS`·`START`·`STOP`·`RECOVER`·`E_STOP`도 처리. 별도 ROS client가 관리 실행 Trigger/GetSortRun에 연결됨. 1.2 스냅샷은 기존 `GetSortRun` 응답에서 TCP 프로세스가 조립함 |
 | `sort_manager.py` `SortGoalReceiver.__init__` | `~/start_run`·`~/stop_run`·`~/e_stop`·`~/recover`(`std_srvs/Trigger`), `~/get_run`(`GetSortRun`)은 `--run-state`가 있을 때만 생성. ROS-side A/B discard 서비스 연결도 관리 실행에 둠. `run_epoch`는 노드 기동마다 SQLite에서 증가하며 run pause·ID는 메모리 상태 |
 | `_start_run` | E-STOP 뒤에는 기존 ID·epoch·분류 기억을 유지해 같은 run을 재활성화. 일반 STOP/RECOVER 뒤에는 새 ID·epoch로 새 run 시작. 실행 중 중복·복구 잠금·A/B 폐기 미완료면 거부 |
 | `_stop_run` | 벨트/볼트 생성을 멈추고 goal 취소·정지 확인 뒤 `move_home`, A/B 추적·B 대기 데이터 및 detect/center 표시를 폐기. 성공 시 `sort_job_id`를 비움. 최대 35초 goal 정지 대기. 벨트 속도 피드백은 아직 없음 |
@@ -902,9 +902,11 @@ A.5의 이전 미결 목록을 아래처럼 닫습니다. "권고"는 D 초안�
 | `_get_run` | E-STOP pause 중 `active=false`와 기존 ID·epoch를 반환해 START 재개를 허용. 일반 STOP/RECOVER 후에는 ID가 비어 있음 |
 | `~/recover`·`GazeboSortExecutor.recover_home` | E-STOP 래치에서만 허용. 그립 controller의 stalled 피드백으로 보유를 기록한 경우 현재 위치에서 열고 팔을 초기 관절 위치로 이동. 그 뒤 A/B 데이터를 폐기하고 계속 pause |
 | `_execute`·`gazebo_sort_executor.py` | 진행 중 goal은 정지 플래그를 보고 `ROBOT_STOP_CONFIRMED` 또는 `STOP_UNCONFIRMED`(→ 복구 필요). `STOP_UNCONFIRMED` 뒤에는 자동 귀환을 하지 않음(`NO_HOME_AFTER`). 결과는 액션 클라이언트(B)에게 가며 TCP 서버가 받는 경로는 확인하지 못함 |
-| `robot_server_package` 전체 | ROS run-control 서비스는 구현됨. 전용 A/B discard Trigger가 `run_pipeline`의 `LiveObservationLink`를 통해 queued/in-flight B 계산, B dedupe, A world tracking, detect/center relay cache를 무효화. C TCP `START`·`STOP`·`E_STOP`·`RECOVER` 메시지 연결은 아직 없음. `HELD`/`HOLD_UNKNOWN` 같은 영속 보유 상태는 없음 |
+| `robot_server_package` 전체 | ROS run-control 서비스 및 TCP 1.2 라우팅 구현. 전용 A/B discard Trigger가 `run_pipeline`의 `LiveObservationLink`를 통해 queued/in-flight B 계산, B dedupe, A world tracking, detect/center relay cache를 무효화. ROS GetSortRun은 gripper hold를 제공하지 않아 E-STOP 상태는 `HOLD_UNKNOWN`으로 표시함 |
 | C 상세설계 §16.4.1~§16.4.3, §16.8.2~§16.8.4 | 보유 상태·적용 확인·복구 재기동·슬롯 상속·작업별 조건·분류 작업 상태는 **설계 제안**이며 위 구현과 차이가 있음 |
-| `dashboard-client/src/eyetoarm/gui/sort_demo.py`(모의) | `STARTING`·`STOPPING`·`RECOVERING`, 자체 `epoch`·`seq`, 모의 정지 확인. 시험용 내부 값이며 이 계약과 다름. 실제 모드 `START`·`STOP`·`RECOVER`는 비활성 |
+| `dashboard-client/src/eyetoarm/gui/sort_demo.py`(모의) | `STARTING`·`STOPPING`·`RECOVERING`, 자체 `epoch`·`seq`, 모의 정지 확인. 시험용 내부 값이며 실제 TCP 1.2 응답과는 별도 |
+
+**현재 TCP 1.2 구현 범위(2026-11-24):** D 후보의 요청/응답 스키마를 처리하고 run-control Trigger에 전달합니다. 1.1 연결은 계속 사용할 수 있습니다. `c_session_id`·`run_revision`은 TCP 프로세스 메모리에서 합성하며 요청 이력도 메모리 범위라 A.6.10의 서버 재기동 내구성을 제공하지 않습니다. `E_STOP_STATUS.CONFIRMED`는 ROS service 성공 응답을 뜻하며 안전 정격 하드웨어 정지 확인이 아닙니다. Hold 상태와 벨트 속도는 독립 피드백으로 확인하지 않습니다.
 
 **현재 `Trigger` 서비스만으로는 보장할 수 없는 것:** 요청에 인자가 없어 C가 "어느 시점의 상태를 보고 보낸 `START`인지" 알 수 없습니다. 시간 초과된 `start_run`이 C에 늦게 도착하면, 그 사이 처리된 `stop_run` 뒤에 실행을 다시 켤 수 있습니다. TCP 서버 안에서 직렬화해도 이미 보낸 호출은 회수하지 못합니다.
 
@@ -1070,7 +1072,7 @@ C §16.4.3을 그대로 따르며 새 동작을 정의하지 않습니다.
 - **절차:** ① 팔 명령 없이 미종료 goal 취소 요청 → 종료·정지 확인, 확인할 수 없으면 실행 구성 전체 정상 종료(응답 없으면 프로세스 종료를 기록) ② 재기동 뒤 §16.4.1 2~5단계(구성 확인·초기화·최종 확인) ③ 자동 재시도 없음.
 - **결과:** 성공하면 새 `c_session_id`의 `IDLE`이며 **분류를 자동 재개하지 않습니다**(사용자가 다시 `START`). 실패하면 `RECOVERY_REQUIRED`. 부품이 초기 배치로 돌아가는 것은 시험 초기화로 기록하며 결과로 세지 않습니다.
 - **관리 시뮬레이션 재기동 경계(제안).** "실행 구성 재기동"은 `sort_goal_receiver`와 Gazebo 실행 구성의 재기동을 뜻합니다. TCP 서버가 같은 재기동 범위에 들면 연결이 끊기며, 클라이언트는 재접속 뒤 스냅샷으로 다시 맞춥니다. `MOVE` 명령 로그 복구(§7.8)와 분류 실행 상태 복구는 서로 다른 기록입니다. 재기동 주체와 범위는 C 결정입니다.
-- **현재 구현과의 차이(A.6.2):** ROS `recover`는 E-STOP 래치 뒤 stalled gripper feedback으로 보유가 확인되면 그리퍼를 열고 팔을 home으로 보냅니다. 전체 실행 구성 재기동, `HELD`·`HOLD_UNKNOWN`·`DETACHED`·`apply_state` 확인은 구현되지 않았고, 이 ROS service는 TCP `RECOVER` 수신부가 아닙니다. E-STOP 후 START는 run ID를 재사용하지만 취소된 개별 FollowJointTrajectory goal의 중간 경로를 이어서 실행하지 않고 새 유효 B goal을 기다립니다.
+- **현재 구현과의 차이(A.6.2):** ROS `recover`는 E-STOP 래치 뒤 stalled gripper feedback으로 보유가 확인되면 그리퍼를 열고 팔을 home으로 보냅니다. 전체 실행 구성 재기동과 `apply_state` 확인은 구현되지 않았고, TCP 1.2의 `HOLD_UNKNOWN`은 보수적으로 합성합니다. E-STOP 후 START는 run ID를 재사용하지만 취소된 개별 FollowJointTrajectory goal의 중간 경로를 이어서 실행하지 않고 새 유효 B goal을 기다립니다.
 
 #### A.6.10 재전송·재접속·중복 방어
 
@@ -1166,7 +1168,7 @@ C §16.4.3을 그대로 따르며 새 동작을 정의하지 않습니다.
 1. **C 결정:** A.6.3 순번·조건부 요청·반복 `STOP` 규칙(또는 같은 성질의 대안)과 서비스 형태, A.6.7 스냅샷 전달 방식(토픽 QoS·조회 대체 경로), A.4 슬롯 소유자 표현, A.6.4 상태·전이, A.6.6 이름·코드·`not_ready_reasons`, A.6.8 확인 항목, A.6.9 재기동 주체·범위와 잠금 저장, A.6.11 값, `HELD` 정지 후 처리 절차, `RECOVERING` 중 `STOP` 처리, `sort_job_id` 이력 범위(A.6.10), 정지 확인 식별 방식(A.6.8). **D 결정의 공동 확인:** A.6.4 `allowed`·순번 증가, A.6.5 정수·`user_confirmed`, A.6.6 응답 검증·`detail` 길이, A.6.10 ID 충돌.
 2. **C 확인(현재 동작):** 공급기 없는 구성의 실행 중 `start_run`, 복구 필요 상태의 `stop_run` 응답, `BUSY`의 두 원인, 복구 필요 표시의 비저장, 분류 중 `MOVE`의 실제 판정(A.6.2), `--run-state` 없는 구성의 분류 goal과 `MOVE` 경합.
 3. **C 승인 뒤 C·D·A 확인(§0.1).** A는 시험 관점.
-4. **그 뒤에만** 스키마·시험 벡터·서버·클라이언트 구현과 동시 배포. 지금은 미승인이며 C 구현·실통신이 없습니다. D 클라이언트 후보 구현(`--tcp-version 1.2`, 기본 1.1)은 루프백 대역으로만 시험했습니다.
+4. **현재 구현:** C TCP는 1.2 요청 경로를 추가했고 D는 `--tcp-version 1.2`에서 이를 사용합니다. 이 구현은 이 부록의 일부 후보 선택을 사용하며 공식 프로토콜 승인·실물 안전 인증·서버 재기동 내구성·완전한 정지 센서 확인을 뜻하지 않습니다. 실제 Gazebo 통합 동작 확인은 별도입니다.
 
 #### A.6.16 `E_STOP` 응용 요청 확장 (D 후보 2026-11-24 · 미승인 · C 회신 대기)
 
