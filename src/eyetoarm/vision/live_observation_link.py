@@ -286,6 +286,9 @@ class LiveObservationLink:
         self.probes_done = 0
         self.open_attempts: list[tuple] = []      # (image_seq, epoch, 결과)
         self._lock = threading.Lock()
+        self._discard_lock = threading.Lock()
+        self._discard_generation = 0
+        self._discarding = False
         self._stage_factory = stage_factory
         self.stages: list = []
         capture = LiveCaptureTfLookup(tf.lookup, world_frame=config.world_frame, wait_limit_s=config.tf_wait_limit_s)
@@ -685,13 +688,21 @@ class LiveObservationLink:
         frame, obs = outcome.context.frame, outcome.observation
         ids = {"job_seq": outcome.context.job_seq, "generation": outcome.context.generation, "rx_epoch": rx_epoch}
 
+        with self._discard_lock:
+            if self._discarding:
+                return self._record_skip("link", "operator_discard", frame, ids)
+            discard_generation = self._discard_generation
+
         # 현재 응답이면 추적 큐에 넣기만 한다(TF 없음). B로 보내지 않는 프레임도 추적은 본다
         trackable = WORLD_TRACKABLE_LIST_SKIPS if self.b_input == B_INPUT_LIST else WORLD_TRACKABLE_SKIPS
 
-        if (self.world is not None and skip_reason in trackable and self._track_camera is not None
-                and isinstance(outcome.display_result, AiSegResult) and frame.calibration_id == self._calibration_id
-                and self.ended is None and not self.reset_pending):
-            self.world.offer(outcome.context, outcome.display_result, self._track_camera)
+        with self._discard_lock:
+            if self._discarding or discard_generation != self._discard_generation:
+                return self._record_skip("link", "operator_discard", frame, ids)
+            if (self.world is not None and skip_reason in trackable and self._track_camera is not None
+                    and isinstance(outcome.display_result, AiSegResult) and frame.calibration_id == self._calibration_id
+                    and self.ended is None and not self.reset_pending):
+                self.world.offer(outcome.context, outcome.display_result, self._track_camera)
 
         if skip_reason is not None:
             return self._record_skip("runner", skip_reason, frame, ids)
@@ -737,13 +748,51 @@ class LiveObservationLink:
             obs = with_track(obs, track_id, state)
             self._count_tracking(f"submitted_{state}")
 
-        if not self.dispatcher.submit(frame, obs, rx_epoch=rx_epoch, generation=outcome.context.generation,
-                                      calibration_id=frame.calibration_id):
+        with self._discard_lock:
+            if self._discarding or discard_generation != self._discard_generation:
+                return self._record_skip("link", "operator_discard", frame, ids)
+            submitted = self.dispatcher.submit(frame, obs, rx_epoch=rx_epoch,
+                                                generation=outcome.context.generation,
+                                                calibration_id=frame.calibration_id)
+
+        if not submitted:
             return self._record_skip("link", "submit_refused", frame, ids)
 
         self.submitted += 1
 
         return "submitted"
+
+    def discard_detections(self, reason: str, timeout_s: float = 2.0) -> bool:
+        """Discard queued/in-flight A/B data and tracking state while keeping the live pipeline open."""
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("reason must be a non-empty string")
+
+        with self._discard_lock:
+            self._discard_generation += 1
+            self._discarding = True
+            self.state.invalidate_current(reason)
+            self.dispatcher.discard_pending(reason)
+            if self.world is not None:
+                self.world.discard_pending(reason)
+            state_usable = not self.state.closed and self.state.failed is None
+
+        if not state_usable or not self.dispatcher.drain(timeout_s):
+            # Fail closed: do not accept new observations if old B work did not drain.
+            return False
+
+        with self._lock:
+            stages = [entry[0] for entry in self.stages]
+            self._list_chosen = None
+
+        for stage in stages:
+            reset = getattr(stage, "discard_detections", None)
+            if callable(reset):
+                reset()
+
+        with self._discard_lock:
+            self._discarding = False
+
+        return True
 
     def _probe_loop(self) -> None:
         """열기 스레드: 시도 칸의 프레임으로 TF 준비를 시도한다(제어 흐름 밖)."""

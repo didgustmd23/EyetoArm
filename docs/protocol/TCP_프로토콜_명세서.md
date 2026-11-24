@@ -889,18 +889,20 @@ A.5의 이전 미결 목록을 아래처럼 닫습니다. "권고"는 D 초안�
 
 모든 요청은 기존 TCP 서버·포트·연결·메시지 처리기로 받습니다(A.1).
 
-#### A.6.2 현재 소스·설계 확인 (2026-11-24, 읽기만)
+#### A.6.2 현재 소스·설계 확인 (2026-11-24)
 
 | 위치 | 확인한 동작 |
 |---|---|
 | `robot_ws/src/robot_server_package/robot_server_package/tcp_server.py` `_handle_line`·`_readiness` | `GET_STATUS`·`MOVE`·`CANCEL`만 분기하고 그 밖의 `type`은 거부(§6.1 `BAD_FORMAT`). 준비 판정에 분류 실행을 참조하는 코드가 없음. 분류 중 `MOVE`가 실제로 어떻게 판정되는지는 **미검증** |
-| `sort_manager.py` `SortGoalReceiver.__init__` | `~/start_run`·`~/stop_run`(`std_srvs/Trigger`), `~/get_run`(`GetSortRun`)은 `--run-state`가 있을 때만 생성. `run_epoch`는 `next_epoch`로 **노드 기동마다 1 증가**(SQLite 저장). `sort_job_id`와 복구 필요 표시(`_recovery_required`)는 메모리에만 있어 **노드 재기동 뒤 빈 값·해제 상태**로 시작 |
-| `_start_run` | 실행 잠금을 기다리지 않고 잡으려 하며, 못 잡으면 `success=false`·`BUSY`. 이 잠금은 진행 중 `SortPart` goal과 동시에 들어온 다른 `start_run`이 함께 써서 `BUSY`는 둘을 구분하지 않음. 복구 필요면 `RECOVERY_REQUIRED`. 공급기가 있고 실행 중이면 `ALREADY_RUNNING`. 그 밖에는 새 `sort_job_id`, `run_epoch`는 **직전 작업이 남아 있거나 처리한 goal 기록이 있을 때만** 증가, `RUN_STARTED`. 따라서 같은 `run_epoch`에 다른 `sort_job_id`가 생길 수 있음. 공급기 없는 구성에서는 실행 중 `start_run`이 새 작업을 만듦 |
-| `_stop_run` | 잠금 없이 정지 플래그·`sort_job_id` 비움·공급기 정지 호출 뒤 **즉시** `STOP_REQUESTED`. 정지 확인을 기다리지 않고, 실행 중이 아니거나 복구 필요 상태여도 같은 응답 |
-| `_feed` | 공급기 예외 시 내부에서 `_stop_run` 호출. 이를 알리는 서비스·토픽 없음 |
-| `_get_run` | `active`·`sort_job_id`·`run_epoch`만. 시작 전·정지 요청 후·복구 필요를 구분하지 않음. 정지 확인·보유 상태·변경 순번 없음 |
+| `sort_manager.py` `SortGoalReceiver.__init__` | `~/start_run`·`~/stop_run`·`~/e_stop`·`~/recover`(`std_srvs/Trigger`), `~/get_run`(`GetSortRun`)은 `--run-state`가 있을 때만 생성. ROS-side A/B discard 서비스 연결도 관리 실행에 둠. `run_epoch`는 노드 기동마다 SQLite에서 증가하며 run pause·ID는 메모리 상태 |
+| `_start_run` | E-STOP 뒤에는 기존 ID·epoch·분류 기억을 유지해 같은 run을 재활성화. 일반 STOP/RECOVER 뒤에는 새 ID·epoch로 새 run 시작. 실행 중 중복·복구 잠금·A/B 폐기 미완료면 거부 |
+| `_stop_run` | 벨트/볼트 생성을 멈추고 goal 취소·정지 확인 뒤 `move_home`, A/B 추적·B 대기 데이터 및 detect/center 표시를 폐기. 성공 시 `sort_job_id`를 비움. 최대 35초 goal 정지 대기. 벨트 속도 피드백은 아직 없음 |
+| `_e_stop_run` | 벨트/볼트 생성을 멈추고 진행 중 goal을 현 위치에서 정지. 홈 이동·A/B 폐기 없이 ID·epoch를 보존 |
+| `_feed` | 활성·비복구 상태에서만 볼트 생성 tick. 공급 예외는 일반 정지 절차를 요청 |
+| `_get_run` | E-STOP pause 중 `active=false`와 기존 ID·epoch를 반환해 START 재개를 허용. 일반 STOP/RECOVER 후에는 ID가 비어 있음 |
+| `~/recover`·`GazeboSortExecutor.recover_home` | E-STOP 래치에서만 허용. 그립 controller의 stalled 피드백으로 보유를 기록한 경우 현재 위치에서 열고 팔을 초기 관절 위치로 이동. 그 뒤 A/B 데이터를 폐기하고 계속 pause |
 | `_execute`·`gazebo_sort_executor.py` | 진행 중 goal은 정지 플래그를 보고 `ROBOT_STOP_CONFIRMED` 또는 `STOP_UNCONFIRMED`(→ 복구 필요). `STOP_UNCONFIRMED` 뒤에는 자동 귀환을 하지 않음(`NO_HOME_AFTER`). 결과는 액션 클라이언트(B)에게 가며 TCP 서버가 받는 경로는 확인하지 못함 |
-| `robot_server_package` 전체 | `HELD`·`HOLD_UNKNOWN`·`DETACHED`, `apply_state`, `RECOVER` 구현 없음(문자열 검색 기준) |
+| `robot_server_package` 전체 | ROS run-control 서비스는 구현됨. 전용 A/B discard Trigger가 `run_pipeline`의 `LiveObservationLink`를 통해 queued/in-flight B 계산, B dedupe, A world tracking, detect/center relay cache를 무효화. C TCP `START`·`STOP`·`E_STOP`·`RECOVER` 메시지 연결은 아직 없음. `HELD`/`HOLD_UNKNOWN` 같은 영속 보유 상태는 없음 |
 | C 상세설계 §16.4.1~§16.4.3, §16.8.2~§16.8.4 | 보유 상태·적용 확인·복구 재기동·슬롯 상속·작업별 조건·분류 작업 상태는 **설계 제안**이며 위 구현과 차이가 있음 |
 | `dashboard-client/src/eyetoarm/gui/sort_demo.py`(모의) | `STARTING`·`STOPPING`·`RECOVERING`, 자체 `epoch`·`seq`, 모의 정지 확인. 시험용 내부 값이며 이 계약과 다름. 실제 모드 `START`·`STOP`·`RECOVER`는 비활성 |
 
@@ -1068,7 +1070,7 @@ C §16.4.3을 그대로 따르며 새 동작을 정의하지 않습니다.
 - **절차:** ① 팔 명령 없이 미종료 goal 취소 요청 → 종료·정지 확인, 확인할 수 없으면 실행 구성 전체 정상 종료(응답 없으면 프로세스 종료를 기록) ② 재기동 뒤 §16.4.1 2~5단계(구성 확인·초기화·최종 확인) ③ 자동 재시도 없음.
 - **결과:** 성공하면 새 `c_session_id`의 `IDLE`이며 **분류를 자동 재개하지 않습니다**(사용자가 다시 `START`). 실패하면 `RECOVERY_REQUIRED`. 부품이 초기 배치로 돌아가는 것은 시험 초기화로 기록하며 결과로 세지 않습니다.
 - **관리 시뮬레이션 재기동 경계(제안).** "실행 구성 재기동"은 `sort_goal_receiver`와 Gazebo 실행 구성의 재기동을 뜻합니다. TCP 서버가 같은 재기동 범위에 들면 연결이 끊기며, 클라이언트는 재접속 뒤 스냅샷으로 다시 맞춥니다. `MOVE` 명령 로그 복구(§7.8)와 분류 실행 상태 복구는 서로 다른 기록입니다. 재기동 주체와 범위는 C 결정입니다.
-- **현재 구현과의 차이(A.6.2):** `RECOVER`·보유 상태·`apply_state`가 없고, 복구 필요 표시가 메모리에만 있어 노드를 재기동하면 §16.4.1 확인 없이 풀립니다. 1.2 적용 전 C가 잠금을 저장하거나 재기동 시 §16.4.1 확인을 거치게 해야 합니다.
+- **현재 구현과의 차이(A.6.2):** ROS `recover`는 E-STOP 래치 뒤 stalled gripper feedback으로 보유가 확인되면 그리퍼를 열고 팔을 home으로 보냅니다. 전체 실행 구성 재기동, `HELD`·`HOLD_UNKNOWN`·`DETACHED`·`apply_state` 확인은 구현되지 않았고, 이 ROS service는 TCP `RECOVER` 수신부가 아닙니다. E-STOP 후 START는 run ID를 재사용하지만 취소된 개별 FollowJointTrajectory goal의 중간 경로를 이어서 실행하지 않고 새 유효 B goal을 기다립니다.
 
 #### A.6.10 재전송·재접속·중복 방어
 

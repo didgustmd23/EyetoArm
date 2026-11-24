@@ -24,6 +24,8 @@ from .sort_event_log import SortEventLog
 
 
 ACTION_NAME = "/sort_part"
+STOP_CONFIRM_TIMEOUT_S = 35.0
+VISION_DISCARD_TIMEOUT_S = 8.0
 
 
 def next_epoch(path: Path) -> int:
@@ -71,12 +73,21 @@ class SortGoalReceiver(Node):
         self._backend = backend
         self._event_log = event_log
         self._execution_lock = Lock()
+        self._control_lock = Lock()
         self._epoch_file = epoch_file
+        self._managed = epoch_file is not None
         self._epoch = next_epoch(epoch_file) if epoch_file is not None else 0
         self._job_id = ""
+        self._run_paused = True
+        self._estop_latched = False
+        self._has_started = False
+        self._purge_required = False
         self._seen = set()
         self._seen_lock = Lock()
         self._recovery_required = False
+        self._vision_discard_client = (self.create_client(
+            Trigger, "/eyetoarm_live_sort_part/discard_detections",
+            callback_group=ReentrantCallbackGroup()) if epoch_file is not None else None)
         self._server_guard = acquire_action_server_guard(self, action_name)
         try:
             self._server = ActionServer(
@@ -96,7 +107,12 @@ class SortGoalReceiver(Node):
         if epoch_file is not None:
             self.create_service(Trigger, "~/start_run", self._start_run)
             self.create_service(Trigger, "~/stop_run", self._stop_run)
+            self.create_service(Trigger, "~/e_stop", self._e_stop_run)
+            self.create_service(Trigger, "~/recover", self._recover_run)
             if feeder is not None:
+                # A managed run always starts with the belt stopped. START is the
+                # only operation that enables both movement and part generation.
+                feeder.set_running(False)
                 self.create_timer(0.25, self._feed)
             self.create_service(GetSortRun, "~/get_run", self._get_run)
         self.get_logger().info(
@@ -113,7 +129,7 @@ class SortGoalReceiver(Node):
                 self._server_guard = None
 
     def _feed(self):
-        if self._job_id and not self._recovery_required:
+        if self._job_id and not self._run_paused and not self._recovery_required:
             try:
                 self._feeder.tick()
             except Exception as exc:
@@ -121,47 +137,162 @@ class SortGoalReceiver(Node):
                 self._stop_run(None, Trigger.Response())
 
     def _stop_run(self, request, response):
+        with self._control_lock:
+            stopped, reason = self._pause_run()
+            if not stopped:
+                self._estop_latched = True
+                response.success = False
+                response.message = reason
+                return response
+            try:
+                if self._backend is None:
+                    raise SortFailure("EXECUTION_NOT_CONFIGURED")
+                self._backend.move_home()
+            except Exception as exc:
+                self._recovery_required = True
+                self._estop_latched = True
+                response.success = False
+                response.message = f"HOME_FAILED: {type(exc).__name__}: {exc}"
+                return response
+            discarded, detail = self._discard_vision_detections("STOP")
+            if not discarded:
+                self._purge_required = True
+                response.success = False
+                response.message = f"A_B_DISCARD_FAILED: {detail}"
+                return response
+            self._job_id = ""
+            self._estop_latched = False
+            self._recovery_required = False
+            self._purge_required = False
+            self._run_paused = True
+            response.success = True
+            response.message = "STOPPED_HOME_DATA_DISCARDED"
+            return response
+
+    def _e_stop_run(self, _request, response):
+        with self._control_lock:
+            self._estop_latched = True
+            stopped, reason = self._pause_run()
+            response.success = stopped
+            response.message = "E_STOPPED_IN_PLACE" if stopped else reason
+            return response
+
+    def _pause_run(self):
+        """Stop part spawning/belt and wait for the current robot goal to stop in place."""
         self._stop_run_requested.set()
-        self._job_id = ""
+        self._run_paused = True
         if self._feeder is not None:
-            self._feeder.set_running(False)
-        response.success = True
-        response.message = "STOP_REQUESTED"
-        return response
+            try:
+                self._feeder.set_running(False)
+            except Exception as exc:
+                self._recovery_required = True
+                return False, f"BELT_STOP_FAILED: {type(exc).__name__}: {exc}"
+        acquired = self._execution_lock.acquire(timeout=STOP_CONFIRM_TIMEOUT_S)
+        if not acquired:
+            self._recovery_required = True
+            return False, "STOP_UNCONFIRMED"
+        self._execution_lock.release()
+        return True, "STOPPED_IN_PLACE"
+
+    def _discard_vision_detections(self, reason):
+        client = self._vision_discard_client
+        if client is None or not client.wait_for_service(timeout_sec=2.0):
+            return False, "A/B discard service unavailable"
+        future = client.call_async(Trigger.Request())
+        completed = Event()
+        future.add_done_callback(lambda _future: completed.set())
+        if not completed.wait(VISION_DISCARD_TIMEOUT_S):
+            return False, "A/B discard timed out"
+        try:
+            reply = future.result()
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+        if reply is None or not reply.success:
+            return False, "A/B discard refused" if reply is None else reply.message
+        self.get_logger().info(f"A/B detections discarded reason={reason}: {reply.message}")
+        return True, reply.message
 
     def _start_run(self, request, response):
-        if not self._execution_lock.acquire(blocking=False):
-            response.message = "BUSY"
-            return response
-        try:
-            if self._recovery_required:
-                response.message = "RECOVERY_REQUIRED"
+        with self._control_lock:
+            if not self._execution_lock.acquire(blocking=False):
+                response.message = "BUSY"
                 return response
-            if self._feeder is not None:
-                if self._job_id:
+            try:
+                if self._recovery_required:
+                    response.message = "RECOVERY_REQUIRED"
+                    return response
+                if self._purge_required:
+                    response.message = "A_B_DISCARD_REQUIRED"
+                    return response
+                if self._job_id and not self._run_paused:
                     response.success = True
                     response.message = "ALREADY_RUNNING"
                     return response
-                self._feeder.set_running(True)
-            self._stop_run_requested.clear()
-            if self._job_id or self._seen:
-                self._epoch = next_epoch(self._epoch_file)
-            self._job_id = str(uuid.uuid4())
-            with self._seen_lock:
-                self._seen.clear()
-            response.success = True
-            response.message = "RUN_STARTED"
-            return response
-        finally:
-            self._execution_lock.release()
+                resuming = bool(self._job_id)
+                if self._feeder is not None:
+                    self._feeder.set_running(True)
+                self._stop_run_requested.clear()
+                if not self._job_id:
+                    if self._has_started or self._seen:
+                        self._epoch = next_epoch(self._epoch_file)
+                    self._job_id = str(uuid.uuid4())
+                    with self._seen_lock:
+                        self._seen.clear()
+                    self._has_started = True
+                self._run_paused = False
+                self._estop_latched = False
+                response.success = True
+                response.message = "RUN_RESUMED" if resuming else "RUN_STARTED"
+                return response
+            finally:
+                self._execution_lock.release()
+
+    def _recover_run(self, _request, response):
+        """E-stop recovery: release a held object at the current pose, then home and purge A/B."""
+        with self._control_lock:
+            if not self._estop_latched:
+                response.message = "E_STOP_REQUIRED"
+                return response
+            if self._backend is None:
+                response.message = "EXECUTION_NOT_CONFIGURED"
+                return response
+            if not self._execution_lock.acquire(blocking=False):
+                response.message = "BUSY"
+                return response
+            try:
+                self._stop_run_requested.set()
+                try:
+                    self._backend.recover_home()
+                except Exception as exc:
+                    self._recovery_required = True
+                    response.message = f"RECOVERY_FAILED: {type(exc).__name__}: {exc}"
+                    return response
+                discarded, detail = self._discard_vision_detections("RECOVER")
+                if not discarded:
+                    self._purge_required = True
+                    response.message = f"A_B_DISCARD_FAILED: {detail}"
+                    return response
+                self._job_id = ""
+                self._recovery_required = False
+                self._run_paused = True
+                self._estop_latched = False
+                self._purge_required = False
+                response.success = True
+                response.message = "OBJECT_RELEASED_HOME_REACHED_DATA_DISCARDED"
+                return response
+            finally:
+                self._execution_lock.release()
 
     def _get_run(self, request, response):
         response.sort_job_id = self._job_id
         response.run_epoch = self._epoch
-        response.active = bool(response.sort_job_id) and not self._recovery_required
+        response.active = bool(response.sort_job_id) and not self._run_paused and not self._recovery_required
         return response
 
     def _goal_request(self, request) -> GoalResponse:
+        if self._managed and (self._run_paused or self._recovery_required or not self._job_id):
+            self.get_logger().warning("goal 거부: managed sort run is not active")
+            return GoalResponse.REJECT
         if request.goal_kind not in ("PICK_PLACE", "PASS_THROUGH"):
             self.get_logger().warning(f"goal 거부: unsupported goal_kind={request.goal_kind!r}")
             return GoalResponse.REJECT
@@ -233,9 +364,11 @@ class SortGoalReceiver(Node):
                 goal_handle.publish_feedback(SortPart.Feedback(stage=stage))
 
             try:
+                if self._managed and (self._run_paused or not self._job_id):
+                    raise SortFailure("SORT_RUN_PAUSED")
                 if self._recovery_required:
                     raise SortFailure("RECOVERY_REQUIRED")
-                if self._epoch_file is not None:
+                if self._managed:
                     if not self._job_id or request.sort_job_id != self._job_id or request.run_epoch != self._epoch:
                         raise SortFailure("SORT_RUN_MISMATCH")
                     if request.timestamp_base != "SIM_TIME" or not 0 < request.capture_stamp_ns < request.valid_until_ns:
@@ -263,6 +396,13 @@ class SortGoalReceiver(Node):
                 result.status = "EXPIRED" if result.reason == "GOAL_EXPIRED" else "FAILED"
                 if result.reason == "STOP_UNCONFIRMED":
                     self._recovery_required = True
+                    self._run_paused = True
+                    self._stop_run_requested.set()
+                    if self._feeder is not None:
+                        try:
+                            self._feeder.set_running(False)
+                        except Exception as belt_exc:
+                            self.get_logger().error(f"Belt stop after unconfirmed robot stop failed: {belt_exc}")
                     if goal_handle.is_cancel_requested:
                         goal_handle.abort()
                         return result
