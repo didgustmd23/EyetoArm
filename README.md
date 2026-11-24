@@ -77,7 +77,7 @@ ros2 launch scripts/c_stack.launch.py gui:=false start_a:=true start_b:=true
   - `run_mode:=multi`: 남은 Gazebo가 있어도 경고만 출력하고 실행합니다(여러 실행을 일부러 함께 띄울 때).
   - 끌 때(Ctrl+C·`kill`·터미널 창 닫기) 이 실행이 띄운 프로세스만 정리합니다. 처리 기록은 `logs/c_stack_guard_<시각>.log`에 남습니다.
   - 예: `ros2 launch scripts/c_stack.launch.py auto_sort:=true`(단일) / `ros2 launch scripts/c_stack.launch.py auto_sort:=true run_mode:=multi`
-  - 이 처리는 `c_stack.launch.py`에만 있습니다. `sim_sort_cell.launch.py`·`dashboard_up.sh`로 띄운 뒤에는 `pgrep -af "gz sim"`으로 남은 Gazebo가 없는지 확인합니다.
+  - 이 처리는 `c_stack.launch.py`와 `dashboard_up.sh`(`dashboard_stack.launch.py`)에 있습니다. `sim_sort_cell.launch.py`를 단독으로 띄운 뒤에는 `pgrep -af "gz sim"`으로 남은 Gazebo가 없는지 확인합니다.
 - 컨베이어를 움직이려면 `ros2 run ros_gz_bridge parameter_bridge /world/sort_cell/set_pose@ros_gz_interfaces/srv/SetEntityPose`를 따로 띄웁니다. 모든 터미널의 `ROS_DOMAIN_ID`·`GZ_PARTITION`이 같아야 합니다.
 - Windows 대시보드 실행과 외부 PC 연결은 [서버-대시보드 실행](docs/design/서버-대시보드%20실행.md)과 [대시보드 한 번에 실행](docs/design/대시보드_한번에_실행.md)을 따릅니다.
 - A 파이프라인 단독 실행(저장 영상·실시간·옵션)은 `scripts/run_pipeline.py --help`와 [A 상세설계](docs/design/A담당_비전_상세설계.md) §3·§6·§9를 봅니다.
