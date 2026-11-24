@@ -12,6 +12,7 @@ from typing import Any
 
 from eyetoarm.vision.ai_result import AiSegResult
 from eyetoarm.vision.handoff import HandoffView, annotate
+from eyetoarm.vision import stage_timing
 
 MAGIC = b"ETV1"
 PACKET_HEADER = struct.Struct(">4sI")
@@ -58,8 +59,10 @@ class _DisplayFrameForwarder:
             "capture_stamp_ns": frame.ros_stamp_ns,
             "timestamp_base": str(getattr(frame.timestamp_base, "value", frame.timestamp_base)),
         }
+        stage_timing.mark("c_detect_start", frame.image_seq)
         image = annotate(view)
         ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        stage_timing.mark("c_detect_done", frame.image_seq)
         if not ok:
             raise ValueError("JPEG encoding failed")
         header = json.dumps(metadata, separators=(",", ":")).encode("utf-8")

@@ -261,6 +261,46 @@ class CleanupSignalTest(Base):
         self.assertIs(signal.getsignal(signal.SIGINT), before)
 
 
+class StageTimingCliTest(Base):
+    """`--stage-timing`: 실시간 관측 경로에서 같은 사진의 단계 시각이 순서대로 남고, 끝나면 진단이 꺼진다(#372 ③)."""
+
+    def test_stage_marks_for_accepted_frames(self):
+        """수락된 사진마다 taken → detected → handle → offered → b_start → b_done 순서, 실행 결과는 그대로 0."""
+        from eyetoarm.vision import stage_timing
+
+        path = str(Path(self.tmp.name) / "stage.jsonl")
+        code, err, out = self.run_cli(Scenario(3), extra=("--stage-timing", path))
+        marks = [json.loads(t) for t in Path(path).read_text(encoding="utf-8").splitlines()]
+        by_seq = {}
+
+        for m in marks:
+            if m["kind"] == "mark":
+                by_seq.setdefault(m["image_seq"], []).append(m)
+
+        accepted = [r["input"]["image_seq"] for r in self.records(out) if r["kind"] == "accept"]
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("STAGE TIMING ON", err)
+        self.assertFalse(stage_timing.enabled())
+        self.assertGreaterEqual(len(accepted), 1)
+
+        for seq in accepted:
+            stages = [m["stage"] for m in by_seq[seq]]
+            order = [stages.index(s) for s in ("taken", "detected", "handle", "offered", "b_start", "b_done")]
+
+            self.assertEqual(order, sorted(order), stages)
+            times = [m["t_ns"] for m in by_seq[seq]]
+            self.assertEqual(times, sorted(times))
+
+    def test_requires_live_observation_out(self):
+        """저장 입력처럼 실시간 관측 경로가 아니면 인자 오류(종료 2)."""
+        with self.assertRaises(SystemExit) as ctx:
+            self.mod.main(["--images", "x.png", "--detect-config", "x.json", "--log", "x.jsonl",
+                           "--stage-timing", "x.jsonl"], stderr=io.StringIO())
+
+        self.assertEqual(ctx.exception.code, 2)
+
+
 class NormalPathTest(Base):
     """정상 좌표·같은 프레임 주석."""
 
