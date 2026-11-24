@@ -10,8 +10,8 @@ import weakref
 
 import numpy as np
 
-from eyetoarm.vision.live_view import (CLASS_COLORS_BGR, MASK_ALPHA, STATE_COLORS_BGR, DisplayBridge, ViewState,
-                                       draw_detections, render_view)
+from eyetoarm.vision.live_view import (CLASS_COLORS_BGR, MASK_ALPHA, REJECTED_COLOR_BGR, STATE_COLORS_BGR, DisplayBridge,
+                                       ViewState, draw_detections, render_view)
 from eyetoarm.vision.pipeline_types import JobContext, JobOutcome, JobStatus
 from test_ai_config import ai_config
 from test_ai_pipeline import ai_observation
@@ -67,6 +67,11 @@ def pixel(img, x, y):
     return tuple(int(v) for v in img[y, x])
 
 
+def _changed(out, src, y0, y1, x0, x1):
+    """두 영상의 [y0:y1, x0:x1] 영역에서 화소가 달라진 곳(불리언 2차원)."""
+    return (out[y0:y1, x0:x1] != src[y0:y1, x0:x1]).any(axis=2)
+
+
 class DrawTest(unittest.TestCase):
     """그리기: 원본 불변·좌표 대응·무검출·비대상 미표시·초록 없음."""
 
@@ -94,16 +99,54 @@ class DrawTest(unittest.TestCase):
         self.assertNotEqual(pixel(out, 120, 125), (40, 40, 40))
         self.assertEqual(pixel(out, 200, 190), (40, 40, 40))   # (120+80, 125+80) 근처는 원본 그대로
 
-    def test_no_detection_and_out_of_scope_not_drawn(self):
-        """무검출과 비대상·점수 미달 인스턴스는 그리지 않는다(표시 영상 = 원본, 그린 수 0)."""
+    def test_no_detection_not_drawn(self):
+        """무검출이면 아무것도 그리지 않는다(표시 영상 = 원본, 그린 수 0, 안내 글도 없음)."""
         src = image()
+        out, drawn = draw_detections(src, seg_result((), crop_wh=(W, H)))
 
-        for instances in ((), (big_instance(rejected="LOW_CONFIDENCE"),),
-                          (big_instance(rejected="NON_TARGET_CLASS", class_index=1, class_name="nut"),)):
-            with self.subTest(instances=instances):
-                out, drawn = draw_detections(src, seg_result(instances, crop_wh=(W, H)))
-                self.assertEqual(drawn, 0)
-                np.testing.assert_array_equal(out, src)
+        self.assertEqual(drawn, 0)
+        np.testing.assert_array_equal(out, src)
+
+    def test_rejected_drawn_with_reason_when_no_eligible(self):
+        """유효 후보가 0이면(C 5e99bd6) 제외된 검출도 회색으로 그리고 사유 라벨과 'NO ELIGIBLE CANDIDATES' 안내 글을 붙인다.
+
+        범위 밖(점수 미달·비대상)과 범위 안이지만 잘린 검출 모두 해당한다. 사유 표시는 같은 검출을 유효로 그렸을 때보다
+        라벨 글이 오른쪽으로 더 길어지는 것으로 확인한다(구현과 같은 그리기 호출로 기대 영상을 만들지 않음).
+        """
+        src = image()
+        plain, _ = draw_detections(src, seg_result([big_instance()], crop_wh=(W, H)))
+
+        for over in ({"rejected": "LOW_CONFIDENCE"}, {"rejected": "NON_TARGET_CLASS", "class_index": 1, "class_name": "nut"},
+                     {"clipped": True}):
+            with self.subTest(over=over):
+                inst = big_instance(**over)
+                out, drawn = draw_detections(src, seg_result([inst], crop_wh=(W, H)))
+
+                self.assertEqual(drawn, 1)
+                self.assertEqual(pixel(out, 140, 125), REJECTED_COLOR_BGR)   # 박스 오른쪽 변: 회색
+                self.assertNotEqual(pixel(out, 120, 125), (40, 40, 40))     # 윤곽 안 채우기
+                self.assertTrue(_changed(out, src, 6, 20, 4, W).any())        # 위쪽 안내 글 줄
+
+                plain_band = _changed(plain, src, 84, 99, 0, W)
+                out_band = _changed(out, src, 84, 99, 0, W)
+                plain_right = int(np.nonzero(plain_band.any(axis=0))[0].max())
+                out_right = int(np.nonzero(out_band.any(axis=0))[0].max())
+                self.assertGreater(out_right, plain_right)                    # 사유가 붙어 라벨이 더 김
+
+    def test_out_of_scope_hidden_when_eligible_exists(self):
+        """유효 후보가 있으면 범위 밖 검출은 지금처럼 그리지 않고 안내 글도 없다(그린 수 = 유효 1)."""
+        src = image()
+        far = [[20, 150], [60, 150], [60, 190], [20, 190]]
+
+        for over in ({"rejected": "LOW_CONFIDENCE"}, {"rejected": "NON_TARGET_CLASS", "class_index": 1, "class_name": "nut"}):
+            with self.subTest(over=over):
+                other = instance(1, box_xyxy=(20.0, 150.0, 60.0, 190.0), polygon=far, area_px=1600.0, **over)
+                out, drawn = draw_detections(src, seg_result([big_instance(), other], crop_wh=(W, H)))
+
+                self.assertEqual(drawn, 1)
+                self.assertEqual(pixel(out, 40, 170), (40, 40, 40))          # 범위 밖 검출 자리는 원본
+                self.assertFalse(_changed(out, src, 6, 20, 4, W).any())       # 안내 글 없음
+                self.assertEqual(pixel(out, 140, 125), CLASS_COLORS_BGR[0])   # 유효 검출은 클래스 색
 
     def test_no_green_status_or_class_colors(self):
         """작업 가능 신호로 오해할 초록 우세 색(G가 B·R보다 큼)을 쓰지 않는다."""

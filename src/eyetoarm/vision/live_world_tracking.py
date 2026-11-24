@@ -13,6 +13,7 @@ import threading
 import time
 from dataclasses import dataclass, fields
 from pathlib import Path
+from eyetoarm.vision import stage_timing
 from typing import Callable
 
 import numpy as np
@@ -320,6 +321,8 @@ class LiveWorldTracking:
             self._queue.append(item)
             self._cond.notify_all()
 
+        stage_timing.mark("track_queued", getattr(context.frame, "image_seq", None))
+
         return True
 
     def offer_gripper(self, frame: GripperDepthFrame) -> bool:
@@ -538,7 +541,9 @@ class LiveWorldTracking:
                 self._process_gripper(g)
 
             if item is not None:
+                stage_timing.mark("track_start", getattr(item.frame, "image_seq", None))
                 self._process(item, lag_ms if lag_reset is None else (now - item.enqueued_ns) / 1e6)
+                stage_timing.mark("tracked", getattr(item.frame, "image_seq", None))
 
             for g in grips[len(before):]:
                 self._process_gripper(g)

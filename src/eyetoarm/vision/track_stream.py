@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from eyetoarm.vision.track_class_lock import ClassLockConfig, ClassLockConfigError, parse_class_lock
+from eyetoarm.vision import stage_timing
 
 TOPIC = "/a/track_states"
 STATES = ("VISIBLE", "PREDICTED", "OCCLUDED", "GRIPPER")
@@ -308,6 +309,8 @@ class TrackStream:
         try:
             out["publish_stamp_ns"] = int(self._now_ns())
             self._send(out)
+            stage_timing.mark("published", out.get("image_seq"), msg_kind=out.get("kind"),
+                              publish_sim_ns=out.get("publish_stamp_ns"), capture_ns=out.get("capture_stamp_ns"))
         except Exception as exc:   # 발행 스레드 최상단: 추적 결과에 영향 없이 실패만 드러낸다
             with self._cond:
                 self.counts["publish_errors"] += 1

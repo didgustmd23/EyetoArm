@@ -22,6 +22,7 @@ from eyetoarm.inputs.base import FrameIdIssuer, new_run_id
 from eyetoarm.inputs.live_slot import BoundaryKind, LiveInputOverflow, NoticeKind
 from eyetoarm.vision.ai_convert import list_candidate_indices
 from eyetoarm.vision.ai_result import AiJobConfigError, AiSegResult, ModelPrepareError
+from eyetoarm.vision import stage_timing
 from eyetoarm.vision.handoff import HandoffClosed, HandoffError, HandoffFailed, HandoffState
 from eyetoarm.vision.pipeline import GenerationCause, VisionPipeline
 from eyetoarm.vision.pipeline_opencv import process_opencv
@@ -688,6 +689,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
 
     def handle(outcome: JobOutcome) -> None:
         """terminal 응답을 기록·표시·전달하고, 소비 조건을 통과하면 그 자리에서 B 지점을 한 번 부른다."""
+        stage_timing.mark("handle", outcome.context.frame.image_seq, status=outcome.status.value)
         _logged(log.log_outcome, outcome)
         sync_records()
         track_frame = None
@@ -731,6 +733,7 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             # 추적을 켠 실행만 같은 작업 TrackFrame(없으면 None)을 넘긴다
             sink_kw = {} if part_tracker is None else {"tracks": track_frame}
             live_observation_sink.offer(outcome, reason, source.frame_epoch(outcome.context.frame), **sink_kw)
+            stage_timing.mark("offered", outcome.context.frame.image_seq, reason=reason)
 
     def finish_detection(job: JobContext, value, exc: BaseException | None) -> None:
         """detector 반환·예외를 terminal로 정확히 한 번 보낸다(동기·worker 경로 공통).
@@ -831,6 +834,8 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
 
     def finish_published(job: JobContext, value, exc: BaseException | None) -> None:
         """결과 공개 직전 처리. 실시간이면 입력을 먼저 반영하고, 수신 epoch가 지난 프레임은 관측 없이 끝낸다."""
+        stage_timing.mark("detected", job.frame.image_seq)
+
         if live:
             apply_live_inputs()
 
@@ -1108,6 +1113,10 @@ def run(source_factory: Callable[[FrameIdIssuer, Callable[[], int]], object], se
             result.frames += 1
             pipeline.offer_frame(item)
             job = pipeline.start_next()
+
+            if job is not None:   # 단계별 시각 진단(꺼져 있으면 무변, #372)
+                stage_timing.mark("taken", job.frame.image_seq, received_ns=job.frame.received_monotonic_ns,
+                                  stamp_ns=job.frame.ros_stamp_ns)
 
             if job is not None and config.watchdog:
                 verdict = run_job_watched(job)

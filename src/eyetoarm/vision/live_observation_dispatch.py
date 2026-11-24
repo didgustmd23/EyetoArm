@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from eyetoarm.vision.observation_envelope import ObservationEnvelopeError
+from eyetoarm.vision import stage_timing
 from eyetoarm.vision.live_observation_state import LiveObservationState, LiveObservationToken
 
 
@@ -229,6 +230,15 @@ class LiveObservationDispatcher:
                     self._cond.notify_all()
 
     def _process(self, item: LiveObservationItem) -> None:
+        seq = getattr(item.frame, "image_seq", None)
+        stage_timing.mark("b_start", seq)
+
+        try:
+            self._process_body(item)
+        finally:
+            stage_timing.mark("b_done", seq)
+
+    def _process_body(self, item: LiveObservationItem) -> None:
         if self._stage is None:
             self._stage = self._stage_factory(self._camera)
 

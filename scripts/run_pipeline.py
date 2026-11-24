@@ -86,6 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"AI 모델 준비 상한(기본 {RunnerConfig.model_load_timeout_s} s, A 임시 개발값)")
     parser.add_argument("--log-instance-geometry", action="store_true",
                         help="AI 인스턴스 박스·다각형을 ai_geometry로 기록한다(선택)")
+    parser.add_argument("--stage-timing", metavar="PATH", default=None,
+                        help="진단: A 처리 단계별 단조 시각과 스레드 이름표를 PATH(JSONL, 새 파일)에 남긴다. "
+                             "--live-observation-out 실시간 경로 전용, 기본 끔(#372)")
     parser.add_argument("--infer-process", dest="infer_process_on", action="store_true",
                         help="AI 추론(crop·predict·변환·끝점)을 별도 자식 프로세스에서 한다(--detector ai 전용). "
                              "기본: --ros-link --detector ai면 켬, 그 밖은 끔")
@@ -336,6 +339,10 @@ def _check_source_args(args, ros_available) -> None:
             build_parser().error("--b-center-overlay requires --live-observation-out")
         if args.b_input != "list":
             build_parser().error("--b-center-overlay is for stage L only (--b-input list); stage T has no center source")
+
+    # 단계별 시각 진단은 실시간 관측 경로에서만(#372)
+    if getattr(args, "stage_timing", None) is not None and args.live_observation_out is None:
+        build_parser().error("--stage-timing requires --live-observation-out (live run diagnostic)")
 
     # 시험 B 연결: 저장 입력 전용. 실시간 입력의 B 소비 금지(D13)·추적과 B 결합 금지를 인자 단계에서 막는다
     if args.synthetic_fixture is not None or args.synthetic_out is not None:
@@ -989,7 +996,7 @@ class _RosSortPartRuntime:
         from rclpy.executors import SingleThreadedExecutor
         from rclpy.signals import SignalHandlerOptions
 
-        from eyetoarm.vision.live_sort_part import RecordingSortPartClient
+        from eyetoarm.vision.live_sort_part import RecordingSortPartClient, result_watch_of
 
         self._config = config
         self._sink = None
@@ -1017,7 +1024,11 @@ class _RosSortPartRuntime:
 
         try:
             self._node = rclpy.create_node(self.NODE_NAME, context=self._context)
-            self.client = RecordingSortPartClient(self._node, self._emit, stage=None)
+            watch = result_watch_of(config)
+            self.client = RecordingSortPartClient(self._node, self._emit, stage=None, watch=watch)
+            self.watch_errors = 0
+            # 진행 중 목표 결과 감시(#373 D-14): spin 스레드 타이머, 시각은 단조 시계
+            self._node.create_timer(watch.check_s, self._watch_results)
 
             if self._run_cfg is not None:
                 from eyetoarm_interfaces.srv import GetSortRun   # 없으면 ImportError(진입점 종료 1)
@@ -1043,6 +1054,24 @@ class _RosSortPartRuntime:
         except BaseException:
             self.close(1.0)
             raise
+
+    # ---------- 결과 감시(spin 스레드) ----------
+    def _watch_results(self) -> None:
+        """타이머 콜백: 서버 보임 여부와 단조 시각으로 클라이언트 감시를 돌린다. 예외는 세고 사건으로 남긴다(spin을 죽이지 않음)."""
+        try:
+            self.client.watch(time.monotonic_ns(), bool(self.client.client.server_is_ready()))
+        except Exception as exc:  # noqa: BLE001 - 타이머 최상단: spin 스레드를 살려 두고 사유를 남긴다
+            self.watch_errors += 1
+            self._emit("result_watch_error", None, {"error": f"{type(exc).__name__}: {exc}"})
+
+    def abandon(self, gid: str, reason: str) -> bool:
+        """진행 중 목표를 「모름」으로 끝낸다(송신기의 실행 번호 변경 처리가 부름)."""
+        return self.client.abandon(gid, reason)
+
+    @property
+    def watch_counts(self) -> dict:
+        """감시 계수(참고용, 요약)."""
+        return {**self.client.watch_counts, "errors": self.watch_errors}
 
     # ---------- 실행 번호 조회(관리 실행) ----------
     def set_run_listener(self, listener) -> None:
@@ -1330,8 +1359,21 @@ def _run_live_observation(*args, **kw) -> int:
 
     정지 신호는 실행 중에는 정지 요청이고, 본문이 정리에 들어가면(`begin_cleanup`) 정리를 끊지 않는다.
     """
-    with _StopSignals() as signals:
-        return _run_live_observation_body(*args, signals=signals, **kw)
+    path = getattr(args[0], "stage_timing", None)
+    err = args[4]
+
+    if path is not None:   # 진단: 실행 전에 켜고 정리까지 끝난 뒤 끈다
+        from eyetoarm.vision import stage_timing
+
+        stage_timing.enable(path)
+        err.write(f"run_pipeline: STAGE TIMING ON path={path} (diagnostic only)\n")
+
+    try:
+        with _StopSignals() as signals:
+            return _run_live_observation_body(*args, signals=signals, **kw)
+    finally:
+        if path is not None:
+            err.write(f"run_pipeline: stage timing {stage_timing.disable()}\n")
 
 
 def _run_live_observation_body(args, settings, runner_config, detector_kw, err, *, b_stage_hook, live_source_factory,
