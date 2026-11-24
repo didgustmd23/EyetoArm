@@ -683,8 +683,7 @@ class GazeboSortExecutor:
             rotation = np.column_stack([closing, np.cross(DOWN, closing), DOWN])
             self._follow(self._line(start, target, rotation, current), .32)
             if not clearance and grasp_goal is None:
-                self._event(goal, "gripper_close_command", command_position_rad=self.demo.GRIP_CLOSED)
-                grasp_goal = self._start_grip()
+                grasp_goal = self._start_grip(.75 if part == "BOLT_A" else None)
         self._check_cancel()
         result, _ = self._result_source(tracker, initial, offset)
         grasping_position = result.pose()[0]
@@ -703,10 +702,10 @@ class GazeboSortExecutor:
         self._follow(self._line(probe, target, rotation, current), 1.2)
         return result, initial[2] if not track else grasping_position[2]
 
-    def _start_grip(self):
+    def _start_grip(self, position=None):
         from control_msgs.action import ParallelGripperCommand
         goal = ParallelGripperCommand.Goal()
-        goal.command = JointState(name=[self.demo.GRIPPER_JOINT], position=[self.demo.GRIP_CLOSED])
+        goal.command = JointState(name=[self.demo.GRIPPER_JOINT], position=[self.demo.GRIP_CLOSED if position is None else position])
         future = self.arm.gripper.send_goal_async(goal)
         rclpy.spin_until_future_complete(self.node, future, timeout_sec=5.)
         if not future.done():
