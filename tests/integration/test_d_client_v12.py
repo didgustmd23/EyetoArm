@@ -425,23 +425,46 @@ class Window(V12Case):
         self.window.deleteLater()
         super().tearDown()
 
-    def test_buttons_follow_allowed_and_recover_confirmation(self):
+    def test_buttons_clickable_but_send_only_when_allowed_and_confirmed(self):
         w = self.window
         self.assertIn("1.2 후보", w.windowTitle())
-        self.assertTrue(until(lambda: w.start_button.isEnabled()))
-        self.assertFalse(w.stop_button.isEnabled())
+        buttons = (w.start_button, w.stop_button, w.estop_button, w.recover_button)
+        self.assertTrue(until(lambda: all(b.isEnabled() for b in buttons)))   # 연결되면 누를 수 있음
         self.assertFalse(w.move_button.isEnabled())
+        self.assertIn("Stop 정지 미전송(allowed", w.sort_detail.text())        # 누르기 전 보이는 미전송 사유
+        w.stop_button.click()                                    # IDLE allowed=["START"]: STOP 미전송
+        until(lambda: False, 0.1)
+        self.assertEqual(self.peer.sort_requests(), [])
+        self.assertIn("Stop 정지 미전송 · allowed", w.request_note.text())
         self.peer.snapshot = snap("RECOVERY_REQUIRED", 20, ("STOP", "RECOVER"), hold="HOLD_UNKNOWN")
         self.peer.push(run_status(snapshot=self.peer.snapshot))
-        self.assertTrue(until(lambda: w.stop_button.isEnabled() and not w.start_button.isEnabled()))
-        self.assertFalse(w.recover_button.isEnabled())      # 확인란 전
-        self.assertIn("복구 필요", w.chip_sort.toolTip() + w.sort_detail.text())
+        self.assertTrue(until(lambda: "복구 필요" in w.sort_detail.text()))
+        w.recover_button.click()                                 # 확인란 전: 미전송
+        until(lambda: False, 0.1)
+        self.assertEqual(self.peer.sort_requests(), [])
+        self.assertIn("확인란", w.request_note.text())
         w.sort_confirm.setChecked(True)
-        self.assertTrue(until(w.recover_button.isEnabled))
         w.recover_button.click()
         self.assertTrue(until(lambda: self.peer.sort_requests()))
         self.assertEqual(self.peer.sort_requests()[0]["user_confirmed"], True)
         self.assertFalse(w.sort_confirm.isChecked())
+
+    def test_start_button_click_sends_exact_start_and_shows_c_reply(self):
+        w = self.window
+        self.assertTrue(until(lambda: "START 송신" in w.sort_detail.text()))   # IDLE allowed=["START"] 반영 대기
+        self.peer.on_request = lambda r: [run_status(r["request_id"], "ACCEPTED", "RUN_STARTED",
+                                                     snap("RUNNING", 13, ("STOP",)))]
+        w.start_button.click()                                   # 실제 버튼 → StatusLink 소켓
+        self.assertTrue(until(lambda: self.peer.sort_requests()))
+        sent = self.peer.sort_requests()
+        self.assertEqual(len(sent), 1)
+        request_id = sent[0]["request_id"]
+        self.assertEqual(uuid.UUID(request_id).version, 4)
+        self.assertEqual(sent[0], {"version": "1.2", "type": "START", "request_id": request_id,
+                                   "expected_session": SESSION, "expected_revision": 12})
+        self.assertIn("START 요청 시도", w.request_note.text())
+        self.assertTrue(until(lambda: "분류 실행 중" in w.sort_detail.text()))   # 상태는 C 스냅샷으로만
+        self.assertIn("RUN_STARTED", w.sort_detail.text())                       # C 요청 결과(상태와 별도 줄)
 
     def test_cleanup_button_sends_stop_and_estop_is_inert(self):
         w = self.window
@@ -456,20 +479,23 @@ class Window(V12Case):
             return None
         row = holder(w.centralWidget().layout())
         self.assertEqual(w.stop_button.text(), "Stop 정지")
-        self.assertEqual(w.estop_button.text(), "E-Stop")
+        self.assertTrue(until(lambda: w.estop_button.text() == "E-Stop · 미전송"))   # C 알림 없음 = 미전송 표시
         self.assertEqual(row.indexOf(w.estop_button), row.indexOf(w.stop_button) + 1)   # STOP 버튼 바로 오른쪽
         self.assertIn("e_stop_available", w.estop_button.toolTip())   # C 가 알리지 않음 = 비활성
         self.peer.snapshot = snap("RUNNING", 13, ("STOP",))
         self.peer.push(run_status(snapshot=self.peer.snapshot))
-        self.assertTrue(until(w.stop_button.isEnabled))
-        self.assertFalse(w.estop_button.isEnabled())
-        w.estop_button.click()                                  # 비활성 버튼: 아무것도 보내지 않음
+        self.assertTrue(until(lambda: "Stop 정지 송신" in w.sort_detail.text()))
+        self.assertTrue(w.estop_button.isEnabled())             # 누를 수 있으나 C 알림 없음 → 미전송
+        self.assertIn("요청 불가", w.estop_value._full)
+        w.estop_button.click()
         until(lambda: False, 0.1)
         self.assertEqual(self.peer.sort_requests(), [])
+        self.assertIn("E-Stop 미전송", w.request_note.text())
         w.stop_button.click()                                   # STOP 버튼 = 기존 STOP 요청 그대로
         self.assertTrue(until(lambda: self.peer.sort_requests()))
         self.assertEqual([r["type"] for r in self.peer.sort_requests()], ["STOP"])
-        self.assertFalse(w.estop_button.isEnabled())
+        self.assertIn("Stop 정지 요청 시도", w.request_note.text())
+        self.assertIn("E-Stop 미전송(C 가 E-Stop 요청 가능을 알리지 않음", w.sort_detail.text())
 
     def test_stop_requested_label_and_disconnect_disables_all(self):
         w = self.window
@@ -604,7 +630,8 @@ class EStop(V12Case):
                 self.assertIn("로봇+컨베이어", button.accessibleDescription())
             self.assertIn("벨트 연속 운전을 약속하지 않습니다", window.start_button.toolTip())
             self.assertIn("현재 C(1.1)는 이 요청을 처리하지 않으며", window.estop_button.toolTip())
-            self.assertEqual((window.stop_button.text(), window.estop_button.text()), ("Stop 정지", "E-Stop"))
+            self.assertTrue(until(lambda: window.estop_button.text() == "E-Stop"))   # 보낼 수 있을 때만 정확히 E-Stop
+            self.assertEqual(window.stop_button.text(), "Stop 정지")
         finally:
             window.close()
             window.deleteLater()
@@ -637,13 +664,15 @@ class EStop(V12Case):
         from eyetoarm.gui.window import MainWindow
         window = MainWindow(self.link, DemoView())
         try:
-            self.assertFalse(window.estop_button.isEnabled())
             self.enable()
-            self.assertTrue(until(window.estop_button.isEnabled))
+            self.assertTrue(until(lambda: "요청 가능" in window.estop_value._full))
             window.estop_button.click()
             self.assertTrue(until(lambda: self.e_stops()))
             request_id = self.e_stops()[0]["request_id"]
-            self.assertFalse(window.estop_button.isEnabled())
+            window.estop_button.click()                          # 대기 중 두 번째 누름: 미전송
+            until(lambda: False, 0.1)
+            self.assertEqual(len(self.e_stops()), 1)
+            self.assertIn("E-Stop 미전송 · 앞선 E-Stop 요청 결과 대기 중", window.request_note.text())
             self.peer.push(e_stop_status(request_id, "REQUESTED"))
             self.assertTrue(until(lambda: "REQUESTED" in window.sort_detail.text()))
             self.assertIn("정지 확인 아님", window.sort_detail.text())

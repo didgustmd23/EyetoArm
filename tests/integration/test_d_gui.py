@@ -122,16 +122,23 @@ class GuiCase(unittest.TestCase):
         kinds = [table.item(row, 2).text() for row in range(table.rowCount() - rows)]   # 새 행이 위에 쌓인다
         self.assertCountEqual(kinds, ["모의 끊김", "모의 접속", "준비 조회", "STATUS", "모의 분류", "모의 집계"])
 
-    def test_real_mode_keeps_unapproved_sorting_disabled(self):
+    def test_real_1_1_mode_buttons_clickable_but_never_send(self):
         link, view = DemoLink(), DemoView()
         window = MainWindow(link, view, demo=False)
         try:
             self.assertIsNone(window.sort_demo)
-            self.assertFalse(window.start_button.isEnabled())
-            self.assertFalse(window.stop_button.isEnabled())
-            self.assertFalse(window.recover_button.isEnabled())
-            window._request_sort("START")
+            buttons = (window.start_button, window.stop_button, window.estop_button, window.recover_button)
+            link.set_connected(True)                                           # 대역을 연결 상태로
+            self.assertTrue(until(lambda: all(b.isEnabled() for b in buttons)))
+            self.assertEqual(window.estop_button.text(), "E-Stop · 미전송")
+            self.assertIn("C TCP 1.2 필요", window.request_note.text())        # 누르기 전 보이는 미전송 안내
+            for button, name in zip(buttons, ("START", "Stop 정지", "E-Stop", "RECOVER")):
+                button.click()                                                 # 실제 버튼 누름
+                self.assertEqual(window.request_note.text(), f"{name} 미전송 · C TCP 1.2 필요(--tcp-version 1.2 와 C 지원)")
+            link.set_connected(False)
+            self.assertTrue(until(lambda: not any(b.isEnabled() for b in buttons)))
             self.assertIsNone(window.sort_demo)
+            self.assertFalse(hasattr(link, "sort_request"))   # 1.1 대역에는 송신 경로 자체가 없다
         finally:
             window.close()
             window.deleteLater()
