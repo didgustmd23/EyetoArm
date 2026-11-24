@@ -75,6 +75,9 @@ from eyetoarm.tcp.protocol import MoveTarget
 PAGES = ["조작·설정", "운영 대시보드", "평가·기록"]
 NOT_APPROVED = "TCP 명세 부록 A(분류 명령 개정 제안)가 C 승인 전입니다. 승인 전에는 실제 서버로 보내지 않습니다."
 NO_VALUE = "—"
+ACTION_NAMES = {"START": "START", "STOP": "Stop 정지", "RECOVER": "RECOVER"}
+REQUEST_IDLE_11 = "분류·E-Stop 버튼: 누를 수 있으나 미전송 · C TCP 1.2 필요"
+REQUEST_IDLE_12 = "분류·E-Stop 버튼: 누름 = 요청 시도 · 준비·정지 확인 아님"
 # 분류 START·Stop 정지(STOP)·E-Stop 은 로봇과 컨베이어 벨트를 함께 다룬다(사용자 지정 2026-11-24). 실제 동작은 C 가 정한다
 START_HINT = "START: 로봇+컨베이어 분류 시작 요청. C 순서대로 운전하며 벨트 연속 운전을 약속하지 않습니다."
 STOP_HINT = "Stop 정지(STOP): 로봇+컨베이어 분류 정지 요청. 부품 해제·정지 완료가 아닙니다(정지 확인은 C 상태로만)."
@@ -158,6 +161,8 @@ class MainWindow(QMainWindow):
         right.setSpacing(10)
         outer.addLayout(right, 1)
         right.addLayout(self._build_header())
+        right.addWidget(self.request_note)
+        self.request_note.setVisible(not demo)
         right.addLayout(self._build_status_strip())
 
         self.traffic_full = TrafficTable()      # 평가·기록 화면의 전체 기록
@@ -196,9 +201,11 @@ class MainWindow(QMainWindow):
         if self.sort_demo is not None:
             self.sort_demo.changed.connect(self._update_sort_controls)
             self.link.state_changed.connect(self._on_demo_connection)
-        if self.live_run:
-            # E-Stop 은 1.2 후보 실제 모드에서만 C 에 응용 요청으로 보낸다(D 제안 · C 미합의). 모의·1.1 은 연결하지 않는다
+        if not demo:
+            # 실제 모드에서는 연결되면 네 버튼을 누를 수 있다. 1.1 은 미전송 사유만 보이고, 1.2 는 계약 검사를 통과할 때만 보낸다
             self.estop_button.clicked.connect(self._request_e_stop)
+            self.request_note.setText(REQUEST_IDLE_12 if self.live_run else REQUEST_IDLE_11)
+        if self.live_run:
             self.link.run_changed.connect(self._update_live_sort)
             self.link.state_changed.connect(self._update_live_sort)
         self._status: dict | None = None
@@ -221,6 +228,10 @@ class MainWindow(QMainWindow):
         self.title = label("", "PageTitle")
         row.addWidget(self.title)
         row.addStretch(1)
+        # 분류·E-Stop 버튼 누름 결과(송신/미전송 사유). 누를 수 있다는 것은 준비·정지·비상정지 확인이 아니다
+        self.request_note = label("", "Caption", wrap=True)   # 제목줄 아래 별도 줄(작은 창에서 버튼을 밀지 않게)
+        self.request_note.setAccessibleName("분류·E-Stop 요청 결과")
+        self.request_note.setMinimumWidth(0)
         # [C 연동 · 부록 A 미승인] 분류 시작·정지·복구. 계약 승인 뒤 4일차에 연결한다
         self.start_button = pill("START 시작", "primary", NOT_APPROVED + " " + START_HINT)
         self.start_button.setAccessibleDescription(START_HINT)
@@ -315,7 +326,8 @@ class MainWindow(QMainWindow):
             rows = [
                 ("GET_STATUS (준비 조회)", "사용 중 · TCP 1.1"),
                 ("MOVE · CANCEL", "미구현"),
-                ("START · STOP · RECOVER", "부록 A 미승인 · 미전송"),
+                ("START · STOP · RECOVER", "미전송 · TCP 1.2 필요"),
+                ("E-Stop", "미전송 · TCP 1.2 필요"),
                 ("링크 채널 선택", "누를 때 영상 연결로 요청 · 임시 형식 · 프레임 도착으로 확인" if self.relay else "부록 B 미승인 · 미전송"),
             ]
             for value, (_name, text) in zip(self._rows(command_card, rows), rows):
@@ -897,15 +909,22 @@ class MainWindow(QMainWindow):
         self.sort_demo.apply_snapshot(snapshot, resync=True)
 
     def _request_sort(self, action):
+        name = ACTION_NAMES[action]
         if self.live_run:
-            button = {"START": self.start_button, "STOP": self.stop_button, "RECOVER": self.recover_button}[action]
-            if button.isEnabled():
-                self.link.sort_request(action, confirmed=action == "RECOVER" and self.sort_confirm.isChecked())
-            if action == "RECOVER":
-                self.sort_confirm.setChecked(False)   # 확정은 한 번의 송신에만 쓴다
+            reason = self._sort_block(action)
+            if reason:
+                self._note(f"{name} 미전송 · {reason}")
+            elif self.link.sort_request(action, confirmed=action == "RECOVER" and self.sort_confirm.isChecked()):
+                if action == "RECOVER":
+                    self.sort_confirm.setChecked(False)   # 확정은 한 번의 송신에만 쓴다
+                self._note(f"{name} 요청 시도 · 소켓 기록·결과는 TX/RX 기록과 C 보고로(준비·정지 확인 아님)")
+            else:
+                self._note(f"{name} 미전송 · 송신 조건 불충족")
             self._update_live_sort()
             return
         if self.sort_demo is None:
+            if not self.demo:   # 1.1 실제 모드: 보내지 않고 이유만 보인다
+                self._note(f"{name} 미전송 · C TCP 1.2 필요(--tcp-version 1.2 와 C 지원)")
             return
         confirmed = action != "RECOVER" or self.sort_confirm.isChecked()
         self.sort_demo.request(action, confirmed=confirmed)
@@ -1065,16 +1084,20 @@ class MainWindow(QMainWindow):
         if not self.live_run:
             return
         link = self.link
+        connected = link.state == "connected"
+        plans = []   # 누르기 전에 보이는 「지금 누르면」 결과. 누를 수 있음 ≠ 보냄 ≠ 준비·정지 확인
         for action, button in (("START", self.start_button), ("STOP", self.stop_button), ("RECOVER", self.recover_button)):
-            allowed, reason = link.sort_allowed(action)
-            if action == "RECOVER" and allowed and not self.sort_confirm.isChecked():
-                allowed, reason = False, "복구 조건 확인란을 먼저 선택하세요"
-            button.setEnabled(allowed)
+            reason = self._sort_block(action)
+            button.setEnabled(connected)
             hint = {"START": START_HINT, "STOP": STOP_HINT}.get(action, "")
-            button.setToolTip("TCP 1.2 후보(부록 A.6, 미승인) · " + (hint + " · " if hint else "") + reason)
+            button.setToolTip("TCP 1.2 후보(부록 A.6, 미승인) · " + (hint + " · " if hint else "")
+                              + ("누르면 송신" if not reason else "누르면 미전송 · " + reason))
+            plans.append(f"{ACTION_NAMES[action]} " + ("송신" if not reason else f"미전송({reason})"))
         allowed, reason = link.e_stop_allowed()
-        self.estop_button.setEnabled(allowed)
-        self.estop_button.setToolTip(E_STOP_HINT + " · " + reason)
+        self._estop_face(blocked=connected and not allowed)
+        plans.append("E-Stop " + ("송신" if allowed else f"미전송({reason})"))   # 지난 결과(아래 줄)와 별개로 지금 가능 여부
+        self.estop_button.setEnabled(connected)
+        self.estop_button.setToolTip(E_STOP_HINT + " · " + ("누르면 C 에 요청 송신" if allowed else "누르면 미전송 · " + reason))
         e_stop = link.e_stop
         if e_stop is not None:   # C 보고와 D 판단(기한·끊김 = 결과 미확인)을 구분하고, 지난 연결 기록은 그렇게 적는다
             if e_stop.state in ("CONFIRMED", "REJECTED", "UNCONFIRMED"):
@@ -1108,7 +1131,7 @@ class MainWindow(QMainWindow):
                 text += " · 보유 불명"
             kind = "warn" if state in {"STOP_REQUESTED", "RECOVERY_REQUIRED", "RECOVERING", "UNAVAILABLE"} else "accent"
         self.chip_sort.set_state(kind, "1.2 후보 · " + text)
-        lines = [f"실행 상태(C 스냅샷): {text}"]
+        lines = [f"실행 상태(C 스냅샷): {text}", "지금 누르면: " + " · ".join(plans)]
         if snapshot is not None:
             lines.append(f"rev {snapshot['run_revision']} · 작업 {(snapshot['sort_job_id'] or NO_VALUE)[:8]} · "
                          f"epoch {snapshot['run_epoch']} · 정지 사유 {snapshot['stop_cause'] or NO_VALUE}")
@@ -1120,9 +1143,39 @@ class MainWindow(QMainWindow):
             lines.append(f"E-Stop 응용 요청(안전 장치 아님): {e_stop.result}" + (f" · {e_stop.detail}" if e_stop.detail else ""))
         self.sort_detail.setText("\n".join(lines))
 
+    def _sort_block(self, action) -> str:
+        """1.2 후보에서 지금 누르면 보내지 않는 사유. 빈 문자열 = 보낸다. link 검사를 그대로 쓴다."""
+        allowed, reason = self.link.sort_allowed(action)
+        if not allowed:
+            return reason
+        if action == "RECOVER" and not self.sort_confirm.isChecked():
+            return "복구 조건 확인란을 먼저 선택하세요"
+        return ""
+
+    def _estop_face(self, blocked: bool) -> None:
+        """연결됐지만 보낼 수 없으면 버튼 글자에 미전송을 적고 정지(빨강) 강조를 뺀다. 보낼 수 있을 때만 「E-Stop」."""
+        text, role = ("E-Stop · 미전송", "") if blocked else ("E-Stop", "stop")
+        if self.estop_button.text() != text:
+            self.estop_button.setText(text)
+            self.estop_button.setProperty("role", role)
+            self.estop_button.style().unpolish(self.estop_button)
+            self.estop_button.style().polish(self.estop_button)
+
+    def _note(self, text: str) -> None:
+        self.request_note.setText(text)
+        self.request_note.setToolTip(text)
+
     def _request_e_stop(self) -> None:
-        if self.live_run and self.estop_button.isEnabled():
-            self.link.e_stop_request()
+        if not self.live_run:
+            self._note("E-Stop 미전송 · C TCP 1.2 필요(--tcp-version 1.2 와 C 지원)")
+            return
+        allowed, reason = self.link.e_stop_allowed()
+        if not allowed:
+            self._note(f"E-Stop 미전송 · {reason}")
+        elif self.link.e_stop_request():
+            self._note("E-Stop 요청 시도 · 소켓 기록·결과는 TX/RX 기록과 C 보고로 · 정지 확인 아님")
+        else:
+            self._note("E-Stop 미전송 · 송신 조건 불충족")
         self._update_live_sort()
 
     def _on_status(self, message: dict) -> None:
@@ -1282,6 +1335,12 @@ class MainWindow(QMainWindow):
         self.chip_age.set_state("idle" if age is None else "accent", age_text)
         self._update_command_controls()
         self._update_live_sort()   # 오래된 스냅샷을 현재 상태처럼 두지 않는다
+        if not self.demo and not self.live_run:   # 1.1 실제 모드: 연결되면 누를 수 있으나 보내지 않는다(누르면 미전송 사유)
+            for button in (self.start_button, self.stop_button, self.estop_button, self.recover_button):
+                button.setEnabled(link.state == "connected")
+            self._estop_face(blocked=link.state == "connected")
+            self.estop_button.setToolTip("E-Stop · 누르면 미전송 · C TCP 1.2 필요. 로봇+컨베이어 비상 정지 요청은 "
+                                         "--tcp-version 1.2 와 C 지원이 있을 때만 C 에 보냅니다. 이 화면은 안전 장치가 아닙니다.")
 
         if self.demo:
             self._update_display()
