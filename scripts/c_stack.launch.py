@@ -6,7 +6,11 @@ Set start_b:=false to run the live A path without the B consumer.
 """
 
 from datetime import datetime
+import importlib.util
+import os
+import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 from ament_index_python.packages import get_package_prefix
@@ -31,6 +35,49 @@ SIM_LAUNCH = ROOT / "scripts" / "sim_sort_cell.launch.py"
 # M2 live A input feeds the B list consumer; B publishes center overlays from this same process.
 AI_CONFIG = ROOT / "config" / "vision" / "ai_s1_08_axis_m2_viewbias.json"
 LIVE_CONFIG = ROOT / "config" / "vision" / "live_observation_test.json"
+GUARD_SCRIPT = ROOT / "scripts" / "stack_guard.py"
+_spec = importlib.util.spec_from_file_location("eyetoarm_stack_guard", GUARD_SCRIPT)
+stack_guard = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = stack_guard          # dataclass가 모듈을 찾을 수 있게
+_spec.loader.exec_module(stack_guard)
+
+
+def _guard_and_watch(context, marker, stamp):
+    """시작 전 처리(run_mode)와 종료 정리 감시 프로세스 실행.
+
+    run_mode:=single(기본): 같은 ROS_DOMAIN_ID·GZ_PARTITION의 남은 gz sim·묶음 노드를 SIGINT → SIGTERM → SIGKILL로
+    정리한 뒤 시작한다. 기본 포트(47090·47092·47093)를 다른 프로세스가 잡고 있거나 정리가 끝까지 안 되면
+    예외로 launch를 멈춘다(뒤의 Gazebo·노드는 하나도 띄우지 않음). 다른 도메인·파티션은 건드리지 않는다.
+    run_mode:=multi: 중복·포트 점유를 경고만 하고 시작한다.
+    감시 프로세스는 따로 된 세션에서 이 launch가 끝나기를 기다렸다가 같은 표식의 프로세스만 정리한다
+    (SIGTERM·SIGHUP으로 launch만 끝나 Gazebo·노드가 남는 경우 대비, scripts/stack_guard.py).
+    """
+    mode = LaunchConfiguration("run_mode").perform(context).strip().lower()
+    domain, partition = os.environ.get("ROS_DOMAIN_ID"), os.environ.get("GZ_PARTITION")
+    log = ROOT / "logs" / f"c_stack_guard_{stamp}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(log, "a", encoding="utf-8") as f:
+        def record(msg):
+            """화면(표준 오류)과 기록 파일에 함께 남긴다."""
+            line = f"[{datetime.now().isoformat(timespec='milliseconds')}] prestart: {msg}"
+            print(f"[c_stack guard] {msg}", file=sys.stderr, flush=True)
+            f.write(line + "\n")
+            f.flush()
+
+        record(f"run_mode={mode} ROS_DOMAIN_ID={stack_guard.norm_domain(domain)} "
+               f"GZ_PARTITION={stack_guard.norm_partition(partition) or '(없음)'}")
+        ok, _ = stack_guard.prestart(mode, domain, partition,
+                                     exclude=stack_guard.ancestors(Path("/proc"), os.getpid()), log=record)
+        if not ok:
+            record("시작하지 않음")
+            raise RuntimeError(f"c_stack 시작 전 확인 실패(run_mode={mode}) — 위 메시지와 {log} 참고")
+
+    subprocess.Popen([sys.executable, str(GUARD_SCRIPT), "watch", "--launch-pid", str(os.getpid()),
+                      "--marker", marker, "--log", str(log)],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True, close_fds=True)
+    return [LogInfo(msg=f"종료 정리 감시 시작(표식 {marker}, 기록 {log})")]
 
 
 def _live_pipeline_actions(context, root, ai_config, live_config, ai_log, stamp):
@@ -67,6 +114,7 @@ def _live_pipeline_actions(context, root, ai_config, live_config, ai_log, stamp)
 
 def generate_launch_description():
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    marker = uuid.uuid4().hex
     ai_log = ROOT / "logs" / f"a_live_display_{stamp}.jsonl"
     gui = LaunchConfiguration("gui")
     start_moveit = LaunchConfiguration("start_moveit")
@@ -96,6 +144,13 @@ def generate_launch_description():
                               description="MoveIt RViz GUI 실행 여부 (start_moveit:=true일 때만 적용)"),
         DeclareLaunchArgument("a_python", default_value=str(ROOT / ".venv" / "bin" / "python"),
                               description="A 파이프라인에 사용할 Python 실행 파일"),
+        DeclareLaunchArgument("run_mode", default_value="single",
+                              description="single(기본): 같은 ROS_DOMAIN_ID·GZ_PARTITION의 남은 Gazebo·노드를 정리 후 시작, "
+                                          "기본 포트를 남이 쓰면 거부 / multi: 경고만 하고 시작"),
+
+        # 이 실행이 띄우는 모든 프로세스에 표식을 물려주고, 시작 전 검사·종료 정리 감시를 가장 먼저 한다.
+        SetEnvironmentVariable(stack_guard.MARKER_ENV, marker),
+        OpaqueFunction(function=lambda context: _guard_and_watch(context, marker, stamp)),
 
         # A 파이프라인도 ROS 이미지 토픽을 읽으므로 시뮬레이션과 같은 DDS 설정을 사용한다.
         SetEnvironmentVariable("ROS_AUTOMATIC_DISCOVERY_RANGE", "SUBNET"),
