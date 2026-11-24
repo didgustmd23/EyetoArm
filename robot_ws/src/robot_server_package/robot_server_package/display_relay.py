@@ -458,7 +458,7 @@ def main():
     # /b/results and CenterOverlay use separate ROS topics. Join them by the complete
     # B frame identity and retain only a small bounded set while the topics race.
     center_result_cache = {}
-    center_frame = {"key": None, "metadata": None, "jpeg": None}
+    center_frame = {"key": None, "metadata": None, "jpeg": None, "counted_key": None}
 
     def result_key(payload):
         return tuple(payload.get(key) for key in (
@@ -487,6 +487,11 @@ def main():
                     "detector_config_id": result_payload["detector_config_id"],
                 }
         relay.offer("link", pack_packet(metadata, current["jpeg"]), variant="center")
+        # Results and CenterOverlay arrive on separate topics and either can arrive first.
+        # Count the matched frame here, where both arrival paths converge, exactly once.
+        if current["counted_key"] != current["key"]:
+            relay.note_center_received()
+            current["counted_key"] = current["key"]
 
     def on_results(message):
         try:
@@ -540,7 +545,7 @@ def main():
             if message.kind == "marker":
                 relay.invalidate_center_source(str(message.run_id))
                 if center_frame["metadata"] is not None and center_frame["metadata"].get("producer_run_id") == str(message.run_id):
-                    center_frame.update(key=None, metadata=None, jpeg=None)
+                    center_frame.update(key=None, metadata=None, jpeg=None, counted_key=None)
             return
         try:
             image_message = message.image
@@ -594,13 +599,12 @@ def main():
                 "stamp_nanosec": int(image_message.header.stamp.nanosec),
             }
             frame_key = result_key({**keys, "run_id": str(message.run_id)})
-            center_frame.update(key=frame_key, metadata=meta, jpeg=encoded.tobytes())
+            center_frame.update(key=frame_key, metadata=meta, jpeg=encoded.tobytes(), counted_key=None)
             result_payload = center_result_cache.pop(frame_key, None)
             # Publish only after its matching B result is available. D rejects a repeated
             # (capture_generation, image_seq, job_seq), so a later enriched resend is lost.
             if result_payload is not None:
                 publish_center_frame(result_payload)
-                relay.note_center_received()
         except Exception as exc:
             node.get_logger().warning(f"B center frame dropped: {exc}")
 
