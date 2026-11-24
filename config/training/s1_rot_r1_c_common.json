@@ -1,0 +1,103 @@
+{
+ "format_version": 1,
+ "kind": "comparison",
+ "train": {
+  "imgsz": 640,
+  "epochs": 50,
+  "seed": 0,
+  "deterministic": true,
+  "batch": 16,
+  "device": "0",
+  "workers": 2,
+  "cache": false,
+  "plots": false,
+  "hsv_v": 0.6
+ },
+ "data": {
+  "data_yaml": "data/derived/bolt_nut_clean_rot90_bg_r1/dataset.yaml",
+  "split_lists": [
+   "data/splits/clean_rot90_bg_r1/train.txt",
+   "data/splits/clean_rot90_bg_r1/valid.txt",
+   "data/splits/clean_rot90_bg_r1/test.txt",
+   "data/splits/clean_rot90_bg_r1/manifest.json"
+  ],
+  "class_names": [
+   "bolt",
+   "nut"
+  ],
+  "expected_fingerprint": {
+   "lists": {
+    "data/splits/clean_rot90_bg_r1/train.txt": {
+     "sha256": "0cd46bda17d32a149efbc2ae394c8c27ffef768836d891b7996821638d032d99",
+     "lines": 1520
+    },
+    "data/splits/clean_rot90_bg_r1/valid.txt": {
+     "sha256": "bec204733c1fd318437eadd3c7f8638d46d09f0a03d1b376bd40f9d639af69d8",
+     "lines": 162
+    },
+    "data/splits/clean_rot90_bg_r1/test.txt": {
+     "sha256": "d93e158434cb55772143fa922fb8f6e851eb9a44daa62c1c4dd63c6765b23d24",
+     "lines": 161
+    },
+    "data/splits/clean_rot90_bg_r1/manifest.json": {
+     "sha256": "6de52165fa96ba74d5f22d62f4523438937457ea6b2dc6da36e59e929c682e81",
+     "lines": 1323
+    },
+    "data/derived/bolt_nut_clean_rot90_bg_r1/dataset.yaml": {
+     "sha256": "86e5f6453f10520a383d2f75fced796822c7c557c1ca37df5e9a2af68d195bd7",
+     "lines": 8
+    }
+   },
+   "splits": {
+    "train": {
+     "images": 1520,
+     "labels": 1520,
+     "stems_match": true,
+     "images_sha256": "1023b31555adbd13bf3bbe211103bd029c341b3f8e68486629b7654cc7bc0e3b",
+     "labels_sha256": "ae1d11e4d73cfa57a584cf3e88df35594243d3f9e8923a4c14932d2afc2da20e",
+     "instances": {
+      "bolt": 1446,
+      "nut": 140
+     }
+    },
+    "val": {
+     "images": 162,
+     "labels": 162,
+     "stems_match": true,
+     "images_sha256": "6c74f7aa6d7f7c1ad5e379577d321e964676b94e657484bf8f38cc6616a9f991",
+     "labels_sha256": "4f54b867c178f407f0629a1ed46bb497efbc502f0bc46a84d711de1f430e49aa",
+     "instances": {
+      "bolt": 262,
+      "nut": 60
+     }
+    },
+    "test": {
+     "images": 161,
+     "labels": 161,
+     "stems_match": true,
+     "images_sha256": "8f329ef3efb970200c07e0da4b9f619ec57422042e44cfd98faafd6e492b0b2c",
+     "labels_sha256": "4a06e7eec2b123dab5af8ac99911a4f51a077d0003d7a55e6d267f088ecbe5ba",
+     "instances": {
+      "bolt": 301,
+      "nut": 84
+     }
+    }
+   }
+  }
+ },
+ "watch": {
+  "watch_interval_s": 30,
+  "mem_available_stop_kib": 2097152,
+  "kill_grace_s": 15,
+  "train_deadline_s": 5400,
+  "eval_deadline_s": 1800,
+  "reap_timeout_s": 30,
+  "monitor_cmd_timeout_s": 5
+ },
+ "weights_dir": "outputs/weights",
+ "outputs_dir": "outputs/training",
+ "required_env": {
+  "YOLO_AUTOINSTALL": "false",
+  "YOLO_OFFLINE": "1"
+ }
+}

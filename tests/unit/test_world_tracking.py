@@ -585,6 +585,57 @@ class LiveThreadTest(LiveBase):
         s = lw.summary()
         self.assertEqual((s["counts"]["lag_resets"], s["lag"]["handoff_pending_ratio"]), (0, 0.0))
 
+    def processed_to(self, n, limit_s=5.0):
+        """추적 스레드가 n개를 처리할 때까지 기다린다(결과를 묻지 않아 대기 창을 건드리지 않음)."""
+        deadline = time.monotonic() + limit_s
+
+        while time.monotonic() < deadline and self.lw.summary()["counts"]["processed"] < n:
+            time.sleep(0.005)
+
+        self.assertGreaterEqual(self.lw.summary()["counts"]["processed"], n)
+
+    def early_ask(self, i):
+        """B가 추적기보다 먼저 묻는 경우: 넣기 전에 기다림 0으로 물어 실패시키고, 넣은 뒤 처리까지 기다린다."""
+        self.assertIsNone(self.lw.wait(ctx_of(i), timeout_s=0.0))
+        self.offer(i)
+        self.processed_to(i + 1)
+
+    def test_early_b_waits_do_not_reset_tracks(self):
+        """추적기는 빠른데 B가 늘 먼저 물어 대기 실패 비율이 1.0이어도 밀림 초기화 0, 진단 `pending_high` 1(#372)."""
+        lw = self.make()
+
+        for i in range(30):
+            self.early_ask(i)
+
+        s = lw.summary()
+
+        self.assertEqual(s["counts"]["lag_resets"], 0)
+        self.assertEqual(s["tracker"]["resets"].get("lag"), None)
+        self.assertEqual(s["lag"]["handoff_pending_ratio"], 1.0)
+        self.assertEqual((s["counts"]["pending_high"], s["lag"]["pending_high"]), (1, 1))
+
+    def test_pending_high_counts_each_episode(self):
+        """대기 실패 구간 → 정상 구간 → 다시 실패 구간이면 `pending_high`는 2(구간 시작마다 1회), 초기화는 0."""
+        lw = self.make()
+        n = 0
+
+        for _ in range(25):
+            self.early_ask(n)
+            n += 1
+
+        for _ in range(25):
+            self.offer(n)
+            self.assertIsNotNone(lw.wait(ctx_of(n)))   # 결과가 나올 때까지 기다려 받음
+            n += 1
+
+        for _ in range(25):
+            self.early_ask(n)
+            n += 1
+
+        s = lw.summary()
+
+        self.assertEqual((s["counts"]["pending_high"], s["counts"]["lag_resets"]), (2, 0))
+
     def test_thread_crash_is_problem(self):
         """추적 스레드 비정상 종료 → problem·close RuntimeError(정리 확인 아님), 이후 넘김은 None."""
         lw = self.make()
