@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from eyetoarm.transforms.planar_transform import w_to_image
 from eyetoarm.vision.arm_occlusion import occluded_fn, world_capsules
 from eyetoarm.vision.gripper_depth import GripperConfig, GripperConfigError, GripperDepthFrame, observe, parse_gripper, project_w
+from eyetoarm.vision.track_class_lock import TrackClassLock
 from eyetoarm.vision.track_stream import TrackStream, frame_message, marker_message, reset_message
 from eyetoarm.vision.tracking import FrameKey, TrackFrame
 from eyetoarm.vision.world_tracking import (BoltPlanes, GripperInput, VisibilityConfig, WorldTracker, WorldTrackerConfigError,
@@ -285,7 +286,9 @@ class LiveWorldTracking:
 
         if stream is not None:   # 발행 기록(촬영·발행 SIM 시각)은 같은 실행 폴더에
             stream.set_record(Path(out_dir) / "track_stream.jsonl")
-        self._stream_classes: dict = {}          # 확정 번호 → (종류, 투영 높이 m), 끝점 입력에서 고른 값(추적 스레드)
+        # 확정 번호 → (종류, 투영 높이 m), 끝점 입력에서 고른 값. 설정이 있으면 팔 근처·급감 사진으로 바꾸지 않는다(추적 스레드)
+        self._class_lock = TrackClassLock(None if stream is None else stream.config.class_lock)
+        self._class_counts = dict(self._class_lock.counts)   # 요약용 사본(조건변수 안, 추적 스레드가 바꿈)
         self._stream_source = ""                 # 마지막 링크 항목의 source_id(재설정·끝 알림용, 추적 스레드)
 
     @property
@@ -604,6 +607,7 @@ class LiveWorldTracking:
                                   view_bias=self._view_bias, width=getattr(frame, "width", None),
                                   height=getattr(frame, "height", None), mask_fallback=self._tracker.config.mask_fallback)
             ts = int(frame.timestamp_ms)
+            occluded = None   # 가림 판정 함수(가시성 켬·팔 TF 있음일 때만). 종류 고정의 팔 근처 판정에도 쓴다
 
             if self._visibility is None:
                 track = self._tracker.update(key, ts, inputs)
@@ -645,7 +649,7 @@ class LiveWorldTracking:
                 rec["camera"] = "link"
 
             if self._stream is not None:
-                rec["stream"] = self._stream_frame(key, frame, ts, track, inputs)
+                rec["stream"] = self._stream_frame(key, frame, ts, track, inputs, occluded)
 
         # 갱신한 결과면 확정 번호의 표시용 박스 사본을 둔다(추적 판정·송신에는 쓰지 않음)
         snap = snapshot(value, item.display) if isinstance(value, TrackFrame) else None
@@ -672,12 +676,16 @@ class LiveWorldTracking:
         if self._stream is None:
             return
 
-        self._stream_classes = {}
+        self._class_lock.clear()
         self._stream.offer(reset_message(run_id=self.run_id, source_id=self._stream_source, reason=reason,
                                          tracker_epoch=self._tracker.tracker_epoch, handoff_on=self.handoff_on))
 
-    def _stream_frame(self, key: FrameKey, frame, ts: int, track: TrackFrame, inputs) -> dict:
-        """링크 프레임 결과 → 확정 트랙 발행. 범위가 바뀌어 추적기가 비워졌으면 재설정 알림을 먼저 낸다. 기록용 결과를 돌려준다."""
+    def _stream_frame(self, key: FrameKey, frame, ts: int, track: TrackFrame, inputs, occluded=None) -> dict:
+        """링크 프레임 결과 → 확정 트랙 발행. 범위가 바뀌어 추적기가 비워졌으면 재설정 알림을 먼저 낸다. 기록용 결과를 돌려준다.
+
+        `occluded(x_mm, y_mm, margin_mm)`은 이 사진의 가림 판정 함수(없으면 None). 종류 고정이 켜져 있으면 후보 중심이
+        캡슐 + `near_arm_mm` 안인 사진을 팔 근처로 보고 종류를 바꾸지 않는다(#368).
+        """
         t0 = self._clock_ns()
         self._stream_source = key.source_id
 
@@ -685,12 +693,24 @@ class LiveWorldTracking:
             self._stream_reset("scope_changed")
 
         by_index = {i.index: i for i in inputs}
+        lock = self._class_lock
+        decisions = []
 
         for a in track.assignments:
             c = by_index[a.instance_index]
 
-            if a.part_track_id is not None and c.plane_spec is not None:
-                self._stream_classes[a.part_track_id] = (c.plane_spec, c.plane_z_m)
+            if a.part_track_id is None or c.plane_spec is None:
+                continue
+
+            near = False
+
+            if lock.config is not None and occluded is not None and c.center_mm is not None:
+                near = bool(occluded(c.center_mm[0], c.center_mm[1], lock.config.near_arm_mm))
+
+            d = lock.observe(a.part_track_id, c.plane_spec, c.plane_z_m, c.length_mm, near)
+
+            if lock.config is not None and d["decision"] not in ("first", "same"):
+                decisions.append(d)
 
         velocity = self._tracker.last_velocity if self._visibility is not None else None
         belt = self._tracker.last_belt_vy
@@ -704,10 +724,17 @@ class LiveWorldTracking:
         msg = frame_message(run_id=self.run_id, source_id=key.source_id, image_seq=key.image_seq, generation=key.generation,
                             tracker_epoch=track.tracker_epoch, capture_stamp_ns=int(getattr(frame, "ros_stamp_ns", 0) or 0),
                             timestamp_ms=ts, snapshot=snap, belt_velocity_mm_per_s=belt_mm_s, handoff_on=self.handoff_on,
-                            classes=self._stream_classes, default_plane_z_m=self._plane_z_m())
+                            classes=lock.classes, default_plane_z_m=self._plane_z_m())
         result = self._stream.offer(msg)
+        out = {"result": result, "tracks": len(msg["tracks"]), "build_ms": round((self._clock_ns() - t0) / 1e6, 3)}
 
-        return {"result": result, "tracks": len(msg["tracks"]), "build_ms": round((self._clock_ns() - t0) / 1e6, 3)}
+        with self._cond:
+            self._class_counts = dict(lock.counts)
+
+        if decisions:   # 종류 고정이 이 사진의 종류를 받아들이지 않았거나 바꾼 트랙(기록용)
+            out["class_lock"] = decisions
+
+        return out
 
     # ------------------------------------------------------------------ 그리퍼(추적 스레드)
 
@@ -987,7 +1014,8 @@ class LiveWorldTracking:
                 "lag": lag, "tracker": self._tracker.stats(), "diagnostics": dict(self.diagnostics),
                 "display_lookup": display,
                 "crash": self.crash, "write_error": self.write_error, **({} if handoff is None else {"handoff": handoff}),
-                **({} if self._stream is None else {"track_stream": self._stream.summary()})}
+                **({} if self._stream is None else {"track_stream": {**self._stream.summary(),
+                                                                      "class_lock": dict(self._class_counts)}})}
 
 
 def _r(p):
