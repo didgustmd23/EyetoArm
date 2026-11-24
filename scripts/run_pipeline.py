@@ -1851,8 +1851,9 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
                 if not link.discard_detections(reason):
                     return False
                 handoff.clear_from_control_thread(f"operator_{reason}", timeout_s=DISCARD_CLEAR_LIMIT_S)
-                if center_pub is not None:
-                    center_pub.invalidate(link.run_id)
+                # center 무효화 표지(CenterOverlay marker)는 보내지 않는다(#397 R9, A 결정 (나)): marker는 실행 종료
+                # 표지라 C 중계기가 이 A 실행을 은퇴시켜 재개 뒤 B center가 다시 나오지 않았다. 폐기 뒤 B center는
+                # 새 사진의 B 결과가 덮어쓰고, 그 전에 끊기면 중계기 대체(--center-fallback-s)가 원본으로 바꾼다
                 return True
 
             set_discard(discard_operator_data)

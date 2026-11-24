@@ -366,5 +366,76 @@ class CliDiscardTest(CliBase):
         self.assertFalse(success)
 
 
+
+class MarkerPublisher:
+    """`FakePublisher`(test_live_a_wiring)에 C가 부르던 `invalidate`(center marker)를 더한 기록용 발행기."""
+
+    def __new__(cls, events, **kw):
+        """FakePublisher를 감싸 invalidate 기록을 더한다."""
+        from test_live_a_wiring import FakePublisher
+
+        pub = FakePublisher(events, **kw)
+        pub.invalidations = []
+        pub.publish_times = []
+        orig = pub.publish
+
+        def publish(image, frame, keys=None):
+            """발행 시각도 남긴다."""
+            pub.publish_times.append(time.monotonic_ns())
+            return orig(image, frame, keys)
+
+        pub.publish = publish
+        pub.invalidate = lambda run_id: pub.invalidations.append((run_id, time.monotonic_ns()))
+        return pub
+
+
+class CenterAfterDiscardTest(CliBase):
+    """R9 (나, A 결정): 폐기 때 center 무효화 표지(marker)를 보내지 않고, 재개 뒤 center 발행이 이어진다."""
+
+    def test_no_marker_and_center_continues_after_discard(self):
+        """목록 입력 + center 발행 + 관리 송신: 실행 중 폐기 → 성공 응답, marker 0건, 폐기 뒤에도 center 발행이 이어진다."""
+        from test_live_stage_l import three_bolts
+
+        rt = DiscardRuntime()
+        pubs = []
+        seen = {}
+
+        def during(sc):
+            """검출 4 중: 폐기를 부르고 끝날 때까지 기다린 뒤 그 시각을 남긴다."""
+            t = rt.call_in_thread()
+            t.join(LIMIT_S * 2)
+            seen["discard_done_ns"] = time.monotonic_ns()
+
+        frames = 12
+        sc = Scenario(frames, masks={i: three_bolts for i in range(frames)}, during={4: during})
+
+        def pub_factory():
+            """center 발행기 대역."""
+            pub = MarkerPublisher([])
+            pubs.append(pub)
+            return pub
+
+        real = self.mod.main
+
+        def main(argv, **kw):
+            """center 발행기 주입."""
+            kw.setdefault("center_publisher_factory", pub_factory)
+            return real(argv, **kw)
+
+        with mock.patch.object(self.mod, "main", main):
+            code, err, out = self.run_sort(sc, config=MANAGED_CONFIG,
+                                           extra=("--b-input", "list", "--b-center-overlay", *MANAGED_EXTRA),
+                                           factory=self.factory(rt))
+
+        rt.join()
+        self.assertEqual(code, 0, err)
+        self.assertEqual([r[:2] for r in rt.replies], [(True, "A/B detections discarded")])
+        pub = pubs[0]
+        self.assertEqual(pub.invalidations, [])   # 폐기 때 marker를 보내지 않는다(고치기 전에는 1건)
+        before = [t for t in pub.publish_times if t < seen["discard_done_ns"]]
+        after = [t for t in pub.publish_times if t > seen["discard_done_ns"]]
+        self.assertTrue(before)
+        self.assertTrue(after, "center publishing must continue after the discard")
+
 if __name__ == "__main__":
     unittest.main()
