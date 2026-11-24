@@ -340,6 +340,19 @@ class LiveObservationState:
                 self._closed = True
                 self._emit("run_end", reserved=True, cause=reason)
 
+    def invalidate_current(self, reason: str) -> int:
+        """현재 A/B 결과·계산을 무효화하되 실시간 입력은 계속 받는다."""
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("reason must be a non-empty string")
+
+        with self._locked():
+            if self._closed:
+                self._count("invalidate_after_close")
+                return self._token.token_seq
+
+            self._set_token(self._token, cause=f"operator_discard:{reason}")
+            return self._token.token_seq
+
     # ------------------------------------------------------------------ 계산 권한·수락(worker)
 
     def begin_compute(self, token: LiveObservationToken) -> int | None:

@@ -42,7 +42,7 @@ D 운영 GUI는 **Windows**, A·B·C와 ROS 2·MoveIt 2·Gazebo는 **WSL2**에�
 그림 원본 정의는 [docs/images/system_overview.archify.json](docs/images/system_overview.archify.json)(Archify)입니다. 사람 자세 제어(4~5주)는 「예정」으로 표시했습니다.
 
 - **자동 분류:** 목표는 GUI를 거치지 않고 B→C ROS 액션으로 전달합니다. C가 목표를 검증·계획·실행·취소하고 결과를 책임집니다.
-- **GUI 명령:** GUI는 같은 TCP 서버·포트·연결로 `START`·`STOP`·`RECOVER`와 상태 조회를 보냅니다. 이 분류 명령은 TCP 1.1에 없으므로 [TCP 명세서 부록 A](docs/protocol/TCP_프로토콜_명세서.md)의 **미승인 개정 제안**이며, 별도 확장 서버·포트·계약은 두지 않습니다. `STOP`은 요청 접수와 정지 확인을 구분하고, `RECOVER` 성공은 분류 자동 재개가 아닙니다.
+- **GUI 명령:** C TCP 서버는 TCP 1.1 수동 이동과 TCP 1.2 분류 제어를 같은 포트에서 지원합니다. 대시보드에서 `--tcp-version 1.2`를 선택하면 START·STOP·E-STOP·RECOVER를 ROS 관리 실행 서비스에 전달합니다. `STOP` 접수 응답과 정지 완료 상태는 구분되며, E-STOP은 소프트웨어 요청이지 안전 정격 하드웨어 정지 장치가 아닙니다.
 - **수동 이동(별도 경로):** GUI에서 사용자가 유효한 목표를 확정하면 TCP 1.1 `MOVE` 1건을 보내고, 서버가 수락해 로봇 베이스 기준 접근 목표를 계산합니다. 정상 진행 상태는 `ACK → PLANNING → MOVING → REACHED`이며 실패 시 `FAILED`입니다. `ACK`는 명령 수락, `REACHED`는 실제 시뮬레이션 끝단이 명령 목표의 위치·방향 허용치 안에 들어왔다는 뜻입니다. 분류 작업 중 수동 `MOVE` 거부 방식은 제안입니다.
 - **연결 끊김:** GUI와 TCP 서버 사이 연결이 끊기는 것은 취소나 정지 완료가 아닙니다. 서버가 이미 수락한 작업은 계속 처리하고, 재접속 후 GUI는 `GET_STATUS`로 상태를 확인합니다. 수동 이동 취소는 `CANCEL`, 분류 정지는 `STOP`입니다.
 - **영상 표시:** 영상은 로봇 명령 TCP로 보내지 않습니다. C 영상 중계기(`display_relay`, 포트 47092)가 링크 raw·A 검출(detect)·B 중심점(center)과 그리퍼·탑뷰 영상을 Windows GUI로 전달합니다. A 검출 영상은 중계기 입력 포트 47093으로 넘깁니다.
@@ -58,7 +58,7 @@ A 담당 Python 의존성은 가상환경에서 `pip install -r requirements.txt
 | 호스트 | Windows 11(D 운영 GUI), WSL2 Ubuntu 24.04 LTS(A·B·C·ROS·Gazebo, Gazebo 창은 WSLg) |
 | 로봇 | ROS 2 Jazzy, Gazebo Harmonic, MoveIt 2, `ros2_control`, UR5e |
 | 영상·GUI | WSL2: Python, OpenCV, NumPy / Windows: PySide6 GUI |
-| 통신 | GUI↔C: TCP 프로토콜 `1.1`(분류 명령은 같은 연결의 미승인 개정 제안), UTF-8 줄바꿈 구분 JSON. B→C: ROS 2 액션 `/sort_part`. 영상은 ROS 2 토픽과 C 영상 중계기로 전달하고 명령 TCP에 넣지 않음 |
+| 통신 | GUI↔C: TCP 프로토콜 `1.1`(수동 이동) 및 `1.2`(실행 제어), UTF-8 줄바꿈 구분 JSON. B→C: ROS 2 액션 `/sort_part`. 영상은 ROS 2 토픽과 C 영상 중계기로 전달하고 명령 TCP에 넣지 않음 |
 | Gazebo 렌더링 | WSL2에서는 `GALLIUM_DRIVER=d3d12`와 `MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA`로 GPU 렌더링을 씁니다. 없으면 CPU 렌더링이 되어 카메라가 약 6 fps로 떨어집니다. GPU 렌더링에서 Gazebo 메모리가 계속 늘면 `MESA_EXTENSION_OVERRIDE="-GL_ARB_multi_draw_indirect -GL_ARB_draw_indirect"`를 더합니다(각자 실행 환경에서 설정, [A 상세설계 §6](docs/design/A담당_비전_상세설계.md)) |
 
 ## 실행

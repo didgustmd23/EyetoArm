@@ -855,7 +855,7 @@ GUI 입력은 사용자 확정이며, 아래 메시지 이름·필드·응답은
 
 ### A.5 초안 점검표 마감
 
-A.5의 이전 미결 목록을 아래처럼 닫습니다. "권고"는 D 초안이며, 확정은 모두 C 승인 뒤입니다.
+A.5의 이전 미결 목록을 아래처럼 닫습니다. "권고"는 D 초안이며, 확정은 모두 C 승인 뒤입니다. 「D 결정」(사용자 2026-11-24: 정수 필드·`user_confirmed`·ID 충돌·`allowed`·`detail` 길이)은 D 쪽에서 정한 값이며, C와 공동 확인하기 전에는 1.2 규칙이 아닙니다.
 
 | 이전 미결 | 이 후보의 권고 | 남은 결정 (담당) |
 |---|---|---|
@@ -863,7 +863,10 @@ A.5의 이전 미결 목록을 아래처럼 닫습니다. "권고"는 D 초안�
 | 메시지·필드 | A.6.5~A.6.6 | 이름(`request_id`·`RUN_STATUS`·필드명) (C) |
 | `state`·코드 | 분류 상태는 `run_state`(A.6.4), 코드는 A.6.6 표 | 코드 이름 (C) |
 | `not_ready_reasons` 추가 | `HOLDING_OBJECT`·`HOLD_UNKNOWN`·`RUN_LOCKED`·`RUN_STATE_UNKNOWN`(A.6.6) | 추가 여부 (C) |
-| `BAD_FORMAT`/`BAD_VALUE` | §7.2.1 그대로 적용(A.6.5) | 없음 |
+| `BAD_FORMAT`/`BAD_VALUE` | §7.2.1·§4.1 적용. 정수 필드·`user_confirmed` 규칙은 D 결정(A.6.5) | 공동 확인 (C) |
+| ID 충돌 | `START`·`STOP`·`RECOVER`와 `MOVE` 사이 양방향 `ID_CONFLICT`(A.6.10, D 결정) | 공동 확인, `sort_job_id` 이력 범위 (C) |
+| 허용 명령 | `allowed` 값·순서·상태별 규칙, 바뀌면 순번 +1(A.6.3·A.6.4, D 결정) | 공동 확인, 진입 조건 판정 (C) |
+| `detail` 길이 | `null` 또는 코드 포인트 256개 이하, 넘으면 응답 전체 폐기(A.6.6, D 결정) | 공동 확인 (C) |
 | 시간 초과·재전송 | A.6.11 후보 값 | 값 확정, 정지·복구 대기 시간 (C, 2주차 시험) |
 | 시험 벡터 | A.6.13 시나리오 | 벡터 작성(D), 시험(A) |
 | 후속 명령 | **보류**: `HUMAN_ENABLE`·`HUMAN_INTENT`·`HUMAN_DISABLE`·하트비트, `RELEASE`·`HOME`·`RESET_TRIAL`·`ISOLATE`, `CANCEL_JOB`, 시험용 벨트 명령 | 별도 개정 |
@@ -886,47 +889,53 @@ A.5의 이전 미결 목록을 아래처럼 닫습니다. "권고"는 D 초안�
 
 모든 요청은 기존 TCP 서버·포트·연결·메시지 처리기로 받습니다(A.1).
 
-#### A.6.2 현재 소스·설계 확인 (2026-11-24, 읽기만)
+#### A.6.2 현재 소스·설계 확인 (2026-11-24)
 
 | 위치 | 확인한 동작 |
 |---|---|
-| `robot_ws/src/robot_server_package/robot_server_package/tcp_server.py` `_handle_line`·`_readiness` | `GET_STATUS`·`MOVE`·`CANCEL`만 분기하고 그 밖의 `type`은 거부(§6.1 `BAD_FORMAT`). 준비 판정에 분류 실행을 참조하는 코드가 없음. 분류 중 `MOVE`가 실제로 어떻게 판정되는지는 **미검증** |
-| `sort_manager.py` `SortGoalReceiver.__init__` | `~/start_run`·`~/stop_run`(`std_srvs/Trigger`), `~/get_run`(`GetSortRun`)은 `--run-state`가 있을 때만 생성. `run_epoch`는 `next_epoch`로 **노드 기동마다 1 증가**(SQLite 저장). `sort_job_id`와 복구 필요 표시(`_recovery_required`)는 메모리에만 있어 **노드 재기동 뒤 빈 값·해제 상태**로 시작 |
-| `_start_run` | 실행 잠금을 기다리지 않고 잡으려 하며, 못 잡으면 `success=false`·`BUSY`. 이 잠금은 진행 중 `SortPart` goal과 동시에 들어온 다른 `start_run`이 함께 써서 `BUSY`는 둘을 구분하지 않음. 복구 필요면 `RECOVERY_REQUIRED`. 공급기가 있고 실행 중이면 `ALREADY_RUNNING`. 그 밖에는 새 `sort_job_id`, `run_epoch`는 **직전 작업이 남아 있거나 처리한 goal 기록이 있을 때만** 증가, `RUN_STARTED`. 따라서 같은 `run_epoch`에 다른 `sort_job_id`가 생길 수 있음. 공급기 없는 구성에서는 실행 중 `start_run`이 새 작업을 만듦 |
-| `_stop_run` | 잠금 없이 정지 플래그·`sort_job_id` 비움·공급기 정지 호출 뒤 **즉시** `STOP_REQUESTED`. 정지 확인을 기다리지 않고, 실행 중이 아니거나 복구 필요 상태여도 같은 응답 |
-| `_feed` | 공급기 예외 시 내부에서 `_stop_run` 호출. 이를 알리는 서비스·토픽 없음 |
-| `_get_run` | `active`·`sort_job_id`·`run_epoch`만. 시작 전·정지 요청 후·복구 필요를 구분하지 않음. 정지 확인·보유 상태·변경 순번 없음 |
+| `robot_ws/src/robot_server_package/robot_server_package/tcp_server.py` `_handle_line`·`_readiness` | 기존 1.1 `GET_STATUS`·`MOVE`·`CANCEL` 경로를 유지하고 1.2 `GET_STATUS`·`START`·`STOP`·`RECOVER`·`E_STOP`도 처리. 별도 ROS client가 관리 실행 Trigger/GetSortRun에 연결됨. 1.2 스냅샷은 기존 `GetSortRun` 응답에서 TCP 프로세스가 조립함 |
+| `sort_manager.py` `SortGoalReceiver.__init__` | `~/start_run`·`~/stop_run`·`~/e_stop`·`~/recover`(`std_srvs/Trigger`), `~/get_run`(`GetSortRun`)은 `--run-state`가 있을 때만 생성. ROS-side A/B discard 서비스 연결도 관리 실행에 둠. `run_epoch`는 노드 기동마다 SQLite에서 증가하며 run pause·ID는 메모리 상태 |
+| `_start_run` | E-STOP 뒤에는 기존 ID·epoch·분류 기억을 유지해 같은 run을 재활성화. 일반 STOP/RECOVER 뒤에는 새 ID·epoch로 새 run 시작. 실행 중 중복·복구 잠금·A/B 폐기 미완료면 거부 |
+| `_stop_run` | 벨트/볼트 생성을 멈추고 goal 취소·정지 확인 뒤 `move_home`, A/B 추적·B 대기 데이터 및 detect/center 표시를 폐기. 성공 시 `sort_job_id`를 비움. 최대 35초 goal 정지 대기. 벨트 속도 피드백은 아직 없음 |
+| `_e_stop_run` | 벨트/볼트 생성을 멈추고 진행 중 goal을 현 위치에서 정지. 홈 이동·A/B 폐기 없이 ID·epoch를 보존 |
+| `_feed` | 활성·비복구 상태에서만 볼트 생성 tick. 공급 예외는 일반 정지 절차를 요청 |
+| `_get_run` | E-STOP pause 중 `active=false`와 기존 ID·epoch를 반환해 START 재개를 허용. 일반 STOP/RECOVER 후에는 ID가 비어 있음 |
+| `~/recover`·`GazeboSortExecutor.recover_home` | E-STOP 래치에서만 허용. 그립 controller의 stalled 피드백으로 보유를 기록한 경우 현재 위치에서 열고 팔을 초기 관절 위치로 이동. 그 뒤 A/B 데이터를 폐기하고 계속 pause |
 | `_execute`·`gazebo_sort_executor.py` | 진행 중 goal은 정지 플래그를 보고 `ROBOT_STOP_CONFIRMED` 또는 `STOP_UNCONFIRMED`(→ 복구 필요). `STOP_UNCONFIRMED` 뒤에는 자동 귀환을 하지 않음(`NO_HOME_AFTER`). 결과는 액션 클라이언트(B)에게 가며 TCP 서버가 받는 경로는 확인하지 못함 |
-| `robot_server_package` 전체 | `HELD`·`HOLD_UNKNOWN`·`DETACHED`, `apply_state`, `RECOVER` 구현 없음(문자열 검색 기준) |
+| `robot_server_package` 전체 | ROS run-control 서비스 및 TCP 1.2 라우팅 구현. 전용 A/B discard Trigger가 `run_pipeline`의 `LiveObservationLink`를 통해 queued/in-flight B 계산, B dedupe, A world tracking, detect/center relay cache를 무효화. ROS GetSortRun은 gripper hold를 제공하지 않아 E-STOP 상태는 `HOLD_UNKNOWN`으로 표시함 |
 | C 상세설계 §16.4.1~§16.4.3, §16.8.2~§16.8.4 | 보유 상태·적용 확인·복구 재기동·슬롯 상속·작업별 조건·분류 작업 상태는 **설계 제안**이며 위 구현과 차이가 있음 |
-| `dashboard-client/src/eyetoarm/gui/sort_demo.py`(모의) | `STARTING`·`STOPPING`·`RECOVERING`, 자체 `epoch`·`seq`, 모의 정지 확인. 시험용 내부 값이며 이 계약과 다름. 실제 모드 `START`·`STOP`·`RECOVER`는 비활성 |
+| `dashboard-client/src/eyetoarm/gui/sort_demo.py`(모의) | `STARTING`·`STOPPING`·`RECOVERING`, 자체 `epoch`·`seq`, 모의 정지 확인. 시험용 내부 값이며 실제 TCP 1.2 응답과는 별도 |
+
+**현재 TCP 1.2 구현 범위(2026-11-24):** D 후보의 요청/응답 스키마를 처리하고 run-control Trigger에 전달합니다. 1.1 연결은 계속 사용할 수 있습니다. `c_session_id`·`run_revision`은 TCP 프로세스 메모리에서 합성하며 요청 이력도 메모리 범위라 A.6.10의 서버 재기동 내구성을 제공하지 않습니다. `E_STOP_STATUS.CONFIRMED`는 ROS service 성공 응답을 뜻하며 안전 정격 하드웨어 정지 확인이 아닙니다. Hold 상태와 벨트 속도는 독립 피드백으로 확인하지 않습니다.
 
 **현재 `Trigger` 서비스만으로는 보장할 수 없는 것:** 요청에 인자가 없어 C가 "어느 시점의 상태를 보고 보낸 `START`인지" 알 수 없습니다. 시간 초과된 `start_run`이 C에 늦게 도착하면, 그 사이 처리된 `stop_run` 뒤에 실행을 다시 켤 수 있습니다. TCP 서버 안에서 직렬화해도 이미 보낸 호출은 회수하지 못합니다.
 
 #### A.6.3 C 측 실행 권한·순번 (C 결정 대기)
 
 1. **단일 판정자.** C 실행 관리 노드가 `START`·`STOP`·`RECOVER`·내부 정지 판정을 짧은 제어 잠금 하나로 직렬화합니다. goal 실행 잠금과 분리해 `STOP`이 진행 중 goal이나 미해결 `START`를 기다리지 않게 합니다.
-2. **식별자.** `c_session_id`(C 실행 구성 기동마다 새 UUID)와 `run_revision`(같은 기동 안에서 단조 증가하는 정수). **상태가 바뀔 때만** 1 증가합니다: 시작, 정지 접수, 내부 정지, 정지 확인(`STOPPED`), 복구 필요 진입, 복구 시작. 상태가 바뀌지 않는 응답(`ALREADY_RUNNING`·`STALE_REVISION`·`STOP_ALREADY_REQUESTED`·`NO_ACTIVE_RUN`·`ALREADY_RECOVERING`)은 올리지 않습니다.
+2. **식별자.** `c_session_id`(C 실행 구성 기동마다 새 UUID)와 `run_revision`(같은 기동 안에서 단조 증가하는 정수, 범위는 A.6.5 정수 규칙). **`run_state` 또는 `allowed`(A.6.4)가 바뀔 때만** 1 증가합니다: 시작, 정지 접수, 내부 정지, 정지 확인(`STOPPED`), 복구 필요 진입, 복구 시작, 그리고 `run_state`가 같아도 `allowed`가 바뀐 경우(예: `IDLE`에서 수동 `MOVE`가 끝나 슬롯이 비면서 `[]` → `["START"]`, D 결정). 둘 다 바뀌지 않는 응답(`ALREADY_RUNNING`·`STALE_REVISION`·`STOP_ALREADY_REQUESTED`·`NO_ACTIVE_RUN`·`ALREADY_RECOVERING`·`ID_CONFLICT`)은 올리지 않습니다.
 3. **조건부 요청.** `START`·`RECOVER`는 `expected_session`·`expected_revision`을 담고, 현재 값과 같을 때만 처리합니다. 다르면 `STALE_REVISION`. `STOP`이 먼저 처리되면 순번이 올라가므로 늦게 도착한 `START`는 언제 도착하든 거부됩니다.
-4. **`STOP` 우선·반복 무해.** `STOP`은 조건 없이 받아 신규 목표를 막습니다. `RUNNING`에서만 상태를 바꾸고(`STOP_REQUESTED`, 순번 +1), `STOP_REQUESTED`에서 다시 온 `STOP`은 상태·순번을 바꾸지 않고 `STOP_ALREADY_REQUESTED`로 답합니다. 그래서 `STOP`을 반복해 눌러도 진행 중인 정지 확인(A.6.8의 순번 일치 검사)이 무효화되거나 늦어지지 않습니다. 복구 필요 상태는 그대로 둡니다.
+4. **`STOP` 우선·반복 무해.** `STOP`은 조건 없이 받아 신규 목표를 막습니다. `RUNNING`에서만 상태를 바꾸고(`STOP_REQUESTED`, 순번 +1), `STOP_REQUESTED`에서 다시 온 `STOP`은 상태·`allowed`(계속 `["STOP"]`)·순번을 바꾸지 않고 `STOP_ALREADY_REQUESTED`로 답합니다. 그래서 `STOP`을 반복해 눌러도 진행 중인 정지 확인(A.6.8의 순번 일치 검사)이 무효화되거나 늦어지지 않습니다. 복구 필요 상태는 그대로 둡니다.
 5. **서비스 형태.** 인자·응답 필드가 있는 서비스가 필요합니다(요청 `request_id`·`expected_session`·`expected_revision`, 응답은 A.6.6 스냅샷). 이름·패키지·기존 `start_run`·`stop_run`·`get_run`과의 병행 여부는 C 결정입니다.
 
 C가 다른 방식을 고르더라도 "`STOP` 처리 뒤 그 이전 시점의 `START`는 실행을 켤 수 없다"는 성질을 C가 보장해야 이 후보를 승인할 수 있습니다.
 
 #### A.6.4 실행 상태 모델 (C §16.8.4 기반 제안)
 
-| `run_state` | 뜻 | 슬롯 소유자 | 허용 명령 |
+| `run_state` | 뜻 | 슬롯 소유자 | `allowed` (C 판정, D 결정) |
 |---|---|---|---|
-| `IDLE` | 분류 작업 없음 | 없음 또는 `MOVE` | `START`(조건 충족 시), 수동 `MOVE` |
-| `RUNNING` | 분류 실행 중 | `SORT_RUN` | `STOP` |
-| `STOP_REQUESTED` | 정지 접수, 새 goal 차단, 정지 확인 전 | `SORT_RUN` | `STOP`(무해 반복) |
-| `STOPPED` | 정지 확인(A.6.8), 슬롯 반환. `stop_cause` 기록 | 없음 | `START`(조건 충족 시), 수동 `MOVE` |
-| `RECOVERY_REQUIRED` | 정지·goal 종료·보유 상태 중 확인 불가 또는 오류 잠금 | `LOCKED` | `RECOVER`, `STOP`(무해) |
-| `RECOVERING` | 사용자 확정 `RECOVER` 진행 중(A.6.9) | `RECOVER` | 없음(`STOP`은 무해 응답) |
-| `UNAVAILABLE` | 실행 관리 서비스 없음(`--run-state` 없음 등) | 알 수 없음 | 없음 |
-| `UNKNOWN` | 스냅샷 수신 실패·오래됨(A.6.7) | 알 수 없음 | `STOP`만 송신 가능, 결과는 `UNKNOWN`일 수 있음 |
+| `IDLE` | 분류 작업 없음 | 없음 또는 `MOVE` | C 시작 자격(`hold_state = DETACHED`, 빈 슬롯, 적용 확인, 잠금 없음 등) 충족 시 `["START"]`, 아니면 `[]` |
+| `RUNNING` | 분류 실행 중 | `SORT_RUN` | `["STOP"]` |
+| `STOP_REQUESTED` | 정지 접수, 새 goal 차단, 정지 확인 전 | `SORT_RUN` | `["STOP"]`(무해 반복) |
+| `STOPPED` | 정지 확인(A.6.8), 슬롯 반환. `stop_cause` 기록 | 없음 | `IDLE`과 같음 |
+| `RECOVERY_REQUIRED` | 정지·goal 종료·보유 상태 중 확인 불가 또는 오류 잠금 | `LOCKED` | C §16.4.3 진입 조건 충족 시 `["STOP","RECOVER"]`, 아니면 `["STOP"]`. `RECOVER`는 사용자 확인 뒤에만 송신 |
+| `RECOVERING` | 사용자 확정 `RECOVER` 진행 중(A.6.9) | `RECOVER` | `[]`(받은 `STOP` 처리는 C 결정, A.6.15) |
+| `UNAVAILABLE` | 실행 관리 서비스 없음(`--run-state` 없음 등) | 알 수 없음 | `[]` |
+| `UNKNOWN` | 유효한 스냅샷 없음: 수신 실패·오래됨(A.6.7). C가 보내는 값이 아니라 `snapshot: null`(무ID 응답 `run: null`)로 표현 | 알 수 없음 | 없음(스냅샷이 없음). 연결 중 `STOP` 송신은 `allowed`와 별개인 GUI 예외(A.6.12)이며 결과는 `UNKNOWN`일 수 있음 |
 
-전이(모두 C가 판정, 상태가 바뀔 때마다 `run_revision` +1):
+**`allowed` 규칙 (D 결정).** 값은 `START`·`STOP`·`RECOVER`만 쓰고, 이 순서로, 중복 없이 나열합니다. 수동 `MOVE`는 `allowed`에 넣지 않으며 `robot_ready`·`slot_owner`·`hold_state`로 판정합니다(A.4·A.6.6). 실행 상태 표시(`run_state`)와 버튼 활성(`allowed`·`MOVE` 준비)은 따로 다룹니다(A.6.12). `run_state`가 같아도 `allowed`가 바뀌면 `run_revision` +1입니다(A.6.3 2).
+
+전이(모두 C가 판정, 상태 또는 `allowed`가 바뀔 때마다 `run_revision` +1):
 
 ```
 IDLE / STOPPED --START 수락--> RUNNING
@@ -957,29 +966,49 @@ RECOVERING --실패--> RECOVERY_REQUIRED
 
 | 필드 | 규칙 |
 |---|---|
-| `request_id` | 필수. 사용자 조작 한 번마다 새 UUID(§4.1). `MOVE` `command_id`·`sort_job_id`와 겹치면 안 됨. 1.1 `command_id`는 `MOVE`·슬롯을 가리키므로 이름을 나눔 |
-| `expected_session`·`expected_revision` | `START`·`RECOVER` 필수, `STOP`에는 없음. GUI가 마지막으로 반영한 스냅샷 값. TCP 서버는 고치지 않고 C에 넘김 |
-| `user_confirmed` | `RECOVER` 필수, 값은 `true`만. C §16.4.3의 사용자 확정. GUI는 확인 창을 거친 뒤에만 보냄 |
+| `request_id` | 필수. 사용자 조작 한 번마다 새 UUID(§4.1). 등록된 `MOVE` `command_id`·C가 식별하는 `sort_job_id`와 겹치면 `ID_CONFLICT`(A.6.10). 1.1 `command_id`는 `MOVE`·슬롯을 가리키므로 이름을 나눔 |
+| `expected_session`·`expected_revision` | `START`·`RECOVER` 필수, `STOP`에는 없음. GUI가 마지막으로 반영한 유효 스냅샷 값. `expected_revision`은 아래 정수 규칙. TCP 서버는 고치지 않고 C에 넘김 |
+| `user_confirmed` | `RECOVER` 필수. JSON 리터럴 `true`만 허용(D 결정). `false`·`"true"`·`1`·`null`·누락은 `BAD_FORMAT`이며, TCP 서버가 C 조건을 평가하거나 C를 부르기 전에 거부. C §16.4.3의 사용자 확정. GUI는 확인 창을 거친 뒤에만 보냄 |
 | `GET_STATUS` | 요청 형식은 1.1과 같음(`command_id` 선택). 무ID 응답만 확장(A.6.6) |
 
-- 오류 분류는 §7.2.1 그대로: 필수 필드 누락, 정의되지 않은 필드, UUID 형식 위반, `user_confirmed ≠ true`, `STOP`에 `expected_*` 포함은 `BAD_FORMAT`. `expected_revision`이 음수이면 `BAD_VALUE`. C §16.8.3의 `CONFIRMATION_REQUIRED`는 이 형식 검사로 대신합니다(제안).
+- 오류 분류는 §7.2.1 그대로: 필수 필드 누락, 정의되지 않은 필드, UUID 형식 위반, `user_confirmed`가 리터럴 `true`가 아님, `STOP`에 `expected_*` 포함은 `BAD_FORMAT`. 정수 값 위반은 아래 표. C §16.8.3의 `CONFIRMATION_REQUIRED`는 이 형식 검사로 대신합니다(제안).
+
+**정수 필드 규칙 (D 결정, §4.1 4 적용).** 대상은 `expected_revision`(요청)과 `run_revision`·`run_epoch`·`server_time_ms`(응답)입니다. 값은 소수점·지수 없는 JSON 정수 표기여야 하며, 범위는 0 이상 9007199254740991(2^53−1) 이하(양 끝 포함)입니다. 부동소수점으로 바꾸기 전에 정수 그대로 정확히 읽어(예: Python `parse_int`) 형식과 범위를 검사합니다.
+
+| 값 | 결과 |
+|---|---|
+| `0`·`12`·`9007199254740991` | 유효 |
+| `12.0`·`1e1`·`true`·`false`·`"12"`·`null`·`NaN`·`Infinity`·`-Infinity`·`1e400` | `BAD_FORMAT` |
+| `-1`·`9007199254740992`·`max_line_bytes` 안에 들어가는 400자리 정수 | `BAD_VALUE` |
+| 형식 위반과 값 위반이 섞인 줄, `max_line_bytes`를 넘는 줄 | `BAD_FORMAT`(우선, §4.1 6·§2.2) |
+
+- **요청(D 송신 → 서버 검사).** 정수 위반(`BAD_FORMAT`·`BAD_VALUE`)이면 TCP 서버는 위 표대로 응답하고 C를 부르지 않습니다. 유효한 값은 형식 검사만 통과한 것이며, 이후 기존 수락 흐름(중복·ID 충돌 판정, C의 순번·자격 판정)을 그대로 거칩니다. D는 마지막으로 반영한 유효 스냅샷의 `run_revision`만 `expected_revision`으로 보내므로 범위 밖 값을 만들지 않습니다.
+- **응답(서버 송신 → D 검사).** D는 받은 `RUN_STATUS`·무ID `STATUS`에 들어 있는 위 정수 필드 모두에 같은 검사를 적용하고, 하나라도 어기면 응답 전체를 버리고 수신 오류로 기록합니다(A.6.6 응답 검증).
 - 모드·속도 등 다른 필드 없음.
 
 #### A.6.6 응답·스냅샷 (제안)
 
 새 응답 종류 `RUN_STATUS`. 1.1 `STATUS`의 `state`는 `MOVE` 상태라 섞지 않습니다.
 
-- **요청 결과**(`outcome`·`code`·`detail`): 그 `request_id`에 처음 확정한 값. 재전송에도 바뀌지 않습니다. `outcome`: `ACCEPTED`·`REJECTED`·`PENDING`·`UNKNOWN`. `detail`은 1.1과 같이 최대 256자.
+- **요청 결과**(`outcome`·`code`·`detail`): 그 `request_id`에 처음 확정한 값. 재전송에도 바뀌지 않습니다. `outcome`: `ACCEPTED`·`REJECTED`·`PENDING`·`UNKNOWN`. `detail`은 `null` 또는 JSON 해석 뒤 유니코드 코드 포인트 256개 이하 문자열입니다(D 결정). 257개 이상이면 응답 전체를 버리고 수신 오류로 기록하며, 잘라 쓰지 않고 `outcome`·스냅샷도 반영하지 않습니다.
 - **스냅샷**(`snapshot`): 응답 시점에 TCP 서버가 가진 C의 최신 권한 스냅샷(A.6.7). 요청 결과와 다를 수 있으며 화면 상태는 이것으로만 바꿉니다. 받을 수 없으면 `null`.
 
-스냅샷 필드: `c_session_id`, `run_revision`, `run_state`, `sort_job_id`(`STOP_REQUESTED`·`STOPPED`에서는 직전 작업 ID), `run_epoch`, `hold_state`, `stop_cause`(`USER_STOP`·`FEED_FAILED`·`ISOLATE_STOP`·`null`, 값은 C 결정), `slot_owner`(A.4), `allowed`(지금 받을 수 있는 명령 이름 배열; D는 이것으로만 버튼을 켬, C §16.8.3).
+스냅샷 필드: `c_session_id`, `run_revision`, `run_state`, `sort_job_id`(`STOP_REQUESTED`·`STOPPED`에서는 직전 작업 ID), `run_epoch`, `hold_state`, `stop_cause`(`USER_STOP`·`FEED_FAILED`·`ISOLATE_STOP`·`null`, 값은 C 결정), `slot_owner`(A.4), `allowed`(지금 받을 수 있는 명령 이름 배열, A.6.4 규칙. D는 `START`·`STOP`·`RECOVER` 버튼을 이것으로만 켬. `MOVE`는 넣지 않음, C §16.8.3).
 
-예시 (같은 C 기동, 순번이 이어짐):
+**응답 검증 (D 결정).** D는 아래 중 하나라도 어긴 `RUN_STATUS` 또는 무ID `STATUS`(아래 확장 포함)를 통째로 버리고 수신 오류로 기록합니다. 요청 결과·스냅샷·준비 상태·화면 상태를 일부라도 바꾸지 않습니다.
+
+- 정수 필드 규칙(A.6.5)과 §4.1 숫자 규칙: `RUN_STATUS`의 `server_time_ms`와 `snapshot` 안 `run_revision`·`run_epoch`, 무ID `STATUS`의 `server_time_ms`와 `run` 안 `run_revision`·`run_epoch`
+- `detail` 길이(위)는 `RUN_STATUS`에만 적용합니다(`null` 허용도 `RUN_STATUS`만). 무ID `STATUS`의 `detail`은 1.1 의미 그대로입니다.
+- `allowed`(`snapshot`·`run` 안): 배열이고 원소는 문자열 `START`·`STOP`·`RECOVER`만, 이 순서, 중복 없음. 함께 온 `run_state`로 확인할 수 있는 범위에서 A.6.4와 맞아야 합니다: `IDLE`·`STOPPED`는 `[]` 또는 `["START"]`, `RUNNING`·`STOP_REQUESTED`는 `["STOP"]`, `RECOVERY_REQUIRED`는 `["STOP"]` 또는 `["STOP","RECOVER"]`, `RECOVERING`·`UNAVAILABLE`은 `[]`. C 자격 조건 자체는 D가 확인하지 않습니다. 위반 예: `["STOP","START"]`·`["STOP","STOP"]`·`["MOVE"]`, `RUNNING`인데 `["START"]`
+- `slot_owner`(무ID `STATUS`·스냅샷): A.4 형식(`null` 또는 `{"kind","id"}`, 정의된 `kind`)과 `active_command_id` 관계(A.4)
+
+예시 (같은 C 기동, 순번이 이어짐. 네 번째 줄은 첫 `START`의 `request_id`를 다른 내용으로 다시 쓴 요청에 대한 `ID_CONFLICT`):
 
 ```json
 {"version":"1.2","type":"RUN_STATUS","request_id":"0b6f2e4a-1c3d-4e5f-8a9b-0c1d2e3f4a5b","outcome":"ACCEPTED","code":"RUN_STARTED","detail":null,"snapshot":{"c_session_id":"c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f","run_revision":13,"run_state":"RUNNING","sort_job_id":"5a1c9e2b-3d4f-4a6b-8c0d-1e2f3a4b5c6d","run_epoch":7,"hold_state":"DETACHED","stop_cause":null,"slot_owner":{"kind":"SORT_RUN","id":"5a1c9e2b-3d4f-4a6b-8c0d-1e2f3a4b5c6d"},"allowed":["STOP"]},"server_time_ms":5527310}
 {"version":"1.2","type":"RUN_STATUS","request_id":"7d8e9f0a-1b2c-4d3e-9f4a-5b6c7d8e9f0a","outcome":"ACCEPTED","code":"STOP_REQUESTED","detail":null,"snapshot":{"c_session_id":"c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f","run_revision":14,"run_state":"STOP_REQUESTED","sort_job_id":"5a1c9e2b-3d4f-4a6b-8c0d-1e2f3a4b5c6d","run_epoch":7,"hold_state":"DETACHED","stop_cause":"USER_STOP","slot_owner":{"kind":"SORT_RUN","id":"5a1c9e2b-3d4f-4a6b-8c0d-1e2f3a4b5c6d"},"allowed":["STOP"]},"server_time_ms":5529001}
 {"version":"1.2","type":"RUN_STATUS","request_id":"9a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d","outcome":"ACCEPTED","code":"STOP_ALREADY_REQUESTED","detail":null,"snapshot":{"c_session_id":"c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f","run_revision":14,"run_state":"STOP_REQUESTED","sort_job_id":"5a1c9e2b-3d4f-4a6b-8c0d-1e2f3a4b5c6d","run_epoch":7,"hold_state":"DETACHED","stop_cause":"USER_STOP","slot_owner":{"kind":"SORT_RUN","id":"5a1c9e2b-3d4f-4a6b-8c0d-1e2f3a4b5c6d"},"allowed":["STOP"]},"server_time_ms":5529400}
+{"version":"1.2","type":"RUN_STATUS","request_id":"0b6f2e4a-1c3d-4e5f-8a9b-0c1d2e3f4a5b","outcome":"REJECTED","code":"ID_CONFLICT","detail":null,"snapshot":{"c_session_id":"c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f","run_revision":14,"run_state":"STOP_REQUESTED","sort_job_id":"5a1c9e2b-3d4f-4a6b-8c0d-1e2f3a4b5c6d","run_epoch":7,"hold_state":"DETACHED","stop_cause":"USER_STOP","slot_owner":{"kind":"SORT_RUN","id":"5a1c9e2b-3d4f-4a6b-8c0d-1e2f3a4b5c6d"},"allowed":["STOP"]},"server_time_ms":5529700}
 {"version":"1.2","type":"RUN_STATUS","request_id":null,"outcome":null,"code":null,"detail":null,"snapshot":{"c_session_id":"c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f","run_revision":15,"run_state":"STOPPED","sort_job_id":"5a1c9e2b-3d4f-4a6b-8c0d-1e2f3a4b5c6d","run_epoch":7,"hold_state":"DETACHED","stop_cause":"USER_STOP","slot_owner":null,"allowed":["START"]},"server_time_ms":5531050}
 {"version":"1.2","type":"RUN_STATUS","request_id":"2e3f4a5b-6c7d-4e8f-9a0b-1c2d3e4f5a6b","outcome":"UNKNOWN","code":"RUN_SERVICE_TIMEOUT","detail":null,"snapshot":null,"server_time_ms":5533200}
 ```
@@ -997,6 +1026,7 @@ RECOVERING --실패--> RECOVERY_REQUIRED
 | `RECOVER` | C §16.4.3 진입 조건 충족 | `ACCEPTED` | `RECOVER_STARTED` | +1 |
 | `RECOVER` | 진입 조건 없음(정상 `HELD`, `DETACHED`의 `IDLE` 등) | `REJECTED` | `RECOVER_NOT_APPLICABLE` | 그대로 |
 | `RECOVER` | 이미 복구 중 | `ACCEPTED` | `ALREADY_RECOVERING` | 그대로 |
+| `START`·`STOP`·`RECOVER` | 같은 `request_id`·다른 내용, 또는 등록된 `MOVE` `command_id`·C가 식별하는 `sort_job_id`와 같음(A.6.10) | `REJECTED` | `ID_CONFLICT`. C 호출 없음, 이전 기록 유지 | 그대로 |
 | 모두 | 서비스 없음 | `REJECTED` | `RUN_SERVICE_UNAVAILABLE` | — |
 | 모두 | C 호출 시간 초과·연결 오류 | `UNKNOWN` | `RUN_SERVICE_TIMEOUT`. **실행되지 않았다는 뜻이 아님** | — |
 | 모두 | 해석할 수 없는 C 답 | `UNKNOWN` | `RUN_UNEXPECTED_REPLY`, 원문은 `detail`·로그 | — |
@@ -1009,16 +1039,16 @@ RECOVERING --실패--> RECOVERY_REQUIRED
 | `HOLDING_OBJECT` | `hold_state = HELD` |
 | `HOLD_UNKNOWN` | `hold_state = HOLD_UNKNOWN` |
 | `RUN_LOCKED` | `run_state = RECOVERY_REQUIRED` 또는 `RECOVERING` |
-| `RUN_STATE_UNKNOWN` | 스냅샷이 `UNKNOWN`·`null`. 슬롯이 비었는지 확인할 수 없으므로 준비 아님 |
+| `RUN_STATE_UNKNOWN` | 유효한 스냅샷 없음(`run = null`, A.6.4 `UNKNOWN`). 슬롯이 비었는지 확인할 수 없으므로 준비 아님 |
 
-분류 작업이 슬롯을 가지면 `COMMAND_ACTIVE`(A.4 정의)입니다. `UNAVAILABLE`(`--run-state` 없는 구성)은 분류 작업이 없다는 뜻이므로 `MOVE` 준비를 막지 않습니다(1.1 회귀 유지). 이 구성에서 B 분류 goal과 수동 `MOVE`가 겹치는 문제는 1.1과 같이 이 후보에서 풀지 않습니다(A.6.15 2). 준비 응답은 C 서비스 호출을 기다리지 않고 캐시된 스냅샷으로 만듭니다(A.6.7). 1.1 `readiness_timeout_ms`(1000)를 지키기 위해서입니다.
+수동 `MOVE` 준비는 `allowed`가 아니라 `robot_ready`·`slot_owner`·`hold_state`(위 사유)로 판정합니다. 분류 작업이 슬롯을 가지면 `COMMAND_ACTIVE`(A.4 정의)입니다. `UNAVAILABLE`(`--run-state` 없는 구성)은 분류 작업이 없다는 뜻이므로 `MOVE` 준비를 막지 않습니다(1.1 회귀 유지). 이 구성에서 B 분류 goal과 수동 `MOVE`가 겹치는 문제는 1.1과 같이 이 후보에서 풀지 않습니다(A.6.15 2). 준비 응답은 C 서비스 호출을 기다리지 않고 캐시된 스냅샷으로 만듭니다(A.6.7). 1.1 `readiness_timeout_ms`(1000)를 지키기 위해서입니다.
 
 #### A.6.7 권한 스냅샷 전달 (C 결정 대기)
 
 1. **기본 경로.** C가 `run_revision`이 바뀔 때마다 스냅샷 전체를 ROS 토픽으로 냅니다(신뢰성 `RELIABLE`, 내구성 `TRANSIENT_LOCAL`, 깊이 1 제안). 늦게 붙은 TCP 서버도 마지막 스냅샷을 받습니다. 요청 서비스 응답에도 같은 스냅샷을 담습니다.
 2. **캐시와 알림.** TCP 서버는 같은 `c_session_id`에서 순번이 더 큰 스냅샷만 캐시에 반영하고, 반영할 때마다 연결된 모든 클라이언트에 `RUN_STATUS`(`request_id = null`, 요청 결과 필드 `null`)를 보냅니다. `c_session_id`가 바뀌면 순번과 관계없이 새 스냅샷으로 바꿉니다.
-3. **제한된 대체 경로.** 마지막 수신 뒤 `run_snapshot_max_age_ms`가 지나면 TCP 서버가 조회 서비스(확장된 `get_run`)를 `run_service_timeout_ms`로 부릅니다. 같은 간격으로 최대 `run_poll_fail_limit`회 연속 실패하면 캐시를 `UNKNOWN`으로 바꾸고 알립니다. 이후에도 같은 간격으로 조회를 계속하되, 성공 전까지 `UNKNOWN`을 유지합니다. 마지막 값으로 추정하지 않습니다.
-4. **클라이언트 반영 규칙.** 같은 `c_session_id`에서 `run_revision`이 표시 중인 값보다 클 때만 반영, 같으면 무시, 작으면 기록만 합니다. `run_epoch`로는 순서를 판정하지 않습니다(같은 `run_epoch`에 다른 `sort_job_id`가 생길 수 있음, A.6.2). `c_session_id`가 바뀌면 이전 표시를 버리고 새 스냅샷으로 맞춥니다.
+3. **제한된 대체 경로.** 마지막 수신 뒤 `run_snapshot_max_age_ms`가 지나면 TCP 서버가 조회 서비스(확장된 `get_run`)를 `run_service_timeout_ms`로 부릅니다. 같은 간격으로 최대 `run_poll_fail_limit`회 연속 실패하면 캐시를 비워 `UNKNOWN`(`snapshot: null`, 무ID 응답 `run: null`)으로 바꾸고 알립니다. 이후에도 같은 간격으로 조회를 계속하되, 성공 전까지 `UNKNOWN`을 유지합니다. 마지막 값으로 추정하지 않습니다.
+4. **클라이언트 반영 규칙.** A.6.6 응답 검증을 통과한 응답만 아래 규칙으로 반영합니다. 같은 `c_session_id`에서 `run_revision`이 표시 중인 값보다 클 때만 반영, 같으면 무시, 작으면 기록만 합니다. `run_epoch`로는 순서를 판정하지 않습니다(같은 `run_epoch`에 다른 `sort_job_id`가 생길 수 있음, A.6.2). `c_session_id`가 바뀌면 이전 표시를 버리고 새 스냅샷으로 맞춥니다.
 
 #### A.6.8 `STOPPED` 확인
 
@@ -1032,6 +1062,8 @@ RECOVERING --실패--> RECOVERY_REQUIRED
 
 하나라도 확인할 수 없거나 `STOP_UNCONFIRMED`이면 `RECOVERY_REQUIRED`. 이미 복구 필요 상태에서 받은 `STOP`은 그 상태를 지우지 않습니다. 정지 확인 결과가 `HELD`이면 `STOPPED`·`hold_state = HELD`이며 A.6.4 보유 규칙을 따릅니다.
 
+**`allowed` 변경과 이 검사 (C 설계 유보).** A.6.3 2에 따라 `allowed`가 바뀌어도 순번이 오릅니다. A.6.4 규칙에서는 `STOP_REQUESTED`의 `allowed`가 항상 `["STOP"]`이므로 정지 확인을 기다리는 동안 이 이유로 순번이 오르지 않습니다. C가 이 구간에서도 `allowed`나 순번을 바꾸는 설계를 고르면, 순번 일치 대신 그 정지 접수에만 쓰는 식별값으로 확인하거나 그 방식을 C 설계에 명시해야 합니다. 그러지 않으면 정지 확인이 의도치 않게 버려집니다. 이 후보는 그 식별값을 새 프로토콜 필드로 정하지 않습니다(C 결정).
+
 #### A.6.9 `RECOVER` 안전 규칙과 현재 한계
 
 C §16.4.3을 그대로 따르며 새 동작을 정의하지 않습니다.
@@ -1040,11 +1072,12 @@ C §16.4.3을 그대로 따르며 새 동작을 정의하지 않습니다.
 - **절차:** ① 팔 명령 없이 미종료 goal 취소 요청 → 종료·정지 확인, 확인할 수 없으면 실행 구성 전체 정상 종료(응답 없으면 프로세스 종료를 기록) ② 재기동 뒤 §16.4.1 2~5단계(구성 확인·초기화·최종 확인) ③ 자동 재시도 없음.
 - **결과:** 성공하면 새 `c_session_id`의 `IDLE`이며 **분류를 자동 재개하지 않습니다**(사용자가 다시 `START`). 실패하면 `RECOVERY_REQUIRED`. 부품이 초기 배치로 돌아가는 것은 시험 초기화로 기록하며 결과로 세지 않습니다.
 - **관리 시뮬레이션 재기동 경계(제안).** "실행 구성 재기동"은 `sort_goal_receiver`와 Gazebo 실행 구성의 재기동을 뜻합니다. TCP 서버가 같은 재기동 범위에 들면 연결이 끊기며, 클라이언트는 재접속 뒤 스냅샷으로 다시 맞춥니다. `MOVE` 명령 로그 복구(§7.8)와 분류 실행 상태 복구는 서로 다른 기록입니다. 재기동 주체와 범위는 C 결정입니다.
-- **현재 구현과의 차이(A.6.2):** `RECOVER`·보유 상태·`apply_state`가 없고, 복구 필요 표시가 메모리에만 있어 노드를 재기동하면 §16.4.1 확인 없이 풀립니다. 1.2 적용 전 C가 잠금을 저장하거나 재기동 시 §16.4.1 확인을 거치게 해야 합니다.
+- **현재 구현과의 차이(A.6.2):** ROS `recover`는 E-STOP 래치 뒤 stalled gripper feedback으로 보유가 확인되면 그리퍼를 열고 팔을 home으로 보냅니다. 전체 실행 구성 재기동과 `apply_state` 확인은 구현되지 않았고, TCP 1.2의 `HOLD_UNKNOWN`은 보수적으로 합성합니다. E-STOP 후 START는 run ID를 재사용하지만 취소된 개별 FollowJointTrajectory goal의 중간 경로를 이어서 실행하지 않고 새 유효 B goal을 기다립니다.
 
 #### A.6.10 재전송·재접속·중복 방어
 
-- **중복 판정(§7.3 원칙).** 같은 `request_id`·같은 내용이면 C를 다시 부르지 않고 처음 결과와 **현재** 스냅샷으로 답합니다. 같은 ID·다른 내용, 또는 `MOVE` `command_id`와 같은 값이면 `ID_CONFLICT`.
+- **중복 판정(§7.3 원칙).** 같은 `request_id`·같은 내용이면 C를 다시 부르지 않고 처음 결과와 **현재** 스냅샷으로 답합니다.
+- **ID 충돌 (D 결정).** `START`·`STOP`·`RECOVER`의 `request_id`가 ① 같은 ID·다른 내용의 기존 요청, ② 등록된 `MOVE` `command_id`, ③ C가 식별할 수 있는 `sort_job_id` 중 하나와 겹치면 `RUN_STATUS`(`outcome = REJECTED`, `code = ID_CONFLICT`, 받은 유효 `request_id` 그대로, 현재 스냅샷 또는 없으면 `null`)로 답합니다. C를 부르지 않고, 순번을 바꾸지 않으며, 이전 기록을 덮어쓰지 않습니다. 반대로 `MOVE`의 `command_id`가 등록된 분류 요청 `request_id`와 같으면 1.1 그대로 `STATUS` 거부 `ID_CONFLICT`입니다. ③에 쓸 `sort_job_id` 이력의 범위·보존 기간은 C가 정합니다. `request_id`를 읽을 수 없으면 `ID_CONFLICT`가 아니라 `BAD_FORMAT`입니다.
 - **저장.** 요청 기록은 C 호출 **전에** 저장 확정합니다(§7.5.2와 같은 기준, 보존은 `command_log_retention`과 같게). 결과가 없으면 `PENDING`. 기록이 남은 채 TCP 서버가 재시작되면 `PENDING`이던 요청은 C를 다시 부르지 않고 `UNKNOWN`으로 확정합니다. 기록이 없어진 ID는 새 요청으로 처리되지만, 옛 `START`·`RECOVER`는 A.6.3 순번 검사에서 거부됩니다. 기록 저장 실패는 1.1과 같이 `NOT_READY`(`LOG_UNAVAILABLE`)로 거부하고 C를 부르지 않습니다.
 - **재전송.** 같은 연결 안에서만, 보관한 같은 바이트로(§8.2 4단계) `run_max_resend`회까지. 새 ID로 다시 보내지 않습니다.
 - **재접속.** 이전 `START`·`STOP`·`RECOVER`를 자동으로 다시 보내지 않습니다(§8.6, A.3). 무ID `GET_STATUS`로 맞춘 뒤 사용자가 다시 누르면 새 `request_id`입니다. 연결이 끊겨도 `STOP`이 아니며 분류는 계속될 수 있습니다(§7.6).
@@ -1066,23 +1099,48 @@ C §16.4.3을 그대로 따르며 새 동작을 정의하지 않습니다.
 
 | 수신 | 표시 | 버튼 |
 |---|---|---|
-| 요청 응답 대기·`PENDING`·`UNKNOWN` | "요청 결과 미확인" | `START`·`RECOVER` 비활성, **`STOP`은 연결 시 활성** |
+| 요청 응답 대기·`PENDING`·`outcome = UNKNOWN`(유효 스냅샷 있음) | "요청 결과 미확인" | 결과가 확정될 때까지 새 `START`·`RECOVER` 비활성. `STOP`은 `allowed`에 있으면 이 때문에 끄지 않으며, `allowed`에 없으면 따로 켜지 않음 |
 | `RUNNING` | "분류 실행 중" + `sort_job_id`·`run_epoch` | `allowed`에 따름 |
 | `STOP_REQUESTED` | "정지 요청 접수 — 정지 확인 전". **"정지됨"으로 표시하지 않음** | `STOP` 활성(반복 무해) |
 | `STOPPED` | "정지 확인됨" + `stop_cause` | `allowed`에 따름 |
 | `hold_state = HELD` | "부품 보유 중 — 해제 명령 미제공" | `START`·`MOVE` 비활성 |
-| `RECOVERY_REQUIRED`·`HOLD_UNKNOWN` | "복구 필요" | `RECOVER`(확인 창 뒤), `STOP` |
+| `RECOVERY_REQUIRED`·`HOLD_UNKNOWN` | "복구 필요" | `allowed`에 따름. `RECOVER`는 `allowed`에 있을 때만, 확인 창에서 사용자가 확정한 뒤 송신 |
 | `RECOVERING` | "복구 진행 중 — 자동 재개 없음" | 없음 |
-| `UNAVAILABLE`·`UNKNOWN`·연결 끊김 | "C 실행 상태 미확인". 마지막 상태를 확정으로 표시하지 않음 | `STOP`은 연결 시 활성 |
+| `UNAVAILABLE` | "C 실행 관리 없음" | `allowed = []`이므로 `START`·`STOP`·`RECOVER` 모두 비활성 |
+| 유효 스냅샷 없음(A.6.4 `UNKNOWN`), 연결 중 | "C 실행 상태 미확인". 마지막 상태를 확정으로 표시하지 않음 | `START`·`RECOVER` 비활성. `STOP`만 활성(`allowed` 밖 유일한 예외) |
+| 연결 끊김 | "연결 끊김 — C 실행 상태 미확인". 마지막 상태를 확정으로 표시하지 않음 | 모두 비활성 |
 | `outcome = REJECTED` | "거부: `code`" + `detail` | 스냅샷에 따름 |
+| 응답 검증 실패(A.6.6) | 직전 표시 유지, 수신 오류 기록 | 변화 없음 |
 
-`STOP`은 미해결 요청 때문에 비활성화하지 않습니다.
+`allowed`가 허용한 `STOP`은 미해결 요청 때문에 비활성화하지 않습니다. `START`·`STOP`·`RECOVER` 버튼은 `allowed`로만 켜고, 유효 스냅샷이 없을 때 연결 중 `STOP`을 켜는 것만 그와 별개인 예외입니다. 수동 `MOVE` 버튼은 `allowed`를 보지 않고 무ID `GET_STATUS`의 `robot_ready`·`slot_owner`·`hold_state`로 판정합니다. 실행 상태 문구(`run_state`)는 버튼 판정과 따로 표시합니다.
 
 #### A.6.13 시험 시나리오 (벡터·통합 시험 후보)
 
 **회귀.** §13의 `vectors`·`dedupe`와 §13.1 통합 시험 전부를 `version`만 `"1.2"`로 바꿔 다시 실행해 같은 결과가 나와야 합니다. 예외는 A.4·A.6.6의 의미 변경(무ID 응답의 추가 필드, `COMMAND_ACTIVE`와 `slot_owner`의 관계)뿐입니다.
 
-**새 벡터 후보(`c2s`·`s2c`).** `START`·`STOP`·`RECOVER` 정상 형식, 필수 필드 누락·정의되지 않은 필드·UUID 위반·`user_confirmed = false`·`STOP`에 `expected_revision` → `BAD_FORMAT`, `expected_revision = -1` → `BAD_VALUE`, `"1.1"` 버전의 `START` → `BAD_FORMAT`. `RUN_STATUS`의 `outcome`·`snapshot` 조합 일관성, 무ID 응답의 `slot_owner`·`active_command_id`·`COMMAND_ACTIVE` 일관성.
+**새 벡터 후보(`c2s`·`s2c`).** `START`·`STOP`·`RECOVER` 정상 형식, 필수 필드 누락·정의되지 않은 필드·UUID 위반·`STOP`에 `expected_revision` → `BAD_FORMAT`, `"1.1"` 버전의 `START` → `BAD_FORMAT`. `RUN_STATUS`의 `outcome`·`snapshot` 조합 일관성, 무ID 응답의 `slot_owner`·`active_command_id`·`COMMAND_ACTIVE` 일관성.
+
+**D 결정 벡터 판정 기준.** 새 산출물을 정하지 않으며, 위 벡터를 작성할 때 쓰는 기대값입니다. 입력은 원문 JSON 한 줄 단위로 적습니다(파싱된 값이 아니라 바이트 그대로).
+
+| 묶음 | 입력 | 기대 |
+|---|---|---|
+| 요청 정수(`c2s`) | `START`의 `expected_revision`이 `0`·`12`·`9007199254740991` | 형식 통과, 이후 C 판정 |
+| | `12.0`·`1e1`·`true`·`"12"`·`null`·`NaN`·`Infinity`·`-Infinity`·`1e400` | `BAD_FORMAT`, C 호출 없음 |
+| | `-1`·`9007199254740992`·400자리 정수(줄은 `max_line_bytes` 안) | `BAD_VALUE`, C 호출 없음 |
+| | `-1`과 정의되지 않은 필드를 함께, 또는 `max_line_bytes`를 넘는 줄 | `BAD_FORMAT` |
+| `user_confirmed`(`c2s`) | `RECOVER`에 `false`·`"true"`·`1`·`null`·누락 | `BAD_FORMAT`, C 조건 평가·호출 없음 |
+| 응답 폐기(`s2c`) | `RUN_STATUS`의 `run_revision`·`run_epoch`·`server_time_ms` 중 하나에 위 형식·값 위반 | 응답 전체 폐기, 수신 오류 기록. `outcome`·스냅샷·화면 모두 직전 그대로(부분 반영 없음) |
+| | `allowed`가 `["STOP","START"]`·`["STOP","STOP"]`·`["MOVE"]`, 또는 `run_state = RUNNING`인데 `["START"]` | 같음 |
+| | 무ID `STATUS`의 `run.run_revision = -1`, `run.allowed = ["START","START"]`, 또는 A.4 형식이 아닌 `slot_owner` | 무ID 응답 전체 폐기, 수신 오류 기록. `robot_ready`·`not_ready_reasons`·`run` 모두 직전 그대로 |
+| `detail` 경계(`s2c`) | 코드 포인트 256개(보조 평면 문자, `\u` 이스케이프 서로게이트 쌍은 해석 뒤 1개로 셈) | 반영 |
+| | 코드 포인트 257개 | 전체 폐기, 잘라 쓰지 않음 |
+| ID 충돌 | 같은 `request_id`·같은 내용 재전송 | 처음 결과 + 현재 스냅샷, C 재호출 없음 |
+| | 같은 `request_id`·다른 내용 | `RUN_STATUS` `REJECTED`·`ID_CONFLICT`, 받은 `request_id`, 현재 스냅샷 또는 `null`, 순번 불변, 이전 기록 유지 |
+| | 등록된 `MOVE` `command_id`를 `request_id`로 쓴 `STOP` | 같음 |
+| | 등록된 분류 `request_id`를 `command_id`로 쓴 `MOVE` | `STATUS` 거부 `ID_CONFLICT`(1.1) |
+| `allowed`·순번 | A.6.4 상태별 목록 | 순서 `START`·`STOP`·`RECOVER`, 중복 없음 |
+| | `IDLE`에서 수동 `MOVE` 종료로 `[]` → `["START"]` | `run_state` 그대로, `run_revision` +1 |
+| | `STOP_REQUESTED`에서 반복 `STOP` | `STOP_ALREADY_REQUESTED`, 순번·`allowed` 불변 |
 
 **통합 시험 후보.**
 
@@ -1107,10 +1165,56 @@ C §16.4.3을 그대로 따르며 새 동작을 정의하지 않습니다.
 
 #### A.6.15 승인 관문과 C 결정 대기
 
-1. **C 결정:** A.6.3 순번·조건부 요청·반복 `STOP` 규칙(또는 같은 성질의 대안)과 서비스 형태, A.6.7 스냅샷 전달 방식(토픽 QoS·조회 대체 경로), A.4 슬롯 소유자 표현, A.6.4 상태·전이, A.6.6 이름·코드·`not_ready_reasons`, A.6.8 확인 항목, A.6.9 재기동 주체·범위와 잠금 저장, A.6.11 값, `HELD` 정지 후 처리 절차, `RECOVERING` 중 `STOP` 처리.
+1. **C 결정:** A.6.3 순번·조건부 요청·반복 `STOP` 규칙(또는 같은 성질의 대안)과 서비스 형태, A.6.7 스냅샷 전달 방식(토픽 QoS·조회 대체 경로), A.4 슬롯 소유자 표현, A.6.4 상태·전이, A.6.6 이름·코드·`not_ready_reasons`, A.6.8 확인 항목, A.6.9 재기동 주체·범위와 잠금 저장, A.6.11 값, `HELD` 정지 후 처리 절차, `RECOVERING` 중 `STOP` 처리, `sort_job_id` 이력 범위(A.6.10), 정지 확인 식별 방식(A.6.8). **D 결정의 공동 확인:** A.6.4 `allowed`·순번 증가, A.6.5 정수·`user_confirmed`, A.6.6 응답 검증·`detail` 길이, A.6.10 ID 충돌.
 2. **C 확인(현재 동작):** 공급기 없는 구성의 실행 중 `start_run`, 복구 필요 상태의 `stop_run` 응답, `BUSY`의 두 원인, 복구 필요 표시의 비저장, 분류 중 `MOVE`의 실제 판정(A.6.2), `--run-state` 없는 구성의 분류 goal과 `MOVE` 경합.
 3. **C 승인 뒤 C·D·A 확인(§0.1).** A는 시험 관점.
-4. **그 뒤에만** 스키마·시험 벡터·서버·클라이언트 구현과 동시 배포. 지금은 미승인이며 구현·실통신이 없습니다.
+4. **현재 구현:** C TCP는 1.2 요청 경로를 추가했고 D는 `--tcp-version 1.2`에서 이를 사용합니다. 이 구현은 이 부록의 일부 후보 선택을 사용하며 공식 프로토콜 승인·실물 안전 인증·서버 재기동 내구성·완전한 정지 센서 확인을 뜻하지 않습니다. 실제 Gazebo 통합 동작 확인은 별도입니다.
+
+#### A.6.16 `E_STOP` 응용 요청 확장 (D 후보 2026-11-24 · 미승인 · C 회신 대기)
+
+> **규범이 아닙니다.** D 클라이언트 후보 구현(`--tcp-version 1.2`, 루프백 시험만)의 송수신 형식을 C 검토용으로 적은 것입니다. 기준 원본은 D 코드(`dashboard-client/src/eyetoarm/tcp/protocol.py`의 `build_e_stop`·`parse_v12`, `dashboard-client/src/eyetoarm/gui/client.py`의 `e_stop_allowed`·`e_stop_request`)입니다. 아래 예시는 순서대로 능력 알림 → 요청 → 접수 → 최종 보고입니다. 1.1 본문·스키마·시험 벡터, A.6의 `allowed`·`RECOVER` 규칙은 바꾸지 않습니다. 현재 C(1.1)는 이 요청을 처리하지 않습니다.
+
+**범위.** `START`·`STOP`·`E_STOP`은 모두 **로봇과 컨베이어 벨트**를 함께 다룹니다(사용자 지정 2026-11-24).
+
+- `START`: C가 정한 순서로 둘을 운전합니다. 벨트 연속 운전을 약속하지 않습니다.
+- `STOP`(화면 「Stop 정지」): 둘의 정지 요청이며, 정지 확인은 C 스냅샷 `STOPPED`(A.6.8)로만 합니다. 볼트 해제는 포함하지 않으며 미구현입니다(별도 C 결정).
+- `E_STOP`: 둘의 비상 정지를 C에 **요청만** 합니다. 실제 동작은 C가 허용된 안전 경로로만 정합니다. D 화면은 안전 장치가 아니며, 리셋·잠금 해제·자동 해제 명령은 두지 않습니다.
+- `RECOVER`의 홈 복귀·재개와 일반 해제는 별도 C 결정이며 이 절에서 정하지 않습니다.
+
+**전송.** 기존 명령 TCP 서버·포트·연결·프레이밍(JSON 한 줄 + LF)을 그대로 씁니다.
+
+```json
+{"version":"1.2","type":"STATUS","robot_ready":true,"not_ready_reasons":[],"active_command_id":null,"server_time_ms":5540000,"slot_owner":null,"run":{"c_session_id":"c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f","run_revision":15,"run_state":"STOPPED","sort_job_id":"5a1c9e2b-3d4f-4a6b-8c0d-1e2f3a4b5c6d","run_epoch":7,"hold_state":"DETACHED","stop_cause":"USER_STOP","slot_owner":null,"allowed":["START"]},"e_stop_available":true}
+{"version":"1.2","type":"E_STOP","request_id":"6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"}
+{"version":"1.2","type":"E_STOP_STATUS","request_id":"6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f","state":"REQUESTED","detail":null,"server_time_ms":5540100}
+{"version":"1.2","type":"E_STOP_STATUS","request_id":"6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f","state":"CONFIRMED","detail":null,"server_time_ms":5541300}
+```
+
+| 항목 | 규칙 (D 후보) |
+|---|---|
+| `E_STOP` | 필드는 `version`·`type`·`request_id`만. `request_id`는 클릭마다 새 UUID v4 |
+| `e_stop_available` | 무ID 1.2 `STATUS`의 선택 bool. 생략·`false`·bool 아님(응답 전체 폐기)·연결 끊김·오래된 `STATUS`(`status_watchdog_ms` 초과)면 D 버튼 비활성. `run_state`·`allowed`·`robot_ready`와 무관 |
+| `E_STOP_STATUS` | 필드는 정확히 `version`·`type`·`request_id`·`state`·`detail`·`server_time_ms` |
+| `state` | `REQUESTED` = C 접수만(정지 확인 아님). `CONFIRMED` = C가 로봇·컨베이어 정지를 보고(D는 표시만, 검증 아님). `REJECTED` = C 거부. `UNCONFIRMED` = C가 정지를 확인하지 못함. 마지막 셋이 최종 |
+| `detail` | `null` 또는 해석 뒤 코드 포인트 256개 이하 |
+| `server_time_ms` | A.6.5 정수 규칙(0~2^53−1 JSON 정수) |
+| 상관 | 같은 연결의 마지막 요청 `request_id`만 반영. 다른 ID·이전 연결의 응답은 기록만 |
+| 순서 | 최종 상태는 되돌리지 않음. 기한 뒤 늦은 `REQUESTED`는 무시, 같은 요청의 늦은 최종 보고는 「늦은 응답」으로 반영 |
+| 재전송 | 없음. 한 번에 하나만 대기. 재접속·주소 변경 뒤 다시 보내지 않음 |
+| 기한 | D 설정 후보 `e_stop_timeout_ms` 10000. 최종 보고가 없으면 D가 「결과 미확인」으로 닫음(실행되지 않았다는 뜻 아님) |
+| 끊김 | 대기 요청은 미확인으로 닫음. 끝난 결과는 「이전 연결 기록」으로 표시해 현재 상태처럼 보이지 않게 함 |
+| 분리 | 분류 스냅샷·`allowed`·`STOP` 요청과 별개. `E_STOP_STATUS`는 `run_revision`을 바꾸지 않음(C가 정지 결과를 스냅샷에도 반영할지는 C 결정) |
+
+**D 시험(루프백, 실제 C 아님).** `tests/integration/test_d_client_v12.py` `EStop`: 능력 없음·거짓·형식 오류 시 미송신, `E_STOP` 한 줄과 별개 `STOP`, `REQUESTED`→`CONFIRMED`, 최종 뒤 `REJECTED` 무시, 다른 ID·형식 위반 폐기, 능력 해제 중 대기 결과 유지, 기한 초과 미확인, 끊김 후 재전송 없음, 이전 결과 기록 표시, 늦은 `REQUESTED` 무시, 화면 문구.
+
+**C 회신 점검표.**
+
+1. 지원 여부와 시점: `E_STOP` 수신 구현 계획, 이름·필드·상태 값 수용 또는 대안.
+2. 안전 경로: C가 쓸 실제 비상정지 경로(로봇·컨베이어 각각), 소프트웨어 요청이 허용되는 조건, 리셋·해제 절차(D 명령 없음).
+3. 확인 기준: `CONFIRMED`를 보낼 근거(로봇 관절 정지·벨트 정지 관측 등)와 `UNCONFIRMED` 조건, 기한 10000 ms의 적정성.
+4. 능력 알림: `e_stop_available`을 언제 `true`로 보내는지(기동·정지·복구 중 포함).
+5. 순서: 기동·정상 정지·비상 정지 뒤 재기동 순서와 `START`·`RECOVER`와의 관계(`RECOVER` 홈 복귀·재개는 별도 결정).
+6. 계약: A.6 1.2 후보와 함께 승인할지, 별도 개정으로 둘지.
 
 
 ## 부록 B. 영상 표시 경로 (A 초안 · 미승인 · 프로토콜 1.1 아님)

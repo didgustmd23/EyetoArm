@@ -131,7 +131,7 @@ def generate_launch_description():
     interface_python = Path(get_package_prefix("eyetoarm_interfaces")) / python_site
 
     return LaunchDescription([
-        DeclareLaunchArgument("auto_sort", default_value="false"),
+        DeclareLaunchArgument("auto_sort", default_value="true"),
         DeclareLaunchArgument("gui", default_value="false",
                               description="Gazebo GUI 실행 여부 (false면 headless)"),
         DeclareLaunchArgument("start_a", default_value="true",

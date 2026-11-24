@@ -49,9 +49,9 @@ def encode(message: dict[str, Any]) -> bytes:
     return (json.dumps(message, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
 
 
-def build_get_status(command_id: str | None = None) -> bytes:
-    """command_id 없음 = 준비 조회, 있음 = 명령 상태 조회(§4.4)."""
-    message: dict[str, Any] = {"version": VERSION, "type": "GET_STATUS"}
+def build_get_status(command_id: str | None = None, version: str = VERSION) -> bytes:
+    """command_id 없음 = 준비 조회, 있음 = 명령 상태 조회(§4.4). version="1.2" 는 부록 A.6 후보 모드 전용."""
+    message: dict[str, Any] = {"version": version, "type": "GET_STATUS"}
     if command_id is not None:
         message["command_id"] = command_id
     return encode(message)
@@ -240,8 +240,8 @@ def _core_check(message: dict[str, Any]) -> None:
         raise ProtocolError("COMMAND_ACTIVE에 active_command_id가 없음")
 
 
-def parse_status(line: bytes) -> dict[str, Any]:
-    """LF 를 뗀 한 줄을 STATUS 로 해석한다. 위반이면 ProtocolError."""
+def _load_object(line: bytes) -> dict[str, Any]:
+    """§2.3 해석 규칙: UTF-8, 중복 키·NaN·Infinity·비유한 수 거부, 정수는 float 변환 없이 정확히 읽는다."""
     if line.endswith(b"\r"):
         line = line[:-1]
     try:
@@ -250,10 +250,16 @@ def parse_status(line: bytes) -> dict[str, Any]:
                              parse_float=_finite_float, parse_int=_safe_int)
     except ProtocolError:
         raise
-    except (UnicodeDecodeError, ValueError) as error:
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise ProtocolError(f"JSON 해석 실패: {error}") from error
     if not isinstance(message, dict):
         raise ProtocolError("최상위가 객체가 아님")
+    return message
+
+
+def parse_status(line: bytes) -> dict[str, Any]:
+    """LF 를 뗀 한 줄을 STATUS 로 해석한다. 위반이면 ProtocolError."""
+    message = _load_object(line)
     if _VALIDATOR is not None:
         errors = sorted(_VALIDATOR.iter_errors(message), key=lambda e: list(e.path))
         if errors:
@@ -271,3 +277,199 @@ def status_kind(message: dict[str, Any]) -> str:
     if "state" in message:
         return "command"
     return "reject" if "code" in message else "ready"
+
+
+# ── TCP 1.2 후보(명세 부록 A.6, 미승인) ───────────────────────────────────
+# --tcp-version 1.2 로 고른 때만 쓴다. 현재 C 서버(1.1)는 "1.2" 를 BAD_FORMAT 으로 거부한다.
+
+VERSION_12 = "1.2"
+RUN_ACTIONS = ("START", "STOP", "RECOVER")   # allowed 의 고정 순서(A.6.4)
+RUN_STATES = {"IDLE", "RUNNING", "STOP_REQUESTED", "STOPPED", "RECOVERY_REQUIRED", "RECOVERING", "UNAVAILABLE"}
+# run_state 로 확인할 수 있는 allowed 범위(A.6.6 응답 검증). C 자격 조건 자체는 D 가 판정하지 않는다
+ALLOWED_BY_STATE = {
+    "IDLE": ((), ("START",)), "STOPPED": ((), ("START",)),
+    "RUNNING": (("STOP",),), "STOP_REQUESTED": (("STOP",),),
+    # E-STOP pause uses this state with an explicit START option: the user may
+    # resume the preserved run or choose RECOVER. Other recovery locks omit START.
+    "RECOVERY_REQUIRED": (("STOP",), ("STOP", "RECOVER"), ("START", "STOP", "RECOVER")),
+    "RECOVERING": ((),), "UNAVAILABLE": ((),),
+}
+HOLD_STATES = {"DETACHED", "HELD", "HOLD_UNKNOWN"}
+SLOT_KINDS = {"MOVE", "SORT_RUN", "RECOVER", "LOCKED"}
+RUN_CODES = {
+    "ACCEPTED": {"RUN_STARTED", "ALREADY_RUNNING", "STOP_REQUESTED", "STOP_ALREADY_REQUESTED", "NO_ACTIVE_RUN",
+                 "RECOVER_STARTED", "ALREADY_RECOVERING"},
+    "REJECTED": {"STALE_REVISION", "BUSY", "NOT_APPLIED", "HOLDING_OBJECT", "HOLD_UNKNOWN", "RECOVERY_REQUIRED",
+                 "RECOVER_NOT_APPLICABLE", "ID_CONFLICT", "RUN_SERVICE_UNAVAILABLE", "BAD_FORMAT", "BAD_VALUE",
+                 "NOT_READY"},
+    "UNKNOWN": {"RUN_SERVICE_TIMEOUT", "RUN_UNEXPECTED_REPLY"},
+    "PENDING": {None},
+}
+READY_REASONS_12 = {
+    "COMMAND_ACTIVE", "ROS_DISCONNECTED", "SIM_PAUSED", "CONTROLLER_INACTIVE", "TRAJECTORY_ACTIVE",
+    "ACTION_STATUS_UNKNOWN", "FEEDBACK_STALE", "NOT_STOPPED", "SCENE_NOT_READY", "RECOVERING", "RECOVERY_FAILED",
+    "LOG_UNAVAILABLE", "HOLDING_OBJECT", "HOLD_UNKNOWN", "RUN_LOCKED", "RUN_STATE_UNKNOWN",
+}
+_SNAPSHOT_KEYS = {"c_session_id", "run_revision", "run_state", "sort_job_id", "run_epoch", "hold_state", "stop_cause",
+                  "slot_owner", "allowed"}
+_RUN_STATUS_KEYS = {"version", "type", "request_id", "outcome", "code", "detail", "snapshot", "server_time_ms"}
+_READY_12_REQUIRED = {"version", "type", "robot_ready", "not_ready_reasons", "active_command_id", "server_time_ms",
+                      "slot_owner", "run"}
+
+
+# E-Stop 응용 요청(D 제안 · C 미합의). C 가 실제 동작을 정하고 결과를 E_STOP_STATUS 로 보낸다. D 는 안전 장치가 아니다
+E_STOP_STATES = {"REQUESTED", "CONFIRMED", "REJECTED", "UNCONFIRMED"}   # REQUESTED = C 접수만, 나머지 셋 = C 최종 보고
+_E_STOP_STATUS_KEYS = {"version", "type", "request_id", "state", "detail", "server_time_ms"}
+
+
+def build_e_stop(request_id: str) -> bytes:
+    return encode({"version": VERSION_12, "type": "E_STOP", "request_id": _uuid4(request_id, "request_id")})
+
+
+def build_run_request(action: str, request_id: str, session: str | None = None, revision: int | None = None,
+                      user_confirmed: bool = False) -> bytes:
+    """START·STOP·RECOVER 한 줄(A.6.5). START·RECOVER 는 마지막 유효 스냅샷의 세션·순번, STOP 은 둘 다 없음."""
+    message: dict[str, Any] = {"version": VERSION_12, "type": action, "request_id": _uuid4(request_id, "request_id")}
+    if action in ("START", "RECOVER"):
+        if type(revision) is not int or not 0 <= revision <= MAX_SAFE_INT:
+            raise ValueError("expected_revision 은 0..2^53-1 정수")
+        message["expected_session"] = _uuid4(session, "expected_session")
+        message["expected_revision"] = revision
+        if action == "RECOVER":
+            if user_confirmed is not True:
+                raise ValueError("RECOVER 는 사용자 확정 뒤에만 만든다")
+            message["user_confirmed"] = True
+    elif action != "STOP":
+        raise ValueError(f"알 수 없는 분류 명령 {action}")
+    return encode(message)
+
+
+def _uuid4(value: Any, field: str) -> str:
+    try:
+        parsed = uuid.UUID(value) if isinstance(value, str) else None
+    except ValueError as error:
+        raise ProtocolError(f"{field} UUID 오류") from error
+    if parsed is None or parsed.version != 4 or str(parsed) != value:
+        raise ProtocolError(f"{field} UUID v4 형식 오류")
+    return value
+
+
+def _safe_nonneg(value: Any, field: str) -> None:
+    # bool 은 int 의 하위형이라 type 으로 본다. 12.0·1e1 은 float 로 들어와 여기서 걸린다
+    if type(value) is not int or not 0 <= value <= MAX_SAFE_INT:
+        raise ProtocolError(f"{field} 는 0..2^53-1 JSON 정수여야 함")
+
+
+def _is_enum(value: Any, allowed: Any) -> bool:
+    # 문자열인지 먼저 본다. dict·list 는 해시할 수 없어 set 멤버 검사에서 TypeError 가 난다
+    return isinstance(value, str) and value in allowed
+
+
+def _check_slot_owner(slot: Any, field: str = "slot_owner") -> None:
+    if slot is None:
+        return
+    if not isinstance(slot, dict) or set(slot) != {"kind", "id"} or not _is_enum(slot["kind"], SLOT_KINDS):
+        raise ProtocolError(f"{field} 형식 오류")
+    if slot["kind"] == "LOCKED":
+        if slot["id"] is not None:
+            raise ProtocolError(f"{field} LOCKED 의 id 는 null")
+    else:
+        _uuid4(slot["id"], f"{field}.id")
+
+
+def check_snapshot(snapshot: Any, field: str = "snapshot") -> None:
+    """A.6.6 스냅샷 검사. None 은 '유효 스냅샷 없음'으로 허용한다."""
+    if snapshot is None:
+        return
+    if not isinstance(snapshot, dict) or set(snapshot) != _SNAPSHOT_KEYS:
+        raise ProtocolError(f"{field} 필드 집합 오류")
+    _uuid4(snapshot["c_session_id"], "c_session_id")
+    _safe_nonneg(snapshot["run_revision"], "run_revision")
+    _safe_nonneg(snapshot["run_epoch"], "run_epoch")
+    state = snapshot["run_state"]
+    if not _is_enum(state, RUN_STATES):
+        raise ProtocolError("run_state 값 오류")
+    if snapshot["sort_job_id"] is not None:
+        _uuid4(snapshot["sort_job_id"], "sort_job_id")
+    if not _is_enum(snapshot["hold_state"], HOLD_STATES):
+        raise ProtocolError("hold_state 값 오류")
+    cause = snapshot["stop_cause"]
+    if cause is not None and (not isinstance(cause, str) or not cause or len(cause) > 64
+                              or not all(ch.isascii() and (ch.isupper() or ch == "_" or ch.isdigit()) for ch in cause)):
+        raise ProtocolError("stop_cause 형식 오류")
+    _check_slot_owner(snapshot["slot_owner"], f"{field}.slot_owner")
+    allowed = snapshot["allowed"]
+    if not isinstance(allowed, list) or any(not isinstance(a, str) for a in allowed):
+        raise ProtocolError("allowed 는 문자열 배열")
+    if tuple(allowed) not in ALLOWED_BY_STATE[state]:
+        raise ProtocolError(f"allowed {allowed} 가 {state} 에 맞지 않음(값·순서·중복)")
+    estop_resume = (state == "RECOVERY_REQUIRED" and tuple(allowed) == ("START", "STOP", "RECOVER")
+                    and snapshot["hold_state"] == "HOLD_UNKNOWN"
+                    and snapshot["slot_owner"] == {"kind": "LOCKED", "id": None})
+    if "START" in allowed and not estop_resume and (snapshot["hold_state"] != "DETACHED" or snapshot["slot_owner"] is not None):
+        raise ProtocolError("START 는 DETACHED·빈 슬롯에서만 allowed(A.6.4)")
+
+
+def _check_detail(detail: Any) -> None:
+    # 코드 포인트 수 = Python str 길이(\u 서로게이트 쌍은 json 이 한 글자로 합친다). 넘으면 자르지 않고 버린다
+    if detail is not None and (not isinstance(detail, str) or len(detail) > 256):
+        raise ProtocolError("detail 은 null 또는 코드 포인트 256개 이하")
+
+
+def parse_v12(line: bytes) -> dict[str, Any]:
+    """1.2 후보 수신 한 줄: RUN_STATUS 또는 무ID STATUS(준비 응답 확장). 하나라도 어기면 통째로 ProtocolError."""
+    message = _load_object(line)
+    if not _is_enum(message.get("version"), {VERSION_12}):
+        raise ProtocolError(f"version {message.get('version')!r} · 1.2 후보 응답 아님")
+    if _is_enum(message.get("type"), {"RUN_STATUS"}):
+        if set(message) != _RUN_STATUS_KEYS:
+            raise ProtocolError("RUN_STATUS 필드 집합 오류")
+        _safe_nonneg(message["server_time_ms"], "server_time_ms")
+        _check_detail(message["detail"])
+        check_snapshot(message["snapshot"])
+        request_id, outcome, code = message["request_id"], message["outcome"], message["code"]
+        if request_id is None:
+            if outcome is not None or code is not None or message["detail"] is not None:
+                raise ProtocolError("알림(request_id=null)의 요청 결과 필드는 null")
+        else:
+            _uuid4(request_id, "request_id")
+            if not _is_enum(outcome, RUN_CODES) or not (code is None or isinstance(code, str)) or code not in RUN_CODES[outcome]:
+                raise ProtocolError(f"outcome·code 조합 오류 {outcome}/{code}")
+        return message
+    if _is_enum(message.get("type"), {"E_STOP_STATUS"}):
+        if set(message) != _E_STOP_STATUS_KEYS:
+            raise ProtocolError("E_STOP_STATUS 필드 집합 오류")
+        _uuid4(message["request_id"], "request_id")
+        if not _is_enum(message["state"], E_STOP_STATES):
+            raise ProtocolError("E_STOP_STATUS state 값 오류")
+        _check_detail(message["detail"])
+        _safe_nonneg(message["server_time_ms"], "server_time_ms")
+        return message
+    if not _is_enum(message.get("type"), {"STATUS"}):
+        raise ProtocolError("type 오류")
+    missing = _READY_12_REQUIRED - set(message)
+    if missing or set(message) - (_READY_12_REQUIRED | {"detail", "e_stop_available"}):
+        raise ProtocolError("1.2 후보 클라이언트는 무ID 준비 STATUS 만 해석함(필드 집합 오류)")
+    if "e_stop_available" in message and not isinstance(message["e_stop_available"], bool):
+        raise ProtocolError("e_stop_available 은 bool")   # 생략 = false
+    _safe_nonneg(message["server_time_ms"], "server_time_ms")
+    if "detail" in message and (not isinstance(message["detail"], str) or len(message["detail"]) > 256):
+        raise ProtocolError("detail 형식 오류")   # 1.1 의미 그대로(null 불가)
+    reasons = message["not_ready_reasons"]
+    if (not isinstance(message["robot_ready"], bool) or not isinstance(reasons, list)
+            or any(not isinstance(r, str) or r not in READY_REASONS_12 for r in reasons) or len(set(reasons)) != len(reasons)):
+        raise ProtocolError("robot_ready·not_ready_reasons 형식 오류")
+    if message["robot_ready"] == bool(reasons):
+        raise ProtocolError("robot_ready 와 not_ready_reasons 가 서로 맞지 않음")
+    slot = message["slot_owner"]
+    _check_slot_owner(slot)
+    if (slot is not None) != ("COMMAND_ACTIVE" in reasons):
+        raise ProtocolError("COMMAND_ACTIVE 와 slot_owner 불일치(A.4)")
+    active = message["active_command_id"]
+    expected_active = slot["id"] if slot is not None and slot["kind"] == "MOVE" else None
+    if active != expected_active:
+        raise ProtocolError("active_command_id 는 slot_owner.kind=MOVE 일 때만 그 id(A.4)")
+    check_snapshot(message["run"], "run")
+    if (message["run"] is None) != ("RUN_STATE_UNKNOWN" in reasons):
+        raise ProtocolError("run=null 과 RUN_STATE_UNKNOWN 불일치")
+    return message
