@@ -351,7 +351,7 @@ class LatestFrameServer:
                 tx, self._tx_count = self._tx_count, {name: 0 for name in CAMERAS}
             rates = " ".join(f"{name}:rx={rx[name]/elapsed:.1f},tx={tx[name]/elapsed:.1f}" for name in CAMERAS)
             print(f"[C video FPS] {rates} A_detect_rx={handoff_rx/elapsed:.1f} "
-                  f"A_detect_selected={handoff_selected/elapsed:.1f} B_center_rx={center_rx/elapsed:.1f}", flush=True)
+                  f"A_detect_selected={handoff_selected/elapsed:.1f} B_center_selected={center_rx/elapsed:.1f}", flush=True)
 
     def _accept(self):
         while not self._stop.is_set():
