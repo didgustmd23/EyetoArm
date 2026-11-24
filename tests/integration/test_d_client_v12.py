@@ -1,7 +1,8 @@
 """TCP 1.2 후보(명세 부록 A.6, 미승인) D 클라이언트 시험. 루프백 대역 상대만 쓴다(실제 C·로봇·Gazebo 없음).
 
 대역 상대는 이 파일이 정한 줄을 그대로 보내는 시험용 소켓이다. C 구현이 아니다.
-마지막 묶음은 저장소의 C TcpServer(1.1)를 루프백에 띄워 1.2 후보 요청이 거부되고 조작 관문이 열리지 않음을 본다.
+마지막 묶음은 1.1 만 아는 상대(모든 요청에 1.1 STATUS BAD_FORMAT, 이전 C 1.1 동작)를 루프백 대역으로 두고
+1.2 요청이 거부되고 조작 관문이 열리지 않음을 본다(최신 C 구현 버전에 의존하지 않음).
 """
 import asyncio
 import json
@@ -16,7 +17,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(ROOT / "dashboard-client" / "src"), str(ROOT / "robot_ws/src/robot_server_package")]
+sys.path[:0] = [str(ROOT / "dashboard-client" / "src")]
 from PySide6.QtCore import QCoreApplication, QEvent  # noqa: E402
 from PySide6.QtNetwork import QAbstractSocket  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
@@ -81,6 +82,7 @@ class Peer:
     def __init__(self):
         self.snapshot = snap()
         self.e_stop_available = None   # 준비 STATUS 에 실을 값. None = 생략
+        self.legacy = False            # True = 1.1 만 아는 상대: 모든 요청에 1.1 STATUS BAD_FORMAT
         self.requests = []          # 받은 원문 줄(bytes)
         self.on_request = None      # dict -> list[bytes|dict] | None(무응답)
         self.writers = []
@@ -107,7 +109,10 @@ class Peer:
         while raw := await reader.readline():
             self.requests.append(raw)
             request = json.loads(raw)
-            if request["type"] == "GET_STATUS":
+            if self.legacy:   # 이전 C 1.1 처럼 지원하지 않는 version 을 1.1 거부 STATUS 로 답한다
+                answers = [{"version": "1.1", "type": "STATUS", "code": "BAD_FORMAT", "detail": "version은 1.1이어야 합니다",
+                            "robot_ready": True, "not_ready_reasons": [], "active_command_id": None, "server_time_ms": 1}]
+            elif request["type"] == "GET_STATUS":
                 answers = [ready(self.snapshot, self.e_stop_available)]
             else:
                 answers = self.on_request(request) if self.on_request else []
@@ -427,15 +432,15 @@ class Window(V12Case):
 
     def test_buttons_clickable_but_send_only_when_allowed_and_confirmed(self):
         w = self.window
-        self.assertIn("1.2 후보", w.windowTitle())
+        self.assertEqual(w.windowTitle(), "Eye To Arms · D 운영 GUI (TCP 1.2 실행 제어)")
         buttons = (w.start_button, w.stop_button, w.estop_button, w.recover_button)
         self.assertTrue(until(lambda: all(b.isEnabled() for b in buttons)))   # 연결되면 누를 수 있음
         self.assertFalse(w.move_button.isEnabled())
-        self.assertIn("Stop 정지 미전송(allowed", w.sort_detail.text())        # 누르기 전 보이는 미전송 사유
+        self.assertIn("STOP 정지 미전송(allowed", w.sort_detail.text())        # 누르기 전 보이는 미전송 사유
         w.stop_button.click()                                    # IDLE allowed=["START"]: STOP 미전송
         until(lambda: False, 0.1)
         self.assertEqual(self.peer.sort_requests(), [])
-        self.assertIn("Stop 정지 미전송 · allowed", w.request_note.text())
+        self.assertIn("STOP 정지 미전송 · allowed", w.request_note.text())
         self.peer.snapshot = snap("RECOVERY_REQUIRED", 20, ("STOP", "RECOVER"), hold="HOLD_UNKNOWN")
         self.peer.push(run_status(snapshot=self.peer.snapshot))
         self.assertTrue(until(lambda: "복구 필요" in w.sort_detail.text()))
@@ -478,24 +483,24 @@ class Window(V12Case):
                     return found
             return None
         row = holder(w.centralWidget().layout())
-        self.assertEqual(w.stop_button.text(), "Stop 정지")
-        self.assertTrue(until(lambda: w.estop_button.text() == "E-Stop · 미전송"))   # C 알림 없음 = 미전송 표시
+        self.assertEqual(w.stop_button.text(), "STOP 정지")
+        self.assertTrue(until(lambda: w.estop_button.text() == "E-STOP · 미전송"))   # C 알림 없음 = 미전송 표시
         self.assertEqual(row.indexOf(w.estop_button), row.indexOf(w.stop_button) + 1)   # STOP 버튼 바로 오른쪽
         self.assertIn("e_stop_available", w.estop_button.toolTip())   # C 가 알리지 않음 = 비활성
         self.peer.snapshot = snap("RUNNING", 13, ("STOP",))
         self.peer.push(run_status(snapshot=self.peer.snapshot))
-        self.assertTrue(until(lambda: "Stop 정지 송신" in w.sort_detail.text()))
+        self.assertTrue(until(lambda: "STOP 정지 송신" in w.sort_detail.text()))
         self.assertTrue(w.estop_button.isEnabled())             # 누를 수 있으나 C 알림 없음 → 미전송
         self.assertIn("요청 불가", w.estop_value._full)
         w.estop_button.click()
         until(lambda: False, 0.1)
         self.assertEqual(self.peer.sort_requests(), [])
-        self.assertIn("E-Stop 미전송", w.request_note.text())
+        self.assertIn("E-STOP 미전송", w.request_note.text())
         w.stop_button.click()                                   # STOP 버튼 = 기존 STOP 요청 그대로
         self.assertTrue(until(lambda: self.peer.sort_requests()))
         self.assertEqual([r["type"] for r in self.peer.sort_requests()], ["STOP"])
-        self.assertIn("Stop 정지 요청 시도", w.request_note.text())
-        self.assertIn("E-Stop 미전송(C 가 E-Stop 요청 가능을 알리지 않음", w.sort_detail.text())
+        self.assertIn("STOP 정지 요청 시도", w.request_note.text())
+        self.assertIn("E-STOP 미전송(C 가 E-STOP 요청 가능을 알리지 않음", w.sort_detail.text())
 
     def test_stop_requested_label_and_disconnect_disables_all(self):
         w = self.window
@@ -550,9 +555,9 @@ class EStop(V12Case):
         self.peer.push(e_stop_status(request_id, "CONFIRMED", "C 보고"))
         self.assertTrue(until(lambda: self.link.e_stop.state == "CONFIRMED"))
         self.peer.push(e_stop_status(request_id, "REJECTED"))           # 최종 보고는 되돌리지 않음
-        self.assertTrue(until(lambda: any(r.get("kind") == "E-Stop 결과 불일치" for r in self.log_rows())))
+        self.assertTrue(until(lambda: any(r.get("kind") == "E-STOP 결과 불일치" for r in self.log_rows())))
         self.assertEqual((self.link.e_stop.state, self.link.e_stop.detail), ("CONFIRMED", "C 보고"))
-        self.assertTrue(any(r.get("kind") == "E-Stop 대응 요청 없음" for r in self.log_rows()))
+        self.assertTrue(any(r.get("kind") == "E-STOP 대응 요청 없음" for r in self.log_rows()))
         self.assertTrue(any(r.get("kind") == "형식 오류" for r in self.log_rows()))
         self.assertEqual(self.link.run_snapshot["run_state"], before["run_state"])   # 분류 스냅샷을 바꾸지 않음
         self.assertEqual(len(self.e_stops()), 1)
@@ -587,7 +592,7 @@ class EStop(V12Case):
         self.assertFalse(self.link.e_stop_allowed()[0])
         self.assertTrue(until(lambda: self.link.state == "connected" and self.link.e_stop_available))
         self.peer.push(e_stop_status(request_id, "CONFIRMED"))          # 이전 연결 요청의 답
-        self.assertTrue(until(lambda: any(r.get("kind") == "E-Stop 대응 요청 없음" for r in self.log_rows())))
+        self.assertTrue(until(lambda: any(r.get("kind") == "E-STOP 대응 요청 없음" for r in self.log_rows())))
         self.assertIsNone(self.link.e_stop.state)
         self.assertEqual(len(self.e_stops()), 1)
 
@@ -599,6 +604,7 @@ class EStop(V12Case):
         self.assertIn("로봇·컨베이어", self.link.e_stop.result)
         self.assertIn("D 검증 아님", self.link.e_stop.result)
         self.peer.drop()
+        self.assertTrue(until(lambda: self.link.state == "disconnected"))   # 끊김을 본 뒤 재접속을 기다린다
         self.assertTrue(until(lambda: self.link.state == "connected" and self.link.e_stop_available, 3))
         self.assertTrue(self.link.e_stop.result.startswith("이전 연결 기록(현재 상태 아님)"))
         self.assertEqual(self.link.e_stop.result.count("이전 연결 기록"), 1)
@@ -608,7 +614,7 @@ class EStop(V12Case):
         request_id = self.link.e_stop_request()
         self.assertTrue(until(lambda: self.link.e_stop.final, 2))     # 무응답 → 미확인
         self.peer.push(e_stop_status(request_id, "REQUESTED"))
-        self.assertTrue(until(lambda: any(r.get("kind") == "E-Stop 늦은 접수 무시" for r in self.log_rows())))
+        self.assertTrue(until(lambda: any(r.get("kind") == "E-STOP 늦은 접수 무시" for r in self.log_rows())))
         self.assertIsNone(self.link.e_stop.state)
         self.assertIn("결과 미확인", self.link.e_stop.result)
         self.peer.push(e_stop_status(request_id, "CONFIRMED"))         # 같은 현재 요청의 C 최종 보고는 반영
@@ -630,8 +636,8 @@ class EStop(V12Case):
                 self.assertIn("로봇+컨베이어", button.accessibleDescription())
             self.assertIn("벨트 연속 운전을 약속하지 않습니다", window.start_button.toolTip())
             self.assertIn("현재 C(1.1)는 이 요청을 처리하지 않으며", window.estop_button.toolTip())
-            self.assertTrue(until(lambda: window.estop_button.text() == "E-Stop"))   # 보낼 수 있을 때만 정확히 E-Stop
-            self.assertEqual(window.stop_button.text(), "Stop 정지")
+            self.assertTrue(until(lambda: window.estop_button.text() == "E-STOP"))   # 보낼 수 있을 때만 정확히 E-STOP
+            self.assertEqual(window.stop_button.text(), "STOP 정지")
         finally:
             window.close()
             window.deleteLater()
@@ -672,7 +678,7 @@ class EStop(V12Case):
             window.estop_button.click()                          # 대기 중 두 번째 누름: 미전송
             until(lambda: False, 0.1)
             self.assertEqual(len(self.e_stops()), 1)
-            self.assertIn("E-Stop 미전송 · 앞선 E-Stop 요청 결과 대기 중", window.request_note.text())
+            self.assertIn("E-STOP 미전송 · 앞선 E-STOP 요청 결과 대기 중", window.request_note.text())
             self.peer.push(e_stop_status(request_id, "REQUESTED"))
             self.assertTrue(until(lambda: "REQUESTED" in window.sort_detail.text()))
             self.assertIn("정지 확인 아님", window.sort_detail.text())
@@ -692,71 +698,41 @@ class EStop(V12Case):
         self.assertEqual(len(self.e_stops()), 1)
 
 
-class Against11Server(unittest.TestCase):
-    """저장소 C TcpServer(1.1)를 루프백에 띄운다. 로봇·Gazebo 실행 없음, 이동 실행기는 호출되면 실패로 기록."""
+class AgainstLegacy11Peer(unittest.TestCase):
+    """1.1 만 아는 상대(대역). 실제 D 소켓으로 1.2 조회를 보내고, 1.1 거부를 받으면 조작 관문이 닫힌 채인지 본다."""
 
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
     def test_candidate_is_rejected_and_gate_stays_closed(self):
-        from robot_server_package.tcp_server import TcpServer
         temp = tempfile.TemporaryDirectory(prefix="eyetoarm-v12-c11-")
-        log_path = Path(temp.name) / "c.jsonl"
-        log_path.touch()
-        loop = asyncio.new_event_loop()
-        thread = threading.Thread(target=loop.run_forever, name="v12-c11-loop", daemon=True)
-        thread.start()
-        executed = []
-
-        async def start():
-            async def execute(*_args):
-                executed.append(1)
-            server = TcpServer(readiness_provider=lambda: {"robot_ready": True, "not_ready_reasons": [],
-                                                          "active_command_id": None},
-                               command_log_path=log_path, workspace_mm={"x": (-1, 1), "y": (-1, 1)},
-                               move_executor=execute)
-            listener = await asyncio.start_server(server._handle_client, "127.0.0.1", 0)
-            return server, listener
-
-        server, listener = asyncio.run_coroutine_threadsafe(start(), loop).result(timeout=3)
-        link = StatusLink("127.0.0.1", listener.sockets[0].getsockname()[1], log_path=Path(temp.name) / "d.jsonl",
-                          config=FAST, version="1.2")
+        self.addCleanup(temp.cleanup)
+        peer = Peer()
+        self.addCleanup(peer.close)
+        peer.legacy = True
+        peer.e_stop_available = True   # 1.1 상대는 이 값을 보내지 않는다(legacy 응답이 우선)
+        link = StatusLink("127.0.0.1", peer.port, log_path=Path(temp.name) / "d.jsonl", config=FAST, version="1.2")
         try:
             link.start()
             self.assertTrue(until(lambda: link.peer_mismatch, 3))
             self.assertFalse(link.run_verified)
+            self.assertIsNone(link.run_snapshot)
             for action in ("START", "STOP", "RECOVER"):
                 self.assertFalse(link.sort_allowed(action)[0])
                 self.assertEqual(link.sort_request(action, confirmed=True), "")
+            self.assertFalse(link.e_stop_allowed()[0])
+            self.assertEqual(link.e_stop_request(), "")
             self.assertFalse(link.can_execute())
             sent = {json.loads(r["raw"])["type"] for r in link.log.rows("TX") if r.get("raw")}
             self.assertEqual(sent, {"GET_STATUS"})
-            self.assertEqual(executed, [])
+            received = [json.loads(raw) for raw in peer.requests]
+            self.assertTrue(received)
+            self.assertEqual({(r["version"], r["type"]) for r in received}, {("1.2", "GET_STATUS")})   # 실제 소켓으로 받은 것
         finally:
             link.stop()
             link.deleteLater()
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-
-            async def close():
-                for session in list(server._sessions.values()):   # 연결을 먼저 닫아야 3.12 wait_closed 가 끝난다
-                    session.writer.close()
-                listener.close()
-                await asyncio.wait_for(listener.wait_closed(), 2)
-                await server.close()
-                tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-            try:
-                asyncio.run_coroutine_threadsafe(close(), loop).result(timeout=3)
-            finally:
-                loop.call_soon_threadsafe(loop.stop)
-                thread.join(timeout=3)
-                self.assertFalse(thread.is_alive())
-                loop.close()
-                temp.cleanup()
-
 
 if __name__ == "__main__":
     unittest.main()

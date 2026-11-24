@@ -12,10 +12,14 @@ python -m eyetoarm.gui --env-only --json
 
 실제 연결은 `python -m eyetoarm.gui.window --host <서버 숫자 IP> --port 47090`을 사용합니다. 서버 수신·네트워크 준비는 별도로 필요합니다.
 
-명령 TCP 기본은 1.1입니다. START·Stop 정지(STOP)·RECOVER와 E-Stop 요청을 보내려면 `--tcp-version 1.2`를 지정하세요. C 서버는 두 버전을 같은 포트에서 처리합니다. 1.2 제어는 `c_stack.launch.py auto_sort:=true` 관리 실행과 ROS 제어 서비스가 필요합니다.
+실제 모드의 명령 TCP 기본은 1.2이며 START·Stop 정지(STOP)·RECOVER와 E-Stop 요청을 보냅니다. 수동 MOVE·CANCEL 기존 경로는 `--tcp-version 1.1`로 지정합니다(`--demo`는 소켓을 쓰지 않음). C 서버는 두 버전을 같은 포트에서 처리합니다. 1.2 제어는 `c_stack.launch.py auto_sort:=true` 관리 실행과 ROS 제어 서비스가 필요합니다.
 
 ```powershell
-python -m eyetoarm.gui.window --host <서버 숫자 IP> --port 47090 --tcp-version 1.2
+python -m eyetoarm.gui.window --host <서버 숫자 IP> --port 47090
+# 기존 1.1 경로(수동 MOVE·CANCEL)
+python -m eyetoarm.gui.window --host <서버 숫자 IP> --port 47090 --tcp-version 1.1
+# dashboard-client 폴더에서 WSL 서버와 함께 실행(기본 -TcpVersion 1.2, 대시보드에만 전달)
+powershell -ExecutionPolicy Bypass -File .\start_with_wsl_server.ps1
 ```
 
 - 네 버튼(START·Stop 정지·E-Stop·RECOVER)은 1.2 연결에서만 실제 송신합니다. 누를 수 있다는 것은 준비·정지 확인이 아닙니다. 1.2에서는 같은 연결에서 검사한 실행 스냅샷의 허용 목록(`allowed`, E-Stop은 `e_stop_available`, RECOVER는 사용자 확인란)을 확인합니다. STOP은 접수 즉시 결과를 보고하고, 실제 정지 완료는 후속 실행 스냅샷으로 확인합니다. E-STOP은 소프트웨어 ROS 서비스 확인이며 안전 정격 하드웨어 정지가 아닙니다.
@@ -60,4 +64,4 @@ C 측 실행은 저장소의 [시제품 송출기 안내](../robot_ws/src/robot_
 
 중계는 새 접속에 채널별 마지막 영상(캐시)을 바로 보냅니다. 그래서 접속 직후 채널마다 첫 영상은 「확인 대기」로 어둡게 보이고, 같은 실행에서 더 새 영상이 와야 실시간으로 표시합니다. 영상 접속은 2초 안에 이뤄지지 않으면 끊고 다시 시도합니다.
 
-기본(1.1) 실제 명령 TCP는 준비 조회·수동 MOVE·CANCEL입니다. 분류 START/Stop 정지(STOP)/RECOVER·E-Stop은 `--tcp-version 1.2`에서 보냅니다. 공정·측정 모의 표시는 실제 C 분류 연결이 아닙니다. 실제 영상 생산 측의 ROS/Gazebo와 모델·보정 코드를 배포본에 넣지 않습니다. Windows 이외의 OS와 실제 장비 호환은 별도 검증 대상입니다.
+`--tcp-version 1.1` 실제 명령 TCP는 준비 조회·수동 MOVE·CANCEL입니다. 분류 START/Stop 정지(STOP)/RECOVER·E-Stop은 기본 1.2에서 보냅니다. 공정·측정 모의 표시는 실제 C 분류 연결이 아닙니다. 실제 영상 생산 측의 ROS/Gazebo와 모델·보정 코드를 배포본에 넣지 않습니다. Windows 이외의 OS와 실제 장비 호환은 별도 검증 대상입니다.

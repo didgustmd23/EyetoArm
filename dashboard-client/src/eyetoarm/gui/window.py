@@ -10,9 +10,10 @@
                                            링크 raw/detect/center 를 누르면 영상 연결(47092)로 SET_DISPLAY_VARIANT 요청을
                                            보낸다(임시 형식). 해당 영상 수신으로 확인하며, 그 종류의 C 프레임이 오기 전에는 수신 대기다
   python -m eyetoarm.gui.window --demo     모의 분류 조작·상태 확인 (아무 것도 보내지 않음)
-  python -m eyetoarm.gui.window --tcp-version 1.2  같은 TCP 연결로 START/STOP/E-STOP/RECOVER 송수신.
+  python -m eyetoarm.gui.window             실제 모드 기본은 TCP 1.2: 같은 TCP 연결로 START/STOP/E-STOP/RECOVER 송수신.
                                            C의 TCP 1.2 지원과 관리 실행(auto_sort:=true)이 필요하다.
                                            이 모드에서 수동 MOVE·CANCEL 은 비활성.
+  python -m eyetoarm.gui.window --tcp-version 1.1  기존 TCP 1.1 경로(준비 조회·수동 MOVE·CANCEL, 분류 버튼은 미전송)
   python -m eyetoarm.gui.window --no-motion  모션 줄이기 상태로 시작
   python -m eyetoarm.gui.window --theme light  라이트 테마로 시작 (오른쪽 위 「다크 / 라이트」로 실행 중 전환)
   python -m eyetoarm.gui.window --no-cover  표지 화면(UR5e 인사, cover.py) 없이 바로 연다
@@ -75,13 +76,17 @@ from eyetoarm.tcp.protocol import MoveTarget
 PAGES = ["조작·설정", "운영 대시보드", "평가·기록"]
 NOT_APPROVED = "TCP 명세 부록 A(분류 명령 개정 제안)가 C 승인 전입니다. 승인 전에는 실제 서버로 보내지 않습니다."
 NO_VALUE = "—"
-ACTION_NAMES = {"START": "START", "STOP": "Stop 정지", "RECOVER": "RECOVER"}
-REQUEST_IDLE_11 = "분류·E-Stop 버튼: 누를 수 있으나 미전송 · C TCP 1.2 필요"
-REQUEST_IDLE_12 = "분류·E-Stop 버튼: 누름 = 요청 시도 · 준비·정지 확인 아님"
-# 분류 START·Stop 정지(STOP)·E-Stop 은 로봇과 컨베이어 벨트를 함께 다룬다(사용자 지정 2026-11-24). 실제 동작은 C 가 정한다
+ACTION_NAMES = {"START": "START", "STOP": "STOP 정지", "RECOVER": "RECOVER"}
+VARIANT_NAMES = {"raw": "Raw", "detect": "Detect", "center": "Center"}   # 링크 표시 종류의 화면 표기(프로토콜 값은 소문자 그대로)
+# 버튼 누름 효과 색(theme 이름). 미전송은 IDLE. 결과 효과는 C 응답(ACCEPTED·CONFIRMED=OK, REJECTED=FAIL, 그 밖=WARN)
+PRESS_COLOR = {"START": "ACCENT", "STOP": "FAIL", "RECOVER": "DIM", "E_STOP": "FAIL"}
+RESULT_COLOR = {"ACCEPTED": "OK", "CONFIRMED": "OK", "REJECTED": "FAIL"}
+REQUEST_IDLE_11 = "분류·E-STOP 버튼: 누를 수 있으나 미전송 · C TCP 1.2 필요"
+REQUEST_IDLE_12 = "분류·E-STOP 버튼: 누름 = 요청 시도 · 준비·정지 확인 아님"
+# 분류 START·STOP 정지(STOP)·E-STOP 은 로봇과 컨베이어 벨트를 함께 다룬다(사용자 지정 2026-11-24). 실제 동작은 C 가 정한다
 START_HINT = "START: 로봇+컨베이어 분류 시작 요청. C 순서대로 운전하며 벨트 연속 운전을 약속하지 않습니다."
-STOP_HINT = "Stop 정지(STOP): 로봇+컨베이어 분류 정지 요청. 부품 해제·정지 완료가 아닙니다(정지 확인은 C 상태로만)."
-E_STOP_HINT = ("E-Stop 응용 요청(D 제안 · C 미합의): 로봇+컨베이어 비상 정지를 C 에 요청만 하고 실제 동작은 C 가 정합니다. "
+STOP_HINT = "STOP 정지(STOP): 로봇+컨베이어 분류 정지 요청. 부품 해제·정지 완료가 아닙니다(정지 확인은 C 상태로만)."
+E_STOP_HINT = ("E-STOP 응용 요청(D 제안 · C 미합의): 로봇+컨베이어 비상 정지를 C 에 요청만 하고 실제 동작은 C 가 정합니다. "
                "현재 C(1.1)는 이 요청을 처리하지 않으며, 이 화면은 안전 장치가 아닙니다.")
 CHANNEL_NAMES = {"fixed": "탑뷰", "gripper": "그리퍼", "link": "링크"}
 
@@ -100,6 +105,7 @@ class MainWindow(QMainWindow):
         self.mode_buttons: list = []
         self.sort_demo = self.tally = self.supplier = None
         self._sort_logged = None
+        self._fx_seen: set[str] = set()   # 결과 효과를 이미 보인 request_id(한 번만 보인다)
         # TCP 1.2 run-control 실제 송수신. 모의(--demo)와 함께 쓰지 않는다
         self.live_run = not demo and getattr(link, "version", None) == "1.2"
         if demo:
@@ -228,19 +234,19 @@ class MainWindow(QMainWindow):
         self.title = label("", "PageTitle")
         row.addWidget(self.title)
         row.addStretch(1)
-        # 분류·E-Stop 버튼 누름 결과(송신/미전송 사유). 누를 수 있다는 것은 준비·정지·비상정지 확인이 아니다
+        # 분류·E-STOP 버튼 누름 결과(송신/미전송 사유). 누를 수 있다는 것은 준비·정지·비상정지 확인이 아니다
         self.request_note = label("", "Caption", wrap=True)   # 제목줄 아래 별도 줄(작은 창에서 버튼을 밀지 않게)
-        self.request_note.setAccessibleName("분류·E-Stop 요청 결과")
+        self.request_note.setAccessibleName("분류·E-STOP 요청 결과")
         self.request_note.setMinimumWidth(0)
         # TCP 1.2 분류 시작·정지·복구 요청
         self.start_button = pill("START 시작", "primary", NOT_APPROVED + " " + START_HINT)
         self.start_button.setAccessibleDescription(START_HINT)
-        # 「Stop 정지」 = 기존 분류 STOP 요청 그대로. 부품 해제·정지 완료를 뜻하지 않는다(정지 확인은 C 상태로만)
-        self.stop_button = pill("Stop 정지", "stop", NOT_APPROVED + " " + STOP_HINT + " 수동 이동 취소(CANCEL)와 다릅니다.")
+        # 「STOP 정지」 = 기존 분류 STOP 요청 그대로. 부품 해제·정지 완료를 뜻하지 않는다(정지 확인은 C 상태로만)
+        self.stop_button = pill("STOP 정지", "stop", NOT_APPROVED + " " + STOP_HINT + " 수동 이동 취소(CANCEL)와 다릅니다.")
         self.stop_button.setAccessibleDescription(STOP_HINT)
-        # E-Stop 자리만 둔다. 저장소에 C 안전(비상정지) 인터페이스가 없어 실제·모의 모두 항상 비활성이며 어떤 신호도 보내지 않는다
-        self.estop_button = pill("E-Stop", "stop", "E-Stop 사용 불가 · C 안전 연동 없음(로봇+컨베이어 비상정지 인터페이스 미정의). "
-                                 "이 버튼은 아무것도 보내지 않으며 Stop 정지(STOP)으로 대신하지 않습니다.")
+        # E-STOP 자리만 둔다. 저장소에 C 안전(비상정지) 인터페이스가 없어 실제·모의 모두 항상 비활성이며 어떤 신호도 보내지 않는다
+        self.estop_button = pill("E-STOP", "stop", "E-STOP 사용 불가 · C 안전 연동 없음(로봇+컨베이어 비상정지 인터페이스 미정의). "
+                                 "이 버튼은 아무것도 보내지 않으며 STOP 정지(STOP)으로 대신하지 않습니다.")
         self.estop_button.setAccessibleDescription("사용 불가: C 안전 연동 없음. 로봇·컨베이어에 아무것도 보내지 않습니다.")
         self.recover_button = pill("RECOVER 복구", "", NOT_APPROVED)
         for action, button in (("START", self.start_button), ("STOP", self.stop_button), ("RECOVER", self.recover_button)):
@@ -249,7 +255,7 @@ class MainWindow(QMainWindow):
         self.cancel_button = pill("CANCEL 취소 · 미구현", "", "현재 ID로 취소 요청. 전송만으로 정지 완료가 되지 않습니다.")
         self.cancel_button.clicked.connect(lambda: self.link.cancel() if hasattr(self.link, "cancel") else None)
         for button in (self.start_button, self.stop_button, self.estop_button, self.recover_button, self.cancel_button):
-            button.setEnabled(False)   # 비활성 사유는 툴팁과 「조작·설정」의 명령 계약 표에 있다. E-Stop 은 다시 켜지 않는다
+            button.setEnabled(False)   # 비활성 사유는 툴팁과 「조작·설정」의 명령 계약 표에 있다. E-STOP 은 다시 켜지 않는다
             row.addWidget(button)
         return row
 
@@ -307,14 +313,14 @@ class MainWindow(QMainWindow):
             rows = [
                 ("GET_STATUS (준비 조회)", "TCP 1.2 · 실행 상태 포함"),
                 ("MOVE · CANCEL", "1.2 모드에서 비활성"),
-                ("START · Stop 정지(STOP) · RECOVER", "TCP 1.2 · 로봇+컨베이어"),
-                ("E-Stop (응용 요청)", "미지원 · C 알림 없음"),
+                ("START · STOP 정지(STOP) · RECOVER", "TCP 1.2 · 로봇+컨베이어"),
+                ("E-STOP (응용 요청)", "미지원 · C 알림 없음"),
                 ("링크 채널 선택", "누를 때 영상 연결로 요청 · 임시 형식 · 프레임 도착으로 확인" if self.relay else "부록 B 미승인 · 미전송"),
             ]
             values = self._rows(command_card, rows)
             for value, (_name, text) in zip(values, rows):
                 self._fit_labels.append(self._elidable(value, text))
-            self.estop_value = values[3]   # E-Stop 지원 여부·현재 결과(C 보고)
+            self.estop_value = values[3]   # E-STOP 지원 여부·현재 결과(C 보고)
             self.sort_detail = label("C 실행 상태 미확인", "Caption", wrap=True)
             self.sort_confirm = QCheckBox("복구 조건을 확인했습니다 (RECOVER 확정)")
             self.sort_confirm.setToolTip("체크한 뒤 RECOVER 를 누를 때만 user_confirmed=true 로 보냅니다. 보낸 뒤 해제됩니다.")
@@ -327,7 +333,7 @@ class MainWindow(QMainWindow):
                 ("GET_STATUS (준비 조회)", "사용 중 · TCP 1.1"),
                 ("MOVE · CANCEL", "미구현"),
                 ("START · STOP · RECOVER", "미전송 · TCP 1.2 필요"),
-                ("E-Stop", "미전송 · TCP 1.2 필요"),
+                ("E-STOP", "미전송 · TCP 1.2 필요"),
                 ("링크 채널 선택", "누를 때 영상 연결로 요청 · 임시 형식 · 프레임 도착으로 확인" if self.relay else "부록 B 미승인 · 미전송"),
             ]
             for value, (_name, text) in zip(self._rows(command_card, rows), rows):
@@ -728,7 +734,7 @@ class MainWindow(QMainWindow):
 
     def _add_mode_buttons(self, row) -> None:
         """링크 raw/detect/center 선택. 모의와 C 중계에서만 켠다. 중계면 누를 때 영상 연결로 요청을 보낸다."""
-        for mode, name in (("raw", "raw 원본"), ("detect", "detect 검출"), ("center", "center 중심점")):
+        for mode, name in (("raw", "Raw 원본"), ("detect", "Detect 검출"), ("center", "Center 중심점")):
             tip = ("D 내부 모의 영상 선택" if self.demo else
                    "영상 연결로 C 에 링크 표시 요청을 보냅니다(임시 형식, 해당 영상 수신으로 확인). 그 종류 영상이 오기 전에는 수신 대기로 보입니다."
                    if self.relay else "C 표시 연결 형식 미결")
@@ -747,7 +753,7 @@ class MainWindow(QMainWindow):
             # (종류마다 순번·세대·설정이 따로라 이전 기록이 새 종류를 막지 않게도 한다). 보조 칸은 그대로다
             self.view.reset_link()
             if self.display.link_source_id:
-                self.display.reset_source(self.display.link_source_id, f"링크 {mode} 선택 · 해당 영상 대기")
+                self.display.reset_source(self.display.link_source_id, f"링크 {VARIANT_NAMES[mode]} 선택 · 해당 영상 대기")
         self.display.set_mode(mode)   # 화면은 고른 종류만 보이고, 그 영상이 올 때까지 수신 대기다
         if self.relay:
             self.view.request_variant(mode)
@@ -908,24 +914,43 @@ class MainWindow(QMainWindow):
         snapshot["seq"] += 1
         self.sort_demo.apply_snapshot(snapshot, resync=True)
 
+    def _sort_button(self, action):
+        return {"START": self.start_button, "STOP": self.stop_button, "RECOVER": self.recover_button,
+                "E_STOP": self.estop_button}[action]
+
+    def _press_fx(self, action, sent: bool) -> None:
+        """누름 효과. 보냈으면 명령 색, 미전송이면 회색. 송신 판단은 바꾸지 않는다."""
+        self._sort_button(action).pulse(getattr(theme, PRESS_COLOR[action] if sent else "IDLE"))
+
+    def _result_fx(self, action, request_id, outcome) -> None:
+        """결과가 처음 정해진 요청에 결과 색을 한 번 보인다(ACCEPTED·CONFIRMED=OK, REJECTED=FAIL, 그 밖=WARN)."""
+        if request_id not in self._fx_seen:
+            self._fx_seen.add(request_id)
+            self._sort_button(action).result(getattr(theme, RESULT_COLOR.get(outcome, "WARN")))
+
     def _request_sort(self, action):
         name = ACTION_NAMES[action]
         if self.live_run:
             reason = self._sort_block(action)
+            sent = False
             if reason:
                 self._note(f"{name} 미전송 · {reason}")
             elif self.link.sort_request(action, confirmed=action == "RECOVER" and self.sort_confirm.isChecked()):
+                sent = True
                 if action == "RECOVER":
                     self.sort_confirm.setChecked(False)   # 확정은 한 번의 송신에만 쓴다
                 self._note(f"{name} 요청 시도 · 소켓 기록·결과는 TX/RX 기록과 C 보고로(준비·정지 확인 아님)")
             else:
                 self._note(f"{name} 미전송 · 송신 조건 불충족")
+            self._press_fx(action, sent)
             self._update_live_sort()
             return
         if self.sort_demo is None:
             if not self.demo:   # 1.1 실제 모드: 보내지 않고 이유만 보인다
                 self._note(f"{name} 미전송 · C TCP 1.2 필요(--tcp-version 1.2 와 C 지원)")
+                self._press_fx(action, False)
             return
+        self._press_fx(action, True)   # 모의: 실제 전송 없음. 누름만 보인다
         confirmed = action != "RECOVER" or self.sort_confirm.isChecked()
         self.sort_demo.request(action, confirmed=confirmed)
         if action == "RECOVER":
@@ -1095,7 +1120,7 @@ class MainWindow(QMainWindow):
             plans.append(f"{ACTION_NAMES[action]} " + ("송신" if not reason else f"미전송({reason})"))
         allowed, reason = link.e_stop_allowed()
         self._estop_face(blocked=connected and not allowed)
-        plans.append("E-Stop " + ("송신" if allowed else f"미전송({reason})"))   # 지난 결과(아래 줄)와 별개로 지금 가능 여부
+        plans.append("E-STOP " + ("송신" if allowed else f"미전송({reason})"))   # 지난 결과(아래 줄)와 별개로 지금 가능 여부
         self.estop_button.setEnabled(connected)
         self.estop_button.setToolTip(E_STOP_HINT + " · " + ("누르면 C 에 요청 송신" if allowed else "누르면 미전송 · " + reason))
         e_stop = link.e_stop
@@ -1140,9 +1165,21 @@ class MainWindow(QMainWindow):
         if request is not None:   # 요청 결과는 실행 상태와 따로 적는다
             lines.append(f"마지막 요청(결과일 뿐 상태 아님): {request.result}" + (f" · {request.detail}" if request.detail else ""))
         e_stop = link.e_stop
-        if e_stop is not None:   # 분류 상태와 따로: C 가 보고한 E-Stop 요청 결과만 적는다
-            lines.append(f"E-Stop 응용 요청(안전 장치 아님): {e_stop.result}" + (f" · {e_stop.detail}" if e_stop.detail else ""))
+        if e_stop is not None:   # 분류 상태와 따로: C 가 보고한 E-STOP 요청 결과만 적는다
+            lines.append(f"E-STOP 응용 요청(안전 장치 아님): {e_stop.result}" + (f" · {e_stop.detail}" if e_stop.detail else ""))
         self.sort_detail.setText("\n".join(lines))
+        # 버튼 효과: 응답 대기 테두리, 결과가 처음 정해질 때 한 번의 색. 표시만 바꾼다
+        waiting = {action: False for action in ACTION_NAMES}
+        for record in link.sort_requests.values():
+            if not record.final:
+                waiting[record.action] = True
+            elif record.request_id not in self._fx_seen:
+                self._result_fx(record.action, record.request_id, record.outcome)
+        for action, on in waiting.items():
+            self._sort_button(action).set_waiting(on)
+        self.estop_button.set_waiting(e_stop is not None and not e_stop.final)
+        if e_stop is not None and e_stop.final:
+            self._result_fx("E_STOP", e_stop.request_id, e_stop.state)
 
     def _sort_block(self, action) -> str:
         """1.2 후보에서 지금 누르면 보내지 않는 사유. 빈 문자열 = 보낸다. link 검사를 그대로 쓴다."""
@@ -1154,8 +1191,8 @@ class MainWindow(QMainWindow):
         return ""
 
     def _estop_face(self, blocked: bool) -> None:
-        """연결됐지만 보낼 수 없으면 버튼 글자에 미전송을 적고 정지(빨강) 강조를 뺀다. 보낼 수 있을 때만 「E-Stop」."""
-        text, role = ("E-Stop · 미전송", "") if blocked else ("E-Stop", "stop")
+        """연결됐지만 보낼 수 없으면 버튼 글자에 미전송을 적고 정지(빨강) 강조를 뺀다. 보낼 수 있을 때만 「E-STOP」."""
+        text, role = ("E-STOP · 미전송", "") if blocked else ("E-STOP", "stop")
         if self.estop_button.text() != text:
             self.estop_button.setText(text)
             self.estop_button.setProperty("role", role)
@@ -1168,15 +1205,19 @@ class MainWindow(QMainWindow):
 
     def _request_e_stop(self) -> None:
         if not self.live_run:
-            self._note("E-Stop 미전송 · C TCP 1.2 필요(--tcp-version 1.2 와 C 지원)")
+            self._note("E-STOP 미전송 · C TCP 1.2 필요(--tcp-version 1.2 와 C 지원)")
+            self._press_fx("E_STOP", False)
             return
         allowed, reason = self.link.e_stop_allowed()
+        sent = False
         if not allowed:
-            self._note(f"E-Stop 미전송 · {reason}")
+            self._note(f"E-STOP 미전송 · {reason}")
         elif self.link.e_stop_request():
-            self._note("E-Stop 요청 시도 · 소켓 기록·결과는 TX/RX 기록과 C 보고로 · 정지 확인 아님")
+            sent = True
+            self._note("E-STOP 요청 시도 · 소켓 기록·결과는 TX/RX 기록과 C 보고로 · 정지 확인 아님")
         else:
-            self._note("E-Stop 미전송 · 송신 조건 불충족")
+            self._note("E-STOP 미전송 · 송신 조건 불충족")
+        self._press_fx("E_STOP", sent)
         self._update_live_sort()
 
     def _on_status(self, message: dict) -> None:
@@ -1210,14 +1251,14 @@ class MainWindow(QMainWindow):
                 if getattr(view, "_display_item", None) is not frame:
                     view.show_frame(frame["image"])
                     view._display_item = frame
-                view.set_footer(f"{tag} · {frame['source_id']} {variant} · 프레임 {frame['image_seq']} · "
+                view.set_footer(f"{tag} · {frame['source_id']} {VARIANT_NAMES[variant]} · 프레임 {frame['image_seq']} · "
                                 f"보정 {frame['calibration_id'] or NO_VALUE}")
             elif self.relay and frame is not None and not frame.get("confirmed", True):
                 if getattr(view, "_display_item", None) is not frame:   # 확인 대기: 보이되 실시간이 아닌 노후 모습으로
                     view.show_frame(frame["image"])
                     view._display_item = frame
                 view.set_stale(int(max(0.0, self.display.clock() - frame["received"]) * 1000))
-                view.set_footer(f"{tag} · {frame['source_id']} {variant} · 프레임 {frame['image_seq']} · "
+                view.set_footer(f"{tag} · {frame['source_id']} {VARIANT_NAMES[variant]} · 프레임 {frame['image_seq']} · "
                                 "확인 대기(접속 직후 C 캐시일 수 있음 · 새 프레임 수신 전)")
             elif self.relay and frame is not None and getattr(view, "_display_item", None) is frame:
                 view.set_stale(int(max(0.0, self.display.clock() - frame["received"]) * 1000))   # 마지막 모습은 노후로 표시
@@ -1235,14 +1276,14 @@ class MainWindow(QMainWindow):
             "calibration": show(result.get("calibration_id")) if result else NO_VALUE,
             "frame": f"{result['source_id']} · {result['image_seq']}" if result else NO_VALUE,
             "detail": (f"{'B · C 중계' if self.relay else 'D 모의'} · {show(result.get('spec'))}" if result else
-                       "링크 center 를 고르면 B 결과 표시(C 시제품)" if self.relay and self.display.mode != "center"
+                       "링크 Center 를 고르면 B 결과 표시(C 시제품)" if self.relay and self.display.mode != "center"
                        else self.display.reason),
         }
         for key, text in contents.items():
             self._set_elided(values[key], text)
         for output, key in zip(self.measure_values, ("px", "mm", "theta")):
             self._set_elided(output, contents[key])
-        inputs = (f"{result['source_id']} · {self.display.mode}" if result else NO_VALUE,
+        inputs = (f"{result['source_id']} · {VARIANT_NAMES[self.display.mode]}" if result else NO_VALUE,
                   contents["calibration"], contents["detail"])
         for output, text in zip(self.input_values, inputs):
             self._set_elided(output, text)
@@ -1256,7 +1297,7 @@ class MainWindow(QMainWindow):
         if channel == "link" and variant != "raw":
             sent = ("요청 송신됨 · C 적용 미확인" if self.view.requested_variant == variant
                     else "요청 송신 대기")
-            return "waiting", f"링크 {variant} {sent} · 수신 대기(raw 로 대신 보이지 않음)"
+            return "waiting", f"링크 {VARIANT_NAMES[variant]} {sent} · 수신 대기(Raw 로 대신 보이지 않음)"
         return "waiting", f"{CHANNEL_NAMES[channel]} 새 프레임 수신 대기 또는 노후"
 
     def _relay_status(self) -> None:
@@ -1270,7 +1311,7 @@ class MainWindow(QMainWindow):
             self.chip_view.set_state("idle" if self.view.state == "disconnected" else "warn",
                                      ("C 영상 중계 없음" if self.view.state == "disconnected" else "접속 중") + note)
         elif not missing:
-            self.chip_view.set_state("ok", f"3채널 수신 · 링크 {self.display.mode}{note}")
+            self.chip_view.set_state("ok", f"3채널 수신 · 링크 {VARIANT_NAMES[self.display.mode]}{note}")
         else:
             self.chip_view.set_state("warn" if len(missing) < 3 else "fail",
                                      f"연결됨 · 대기/노후: {', '.join(missing)}{note}")
@@ -1340,7 +1381,7 @@ class MainWindow(QMainWindow):
             for button in (self.start_button, self.stop_button, self.estop_button, self.recover_button):
                 button.setEnabled(link.state == "connected")
             self._estop_face(blocked=link.state == "connected")
-            self.estop_button.setToolTip("E-Stop · 누르면 미전송 · C TCP 1.2 필요. 로봇+컨베이어 비상 정지 요청은 "
+            self.estop_button.setToolTip("E-STOP · 누르면 미전송 · C TCP 1.2 필요. 로봇+컨베이어 비상 정지 요청은 "
                                          "--tcp-version 1.2 와 C 지원이 있을 때만 C 에 보냅니다. 이 화면은 안전 장치가 아닙니다.")
 
         if self.demo:
@@ -1412,7 +1453,7 @@ def saved_endpoints(store) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m eyetoarm.gui.window", description="D 운영 GUI (TCP 1.1 · 모의 분류)")
+    parser = argparse.ArgumentParser(prog="python -m eyetoarm.gui.window", description="D 운영 GUI (실제 기본 TCP 1.2 · 1.1 · 모의 분류)")
     parser.add_argument("--host", default=None, help="C 서버 숫자 IP (기본: config/gui/client.json)")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--view", choices=("relay", "window", "camera"), default="relay",
@@ -1424,8 +1465,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--view-port", type=int, default=None,
                         help=f"중계 포트 (기본: camera {VIEW_PORT}, relay {RELAY_PORT})")
     parser.add_argument("--demo", action="store_true", help="모의 분류 조작·상태·화면 확인. 소켓을 열지 않음")
-    parser.add_argument("--tcp-version", choices=("1.1", "1.2"), default="1.1",
-                        help="명령 TCP 버전. 1.1 은 MOVE/CANCEL, 1.2 는 START/STOP/E-STOP/RECOVER 실행 제어(서버 1.2 필요)")
+    parser.add_argument("--tcp-version", choices=("1.1", "1.2"), default=None,
+                        help="명령 TCP 버전. 실제 모드 기본 1.2(START/STOP/E-STOP/RECOVER 실행 제어, 서버 1.2 필요). "
+                             "1.1 은 수동 MOVE/CANCEL 기존 경로. --demo 는 소켓을 쓰지 않음")
     parser.add_argument("--no-motion", action="store_true", help="모션 줄이기 상태로 시작")
     parser.add_argument("--no-cover", action="store_true", help="표지 화면(UR5e 인사) 없이 바로 대시보드를 연다")
     parser.add_argument("--theme", choices=tuple(theme.PALETTES), default=None,
@@ -1440,8 +1482,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.stable_count < 1 or args.stable_ms < 0:
         parser.error("stable-count는 1 이상, stable-ms는 0 이상이어야 합니다")
-    if args.demo and args.tcp_version != "1.1":
+    if args.demo and args.tcp_version == "1.2":
         parser.error("--demo 는 소켓을 쓰지 않으므로 --tcp-version 1.2 와 함께 쓸 수 없습니다")
+    if args.tcp_version is None:   # 생략 시 실제 모드는 1.2, 모의는 소켓이 없으므로 1.1 값 그대로(사용하지 않음)
+        args.tcp_version = "1.1" if args.demo else "1.2"
     if not args.demo and args.view != "window":   # 창·소켓을 만들기 전에 중계 주소를 검사한다
         import ipaddress
         try:

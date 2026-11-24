@@ -372,6 +372,34 @@ class DemoAndLegacy(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout.strip().splitlines()[-1])
 
+    def run_version(self, args):
+        """main() 의 실제 기동 경로에서 만든 연결 객체의 TCP 버전. 창·소켓은 만들지 않는다(가짜 MainWindow)."""
+        probe = ("import json, sys; import eyetoarm.gui.window as w\n"
+                 "from PySide6.QtCore import QSettings\n"
+                 "w.settings = lambda: QSettings(sys.argv[1], QSettings.Format.IniFormat)\n"
+                 "def fake(link, view, demo=False, store=None):\n"
+                 "    print(json.dumps([type(link).__name__, getattr(link, 'version', None), demo])); raise SystemExit(0)\n"
+                 "w.MainWindow = fake; w.main(json.loads(sys.argv[2]))\n")
+        with tempfile.TemporaryDirectory() as folder:
+            env = {**os.environ, "QT_QPA_PLATFORM": "offscreen", "PYTHONPATH": str(GUI_SRC), "PYTHONIOENCODING": "utf-8"}
+            result = subprocess.run([sys.executable, "-B", "-c", probe, str(Path(folder) / "s.ini"), json.dumps(args)],
+                                    env=env, cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8",
+                                    timeout=60, stdin=subprocess.DEVNULL)
+        return result
+
+    def test_real_mode_defaults_to_tcp_1_2_and_keeps_explicit_1_1_and_demo(self):
+        last = lambda result: json.loads(result.stdout.strip().splitlines()[-1])   # noqa: E731
+        self.assertEqual(last(self.run_version([])), ["StatusLink", "1.2", False])                       # 실제 기본
+        self.assertEqual(last(self.run_version(["--tcp-version", "1.1"])), ["StatusLink", "1.1", False])  # 기존 경로
+        self.assertEqual(last(self.run_version(["--demo"])), ["DemoLink", None, True])                  # 모의: 소켓 없음
+        self.assertEqual(last(self.run_version(["--demo", "--tcp-version", "1.1"])), ["DemoLink", None, True])
+        rejected = self.run_version(["--demo", "--tcp-version", "1.2"])
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn("--demo", rejected.stderr)
+        from eyetoarm.gui.client import StatusLink
+        import inspect
+        self.assertEqual(inspect.signature(StatusLink).parameters["version"].default, "1.1")   # 다른 사용처 기본값 유지
+
     def test_explicit_cli_beats_saved_which_beats_client_json(self):
         saved = {"host": "10.0.0.7", "port": 47100, "view_host": "", "view_port": 47200}
         self.assertEqual(self.run_main(saved, []), ["StatusLink", "10.0.0.7", 47100, "RelayViewReceiver", "10.0.0.7", 47200])
@@ -479,7 +507,7 @@ class LateServers(unittest.TestCase):
         self.assertEqual(self.fresh(), ["fixed", "gripper", "link"])
         for channel, view in self.views().items():
             self.assertEqual(view._mode, "live")
-            self.assertIn(f"gz_{channel} raw · 프레임 8", view._footer)
+            self.assertIn(f"gz_{channel} Raw · 프레임 8", view._footer)
         self.assertEqual(self.window.chip_view._level, "ok")
 
         self.relay_clients[0].abort()                                     # relay drops D; D reconnects

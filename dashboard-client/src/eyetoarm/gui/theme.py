@@ -97,6 +97,10 @@ MS_STAGGER = 55         # 카드가 차례로 등장할 때 간격
 MS_HINT = 900           # 단축키 표시가 떠 있는 시간
 MS_THEME = 780          # 잠식·타일
 MS_INK = 1750           # 버튼에서 반대 모서리까지 잉크가 번지는 시간
+MS_PRESS_IN = 90        # 버튼이 눌려 작아지는 시간
+MS_PRESS_OUT = 240      # 뗀 뒤 튀어 오르며 돌아오는 시간
+MS_TRACE = 760          # 누른 뒤 굵은 선이 테두리를 한 바퀴 도는 시간
+MS_RING = 900           # C 결과 색 테두리가 옅어지는 시간
 
 _FONT = ", ".join(f'"{name}"' for name in FONT_FAMILIES)
 _MONO = ", ".join(f'"{name}"' for name in MONO_FAMILIES)
@@ -169,6 +173,16 @@ QLineEdit {{ background: {SURFACE_2}; color: {TEXT}; border: 1px solid {LINE}; b
             font-size: 13px; selection-background-color: {ACCENT}; selection-color: {ON_ACCENT}; }}
 QLineEdit:focus {{ border-color: {ACCENT_INK}; }}
 QLineEdit:disabled {{ color: {IDLE}; background: transparent; }}
+QAbstractSpinBox {{ background: {SURFACE_2}; color: {TEXT}; border: 1px solid {LINE}; border-radius: 8px; padding: 4px 8px;
+                    font-size: 13px; selection-background-color: {ACCENT}; selection-color: {ON_ACCENT}; }}
+QAbstractSpinBox:focus {{ border-color: {ACCENT_INK}; }}
+QAbstractSpinBox:disabled {{ color: {IDLE}; background: transparent; }}
+QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{ width: 18px; border: none; background: transparent; }}
+QAbstractSpinBox::up-arrow {{ width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent;
+                              border-bottom: 5px solid {DIM}; }}
+QAbstractSpinBox::down-arrow {{ width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent;
+                                border-top: 5px solid {DIM}; }}
+QAbstractSpinBox::up-arrow:disabled, QAbstractSpinBox::down-arrow:disabled {{ border-top-color: {LINE}; border-bottom-color: {LINE}; }}
 """
 
 

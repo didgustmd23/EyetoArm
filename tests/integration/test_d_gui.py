@@ -130,9 +130,9 @@ class GuiCase(unittest.TestCase):
             buttons = (window.start_button, window.stop_button, window.estop_button, window.recover_button)
             link.set_connected(True)                                           # 대역을 연결 상태로
             self.assertTrue(until(lambda: all(b.isEnabled() for b in buttons)))
-            self.assertEqual(window.estop_button.text(), "E-Stop · 미전송")
+            self.assertEqual(window.estop_button.text(), "E-STOP · 미전송")
             self.assertIn("C TCP 1.2 필요", window.request_note.text())        # 누르기 전 보이는 미전송 안내
-            for button, name in zip(buttons, ("START", "Stop 정지", "E-Stop", "RECOVER")):
+            for button, name in zip(buttons, ("START", "STOP 정지", "E-STOP", "RECOVER")):
                 button.click()                                                 # 실제 버튼 누름
                 self.assertEqual(window.request_note.text(), f"{name} 미전송 · C TCP 1.2 필요(--tcp-version 1.2 와 C 지원)")
             link.set_connected(False)

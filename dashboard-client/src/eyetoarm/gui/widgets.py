@@ -20,10 +20,10 @@ import time
 from collections import deque
 from functools import lru_cache
 
-from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRect, QRectF, QSize, QSizeF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QHeaderView, QLabel, QPushButton, QSizePolicy,
+    QAbstractItemView, QButtonGroup, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QHeaderView, QLabel, QPushButton, QSizePolicy, QStyle, QStyleOptionButton,
     QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -48,9 +48,172 @@ def label(text: str, role: str = "Dim", wrap: bool = False) -> QLabel:
     return widget
 
 
+class FeedbackPill(QPushButton):
+    """알약 버튼 + 누름·응답 대기·결과 표시. 화면 장식일 뿐 송신 여부·C 상태 판단과 무관하다(motion 규칙 1~4).
+
+    누르는 동안: 버튼이 살짝 눌려 작아졌다가, 떼면 튀어 오르며 돌아온다.
+    pulse(color): 누른 곳(키보드면 가운데)에서 색이 퍼지고, 같은 색의 굵은 선이 테두리를 한 바퀴 돈다. 반복하지 않는다.
+    result(color): C 결과 색이 바탕에 퍼지고 테두리 전체가 그 색으로 한 번 밝아졌다 옅어진다.
+    set_waiting(on): 응답을 기다리는 동안 테두리를 따라 굵은 주황 선이 돈다. 모션 줄이기면 테두리만 주황으로 고정.
+    """
+
+    PRESS_SCALE = 0.94   # 눌렸을 때 크기
+    LINE = 3.0           # 테두리 선 두께(px)
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self._wash = 0.0
+        self._wash_color = QColor()
+        self._origin: QPointF | None = None
+        self._press_at: QPointF | None = None
+        self._press = 0.0          # 0 = 평소, 1 = 끝까지 눌림
+        self._trace = -1.0         # 테두리 한 바퀴 진행(0~1). 음수 = 없음
+        self._trace_color = QColor()
+        self._ring = 0.0           # 결과 테두리 밝기(1→0)
+        self._ring_color = QColor()
+        self._waiting = False
+        self._spin = 0.0
+        self._spin_timer = QTimer(self)
+        self._spin_timer.setInterval(30)
+        self._spin_timer.timeout.connect(self._turn)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self._press_at = event.position()
+        if self.isEnabled():
+            motion.tween(self, self._press, 1.0, theme.MS_PRESS_IN, self._set_press)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        motion.tween(self, self._press, 0.0, theme.MS_PRESS_OUT, self._set_press, motion.EASE_BACK)
+        super().mouseReleaseEvent(event)
+
+    def pulse(self, color: str) -> None:
+        self._wash_color = self._trace_color = QColor(color)
+        self._origin, self._press_at = self._press_at, None   # 마우스로 누른 한 번에만 그 위치를 쓴다
+        if not motion.is_reduced():
+            self._set_wash(1.0)    # 애니메이션 첫 값을 기다리지 않고 누른 즉시 보인다
+            self._set_trace(0.0)
+        motion.tween(self, 1.0, 0.0, theme.MS_FLASH, self._set_wash)
+        motion.tween(self, 0.0, 1.0, theme.MS_TRACE, self._set_trace, motion.EASE_IO,
+                     done=lambda: self._set_trace(-1.0))
+
+    def result(self, color: str) -> None:
+        self._wash_color = self._ring_color = QColor(color)
+        self._origin = None
+        if not motion.is_reduced():
+            self._set_wash(1.0)
+            self._set_ring(1.0)
+        motion.tween(self, 1.0, 0.0, theme.MS_FLASH, self._set_wash)
+        motion.tween(self, 1.0, 0.0, theme.MS_RING, self._set_ring)
+
+    def set_waiting(self, on: bool) -> None:
+        on = bool(on)
+        if on == self._waiting:
+            return
+        self._waiting = on
+        if on and not motion.is_reduced():
+            self._spin_timer.start()
+        else:
+            self._spin_timer.stop()
+        self.update()
+
+    def is_waiting(self) -> bool:
+        return self._waiting
+
+    def _set_wash(self, value: float) -> None:
+        self._wash = float(value)
+        self.update()
+
+    def _set_press(self, value: float) -> None:
+        self._press = float(value)
+        self.update()
+
+    def _set_trace(self, value: float) -> None:
+        self._trace = float(value)
+        self.update()
+
+    def _set_ring(self, value: float) -> None:
+        self._ring = float(value)
+        self.update()
+
+    def _turn(self) -> None:
+        self._spin = (self._spin + 0.018) % 1.0
+        self.update()
+
+    def _line(self, painter: QPainter, shape: QPainterPath, color: QColor, start: float | None) -> None:
+        """테두리 선. start 가 있으면 둘레의 1/4 길이 선을 그 위치(0~1)에, 없으면 테두리 전체."""
+        pen = QPen(color, self.LINE)
+        if start is not None:
+            length = shape.length() / self.LINE
+            pen.setDashPattern([length * 0.25, length * 0.75])
+            pen.setDashOffset(-length * start)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(shape)
+
+    def _draw_button(self, painter: QPainter) -> None:
+        """QSS 바탕·테두리는 2배 해상도로 그려 줄인다(둥근 1px 테두리 계단 방지). 글자는 1배로 선명하게."""
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        ratio = self.devicePixelRatioF() * 2
+        bevel = QImage((QSizeF(self.size()) * ratio).toSize(), QImage.Format.Format_ARGB32_Premultiplied)
+        bevel.setDevicePixelRatio(ratio)
+        bevel.fill(Qt.GlobalColor.transparent)
+        with QPainter(bevel) as sub:
+            self.style().drawControl(QStyle.ControlElement.CE_PushButtonBevel, option, sub, self)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.drawImage(QRectF(self.rect()), bevel)
+        painter.restore()
+        self.style().drawControl(QStyle.ControlElement.CE_PushButtonLabel, option, painter, self)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self._press <= 0.0 and self._wash <= 0.0 and self._trace < 0.0 and self._ring <= 0.0 and not self._waiting:
+            self._draw_button(painter)
+            return
+        if self._press > 0.0:   # 가운데를 기준으로 살짝 작게 그린다(배치 크기는 그대로)
+            scale = 1.0 - (1.0 - self.PRESS_SCALE) * self._press
+            center = QRectF(self.rect()).center()
+            painter.translate(center)
+            painter.scale(scale, scale)
+            painter.translate(-center)
+        self._draw_button(painter)
+        inset = self.LINE / 2
+        rect = QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
+        radius = rect.height() / 2
+        shape = QPainterPath()
+        shape.addRoundedRect(rect, radius, radius)
+        if self._wash > 0.0:
+            origin = self._origin or rect.center()
+            reach = math.hypot(max(origin.x(), rect.width() - origin.x()), max(origin.y(), rect.height() - origin.y()))
+            wash = QColor(self._wash_color)
+            wash.setAlphaF(0.42 * self._wash)
+            painter.save()
+            painter.setClipPath(shape)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(wash)
+            size = reach * (1.0 - self._wash * self._wash) + 6.0
+            painter.drawEllipse(origin, size, size)
+            painter.restore()
+        if self._ring > 0.0:
+            ring = QColor(self._ring_color)
+            ring.setAlphaF(self._ring)
+            self._line(painter, shape, ring, None)
+        if self._waiting:
+            self._line(painter, shape, QColor(theme.ACCENT), self._spin if self._spin_timer.isActive() else None)
+        elif self._trace >= 0.0:   # 한 바퀴 돌고 마지막 1/5 구간에서 옅어진다
+            trace = QColor(self._trace_color)
+            trace.setAlphaF(min(1.0, (1.0 - self._trace) * 5.0))
+            self._line(painter, shape, trace, self._trace)
+        painter.end()
+
+
 def pill(text: str, role: str = "", tooltip: str = "", checkable: bool = False) -> QPushButton:
     """알약 버튼. role: ""(기본) · "primary"(강조) · "stop"(정지 계열)."""
-    button = QPushButton(text)
+    button = FeedbackPill(text)
     button.setObjectName("Pill")
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setCheckable(checkable)
@@ -236,8 +399,8 @@ _BLOB_STEPS = 180
 def _ink_arrival(width: int, height: int, ox: int, oy: int) -> QImage:
     """Pixel index = when the new theme reaches it; both colours follow the same outward flow."""
     longest = max(width, height, 1)
-    cols = max(4, 4 * math.ceil(80 * width / longest))
-    rows = max(2, round(320 * height / longest))
+    cols = max(4, 4 * math.ceil(100 * width / longest))   # 긴 변 400칸. 늘린 뒤 자르므로 이 정도면 경계가 매끄럽다
+    rows = max(2, round(400 * height / longest))
     reach = max(math.hypot(ox-x, oy-y) for x in (0, width) for y in (0, height)) / longest
     data = bytearray(cols * rows)
     sin = math.sin
@@ -255,7 +418,19 @@ def _ink_arrival(width: int, height: int, ox: int, oy: int) -> QImage:
                      + .023*fine + .010*sin(104*x + 71*y + 4.6*fine) + .003*sin(191*v - 74*u + 3.3*fine))
             arrival = distance + min(1, 6*distance) * grain
             data[row*cols + col] = min(255, max(0, round(255 * arrival / (reach + .12))))
-    return QImage(data, cols, rows, cols, QImage.Format.Format_Indexed8).copy()
+    return QImage(data, cols, rows, cols, QImage.Format.Format_Grayscale8).copy()
+
+
+def _ink_full(field: QImage, width: int, height: int) -> QImage:
+    """저해상도 도착 시각 지도를 화면 픽셀 크기로 부드럽게 키운 뒤 색표를 바꿀 수 있는 Indexed8 로 같은 바이트를 다시 읽는다.
+
+    경계 자르기를 키운 뒤(화면 해상도)에 하므로 계단처럼 깨지지 않는다.
+    """
+    # Grayscale8 를 바로 늘리면 보간되지 않아 RGB32 로 늘린 뒤 다시 회색조로 바꾼다
+    full = field.convertToFormat(QImage.Format.Format_RGB32).scaled(
+        width, height, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation
+    ).convertToFormat(QImage.Format.Format_Grayscale8)
+    return QImage(full.constBits(), full.width(), full.height(), full.bytesPerLine(), QImage.Format.Format_Indexed8).copy()
 
 
 class ThemeWipe(QWidget):
@@ -293,7 +468,9 @@ class ThemeWipe(QWidget):
         self.setGeometry(self.parentWidget().rect())
         self._active_style = self.style
         if self._active_style == "ink":
-            self._ink_field = _ink_arrival(self.width(), self.height(), round(origin.x()), round(origin.y()))
+            field = _ink_arrival(self.width(), self.height(), round(origin.x()), round(origin.y()))
+            self._ink_field = _ink_full(field, pixmap.width(), pixmap.height())   # 스냅샷과 같은 실제 픽셀 크기
+            self._ink_field.setDevicePixelRatio(pixmap.devicePixelRatio())
             self._ink_base = pixmap.toImage().convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
         # 얼룩이 다 컸을 때 가장 먼 모서리까지 덮는 반지름(여유 2%)
         self._reach = 1.02 * max(math.hypot(origin.x() - x, origin.y() - y)
@@ -319,12 +496,11 @@ class ThemeWipe(QWidget):
         if self._progress >= 1:
             return
         threshold = self._progress * 256
-        cut = int(threshold)
+        band = 5.0   # 경계를 도착 시각 5단계에 걸쳐 부드럽게 넘긴다(안티앨리어싱)
         mask = QImage(self._ink_field)
-        mask.setColorTable([0] * cut + [round(255*(1-threshold+cut)) << 24] + [0xff000000] * (255-cut))
+        mask.setColorTable([min(255, max(0, round(255 * (index - threshold) / band))) << 24 for index in range(256)])
         layer = self._ink_base.copy()
-        with QPainter(layer) as blend:
-            blend.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        with QPainter(layer) as blend:   # mask 는 layer 와 같은 픽셀 크기라 늘이지 않는다
             blend.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
             blend.drawImage(QRectF(self.rect()), mask.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied))
         painter.drawImage(self.rect(), layer)
