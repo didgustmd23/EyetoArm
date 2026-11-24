@@ -75,9 +75,9 @@ from eyetoarm.tcp.protocol import MoveTarget
 PAGES = ["조작·설정", "운영 대시보드", "평가·기록"]
 NOT_APPROVED = "TCP 명세 부록 A(분류 명령 개정 제안)가 C 승인 전입니다. 승인 전에는 실제 서버로 보내지 않습니다."
 NO_VALUE = "—"
-# 분류 START·정리(STOP)·E-Stop 은 로봇과 컨베이어 벨트를 함께 다룬다(사용자 지정 2026-11-24). 실제 동작은 C 가 정한다
+# 분류 START·Stop 정지(STOP)·E-Stop 은 로봇과 컨베이어 벨트를 함께 다룬다(사용자 지정 2026-11-24). 실제 동작은 C 가 정한다
 START_HINT = "START: 로봇+컨베이어 분류 시작 요청. C 순서대로 운전하며 벨트 연속 운전을 약속하지 않습니다."
-STOP_HINT = "정리(STOP): 로봇+컨베이어 분류 정지 요청. 부품 해제·정지 완료가 아닙니다(정지 확인은 C 상태로만)."
+STOP_HINT = "Stop 정지(STOP): 로봇+컨베이어 분류 정지 요청. 부품 해제·정지 완료가 아닙니다(정지 확인은 C 상태로만)."
 E_STOP_HINT = ("E-Stop 응용 요청(D 제안 · C 미합의): 로봇+컨베이어 비상 정지를 C 에 요청만 하고 실제 동작은 C 가 정합니다. "
                "현재 C(1.1)는 이 요청을 처리하지 않으며, 이 화면은 안전 장치가 아닙니다.")
 CHANNEL_NAMES = {"fixed": "탑뷰", "gripper": "그리퍼", "link": "링크"}
@@ -224,12 +224,12 @@ class MainWindow(QMainWindow):
         # [C 연동 · 부록 A 미승인] 분류 시작·정지·복구. 계약 승인 뒤 4일차에 연결한다
         self.start_button = pill("START 시작", "primary", NOT_APPROVED + " " + START_HINT)
         self.start_button.setAccessibleDescription(START_HINT)
-        # 「정리」 = 기존 분류 STOP 요청 그대로. 부품 해제·정지 완료를 뜻하지 않는다(정지 확인은 C 상태로만)
-        self.stop_button = pill("정리", "stop", NOT_APPROVED + " " + STOP_HINT + " 수동 이동 취소(CANCEL)와 다릅니다.")
+        # 「Stop 정지」 = 기존 분류 STOP 요청 그대로. 부품 해제·정지 완료를 뜻하지 않는다(정지 확인은 C 상태로만)
+        self.stop_button = pill("Stop 정지", "stop", NOT_APPROVED + " " + STOP_HINT + " 수동 이동 취소(CANCEL)와 다릅니다.")
         self.stop_button.setAccessibleDescription(STOP_HINT)
         # E-Stop 자리만 둔다. 저장소에 C 안전(비상정지) 인터페이스가 없어 실제·모의 모두 항상 비활성이며 어떤 신호도 보내지 않는다
         self.estop_button = pill("E-Stop", "stop", "E-Stop 사용 불가 · C 안전 연동 없음(로봇+컨베이어 비상정지 인터페이스 미정의). "
-                                 "이 버튼은 아무것도 보내지 않으며 정리(STOP)로 대신하지 않습니다.")
+                                 "이 버튼은 아무것도 보내지 않으며 Stop 정지(STOP)으로 대신하지 않습니다.")
         self.estop_button.setAccessibleDescription("사용 불가: C 안전 연동 없음. 로봇·컨베이어에 아무것도 보내지 않습니다.")
         self.recover_button = pill("RECOVER 복구", "", NOT_APPROVED)
         for action, button in (("START", self.start_button), ("STOP", self.stop_button), ("RECOVER", self.recover_button)):
@@ -296,7 +296,7 @@ class MainWindow(QMainWindow):
             rows = [
                 ("GET_STATUS (준비 조회)", "TCP 1.2 후보 · 실행 상태 포함"),
                 ("MOVE · CANCEL", "1.2 후보 모드에서 비활성 · 명세 미정"),
-                ("START · 정리(STOP) · RECOVER", "1.2 후보 · 로봇+컨베이어 · C 1.1 은 거부"),
+                ("START · Stop 정지(STOP) · RECOVER", "1.2 후보 · 로봇+컨베이어 · C 1.1 은 거부"),
                 ("E-Stop (응용 요청)", "미지원 · C 알림 없음"),
                 ("링크 채널 선택", "누를 때 영상 연결로 요청 · 임시 형식 · 프레임 도착으로 확인" if self.relay else "부록 B 미승인 · 미전송"),
             ]

@@ -12,14 +12,14 @@ python -m eyetoarm.gui --env-only --json
 
 실제 연결은 `python -m eyetoarm.gui.window --host <서버 숫자 IP> --port 47090`을 사용합니다. 서버 수신·네트워크 준비는 별도로 필요합니다.
 
-명령 TCP 기본은 1.1입니다. 분류 START·정리(STOP)·RECOVER와 E-Stop 요청은 TCP 1.2 후보([명세 부록 A.6·A.6.16](../docs/protocol/TCP_프로토콜_명세서.md), 미승인)이며 `--tcp-version 1.2`를 명시할 때만 같은 명령 포트로 보냅니다.
+명령 TCP 기본은 1.1입니다. 분류 START·Stop 정지(STOP)·RECOVER와 E-Stop 요청은 TCP 1.2 후보([명세 부록 A.6·A.6.16](../docs/protocol/TCP_프로토콜_명세서.md), 미승인)이며 `--tcp-version 1.2`를 명시할 때만 같은 명령 포트로 보냅니다.
 
 ```powershell
 python -m eyetoarm.gui.window --host <서버 숫자 IP> --port 47090 --tcp-version 1.2
 ```
 
-- 조작 버튼은 같은 연결에서 검사를 통과한 1.2 응답과 C가 알린 허용 목록(`allowed`, E-Stop은 `e_stop_available`)이 있을 때만 켜집니다. 예외: 검사를 통과한 1.2 응답을 받은 연결에서 유효한 실행 상태 스냅샷이 없으면 정리(STOP)는 `allowed`와 별개로 켜집니다(명세 부록 A.6.12). 현재 C 서버(1.1)는 1.2를 거부하므로 켜지지 않습니다.
-- START·정리·E-Stop은 로봇과 컨베이어를 함께 다룹니다. E-Stop은 C에 요청만 하는 응용 요청이며 안전 장치가 아닙니다.
+- 조작 버튼은 같은 연결에서 검사를 통과한 1.2 응답과 C가 알린 허용 목록(`allowed`, E-Stop은 `e_stop_available`)이 있을 때만 켜집니다. 예외: 검사를 통과한 1.2 응답을 받은 연결에서 유효한 실행 상태 스냅샷이 없으면 Stop 정지(STOP)은 `allowed`와 별개로 켜집니다(명세 부록 A.6.12). 현재 C 서버(1.1)는 1.2를 거부하므로 켜지지 않습니다.
+- START·Stop 정지·E-Stop은 로봇과 컨베이어를 함께 다룹니다. E-Stop은 C에 요청만 하는 응용 요청이며 안전 장치가 아닙니다.
 - 이 모드에서는 수동 MOVE·CANCEL이 비활성입니다. `--demo`와 함께 쓸 수 없습니다.
 
 자세한 실행·기능 설명은 [GUI 안내](src/eyetoarm/gui/README.md)를 참고합니다. 기존 `src/eyetoarm/gui` 진입점은 제거하고 새 폴더만 사용합니다. 저장소 안에서도 이 폴더의 config만 읽습니다. 새 감사 기록은 `logs/gui/`에 저장하고 기존 기록은 유지합니다.
@@ -60,4 +60,4 @@ C 측 실행은 저장소의 [시제품 송출기 안내](../robot_ws/src/robot_
 
 중계는 새 접속에 채널별 마지막 영상(캐시)을 바로 보냅니다. 그래서 접속 직후 채널마다 첫 영상은 「확인 대기」로 어둡게 보이고, 같은 실행에서 더 새 영상이 와야 실시간으로 표시합니다. 영상 접속은 2초 안에 이뤄지지 않으면 끊고 다시 시도합니다.
 
-기본(1.1) 실제 명령 TCP는 준비 조회·수동 MOVE·CANCEL입니다. 분류 START/정리(STOP)/RECOVER·E-Stop은 위 1.2 후보 모드에서만 보내며, 공정·측정 모의 표시는 실제 C 분류 연결이 아닙니다. 실제 영상 생산 측의 ROS/Gazebo와 모델·보정 코드를 배포본에 넣지 않습니다. Windows 이외의 OS와 실제 장비 호환은 별도 검증 대상입니다.
+기본(1.1) 실제 명령 TCP는 준비 조회·수동 MOVE·CANCEL입니다. 분류 START/Stop 정지(STOP)/RECOVER·E-Stop은 위 1.2 후보 모드에서만 보내며, 공정·측정 모의 표시는 실제 C 분류 연결이 아닙니다. 실제 영상 생산 측의 ROS/Gazebo와 모델·보정 코드를 배포본에 넣지 않습니다. Windows 이외의 OS와 실제 장비 호환은 별도 검증 대상입니다.
