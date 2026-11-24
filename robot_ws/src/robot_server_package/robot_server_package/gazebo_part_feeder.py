@@ -18,8 +18,8 @@ X, Y = 0.55, -0.55
 # Model, spawn height in metres.
 FEED_SEQUENCE = (
     ("bolt_m3x20", 0.108),
-    # ("bolt_m6x40", 0.108),
-    # ("nut_m6", 0.1005),
+    ("bolt_m6x40", 0.108),
+    ("nut_m6", 0.1005),
 )
 
 
