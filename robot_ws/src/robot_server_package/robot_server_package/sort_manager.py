@@ -26,6 +26,7 @@ from .sort_event_log import SortEventLog
 ACTION_NAME = "/sort_part"
 STOP_CONFIRM_TIMEOUT_S = 35.0
 VISION_DISCARD_TIMEOUT_S = 8.0
+START_CHECK_PERIOD_S = 2.0   # #394: retry the start home check while the controllers are not up yet
 
 
 def next_epoch(path: Path) -> int:
@@ -85,6 +86,7 @@ class SortGoalReceiver(Node):
         self._seen = set()
         self._seen_lock = Lock()
         self._recovery_required = False
+        self._home_checked = False   # #394: set by the first finished home check (node start or first goal)
         self._vision_discard_client = (self.create_client(
             Trigger, "/eyetoarm_live_sort_part/discard_detections",
             callback_group=ReentrantCallbackGroup()) if epoch_file is not None else None)
@@ -115,9 +117,50 @@ class SortGoalReceiver(Node):
                 feeder.set_running(False)
                 self.create_timer(0.25, self._feed)
             self.create_service(GetSortRun, "~/get_run", self._get_run)
+        self._start_timer = (self.create_timer(START_CHECK_PERIOD_S, self._start_check)
+                             if backend is not None else None)
         self.get_logger().info(
             f"B→C SortPart {action_name}; mode={'gazebo' if backend is not None else 'receive-only'}"
         )
+
+    def _home_check(self, why):
+        """#394 (C item 9②): after a (re)start the arm may be in a carry pose where the link camera cannot
+        see the belt. If it is not at the fixed home, use C's move_home (gripper untouched). A failed move
+        locks like C's stop_run home failure. Raises RuntimeError while the controllers are not up."""
+        if self._backend.at_home():
+            self.get_logger().info(f"SortPart home check ({why}) AT_HOME")
+        else:
+            try:
+                self._backend.move_home()
+            except SortFailure as exc:
+                self._recovery_required = True
+                self.get_logger().error(f"SortPart home check ({why}) HOME_FAILED: {exc}")
+                self._home_checked = True
+                return False
+            self.get_logger().info(f"SortPart home check ({why}) MOVED_HOME")
+        self._home_checked = True
+        if self._start_timer is not None:
+            self._start_timer.cancel()
+        return True
+
+    def _start_check(self):
+        """Once after start (retried until the controllers answer); skipped while a goal or control call runs."""
+        if self._home_checked:
+            self._start_timer.cancel()
+            return
+        if not self._execution_lock.acquire(blocking=False):
+            return
+        try:
+            self._home_check("node start")
+        except SortFailure as exc:    # e.g. STOP_UNCONFIRMED from at_home's arm check: lock like a HOME failure
+            self._recovery_required = True
+            self._home_checked = True
+            self._start_timer.cancel()
+            self.get_logger().error(f"SortPart start home check failed: {exc}")
+        except RuntimeError as exc:   # controllers not available yet: try again
+            self.get_logger().info(f"SortPart start home check waiting: {exc}")
+        finally:
+            self._execution_lock.release()
 
     def destroy_node(self):
         try:
@@ -369,6 +412,15 @@ class SortGoalReceiver(Node):
                     raise SortFailure("SORT_RUN_PAUSED")
                 if self._recovery_required:
                     raise SortFailure("RECOVERY_REQUIRED")
+                if not self._home_checked:
+                    # A goal can arrive 0.1 s after start, before the start timer's check (#374 G-X3b).
+                    try:
+                        if not self._home_check("first goal"):
+                            raise SortFailure("RECOVERY_REQUIRED")
+                    except RuntimeError as exc:
+                        if isinstance(exc, SortFailure):
+                            raise
+                        raise SortFailure("CONTROLLERS_UNAVAILABLE") from exc
                 if self._managed:
                     if not self._job_id or request.sort_job_id != self._job_id or request.run_epoch != self._epoch:
                         raise SortFailure("SORT_RUN_MISMATCH")

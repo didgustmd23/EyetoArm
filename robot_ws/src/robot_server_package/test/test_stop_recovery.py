@@ -87,3 +87,134 @@ def test_move_home_goes_to_fixed_home_not_start_pose(monkeypatch):
     assert np.max(np.abs(start - ex.home)) > .01
     ex.move_home()
     assert np.allclose(ex.arm.q, NEW.HOME_JOINTS)
+
+
+def test_at_home(monkeypatch):
+    """at_home is false for the fake arm's start pose and true after C's move_home."""
+    ex, _ = base.make(NEW, monkeypatch=monkeypatch)
+    assert not ex.at_home()
+    ex.move_home()
+    assert ex.at_home()
+
+
+# ---------------------------------------------------------------- piece ②: receiver start home check
+
+import os  # noqa: E402
+import uuid  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from robot_server_package import sort_manager as SM  # noqa: E402
+
+
+class FakeBackend:
+    """Backend stand-in for the receiver: scripted at_home/move_home, execute returns a stamp."""
+
+    def __init__(self, at_home=True):
+        self.home = at_home
+        self.calls = []
+        self.home_error = None
+        self.holding_object = False
+
+    def at_home(self):
+        self.calls.append("at_home")
+        if isinstance(self.home, Exception):
+            raise self.home
+        return self.home
+
+    def move_home(self):
+        self.calls.append("move_home")
+        if self.home_error is not None:
+            raise self.home_error
+        self.home = True
+
+    def execute(self, request, publish, cancel_requested, *args, **kwargs):
+        self.calls.append("execute")
+        return 5
+
+
+class FakeHandle:
+    """ServerGoalHandle stand-in recording the terminal state."""
+
+    def __init__(self, request):
+        self.goal_id = SimpleNamespace(uuid=list(uuid.UUID(request.goal_id).bytes))
+        self.request, self.is_cancel_requested, self.state = request, False, None
+
+    def publish_feedback(self, feedback):
+        pass
+
+    def succeed(self):
+        self.state = "succeed"
+
+    def canceled(self):
+        self.state = "canceled"
+
+    def abort(self):
+        self.state = "abort"
+
+
+@pytest.fixture
+def ros():
+    """rclpy context for the receiver tests (no signal handlers)."""
+    from rclpy.signals import SignalHandlerOptions
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    yield
+    rclpy.try_shutdown()
+
+
+def receiver(backend):
+    """Unmanaged SortGoalReceiver (no run-state) on a private action name; start timer stopped."""
+    node = SM.SortGoalReceiver(f"/sort_part_test_{os.getpid()}_{uuid.uuid4().hex[:8]}", backend)
+    node._start_timer.cancel()
+    return node
+
+
+def request():
+    """A valid unmanaged SortPart goal."""
+    from eyetoarm_interfaces.action import SortPart
+    goal = SortPart.Goal()
+    goal.goal_id = str(uuid.uuid4())
+    goal.goal_kind, goal.part_class, goal.place_bin = "PICK_PLACE", "BOLT_B", "BOLT_B"
+    return goal
+
+
+def test_start_check_moves_an_off_home_arm_once(ros):
+    """Node start: an arm off home is moved with C's move_home; the check does not repeat."""
+    backend = FakeBackend(at_home=False)
+    node = receiver(backend)
+    try:
+        node._start_check()
+        node._start_check()
+        assert backend.calls == ["at_home", "move_home"] and node._home_checked
+        assert node._execute(FakeHandle(request())).status == "SUCCEEDED"
+        assert backend.calls == ["at_home", "move_home", "execute"]
+    finally:
+        node.destroy_node()
+
+
+def test_start_check_waits_for_controllers_and_locks_on_failure(ros):
+    """Controllers not up (RuntimeError): retried later; a failed home move locks (RECOVERY_REQUIRED)."""
+    backend = FakeBackend()
+    backend.home = RuntimeError("제어기 액션 서버가 없다")
+    node = receiver(backend)
+    try:
+        node._start_check()
+        assert not node._home_checked and not node._recovery_required
+        backend.home = False
+        backend.home_error = SM.SortFailure("STOP_UNCONFIRMED")
+        node._start_check()
+        assert node._home_checked and node._recovery_required
+        assert node._execute(FakeHandle(request())).reason == "RECOVERY_REQUIRED"
+    finally:
+        node.destroy_node()
+
+
+def test_goal_before_start_check_checks_home_first(ros):
+    """A goal arriving before the timer's check runs the home check first; later goals do not repeat it."""
+    backend = FakeBackend(at_home=False)
+    node = receiver(backend)
+    try:
+        assert node._execute(FakeHandle(request())).status == "SUCCEEDED"
+        assert node._execute(FakeHandle(request())).status == "SUCCEEDED"
+        assert backend.calls == ["at_home", "move_home", "execute", "execute"]
+    finally:
+        node.destroy_node()

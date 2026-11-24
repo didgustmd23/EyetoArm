@@ -171,6 +171,11 @@ class GazeboSortExecutor:
             self.node.get_logger().info(f"SortPart HOME fixed joints={np.round(self.home, 4).tolist()} "
                                         f"current={np.round(self.arm.joints(), 4).tolist()}")
 
+    def at_home(self, tolerance=.01):
+        """True when every arm joint is within `tolerance` rad of the fixed home (connects the arm first)."""
+        self._ensure_arm_home()
+        return bool(np.max(np.abs(self.arm.joints() - self.home)) <= tolerance)
+
     def move_home(self):
         """Move the arm to its saved initial pose without touching the gripper."""
         if self.active_grip is not None:
