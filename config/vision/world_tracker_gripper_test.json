@@ -150,7 +150,7 @@
   },
   "live": {
     "queue_capacity": 8,
-    "handoff_wait_s": 0.02,
+    "handoff_wait_s": 0.1,
     "lag": {
       "lag_limit_ms": 300,
       "window_n": 20,
