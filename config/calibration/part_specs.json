@@ -9,7 +9,7 @@
       "class_name": "bolt",
       "label": "M3x20",
       "total_length": 0.022,
-      "length_min": 0.017,
+      "length_min": 0.014,
       "length_max": 0.027,
       "length_tolerance": 0.006,
       "head_diameter": 0.00635,
