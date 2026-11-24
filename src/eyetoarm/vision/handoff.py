@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import queue
 import threading
 import time
 from collections import deque
@@ -162,6 +163,17 @@ class HandoffStats:
     notify_calls: int
 
 
+class _ExternalClearRequest:
+    """A CLEAR requested by a control thread and applied by the producer thread."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        self.done = threading.Event()
+        self.cancelled = threading.Event()
+        self.result: int | None = None
+        self.error: BaseException | None = None
+
+
 def _method_of(pipeline: VisionPipeline) -> tuple[str, str | None]:
     """현재 설정의 검출 방식과 model_id(OpenCV면 None)."""
     config = pipeline.settings.detector_config
@@ -259,6 +271,7 @@ class AToCHandoff:
         self._pipeline: VisionPipeline | None = None
         self._run_id: str | None = None
         self._records_seen = 0
+        self._external_clear_requests: queue.Queue[_ExternalClearRequest] = queue.Queue()
 
         # 알림
         self._notify_pending = False
@@ -425,10 +438,32 @@ class AToCHandoff:
         """CLEAR(전체 해제)를 넣는다. 예: 코어가 현재 관측을 바꿨지만 결과를 공개하지 않은 경우."""
         self._enter_producer()
         self._require_bound(None)
+        return self._clear_on_producer(reason)
 
+    def clear_from_control_thread(self, reason: str, timeout_s: float = 7.0) -> int:
+        """Request CLEAR from a control thread; the producer applies it at its next check()."""
         if not isinstance(reason, str) or not reason:
             raise HandoffContractError(f"reason must be a non-empty string: {reason!r}")
+        if (isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float))
+                or not 0 < timeout_s < float("inf")):
+            raise HandoffContractError(f"timeout_s must be positive: {timeout_s!r}")
+        if self._producer == threading.get_ident():
+            return self.clear(reason)
 
+        request = _ExternalClearRequest(reason)
+        self._external_clear_requests.put(request)
+        if not request.done.wait(float(timeout_s)):
+            request.cancelled.set()
+            raise TimeoutError("producer thread did not apply requested CLEAR in time")
+        if request.error is not None:
+            raise request.error
+        assert request.result is not None
+        return request.result
+
+    def _clear_on_producer(self, reason: str) -> int:
+        self._require_bound(None)
+        if not isinstance(reason, str) or not reason:
+            raise HandoffContractError(f"reason must be a non-empty string: {reason!r}")
         with self._lock:
             self._raise_if_not_open()
             msg = self._message(MsgKind.CLEAR, reason=reason)
@@ -458,6 +493,21 @@ class AToCHandoff:
     def check(self) -> None:
         """대기 지점의 실패 확인. OPEN이면 무동작, FAILED면 HandoffFailed, CLOSED면 HandoffClosed."""
         self._enter_producer()
+
+        while True:
+            try:
+                request = self._external_clear_requests.get_nowait()
+            except queue.Empty:
+                break
+            if request.cancelled.is_set():
+                request.done.set()
+                continue
+            try:
+                request.result = self._clear_on_producer(request.reason)
+            except BaseException as exc:
+                request.error = exc
+            finally:
+                request.done.set()
 
         with self._lock:
             self._raise_if_not_open(count=False)

@@ -68,6 +68,8 @@ class TcpServer:
         self._run_revision = 0
         self._run_signature = None
         self._run_snapshot = None
+        self._run_refresh_task: asyncio.Task | None = None
+        self._run_refresh_next_at = 0.0
         self._run_override = None
         self._last_sort_job_id = None
         self._e_stop_latched = False
@@ -101,18 +103,22 @@ class TcpServer:
         return time.monotonic_ns() // 1_000_000
 
     async def _managed_snapshot(self):
-        """Return the cached TCP 1.2 run view, refreshed from C's ROS GetSortRun service."""
-        source = None
-        if self.run_control is not None and self.run_control.available("GET_RUN"):
-            try:
-                source = await asyncio.to_thread(self.run_control.call, "GET_RUN", 1.5)
-            except Exception as exc:
-                LOG.warning("GetSortRun unavailable: %s", exc)
+        """Return the latest cached run view and refresh it without delaying TCP replies."""
+        now = time.monotonic()
+        if (now >= self._run_refresh_next_at
+                and self.run_control is not None and self.run_control.available("GET_RUN")
+                and (self._run_refresh_task is None or self._run_refresh_task.done())):
+            self._run_refresh_next_at = now + 0.5
+            self._run_refresh_task = asyncio.create_task(self._refresh_managed_snapshot())
+        return copy.deepcopy(self._run_snapshot)
 
-        if source is None:
-            self._run_snapshot = None
-            self._run_signature = None
-            return None
+    async def _refresh_managed_snapshot(self):
+        """Refresh the run cache in the background; ROS service latency must not hold TCP status."""
+        try:
+            source = await asyncio.to_thread(self.run_control.call, "GET_RUN", 1.5)
+        except Exception as exc:
+            LOG.warning("GetSortRun unavailable: %s", exc)
+            return
 
         job_id = source.sort_job_id or self._last_sort_job_id
         if source.sort_job_id:
@@ -122,8 +128,10 @@ class TcpServer:
             state = self._run_override
         if self._e_stop_latched:
             state = "RECOVERY_REQUIRED"
+        elif getattr(source, "purge_required", False) and state != "STOP_REQUESTED":
+            state = "PURGE_REQUIRED"
         epoch = max(0, int(source.run_epoch))
-        active_job = source.sort_job_id or (job_id if state in {"STOPPED", "RECOVERY_REQUIRED", "STOP_REQUESTED"} else None)
+        active_job = source.sort_job_id or (job_id if state in {"STOPPED", "RECOVERY_REQUIRED", "STOP_REQUESTED", "PURGE_REQUIRED"} else None)
         hold_state = "HOLD_UNKNOWN" if self._e_stop_latched else "DETACHED"
         if state == "RUNNING":
             owner = {"kind": "SORT_RUN", "id": active_job}
@@ -131,6 +139,8 @@ class TcpServer:
         elif state in {"STOP_REQUESTED", "RECOVERY_REQUIRED"}:
             owner = {"kind": "LOCKED", "id": None} if state == "RECOVERY_REQUIRED" else {"kind": "SORT_RUN", "id": active_job}
             allowed = (["START", "STOP", "RECOVER"] if self._e_stop_latched else ["STOP", "RECOVER"]) if state == "RECOVERY_REQUIRED" else ["STOP"]
+        elif state == "PURGE_REQUIRED":
+            owner, allowed = {"kind": "LOCKED", "id": None}, ["STOP"]
         elif state == "UNAVAILABLE":
             owner, allowed = None, []
         else:
@@ -249,6 +259,10 @@ class TcpServer:
             response = self._run_status(request_id, "REJECTED", "BUSY", None, snapshot)
             self._run_requests[request_id] = (copy.deepcopy(request), response)
             return response
+        if action == "START" and snapshot is not None and snapshot["run_state"] == "PURGE_REQUIRED":
+            response = self._run_status(request_id, "REJECTED", "A_B_DISCARD_REQUIRED", None, snapshot)
+            self._run_requests[request_id] = (copy.deepcopy(request), response)
+            return response
         if action == "STOP" and self._run_override == "STOP_REQUESTED":
             response = self._run_status(request_id, "ACCEPTED", "STOP_ALREADY_REQUESTED", None, snapshot)
             self._run_requests[request_id] = (copy.deepcopy(request), response)
@@ -340,16 +354,28 @@ class TcpServer:
             finally:
                 self._run_action_pending = False
 
-        snapshot = await self._managed_snapshot()
+        # The action service has finished, so refresh from C before publishing its
+        # terminal result. A background GET_RUN started before STOP/E_STOP may hold
+        # an older snapshot and otherwise leave START disabled or stale.
+        if self._run_refresh_task is not None and not self._run_refresh_task.done():
+            await self._run_refresh_task
+        await self._refresh_managed_snapshot()
+        snapshot = copy.deepcopy(self._run_snapshot)
         if action == "E_STOP":
             notice = self._run_status(None, None, None, None, snapshot)
             for client in tuple(self._sessions.values()):
-                self._queue(client, notice)
+                # The requester correlates only E_STOP_STATUS with its request_id.
+                # Keep the uncorrelated run snapshot notification on other sessions.
+                if client.connection_id != connection_id:
+                    self._queue(client, notice)
             estop_state = "CONFIRMED" if success else "UNCONFIRMED"
             estop = {"version": "1.2", "type": "E_STOP_STATUS", "request_id": request_id,
                      "state": estop_state, "detail": detail, "server_time_ms": self._now_ms()}
-            for client in tuple(self._sessions.values()):
-                self._queue(client, estop)
+            # E_STOP_STATUS is a response, not a broadcast: request IDs are
+            # scoped to the connection that sent E_STOP.
+            requester = self._sessions.get(connection_id)
+            if requester is not None:
+                self._queue(requester, estop)
             return
         response = self._run_status(request_id, outcome, code, detail, snapshot)
         self._run_requests[request_id] = (copy.deepcopy(request), response)

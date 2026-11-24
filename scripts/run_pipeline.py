@@ -1694,7 +1694,7 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
             def discard_operator_data(reason):
                 if not link.discard_detections(reason):
                     return False
-                handoff.clear(f"operator_{reason}")
+                handoff.clear_from_control_thread(f"operator_{reason}")
                 if center_pub is not None:
                     center_pub.invalidate(link.run_id)
                 return True
