@@ -1160,9 +1160,7 @@ opened. The complete license is preserved in
           <title>Gazebo 시뮬레이션 · 월드·벨트·카메라 3대 + ros_gz_bridge · 아키텍처 구성요소 · 공통</title>
           <rect x="440" y="40" width="270" height="68" rx="8" class="c-mask"/>
           <rect x="440" y="40" width="270" height="68" rx="8" class="c-cloud" data-animate="node" style="--step: 0; --flow-node-name: archify-relay-node-7;" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="cloud" class="semantic-sigil s-cloud" transform="translate(446 46) scale(0.6875)">
-            <path d="M4.3 12.5h7.3a2.4 2.4 0 0 0 .2-4.8 4 4 0 0 0-7.5-1.3A3.1 3.1 0 0 0 4.3 12.5Z"/>
-          </g>
+          
           <text data-node-label="" x="575" y="72" class="t-primary" font-size="14" font-weight="600" text-anchor="middle">Gazebo 시뮬레이션</text>
         <text x="575" y="88" class="t-muted" font-size="9" text-anchor="middle">월드·벨트·카메라 3대 + ros_gz_bridge</text>
         <text x="575" y="100" class="t-cloud" font-size="7" text-anchor="middle">공통</text>
@@ -1351,21 +1349,21 @@ opened. The complete license is preserved in
         <!-- Legend -->
         <g data-legend="">
           <text x="40" y="820" class="t-primary" font-size="12" font-weight="650">범례</text>
-          <g data-legend-semantic-kind="frontend" data-legend-x="40" data-legend-baseline="840" data-legend-width="105">
+          <g data-legend-semantic-kind="frontend" data-legend-x="40" data-legend-baseline="840" data-legend-width="149">
             <rect x="40" y="831" width="16" height="10" rx="2.5" class="c-frontend" stroke-width="1"/>
-            <text x="62" y="840" class="t-muted" font-size="10" font-weight="500">프런트엔드</text>
+            <text x="62" y="840" class="t-muted" font-size="10" font-weight="500">대시보드(Windows)</text>
           </g>
-          <g data-legend-semantic-kind="backend" data-legend-x="167" data-legend-baseline="840" data-legend-width="81">
-            <rect x="167" y="831" width="16" height="10" rx="2.5" class="c-backend" stroke-width="1"/>
-            <text x="189" y="840" class="t-muted" font-size="10" font-weight="500">백엔드</text>
+          <g data-legend-semantic-kind="backend" data-legend-x="211" data-legend-baseline="840" data-legend-width="124">
+            <rect x="211" y="831" width="16" height="10" rx="2.5" class="c-backend" stroke-width="1"/>
+            <text x="233" y="840" class="t-muted" font-size="10" font-weight="500">프로세스(WSL)</text>
           </g>
-          <g data-legend-semantic-kind="cloud" data-legend-x="270" data-legend-baseline="840" data-legend-width="93">
-            <rect x="270" y="831" width="16" height="10" rx="2.5" class="c-cloud" stroke-width="1"/>
-            <text x="292" y="840" class="t-muted" font-size="10" font-weight="500">클라우드</text>
+          <g data-legend-semantic-kind="cloud" data-legend-x="357" data-legend-baseline="840" data-legend-width="149">
+            <rect x="357" y="831" width="16" height="10" rx="2.5" class="c-cloud" stroke-width="1"/>
+            <text x="379" y="840" class="t-muted" font-size="10" font-weight="500">Gazebo 시뮬레이션</text>
           </g>
-          <g data-legend-semantic-kind="external" data-legend-x="385" data-legend-baseline="840" data-legend-width="68">
-            <rect x="385" y="831" width="16" height="10" rx="2.5" class="c-external" stroke-width="1"/>
-            <text x="407" y="840" class="t-muted" font-size="10" font-weight="500">외부</text>
+          <g data-legend-semantic-kind="external" data-legend-x="528" data-legend-baseline="840" data-legend-width="81">
+            <rect x="528" y="831" width="16" height="10" rx="2.5" class="c-external" stroke-width="1"/>
+            <text x="550" y="840" class="t-muted" font-size="10" font-weight="500">터미널</text>
           </g>
         </g>
       </svg>

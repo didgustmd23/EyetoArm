@@ -4,13 +4,36 @@
   "meta": {
     "title": "EyetoArm 인식 프로세스 안 스레드와 넘기는 칸 (계획서 1.8 · main 735d514)",
     "locale": "ko",
-    "output": "_workspace/442_k/system_threads_v1_8.html",
+    "output": "_workspace/446_k/system_threads_v1_8.html",
     "quality_profile": "showcase",
     "parentHref": "system_processes_v1_8.html",
     "repository": {
       "url": "https://github.com/didgustmd23/EyetoArm.git",
       "provider": "github",
       "revision": "735d5142e7ab1f335ab4ed2bc9a6a2c02d0a853d"
+    },
+    "legend": {
+      "mode": "auto",
+      "entries": {
+        "backend": {
+          "label": "인식 프로세스 안 스레드"
+        },
+        "database": {
+          "label": "기록 파일 쓰기(스레드)"
+        },
+        "cloud": {
+          "label": "다른 프로세스(같은 PC)"
+        },
+        "external": {
+          "label": "Gazebo"
+        }
+      }
+    },
+    "translations": {
+      "viewer.kind.backend": "인식 프로세스 안 스레드",
+      "viewer.kind.database": "기록 파일 쓰기(스레드)",
+      "viewer.kind.cloud": "다른 프로세스(같은 PC)",
+      "viewer.kind.external": "Gazebo"
     }
   },
   "layout": {
@@ -171,7 +194,8 @@
       "size": [
         200,
         64
-      ]
+      ],
+      "icon": "none"
     },
     {
       "id": "probe",
@@ -179,7 +203,7 @@
       "label": "넘기기 소비자",
       "sublabel": "c-handoff-probe",
       "tag": "C",
-      "explanation": "A→C 넘기기(AToCHandoff)를 비우는 스레드. 제어 대기열은 64개까지이고, 넘치면 버리지 않고 실패(overflow)로 고정해 A를 멈춘다. 사진 칸은 하나라 새 사진이 옛 사진을 바꾼다. 한 번에 64개씩 꺼내며, 꺼낼 때마다 표준 출력에 print(flush=True)를 한다.",
+      "explanation": "A→C 넘기기(AToCHandoff)를 비우는 스레드. 제어 대기열은 64개까지이고, 넘치면 버리지 않고 실패(overflow)로 고정하고 인식 실행이 실패(handoff_failed)로 끝난다. 사진 칸은 하나라 새 사진이 옛 사진을 바꾼다. 한 번에 64개씩 꺼내며, 꺼낼 때마다 표준 출력에 print(flush=True)를 한다.",
       "sources": [
         {
           "path": "src/eyetoarm/vision/handoff.py",
@@ -266,7 +290,8 @@
       "size": [
         200,
         64
-      ]
+      ],
+      "icon": "none"
     },
     {
       "id": "world",
@@ -443,7 +468,7 @@
       "label": "기록 쓰기",
       "sublabel": "eyetoarm-live-observation-writer",
       "tag": "B",
-      "explanation": "B 사건 기록을 64개씩 꺼내 파일로 쓴다. 보통 사건은 8개(write_capacity)까지, 차면 받지 않는다(writer_backpressure). 꼭 남길 사건은 64개(reserved_capacity)까지, 넘치면 실행을 실패로 멈춘다.",
+      "explanation": "B 사건 기록을 64개씩 꺼내 파일로 쓴다. 보통 사건은 8개(write_capacity)까지, 차면 받지 않는다(writer_backpressure). 꼭 남길 사건은 64개(reserved_capacity)까지, 넘치면 실행이 실패로 끝난다.",
       "sources": [
         {
           "path": "src/eyetoarm/vision/live_observation_events.py",
@@ -471,7 +496,8 @@
       "size": [
         200,
         64
-      ]
+      ],
+      "icon": "backend"
     },
     {
       "id": "spin",
@@ -530,7 +556,8 @@
       "size": [
         200,
         64
-      ]
+      ],
+      "icon": "none"
     },
     {
       "id": "cproxy",
@@ -589,7 +616,8 @@
       "size": [
         200,
         64
-      ]
+      ],
+      "icon": "none"
     }
   ],
   "connections": [
@@ -728,10 +756,10 @@
   "cards": [
     {
       "dot": "rose",
-      "title": "넘치면 멈추는 곳 (버리지 않음)",
+      "title": "넘치면 실행이 끝나는 곳 (버리지 않음)",
       "items": [
-        "넘기기 제어 대기열 64: 넘치면 실패(overflow)로 고정하고 A가 멈춘다. 넘기기 소비자가 표준 출력 print에서 막히면 여기가 찬다",
-        "꼭 남길 B 기록 64, 건너뜀 기록 256: 넘치면 실행을 실패로 멈춘다",
+        "넘기기 제어 대기열 64: 넘치면 실패(overflow)로 고정하고 인식 실행이 실패(handoff_failed)로 끝난다. 넘기기 소비자가 표준 출력 print에서 막히면 여기가 찬다",
+        "꼭 남길 B 기록 64, 건너뜀 기록 256: 넘치면 실행이 실패로 끝난다",
         "추론 자식에 빈 칸이 없으면 infer_process_stalled로 실패한다"
       ]
     },
