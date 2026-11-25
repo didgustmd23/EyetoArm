@@ -1,7 +1,7 @@
 """AI 분할 검출 설정(`AiSegConfig`)의 검증·정규화, 설정 ID·`model_id` 계산, 엄격한 JSON 읽기.
 
 torch·ultralytics를 import하지 않고 가중치 파일도 읽지 않는다. 설정 ID는 `weights_path`를 뺀 정규 JSON의
-sha256이며, 선택 키(`axis_extractor`·`axis_view_bias`)는 None이면 정규 JSON에 넣지 않는다.
+sha256이며, 선택 키(`axis_extractor`·`axis_view_bias`·`rotate90_pass`)는 None이면 정규 JSON에 넣지 않는다.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ _MAX_DET_MAX = 1000
 
 # 볼트 축 끝점 추출기 선택 값. None = 꺼짐
 AXIS_EXTRACTORS = ("m1", "m2")
-_OPTIONAL_KEYS = frozenset({"axis_extractor", "axis_view_bias"})
+_OPTIONAL_KEYS = frozenset({"axis_extractor", "axis_view_bias", "rotate90_pass"})
 
 # 시선 기반 끝점 보정 모형은 C1(δ = k·s) 하나, k 상한은 안전 범위
 VIEW_BIAS_MODELS = ("C1",)
@@ -36,6 +36,10 @@ _VIEW_BIAS_KEYS = frozenset({"model", "k_mm", "plane_z_m", "valid_for_model_id"}
 _VIEW_BIAS_SPEC_KEYS = frozenset({"model", "valid_for_model_id", "by_spec"})               # 종류별 형식(#270)
 _VIEW_BIAS_ENTRY_KEYS = frozenset({"label", "k_mm", "fit_plane_z_m"})
 _VIEW_BIAS_K_MAX_MM = 10.0
+
+# 90° 돌린 추론(#417·#425). 방향은 시계 방향만(반시계는 #417에서 더 나빴음)
+ROTATE90_DIRECTIONS = ("cw",)
+_ROTATE90_KEYS = frozenset({"direction", "every_n", "nms_iou", "nut_veto_iou"})
 
 
 def _is_int(v) -> bool:
@@ -263,6 +267,63 @@ def parse_view_bias(v) -> ViewBiasConfig | None:
 
 
 @dataclass(frozen=True)
+class Rotate90Config:
+    """90° 돌린 추론 설정(#425). 켜면 사진을 돌려 한 번 더 추론하고 원래 결과와 R5 규칙으로 합친다.
+
+    - `direction`: 돌리는 방향(`"cw"` 시계 방향만).
+    - `every_n`: 몇 번째 추론마다 돌린 추론을 할지(1 = 매 사진, 2 = 두 장에 한 장). 1 이상의 정수.
+    - `nms_iou`: 같은 종류 마스크 IoU가 이 이상이면 신뢰도 높은 쪽 하나만 남긴다. (0, 1].
+    - `nut_veto_iou`: 돌린 쪽 볼트가 그대로 쪽 너트와 이 이상 겹치면 그 볼트를 버린다. (0, 1].
+    """
+
+    direction: str
+    every_n: int
+    nms_iou: float
+    nut_veto_iou: float
+
+    def __post_init__(self) -> None:
+        """값을 검증·정규화한다. 잘못된 값은 ValueError."""
+        put = lambda k, v: object.__setattr__(self, k, v)  # noqa: E731
+
+        if self.direction not in ROTATE90_DIRECTIONS:
+            raise ValueError(f"rotate90_pass.direction must be one of {ROTATE90_DIRECTIONS}: {self.direction!r}")
+
+        if not _is_int(self.every_n) or self.every_n < 1:
+            raise ValueError(f"rotate90_pass.every_n must be an integer >= 1: {self.every_n!r}")
+
+        put("every_n", int(self.every_n))
+
+        for name in ("nms_iou", "nut_veto_iou"):
+            value = _finite_float(getattr(self, name), f"rotate90_pass.{name}")
+
+            if not 0.0 < value <= 1.0:
+                raise ValueError(f"rotate90_pass.{name} must be in (0, 1]: {getattr(self, name)!r}")
+
+            put(name, value)
+
+    def to_json(self) -> dict:
+        """설정 파일·정규 JSON 형식."""
+        return {"direction": self.direction, "every_n": self.every_n, "nms_iou": self.nms_iou,
+                "nut_veto_iou": self.nut_veto_iou}
+
+
+def parse_rotate90(v) -> Rotate90Config | None:
+    """설정 값(None·사전·Rotate90Config) → Rotate90Config 또는 None. 모르는 키·빠진 키는 ValueError."""
+    if v is None or isinstance(v, Rotate90Config):
+        return v
+
+    if not isinstance(v, dict):
+        raise ValueError(f"rotate90_pass must be an object or null: {v!r}")
+
+    missing, unknown = _ROTATE90_KEYS - v.keys(), v.keys() - _ROTATE90_KEYS
+
+    if missing or unknown:
+        raise ValueError(f"rotate90_pass keys mismatch: missing={sorted(missing)} unknown={sorted(unknown)}")
+
+    return Rotate90Config(**v)
+
+
+@dataclass(frozen=True)
 class AiSegConfig:
     """검증한 AI 분할 검출 설정의 변경 불가 스냅샷. 직접 생성해도 검증을 우회하지 않는다.
 
@@ -288,6 +349,7 @@ class AiSegConfig:
     border_margin_px: int
     axis_extractor: str | None = None
     axis_view_bias: ViewBiasConfig | None = None
+    rotate90_pass: Rotate90Config | None = None
     config_sha256: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -383,6 +445,9 @@ class AiSegConfig:
             if bias.valid_for_model_id != self.model_id:
                 raise ValueError(f"axis_view_bias.valid_for_model_id {bias.valid_for_model_id!r} != model_id {self.model_id!r}")
 
+        # 90° 돌린 추론은 축 추출기와 관계없이 켤 수 있다(A 결정 #429)
+        put("rotate90_pass", parse_rotate90(self.rotate90_pass))
+
         put("config_sha256", hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest())
 
     @property
@@ -415,7 +480,7 @@ class AiSegConfig:
 
             if key == "class_map":
                 value = {str(i): name for i, name in value}
-            elif isinstance(value, ViewBiasConfig):
+            elif isinstance(value, (ViewBiasConfig, Rotate90Config)):
                 value = value.to_json()
             elif isinstance(value, tuple):
                 value = list(value)
@@ -484,6 +549,6 @@ def load_ai_config(path: str | os.PathLike) -> AiSegConfig:
     return AiSegConfig(**doc)
 
 
-__all__ = ["AXIS_EXTRACTORS", "AiSegConfig", "FORMAT_VERSION", "MODEL_FAMILIES", "VIEW_BIAS_MODELS", "ViewBiasConfig",
-           "ViewBiasSpecEntry",
-           "load_ai_config", "parse_view_bias"]
+__all__ = ["AXIS_EXTRACTORS", "AiSegConfig", "FORMAT_VERSION", "MODEL_FAMILIES", "ROTATE90_DIRECTIONS", "Rotate90Config",
+           "VIEW_BIAS_MODELS", "ViewBiasConfig", "ViewBiasSpecEntry",
+           "load_ai_config", "parse_rotate90", "parse_view_bias"]

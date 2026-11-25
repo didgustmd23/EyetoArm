@@ -255,13 +255,19 @@ def _clipped(points: np.ndarray, crop_wh: tuple[int, int], margin: int) -> bool:
 
 
 def convert(raw: RawSegOutput, frame: FramePacket, config: AiSegConfig, *,
-            started_ns: int | None = None) -> AiSegResult:
+            started_ns: int | None = None, sources: tuple[str | None, ...] | None = None,
+            rot_infer_ms: float | None = None) -> AiSegResult:
     """원시 출력을 원본 픽셀 좌표의 표시 결과로 바꾼다.
 
     거부는 처음 걸린 하나(비대상 → 점수 미달 → EMPTY → SMALL). class_map 밖 클래스는 AiJobConfigError,
     crop 크기 불일치는 ValueError. `started_ns`가 있으면 process_ms를 그때부터 잰다.
+    `sources`(90° 돌린 추론을 합친 경우의 인스턴스별 출처, 길이 K)와 `rot_infer_ms`는 결과에 그대로 옮긴다.
     """
     t0 = time.perf_counter_ns()
+
+    if sources is not None and len(sources) != raw.count:
+        raise ValueError(f"sources length {len(sources)} != instance count {raw.count}")
+
     crop, (ox, oy) = crop_frame(frame, config)
     crop_wh = (crop.shape[1], crop.shape[0])
 
@@ -304,7 +310,8 @@ def convert(raw: RawSegOutput, frame: FramePacket, config: AiSegConfig, *,
             index=i, class_index=cls, class_name=name, confidence=conf,
             box_xyxy=(x1 + ox, y1 + oy, x2 + ox, y2 + oy),
             polygon=None if points is None else points.astype(np.float32) + offset,
-            area_px=area, component_count=components, hole_count=holes, clipped=clipped, rejected=rejected)
+            area_px=area, component_count=components, hole_count=holes, clipped=clipped, rejected=rejected,
+            source=None if sources is None else sources[i])
 
         # 잘린 볼트는 추출하지 않고 CONTOUR_CLIPPED
         if config.axis_extractor is not None and rejected is None and _is_bolt(name):
@@ -351,7 +358,7 @@ def convert(raw: RawSegOutput, frame: FramePacket, config: AiSegConfig, *,
 
     return AiSegResult(instances=tuple(instances), model_id=config.model_id, config_sha256=config.config_sha256,
                        roi=config.roi, crop_wh=crop_wh, infer_ms=raw.infer_ms, post_ms=post_ms,
-                       process_ms=max(process_ms, raw.infer_ms + post_ms))
+                       process_ms=max(process_ms, raw.infer_ms + post_ms), rot_infer_ms=rot_infer_ms)
 
 
 def endpoint_gap_px(ea, eb) -> float:

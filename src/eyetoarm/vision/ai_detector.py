@@ -18,6 +18,7 @@ from eyetoarm.common.types import FramePacket, InvalidationKind, PlanarObservati
 from eyetoarm.vision.ai_config import AiSegConfig
 from eyetoarm.vision.ai_convert import convert, crop_frame, observation_from_ai
 from eyetoarm.vision.ai_result import AiJobConfigError, AiSegResult, ModelPrepareError, RawSegOutput
+from eyetoarm.vision.ai_rot90 import merge_r5, rotate_back, rotate_crop
 from eyetoarm.vision.pipeline_types import JobContext
 
 # import 전에 설정해야 하는 환경 변수(자동 설치·온라인 접근 방지)
@@ -147,6 +148,7 @@ class AiSegDetector:
         self._model = None
         self._torch = None
         self._owner_thread: int | None = None
+        self._infer_calls = 0   # infer 호출 수(돌린 추론 차례 `every_n` 계산용, 준비한 스레드만 씀)
 
     @property
     def config(self) -> AiSegConfig:
@@ -308,16 +310,35 @@ class AiSegDetector:
         # predict에는 폐기된 `half` 대신 `quantize`로 넘긴다(False → None(FP32), True → 16(FP16))
         quantize = 16 if cfg.half else None
 
+        raw = self._predict(crop, quantize)
+
+        # 90° 돌린 추론: 켜져 있고 이번이 차례면(호출 수 % every_n == 0) 한 번 더 추론해 R5로 합친다
+        rot = cfg.rotate90_pass
+        turn = rot is not None and self._infer_calls % rot.every_n == 0
+        self._infer_calls += 1
+
+        if not turn:
+            return convert(raw, frame, cfg, started_ns=t0)
+
+        raw_rot = rotate_back(self._predict(rotate_crop(crop, rot.direction), quantize), (crop.shape[1], crop.shape[0]))
+        merged, sources = merge_r5(raw, raw_rot, cfg.class_names, nms_iou=rot.nms_iou, nut_veto_iou=rot.nut_veto_iou)
+
+        return convert(merged, frame, cfg, started_ns=t0, sources=sources, rot_infer_ms=raw_rot.infer_ms)
+
+    def _predict(self, image, quantize) -> RawSegOutput:
+        """영상 하나를 운영 인자로 predict해 원시 출력으로 바꾼다(계약 위반은 ValueError)."""
+        cfg = self._config
+
         t1 = time.perf_counter_ns()
-        results = self._model.predict(crop, imgsz=cfg.imgsz, conf=cfg.conf_threshold, iou=cfg.iou_threshold,
+        results = self._model.predict(image, imgsz=cfg.imgsz, conf=cfg.conf_threshold, iou=cfg.iou_threshold,
                                       max_det=cfg.max_det, device=cfg.device, quantize=quantize, retina_masks=True,
                                       verbose=False)
         infer_ms = (time.perf_counter_ns() - t1) / 1e6
 
-        raw = raw_from_results(results, crop.shape, infer_ms)
+        raw = raw_from_results(results, image.shape, infer_ms)
         del results  # 결과 객체(마스크 텐서)를 붙잡지 않는다
 
-        return convert(raw, frame, cfg, started_ns=t0)
+        return raw
 
 
 __all__ = ["AiSegDetector", "REQUIRED_ENV", "raw_from_results"]
