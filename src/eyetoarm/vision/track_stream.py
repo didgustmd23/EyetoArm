@@ -207,14 +207,16 @@ class TrackStream:
 
     `send(msg_dict)`: 실제 발행(ROS면 `RosTrackStreamSender.send`). `now_ns()`: 발행 시각(ROS면 SIM 시계).
     `send`의 예외는 계수·첫 오류로만 남기고 추적 스레드로 번지지 않는다.
+    `clock_source`(`own`·`link`)는 발행 시각을 어디서 읽는지 요약에 남기는 표지일 뿐 동작을 바꾸지 않는다(#419).
     """
 
     def __init__(self, config: TrackStreamConfig, send: Callable[[dict], None], now_ns: Callable[[], int],
-                 clock_ns: Callable[[], int] = time.monotonic_ns) -> None:
+                 clock_ns: Callable[[], int] = time.monotonic_ns, clock_source: str = "own") -> None:
         if not isinstance(config, TrackStreamConfig):
             raise TrackStreamConfigError("config must be TrackStreamConfig")
 
         self.config = config
+        self.clock_source = clock_source
         self._send, self._now_ns, self._clock_ns = send, now_ns, clock_ns
         self._cond = threading.Condition()
         self._queue: collections.deque[tuple[dict, int]] = collections.deque()
@@ -222,8 +224,10 @@ class TrackStream:
         self._thread: threading.Thread | None = None
         self._last_capture_ns: int | None = None
         self._min_gap_ns = int(1e9 / config.max_rate_hz)
+        # stamp_zero: 발행 시각 0(/clock 못 받음)으로 나간 수. before_capture: 프레임 발행 시각이 촬영 시각보다 이른
+        # 수(발행 쪽 시계가 늦게 따라옴, #419 시계 방식 비교용)
         self.counts = {k: 0 for k in ("offered", "published", "dropped_rate", "dropped_queue", "dropped_closed",
-                                      "publish_errors")}
+                                      "publish_errors", "published_stamp_zero", "published_before_capture")}
         self.first_error: str | None = None
         self._latency_sim_ms: collections.deque[float] = collections.deque(maxlen=LATENCY_KEEP)
         self._queue_ms: collections.deque[float] = collections.deque(maxlen=LATENCY_KEEP)
@@ -325,8 +329,14 @@ class TrackStream:
         if out["kind"] == "frame" and out["capture_stamp_ns"] > 0 and out["publish_stamp_ns"] > 0:
             latency = (out["publish_stamp_ns"] - out["capture_stamp_ns"]) / 1e6
 
+        stamp_zero = out["publish_stamp_ns"] == 0
+        before_capture = (out["kind"] == "frame" and not stamp_zero
+                          and out["publish_stamp_ns"] < out["capture_stamp_ns"])
+
         with self._cond:
             self.counts["published"] += 1
+            self.counts["published_stamp_zero"] += int(stamp_zero)
+            self.counts["published_before_capture"] += int(before_capture)
             self._queue_ms.append(queue_ms)
 
             if latency is not None:
@@ -360,7 +370,8 @@ class TrackStream:
         with self._cond:
             lat, qms = list(self._latency_sim_ms), list(self._queue_ms)
 
-            return {"config": self.config.to_json(), "counts": dict(self.counts), "first_error": self.first_error,
+            return {"config": self.config.to_json(), "clock_source": self.clock_source, "counts": dict(self.counts),
+                    "first_error": self.first_error,
                     "record_error": self.record_error,
                     "queue_left": len(self._queue),
                     "capture_to_publish_sim_ms": {"n": len(lat), "p50": _pct(lat, 0.5), "p95": _pct(lat, 0.95),
@@ -379,12 +390,17 @@ def _record_keys(msg: dict) -> dict:
 # ---------------------------------------------------------------------- ROS 발행기
 
 class RosTrackStreamSender:
-    """`TrackStateArray` 발행기(rclpy·`eyetoarm_interfaces`는 여기서만 import). 노드는 SIM 시계(`use_sim_time`)를 쓴다.
+    """`TrackStateArray` 발행기(rclpy·`eyetoarm_interfaces`는 여기서만 import). `send`는 `TrackStream` 발행 스레드만 부른다.
 
-    `/clock`을 받으려고 노드를 별도 스레드에서 돌린다. `send`는 `TrackStream` 발행 스레드만 부른다.
+    발행 시각(`now_ns`)은 두 방식 가운데 하나다(#419).
+    - `now_ns` 없음(`--track-stream-clock own`, 예전 방식): 노드가 SIM 시계(`use_sim_time`)를 쓰고, `/clock`을 받으려고
+      노드를 별도 스레드(`eyetoarm-track-stream-clock`)에서 돌린다.
+    - `now_ns` 줌(`link`, `run_pipeline` 기본 #430): 영상 수신기가 이미 받은 `/clock` 값을 그 함수로 읽는다. 노드는 `use_sim_time` 없이 만들어
+      `/clock` 구독이 없고, 발행은 spin 없이 되므로 시계 스레드도 만들지 않는다.
     """
 
-    def __init__(self, config: TrackStreamConfig, node_name: str = "a_track_stream") -> None:
+    def __init__(self, config: TrackStreamConfig, node_name: str = "a_track_stream",
+                 now_ns: Callable[[], int] | None = None) -> None:
         import rclpy
         from rclpy.context import Context
         from rclpy.executors import SingleThreadedExecutor
@@ -397,19 +413,30 @@ class RosTrackStreamSender:
         self._rclpy, self._State, self._Array = rclpy, TrackState, TrackStateArray
         self._context = Context()
         rclpy.init(context=self._context, signal_handler_options=SignalHandlerOptions.NO)
-        self._node = rclpy.create_node(node_name, context=self._context,
-                                       parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)])
+        own_clock = now_ns is None
+        overrides = [Parameter("use_sim_time", Parameter.Type.BOOL, True)] if own_clock else []
+        self._node = rclpy.create_node(node_name, context=self._context, parameter_overrides=overrides)
         qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=config.qos_depth,
                          durability=DurabilityPolicy.VOLATILE)
         self._pub = self._node.create_publisher(TrackStateArray, config.topic, qos)
-        self._executor = SingleThreadedExecutor(context=self._context)
-        self._executor.add_node(self._node)
-        self._spin = threading.Thread(target=self._executor.spin, name="eyetoarm-track-stream-clock", daemon=True)
-        self._spin.start()
+        self._linked_now = now_ns
+        self._executor = None
+        self._spin = None
+
+        if own_clock:
+            self._executor = SingleThreadedExecutor(context=self._context)
+            self._executor.add_node(self._node)
+            self._spin = threading.Thread(target=self._executor.spin, name="eyetoarm-track-stream-clock", daemon=True)
+            self._spin.start()
+
+        self.clock_source = "own" if own_clock else "link"
         self.topic = config.topic
 
     def now_ns(self) -> int:
-        """노드 SIM 시각(ns). `/clock`을 아직 못 받았으면 0."""
+        """발행 SIM 시각(ns). `/clock`을 아직 못 받았으면 0. `link`면 수신 스레드가 쓴 값을 발행 스레드가 읽는다."""
+        if self._linked_now is not None:
+            return int(self._linked_now())
+
         return self._node.get_clock().now().nanoseconds
 
     def send(self, msg: dict) -> None:
@@ -431,15 +458,17 @@ class RosTrackStreamSender:
         self._pub.publish(out)
 
     def close(self, limit_s: float = 2.0) -> bool:
-        """시계 스레드를 멈추고 노드·문맥을 정리한다. 시계 스레드가 제한 안에 끝나면 True."""
-        self._executor.shutdown(timeout_sec=limit_s)
-        self._spin.join(limit_s)
+        """시계 스레드(있으면)를 멈추고 노드·문맥을 정리한다. 시계 스레드가 없거나 제한 안에 끝나면 True."""
+        if self._executor is not None:
+            self._executor.shutdown(timeout_sec=limit_s)
+            self._spin.join(limit_s)
+
         self._node.destroy_node()
 
         if self._context.ok():
             self._rclpy.shutdown(context=self._context)
 
-        return not self._spin.is_alive()
+        return self._spin is None or not self._spin.is_alive()
 
 
 __all__ = ["KINDS", "STATES", "TOPIC", "VELOCITY_SOURCES", "RosTrackStreamSender", "TrackStream", "TrackStreamConfig",

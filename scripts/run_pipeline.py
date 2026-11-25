@@ -146,6 +146,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="--tracking-space world 전용, 기본 꺼짐: 링크 프레임마다 확정 W 트랙을 ROS 토픽(TrackStateArray, "
                              "예 config/vision/track_stream_test.json의 /a/track_states)으로 발행한다. robot_ws 빌드·source 필요. "
                              "이동 집기용이면 --gripper-handoff와 함께 켠다")
+    parser.add_argument("--track-stream-clock", dest="track_stream_clock", choices=("own", "link"), default=None,
+                        help="--track-stream 전용: 발행 시각(SIM)을 어디서 읽나. link(기본, #430 A 결정) = 링크 영상 수신기가 "
+                             "이미 받은 /clock 값을 씀(시계 구독·스레드 없음), own = 예전처럼 발행 노드가 /clock을 따로 구독"
+                             "(시계 스레드 하나)")
     parser.add_argument("--arm-region-filter", dest="arm_region_filter", metavar="JSON", default=None,
                         help="--live-observation-out 전용: 팔·그리퍼 투영 영역 검출 제외 설정(기본 켬, "
                              f"기본 파일 {ARM_REGION_DEFAULT_REL})")
@@ -322,6 +326,13 @@ def _check_source_args(args, ros_available) -> None:
 
     if getattr(args, "track_stream", None) is not None and args.tracking_space != "world":
         build_parser().error("--track-stream requires --tracking-space world (W tracking)")
+
+    # 기본값(None → link)은 --track-stream 없이도 무동작. link를 명시했는데 --track-stream이 없을 때만 거부한다
+    if getattr(args, "track_stream_clock", None) == "link" and getattr(args, "track_stream", None) is None:
+        build_parser().error("--track-stream-clock link requires --track-stream")
+
+    if getattr(args, "track_stream_clock", None) is None:
+        args.track_stream_clock = "link"
 
     # 팔 영역 제외는 촬영 시각 TF·카메라가 있는 실시간 기록 연결에서만(기본 켬)
     if args.arm_region_filter is not None and args.no_arm_region_filter:
@@ -937,11 +948,50 @@ def _load_gripper_handoff(path: str):
     return visibility, GripperLive(gripper, belt_roi_xy_m(frames))
 
 
-def _default_track_stream_sender(config):
-    """실제 추적 흐름 발행기(rclpy·eyetoarm_interfaces). 시험은 같은 모양(send·now_ns·close)의 대역을 준다."""
+def _default_track_stream_sender(config, now_ns=None):
+    """실제 추적 흐름 발행기(rclpy·eyetoarm_interfaces). 시험은 같은 모양(send·now_ns·close)의 대역을 준다.
+
+    `now_ns`를 주면(`--track-stream-clock link`) 발행기는 `/clock`을 구독하지 않고 그 함수로 발행 시각을 읽는다.
+    """
     from eyetoarm.vision.track_stream import RosTrackStreamSender
 
-    return RosTrackStreamSender(config)
+    return RosTrackStreamSender(config, now_ns=now_ns)
+
+
+class _LinkSimClock:
+    """링크 영상 수신기의 마지막 `/clock` 값을 추적 발행 쪽에 넘기는 자리(#419, `--track-stream-clock link`).
+
+    발행기는 소스보다 먼저 만들어지므로 소스는 나중에 `attach`로 붙는다(제어 흐름 스레드). `now_ns`는 추적 발행
+    스레드가 부르고, 값 자체는 수신 스레드가 `LiveLinkSource.handle_clock`에서 쓴다. 소스 참조는 잠금으로 넘긴다.
+    소스가 붙기 전이면 0(= /clock 못 받음, `own` 방식의 시작 직후와 같은 뜻).
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._source = None
+
+    def attach(self, source) -> None:
+        """시각을 읽을 소스(`sim_now_ns()`가 있는 것)를 붙인다."""
+        with self._lock:
+            self._source = source
+
+    def wrap(self, factory):
+        """소스 팩토리를 감싸, 만들어진 소스를 붙인 뒤 그대로 돌려준다."""
+        def make(issuer, generation_provider):
+            """원래 팩토리로 소스를 만들고 붙인다."""
+            source = factory(issuer, generation_provider)
+            self.attach(source)
+
+            return source
+
+        return make
+
+    def now_ns(self) -> int:
+        """발행 SIM 시각(ns). 소스가 없으면 0."""
+        with self._lock:
+            source = self._source
+
+        return 0 if source is None else int(source.sim_now_ns())
 
 
 def _default_gripper_transport(config, sink):
@@ -1537,6 +1587,8 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
     sort_rt = None
     center_pub = None
     stream_sender = None
+    # 추적 흐름을 켰을 때만(기본 link, #430). 끄면 소스 팩토리도 감싸지 않는다
+    link_clock = (_LinkSimClock() if stream_on and getattr(args, "track_stream_clock", "link") == "link" else None)
     center_stats = _CenterOverlayStats()
     center_proc = None
     center_proc_exit = None
@@ -1609,7 +1661,10 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
         from eyetoarm.vision.track_stream import TrackStream
 
         try:
-            stream_sender = (live_track_stream_factory or _default_track_stream_sender)(stream_cfg[0])
+            make_sender = live_track_stream_factory or _default_track_stream_sender
+            # own(끄는 옵션)은 예전 호출 그대로, link(기본 #430)만 시각 함수를 넘긴다
+            stream_sender = (make_sender(stream_cfg[0]) if link_clock is None
+                             else make_sender(stream_cfg[0], now_ns=link_clock.now_ns))
         except ImportError as exc:
             err.write(f"run_pipeline: --track-stream: eyetoarm_interfaces TrackStateArray not found ({exc}); build robot_ws "
                       "and source robot_ws/install/setup.bash\n")
@@ -1620,7 +1675,8 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
             close_sort_rt()
             return 1
 
-        world_stream = TrackStream(stream_cfg[0], stream_sender.send, stream_sender.now_ns)
+        world_stream = TrackStream(stream_cfg[0], stream_sender.send, stream_sender.now_ns,
+                                   clock_source="own" if link_clock is None else "link")
 
     if center_on:
         from eyetoarm.vision.center_draw_gate import CenterDrawGate, gated_center_consumer
@@ -1832,6 +1888,7 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
         c = stream_cfg[0]
         err.write(f"run_pipeline: TRACK STREAM ON topic={c.topic} rate<={c.max_rate_hz:g}Hz qos=RELIABLE/KEEP_LAST{c.qos_depth} "
                   f"queue={c.queue_capacity} config_sha256={stream_cfg[1]} handoff_on={str(link.world.handoff_on).lower()} "
+                  f"clock={'own' if link_clock is None else 'link'} "
                   "(confirmed W tracks only, SIM_TIME, base_link mm)\n")
 
         if not link.world.handoff_on:
@@ -1886,6 +1943,9 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
 
         make = live_source_factory or _live_factory
         source_factory = make(args.source_id, args.ros_reliability, boundary_hook=link.boundary_hook)
+
+        if link_clock is not None:   # 추적 발행 시각을 이 소스의 /clock 값으로(#419)
+            source_factory = link_clock.wrap(source_factory)
 
         # A 검출 → C 연결부(항상). 실행기 제어 흐름 하나가 생산자다
         handoff, handoff_probe = (live_handoff_factory or _default_live_handoff)()

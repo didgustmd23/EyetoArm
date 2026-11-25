@@ -160,6 +160,11 @@ class LiveLinkSource:
         self._decode_failures = 0
         self._frames = 0
 
+        # 마지막으로 받은 /clock 값(SIM ns, 못 받았으면 0). 쓰는 쪽은 수신 스레드(`handle_clock`), 읽는 쪽은 다른
+        # 스레드(추적 발행 스레드의 `sim_now_ns`)라 잠금으로 넘긴다. 슬롯의 되감기 기준과 달리 비우지 않는다(#419)
+        self._sim_now_lock = threading.Lock()
+        self._sim_now = 0
+
         factory = transport_factory or (lambda src: RclpyTransport(src.config))
         self._transport: Any = None
 
@@ -187,6 +192,15 @@ class LiveLinkSource:
         """수신 상태기(시험·통계용)."""
         return self._slot
 
+    def sim_now_ns(self) -> int:
+        """마지막으로 받은 `/clock` 값(SIM ns). 아직 못 받았으면 0. 어느 스레드에서 불러도 된다.
+
+        `use_sim_time` 노드 시계의 `now()`와 같은 뜻이다(되감기면 같이 내려가고, 닫힌 뒤에는 마지막 값 유지).
+        추적 발행 노드가 `/clock`을 따로 구독하지 않고 이 값을 쓴다(#419, `--track-stream-clock link`, #430부터 기본).
+        """
+        with self._sim_now_lock:
+            return self._sim_now
+
     # ------------------------------------------------------------------ 수신 스레드 쪽(메시지 속성만 읽음)
 
     def handle_image(self, message) -> str:
@@ -213,6 +227,9 @@ class LiveLinkSource:
         except (AttributeError, TypeError, ValueError):
             self._slot.on_invalid_input("invalid_clock")
             return
+
+        with self._sim_now_lock:
+            self._sim_now = clock_ns
 
         self._slot.on_clock(clock_ns)
 
