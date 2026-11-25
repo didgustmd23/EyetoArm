@@ -276,15 +276,15 @@ def test_deadline_grace(monkeypatch):
 
 # --- #380 A decision 1: grasp height offset kept in the executor ------------------------------------
 
-def test_grasp_height_default_matches_demo():
-    """Executor default offsets equal the C demo's (M3 -2 mm, M6 0) until A decides on -1 mm."""
+def test_grasp_height_default():
+    """Executor default offsets: M3 -1 mm (A decision 2026-11-25, was -2 mm), M6 0. The C demo keeps its own
+    values (M3 -2 mm) and the executor does not read them; M6 still agrees with the demo."""
     import importlib.util
-    assert NEW.GRASP_HEIGHT_OFFSET_M == {"BOLT_A": -.002, "BOLT_B": 0.}
+    assert NEW.GRASP_HEIGHT_OFFSET_M == {"BOLT_A": -.001, "BOLT_B": 0.}
     spec = importlib.util.spec_from_file_location("demo_offsets", base.ROOT / "scripts" / "pick_bolt_demo.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.GRASP_HEIGHT_OFFSET == {"part_00": NEW.GRASP_HEIGHT_OFFSET_M["BOLT_A"],
-                                          "part_01": NEW.GRASP_HEIGHT_OFFSET_M["BOLT_B"]}
+    assert module.GRASP_HEIGHT_OFFSET["part_01"] == NEW.GRASP_HEIGHT_OFFSET_M["BOLT_B"]
 
 
 def test_grasp_height_override_moves_the_stationary_grasp(monkeypatch):

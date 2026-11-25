@@ -18,10 +18,13 @@ from .track_stream_tracker import STILL_M, SimExecutionFeedback, SimTruthLog, Tr
 
 PARTS = {"BOLT_A": ("part_00", 0.0015, (0.72, -0.05)),
          "BOLT_B": ("part_01", 0.003, (0.72, 0.17))}
-# Grasp height offset per part (m), kept in the executor (#380, A decision 1); the same values as
-# pick_bolt_demo.GRASP_HEIGHT_OFFSET (C demo), which is no longer read here. BOLT_A (M3) -2 mm stays the
-# default until A decides on -1 mm after the Gazebo comparison.
-GRASP_HEIGHT_OFFSET_M = {"BOLT_A": -.002, "BOLT_B": 0.}
+# Grasp height offset per part (m), kept in the executor (#380, A decision 1). pick_bolt_demo.GRASP_HEIGHT_OFFSET
+# (C demo) is no longer read here and still has BOLT_A at -2 mm.
+# BOLT_A (M3x20) is -1 mm (A decision 2026-11-25, was -2 mm). At -2 mm the fingertips have 0.5 mm or less to the
+# belt; when they touch it the arm cannot settle and the grasp waits 20-30 s before failing. In the 30 min
+# three-part supply runs that wait happened in 4 of 15 M3 grasps at -2 mm and 0 of 16 at -1 mm, and all 16 M3
+# goals at -1 mm reached the bin. In 4 single runs the carried bolt tilted 6-14 deg at -1 mm against 22-63 deg.
+GRASP_HEIGHT_OFFSET_M = {"BOLT_A": -.001, "BOLT_B": 0.}
 DOWN = np.array([0., 0., -1.])
 POSE_SOURCES = ("sim", "track")
 NO_HOME_AFTER = ("STOP_UNCONFIRMED",)   # stop not confirmed: recovery first, no automatic motion
