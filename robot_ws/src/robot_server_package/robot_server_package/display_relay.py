@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from collections import deque
+from collections import OrderedDict, deque
 import json
 import socket
 import struct
@@ -156,13 +156,20 @@ class CenterFallback:
     ahead of the last substitute is held back (D would drop it); the first center ahead of it ends the fallback.
     The detector config is the last center's (same generation must keep one config in D), else A detect's.
     All state is guarded by one lock: the handoff thread, the D request thread and the ROS executor call it.
+
+    ``every_frame`` (#426, off by default = the behaviour above): send one substitute per A-numbered link image
+    instead of one per 0.1 s, and label each raw image only with the A numbers of the same capture
+    (``capture_stamp_ns``), never with a neighbour's. A center frame held back as "not ahead of the last
+    substitute" ends the fallback episode and restarts the wait, so the next B frame gets ahead and D returns to B.
     """
 
-    def __init__(self, stale_s=1.0, clock=time.monotonic):
+    def __init__(self, stale_s=1.0, clock=time.monotonic, every_frame=False):
         if not stale_s >= 0:
             raise ValueError("stale_s must be >= 0")
         self.stale_s = float(stale_s)
+        self.every_frame = bool(every_frame)
         self._clock = clock
+        self._by_stamp = OrderedDict()   # every_frame: capture_stamp_ns -> A numbers (newest 64)
         self._lock = threading.Lock()
         self._selected = False
         self._ref = None             # selection time or last center sent (monotonic s)
@@ -175,6 +182,8 @@ class CenterFallback:
         self.detect_gaps = deque(maxlen=256)   # 1 s 이상 A detect 공백: (벽시계, 공백 s, 앞 순서, 뒤 순서), 진단 기록용
         self.counts = {"fallback_tx": 0, "fallback_starts": 0, "fallback_no_numbers": 0, "center_behind_fallback": 0,
                        "fallback_ends": 0, "detect_gaps_ge1s": 0}
+        if self.every_frame:
+            self.counts.update(fallback_ended_by_center=0, fallback_unmatched=0)
 
     @staticmethod
     def order_of(meta):
@@ -206,12 +215,19 @@ class CenterFallback:
                 self.detect_gaps.append((time.time(), round(now - at, 3),
                                          None if previous is None else self.order_of(previous), self.order_of(numbers)))
             self._numbers, self._detect_at = numbers, now
+            if self.every_frame:
+                stamp = metadata.get("capture_stamp_ns")
+                if type(stamp) is int and stamp > 0:
+                    self._by_stamp[stamp] = numbers
+                    while len(self._by_stamp) > 64:
+                        self._by_stamp.popitem(last=False)
 
     def forget_detect(self):
         """A detect source changed or disconnected: its numbers can no longer be compared."""
         with self._lock:
             self._numbers = None
             self._last_order = None
+            self._by_stamp.clear()
 
     def center_allowed(self, metadata):
         """Called before a center frame goes to D. False holds it back (not ahead of the last substitute)."""
@@ -219,12 +235,20 @@ class CenterFallback:
         with self._lock:
             if self._last_order is not None and order <= self._last_order:
                 self.counts["center_behind_fallback"] += 1
+                if self.every_frame and self._active:
+                    # B is drawing again but lags the substitute: stop substituting and wait again, so the
+                    # next B frame is ahead of the last substitute (_last_order stays the D order floor)
+                    self._active = False
+                    self._ref = self._clock()
+                    self.counts["fallback_ended_by_center"] += 1
+                    self.counts["fallback_ends"] += 1
                 return False
             if self._active:
                 self.counts["fallback_ends"] += 1
             self._active = False
             self._no_numbers_episode = False
-            self._last_order = None
+            # every_frame: a later substitute must be ahead of this center frame too (an equal one is dropped by D)
+            self._last_order = order if self.every_frame else None
             self._center_config = metadata["detector_config_id"]
             self._ref = self._clock()
             return True
@@ -254,10 +278,51 @@ class CenterFallback:
                 numbers["detector_config_id"] = self._center_config
             return numbers
 
+    def next_fallback_for(self, stamps):
+        """every_frame: (capture stamp, numbers) for the newest raw image that has its own A numbers and is ahead
+        of the last substitute, or None. ``stamps`` are the capture stamps (ns) of the raw images held, any order."""
+        with self._lock:
+            if not self.every_frame or not self._selected or self.stale_s <= 0 or self._ref is None:
+                return None
+            if self._clock() - self._ref < self.stale_s:
+                return None
+            if self._numbers is None:
+                if not self._no_numbers_episode:
+                    self.counts["fallback_no_numbers"] += 1
+                    self._no_numbers_episode = True
+                return None
+            matched = False
+            for stamp in sorted(stamps, reverse=True):
+                numbers = self._by_stamp.get(stamp)
+                if numbers is None:
+                    continue
+                matched = True
+                order = self.order_of(numbers)
+                if self._last_order is not None and order <= self._last_order:
+                    return None   # newer images have no numbers yet and older ones would go backwards
+                if not self._active:
+                    self.counts["fallback_starts"] += 1
+                self._active = True
+                self._last_order = order
+                self.counts["fallback_tx"] += 1
+                numbers = dict(numbers)
+                if self._center_config is not None:
+                    numbers["detector_config_id"] = self._center_config
+                return stamp, numbers
+            if stamps and not matched:   # raw images held but none has its own A numbers (yet)
+                self.counts["fallback_unmatched"] += 1
+            return None
+
     def take_counts(self):
         """Snapshot of the cumulative counters."""
         with self._lock:
             return dict(self.counts)
+
+
+def fallback_period_s(every_frame=False):
+    """Fallback timer period: 0.1 s (one substitute per tick, #379), or 0.02 s with every_frame (#426) so each
+    A-numbered link image (about 25 per real second in Gazebo) can go out."""
+    return 0.02 if every_frame else 0.1
 
 
 def fallback_metadata(run_id, numbers, stamp_sec, stamp_nanosec, frame_id):
@@ -575,7 +640,12 @@ class LatestFrameServer:
             client.close()
 
 
-def main():
+FALLBACK_STALE_S = 0.3          # #426 적용: B 영상 간격 대입(0.3 s에서 끼어듦이 꺾임)으로 고른 기본 기다림
+LEGACY_FALLBACK_STALE_S = 1.0   # #379 때 값(--center-fallback-legacy)
+
+
+def build_parser():
+    """Relay command line. Fallback defaults are the #426 behaviour; --center-fallback-legacy restores #379."""
     parser = argparse.ArgumentParser(description="Relay selected link variant and raw auxiliary cameras to D")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -586,10 +656,39 @@ def main():
     parser.add_argument("--center-topic", default=DEFAULT_CENTER_TOPIC,
                         help="B CenterOverlay message topic (contains the image and B frame identity)")
     parser.add_argument("--quality", type=int, default=80)
-    parser.add_argument("--center-fallback-s", type=float, default=1.0,
+    parser.add_argument("--center-fallback-s", type=float, default=None,
                         help="send the raw link image labelled center after this many seconds without a center "
-                             "frame while D selects center (#379); 0 disables")
+                             f"frame while D selects center (#379); 0 disables. Default {FALLBACK_STALE_S} "
+                             f"({LEGACY_FALLBACK_STALE_S} with --center-fallback-legacy)")
+    parser.add_argument("--center-fallback-every-frame", action=argparse.BooleanOptionalAction, default=None,
+                        help="#426 (default on): send every A-numbered link image as the substitute (not one per "
+                             "0.1 s), each labelled with its own capture's A numbers; a held-back B frame ends the "
+                             "substitute")
+    parser.add_argument("--center-fallback-legacy", action="store_true",
+                        help=f"#426: the #379 substitute ({LEGACY_FALLBACK_STALE_S} s wait, one per 0.1 s, newest A "
+                             "numbers); an explicit --center-fallback-s / --[no-]center-fallback-every-frame still wins")
+    return parser
+
+
+def fallback_settings(args):
+    """(stale_s, every_frame) from parsed arguments: explicit values, else legacy or #426 defaults."""
+    legacy = bool(args.center_fallback_legacy)
+    stale_s = args.center_fallback_s
+    every_frame = args.center_fallback_every_frame
+
+    if stale_s is None:
+        stale_s = LEGACY_FALLBACK_STALE_S if legacy else FALLBACK_STALE_S
+
+    if every_frame is None:
+        every_frame = not legacy
+
+    return float(stale_s), bool(every_frame)
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
+    args.center_fallback_s, args.center_fallback_every_frame = fallback_settings(args)
     if not 1 <= args.quality <= 100:
         parser.error("--quality must be between 1 and 100")
     if not args.center_fallback_s >= 0:
@@ -603,7 +702,8 @@ def main():
     from sensor_msgs.msg import Image
 
     run_id = str(uuid.uuid4())
-    relay = LatestFrameServer(args.host, args.port, run_id, fallback=CenterFallback(args.center_fallback_s))
+    relay = LatestFrameServer(args.host, args.port, run_id,
+                              fallback=CenterFallback(args.center_fallback_s, every_frame=args.center_fallback_every_frame))
     try:
         handoff_ingress = HandoffIngress(relay, args.handoff_host, args.handoff_port)
     except OSError:
@@ -617,6 +717,7 @@ def main():
     center_result_cache = {}
     center_frame = {"key": None, "metadata": None, "jpeg": None, "counted_key": None}
     latest_link = {"message": None}   # center 선택 중 마지막 링크 원본(변환 전)
+    recent_link = OrderedDict()       # #426 every_frame: 촬영 시각(ns) → 링크 원본(최근 40장). ROS 실행기 스레드만 씀
 
     def result_key(payload):
         return tuple(payload.get(key) for key in (
@@ -684,6 +785,11 @@ def main():
             relay.note_received(channel)
             if channel == "link" and relay.selected_link_variant() != "raw":
                 latest_link["message"] = message   # center 대체용: 보낼 때만 변환한다
+                if args.center_fallback_every_frame:   # #426: 촬영 시각으로 A 번호와 짝짓도록 최근 원본을 둔다
+                    stamp = int(message.header.stamp.sec) * 1_000_000_000 + int(message.header.stamp.nanosec)
+                    recent_link[stamp] = message
+                    while len(recent_link) > 40:
+                        recent_link.popitem(last=False)
                 return
             try:
                 image = bridge.imgmsg_to_cv2(message, desired_encoding="bgr8")
@@ -799,6 +905,7 @@ def main():
             link_subscription["value"] = None
             print(f"[C 영상] link raw 입력 구독 중지 variant={selected}", flush=True)
         latest_link["message"] = None
+        recent_link.clear()
         applied_link_variant["value"] = selected
 
         center_enabled = selected == "center"
@@ -830,13 +937,24 @@ def main():
             applied_center_enabled["value"] = center_enabled
 
     def send_center_fallback():
-        """center 대체(#379): 기한이 지났고 새 A 번호와 링크 원본이 있으면 원본을 center 이름표로 보낸다."""
-        message = latest_link["message"]
-        if message is None or relay.selected_link_variant() != "center":
+        """center 대체(#379): 기한이 지났고 새 A 번호와 링크 원본이 있으면 원본을 center 이름표로 보낸다.
+
+        #426 every_frame: 같은 촬영 시각의 A 번호가 있는 가장 새 원본을 그 번호로 보낸다.
+        """
+        if relay.selected_link_variant() != "center":
             return
-        numbers = relay.fallback.next_fallback()
-        if numbers is None:
-            return
+        if args.center_fallback_every_frame:
+            pair = relay.fallback.next_fallback_for(list(recent_link))
+            if pair is None:
+                return
+            message, numbers = recent_link[pair[0]], pair[1]
+        else:
+            message = latest_link["message"]
+            if message is None:
+                return
+            numbers = relay.fallback.next_fallback()
+            if numbers is None:
+                return
         try:
             image = bridge.imgmsg_to_cv2(message, desired_encoding="bgr8")
             ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, args.quality])
@@ -849,7 +967,7 @@ def main():
             node.get_logger().warning(f"center fallback frame dropped: {exc}")
 
     subscription_control_timer = node.create_timer(0.1, update_link_input_subscription)
-    fallback_timer = node.create_timer(0.1, send_center_fallback)
+    fallback_timer = node.create_timer(fallback_period_s(args.center_fallback_every_frame), send_center_fallback)
     print(f"[C 영상] {CAMERAS} + B center={args.center_topic} -> {args.host}:{args.port} 대기 중 · "
           "link variant 기본값=raw", flush=True)
     try:

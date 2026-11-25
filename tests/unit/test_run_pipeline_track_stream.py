@@ -20,9 +20,10 @@ STREAM = ("--track-stream", str(STREAM_CONFIG))
 class FakeSender:
     """발행기 대역: send·now_ns·close."""
 
-    def __init__(self, config):
-        """설정."""
+    def __init__(self, config, now_ns=None):
+        """설정. 기본(link, #430)이면 CLI가 시각 함수 `now_ns`도 넘긴다(이 대역은 쓰지 않고 1을 낸다)."""
         self.config = config
+        self.linked_now = now_ns
         self.got: list[dict] = []
         self.closed = False
 
@@ -72,7 +73,7 @@ class CliTest(StreamCli):
 
     def test_off_never_creates_sender(self):
         """--track-stream이 없으면 발행기를 만들지 않고 요약·기록에 stream이 없다."""
-        code, err, out = self.run_stream(Scenario(5), WORLD, lambda c: self.fail("sender must not start"))
+        code, err, out = self.run_stream(Scenario(5), WORLD, lambda c, now_ns=None: self.fail("sender must not start"))
         self.assertEqual(code, 0, err)
         # 같은 실행: retry 블록 없는 송신 설정이면 기본 제한을 시작 줄·run_meta에 남긴다
         self.assertIn("retry=off tracking=world", err)
@@ -87,9 +88,9 @@ class CliTest(StreamCli):
         """켬(+ 인계)이면 시작 줄, frame 발행·끝 marker, 발행기 정리, 요약 track_stream, 기록 frame 줄에 stream."""
         made = []
 
-        def factory(config):
+        def factory(config, now_ns=None):
             """대역 발행기."""
-            made.append(FakeSender(config))
+            made.append(FakeSender(config, now_ns))
             return made[-1]
 
         code, err, out = self.run_stream(Scenario(5), GRIP + STREAM, factory)
@@ -115,7 +116,7 @@ class CliTest(StreamCli):
     def test_without_handoff_warns(self):
         """인계 없이 켜면 handoff_on=false를 싣고 경고 줄을 낸다."""
         made = []
-        code, err, _ = self.run_stream(Scenario(3), WORLD + STREAM, lambda c: made.append(FakeSender(c)) or made[-1])
+        code, err, _ = self.run_stream(Scenario(3), WORLD + STREAM, lambda c, now_ns=None: made.append(FakeSender(c)) or made[-1])
         self.assertEqual(code, 0, err)
         self.assertIn("handoff_on=false", err)
         self.assertIn("WARNING track stream without --gripper-handoff", err)
@@ -126,12 +127,12 @@ class CliTest(StreamCli):
         bad = Path(self.tmp.name) / "bad_stream.json"
         bad.write_text(json.dumps({**json.loads(STREAM_CONFIG.read_text()), "extra": 1}))
 
-        def missing(config):
+        def missing(config, now_ns=None):
             """인터페이스 미빌드 대역."""
             raise ImportError("No module named 'eyetoarm_interfaces'")
 
-        cases = ((("--tracking", *PIXEL, *STREAM), lambda c: self.fail("no sender"), 2),
-                 ((*WORLD, "--track-stream", str(bad)), lambda c: self.fail("no sender"), 2),
+        cases = ((("--tracking", *PIXEL, *STREAM), lambda c, now_ns=None: self.fail("no sender"), 2),
+                 ((*WORLD, "--track-stream", str(bad)), lambda c, now_ns=None: self.fail("no sender"), 2),
                  ((*WORLD, *STREAM), missing, 1))
 
         for extra, factory, want in cases:
