@@ -1690,12 +1690,18 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
             # 그리기·영상 발행은 자식 프로세스가 한다(#413). 띄우지 못해도 center 영상만 없고 실행은 계속한다
             # 자식의 출력은 이 프로세스의 표준 오류로 함께 나간다(출력 폴더는 아직 만들어지기 전이라 파일을 두지 않음)
             def center_proc_failed(reason):
-                """자식을 더 쓸 수 없게 된 때 한 번(자식 대리의 받기·보내기 스레드에서): 운영자가 화면이 원본으로 바뀐 까닭을 알게."""
+                """더는 다시 띄우지 않기로 한 때 한 번(자식 대리의 스레드에서): 운영자가 화면이 원본으로 바뀐 까닭을 알게."""
                 err.write(f"run_pipeline: center draw process stopped: {reason}; "
                           "center image off (relay sends the raw image), run continues\n")
                 err.flush()
 
-            center_proc = (center_process_factory or CenterDrawProcess)(REPO_ROOT, on_failed=center_proc_failed)
+            def center_proc_notice(line):
+                """다시 띄울 때·다시 뜬 때 한 줄(#432, 자식 대리의 스레드에서). 그 사이 화면은 중계기의 대체 원본."""
+                err.write(f"run_pipeline: {line}\n")
+                err.flush()
+
+            center_proc = (center_process_factory or CenterDrawProcess)(REPO_ROOT, on_failed=center_proc_failed,
+                                                                        on_notice=center_proc_notice)
 
             try:
                 center_proc.start()
@@ -2190,6 +2196,8 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
               + ("" if center_proc is None else
                  f" center_process=failed({center_proc.summary()['failed']})" if center_proc.summary().get("failed")
                  else " center_process=ok")
+              + ("" if center_proc is None or not center_proc.summary().get("restarts") else
+                 f" center_restarts={center_proc.summary()['restarts']}")
               + (" (new run requires an explicit restart)" if reset else "") + "\n")
 
     return exit_code
