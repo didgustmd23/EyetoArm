@@ -101,6 +101,34 @@ class FakePublisher:
         self.events.append("center_close")
 
 
+class NullCenterProcess:
+    """center 그리기 자식 대역(#413 r3, 기본 켜짐): 프로세스를 띄우지 않고 요청을 받아 버린다."""
+
+    def __init__(self, root, *, on_failed=None):
+        """띄우지 않는다."""
+        self.pid = None
+        self.jobs = 0
+
+    def start(self):
+        """아무것도 안 함."""
+
+    def configure(self, camera):
+        """아무것도 안 함."""
+
+    def submit(self, *args, **kwargs):
+        """요청을 받은 것으로 센다."""
+        self.jobs += 1
+        return True
+
+    def summary(self):
+        """요약."""
+        return {"requested": self.jobs, "failed": None}
+
+    def close(self):
+        """정상 종료."""
+        return {"returncode": 0, "forced": False}
+
+
 class OrderTf(FakeTf):
     """TF 닫기(연결부 정리 마지막 쪽 단계)를 공유 사건 기록에 남긴다."""
 
@@ -177,6 +205,7 @@ class WiringBase(CliBase):
             """C 연결부·발행기 주입을 더한다."""
             kw.setdefault("live_handoff_factory", self.handoff_factory)
             kw.setdefault("center_publisher_factory", self.publisher_factory)
+            kw.setdefault("center_process_factory", NullCenterProcess)   # 단위시험에서 실제 자식(ROS)을 띄우지 않는다(#413 r3)
             kw.update(self.extra_kw)
 
             return real(argv, **kw)
@@ -210,7 +239,8 @@ class AllOnTest(WiringBase):
         """볼트 3개 × 4장: handoff 제공·center 발행·고른 1개 송신이 한 main() 호출에서 모두 일어난다."""
         rt = FakeRuntime()
         sc = Scenario(4, masks={i: three_bolts for i in range(4)})
-        code, err, out = self.run_sort(sc, factory=self.factory(rt), extra=(*LIST, "--b-center-overlay", "--live-sort-part"))
+        # 같은 프로세스 발행기 경로를 본다(#413 r3부터 기본은 별도 프로세스라 끄는 옵션을 준다)
+        code, err, out = self.run_sort(sc, factory=self.factory(rt), extra=(*LIST, "--b-center-overlay", "--no-b-center-process", "--live-sort-part"))
 
         self.assertEqual(code, 0, err)
         self.assertEqual((len(self.handoffs), len(self.pubs), len(self.factory_calls)), (1, 1, 1))
@@ -280,7 +310,8 @@ class AllOnTest(WiringBase):
             s.src.handle_camera_info(info_msg(fx=310.0, width=W, height=H, frame_id=FRAME_ID))
 
         sc = Scenario(6, masks={i: three_bolts for i in range(6)}, during={2: change})
-        code, err, out = self.run_sort(sc, config=CONFIG, extra=(*LIST, "--b-center-overlay"), hook=stages.append)
+        code, err, out = self.run_sort(sc, config=CONFIG, extra=(*LIST, "--b-center-overlay", "--no-b-center-process"),
+                                       hook=stages.append)   # 같은 프로세스 경로(#413 r3)
 
         self.assertEqual(code, 0, err)
         self.assertEqual(len(self.pubs), 1)
@@ -402,7 +433,7 @@ class CenterIsolationTest(WiringBase):
         """발행 예외: 종료 0, B 수락·기록 그대로, 요약·마지막 줄에 오류 수."""
         self.pub_kw = {"fail": True}
         sc = Scenario(3, masks={i: three_bolts for i in range(3)})
-        code, err, out = self.run_sort(sc, config=CONFIG, extra=(*LIST, "--b-center-overlay"))
+        code, err, out = self.run_sort(sc, config=CONFIG, extra=(*LIST, "--b-center-overlay", "--no-b-center-process"))   # 같은 프로세스 경로(#413 r3)
 
         self.assertEqual(code, 0, err)
         s = self.summary(out)

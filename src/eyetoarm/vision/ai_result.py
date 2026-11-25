@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 import re
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from numbers import Integral, Real
 
 import numpy as np
@@ -23,6 +23,10 @@ SMALL_MASK = "SMALL_MASK"
 ARM_REGION = "ARM_REGION"   # 링크 카메라에 걸린 팔·그리퍼를 검출한 것(arm_region 판정). 범위 밖으로 다룬다
 OUTSIDE_BELT = "OUTSIDE_BELT"   # 벨트 윗면 밖(바닥·상자 등)의 검출(belt_region 판정). 범위 밖으로 다룬다
 DUPLICATE_MASK = "DUPLICATE_MASK"   # 같은 볼트를 거의 같은 마스크로 한 번 더 검출한 것(ai_convert 중복 판정). 범위 밖으로 다룬다
+# 인스턴스 출처 표시(None = 그대로 추론). 90° 돌린 추론에서 온 것만 표시한다(#425)
+SOURCE_ROT90 = "rot90"
+INSTANCE_SOURCES = (SOURCE_ROT90,)
+
 REJECTIONS = (NON_TARGET_CLASS, LOW_CONFIDENCE, EMPTY_MASK, SMALL_MASK, ARM_REGION, OUTSIDE_BELT, DUPLICATE_MASK)
 
 # polygon 허용 조합: 필수 / 금지 / 둘 다 허용
@@ -196,6 +200,7 @@ class AiInstance:
     axis_max_iou: float | None = None
     axis_diag: dict | None = None
     axis_overlap_with: tuple[int, ...] | None = None
+    source: str | None = field(default=None, metadata={"omit_if_none": True})   # 90° 돌린 추론에서 왔으면 "rot90"
 
     @property
     def axis_evaluated(self) -> bool:
@@ -276,6 +281,9 @@ class AiInstance:
         if self.rejected is not None and self.rejected not in REJECTIONS:
             raise ValueError(f"rejected must be None or one of {REJECTIONS}: {self.rejected!r}")
 
+        if self.source is not None and self.source not in INSTANCE_SOURCES:
+            raise ValueError(f"source must be None or one of {INSTANCE_SOURCES}: {self.source!r}")
+
         # 다각형: 소유 복사 + 점 3개 이상 + 유한
         polygon = _owned_contour(self.polygon, "polygon")
 
@@ -325,6 +333,7 @@ class AiSegResult:
     infer_ms: float
     post_ms: float
     process_ms: float
+    rot_infer_ms: float | None = field(default=None, metadata={"omit_if_none": True})   # 돌린 추론 predict만(안 했으면 None)
 
     def __post_init__(self) -> None:
         """필드를 검증한다. 인스턴스 번호는 0부터 빠짐없이 순서대로여야 한다."""
@@ -365,6 +374,9 @@ class AiSegResult:
 
         for name in ("infer_ms", "post_ms", "process_ms"):
             put(name, _finite(getattr(self, name), name))
+
+        if self.rot_infer_ms is not None:
+            put("rot_infer_ms", _finite(self.rot_infer_ms, "rot_infer_ms"))
 
     @property
     def candidate_count(self) -> int:
@@ -470,5 +482,5 @@ def reject_in(instances, removed: set, code: str) -> tuple:
     return tuple(out)
 
 
-__all__ = ["AXIS_EXTRACTION_ERROR", "CONTOUR_CLIPPED", "MULTIPLE_CANDIDATES", "axis_candidate_reason", "AiInstance", "AiJobConfigError", "AiSegResult", "EMPTY_MASK", "LOW_CONFIDENCE", "ModelPrepareError", "NON_TARGET_CLASS",
+__all__ = ["INSTANCE_SOURCES", "SOURCE_ROT90", "AXIS_EXTRACTION_ERROR", "CONTOUR_CLIPPED", "MULTIPLE_CANDIDATES", "axis_candidate_reason", "AiInstance", "AiJobConfigError", "AiSegResult", "EMPTY_MASK", "LOW_CONFIDENCE", "ModelPrepareError", "NON_TARGET_CLASS",
            "REJECTIONS", "RawSegOutput", "SMALL_MASK", "reject_in", "reject_instances"]

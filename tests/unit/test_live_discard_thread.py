@@ -424,7 +424,8 @@ class CenterAfterDiscardTest(CliBase):
 
         with mock.patch.object(self.mod, "main", main):
             code, err, out = self.run_sort(sc, config=MANAGED_CONFIG,
-                                           extra=("--b-input", "list", "--b-center-overlay", *MANAGED_EXTRA),
+                                           extra=("--b-input", "list", "--b-center-overlay", "--no-b-center-process",   # 같은 프로세스 경로(#413 r3)
+                                                  *MANAGED_EXTRA),
                                            factory=self.factory(rt))
 
         rt.join()

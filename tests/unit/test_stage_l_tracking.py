@@ -359,7 +359,8 @@ class CenterStageLTest(WiringBase):
     def test_all_options_together(self):
         """--b-input list --tracking(픽셀) --b-center-overlay --live-sort-part: 0, center·후보 번호."""
         code, err, out = self.run_sort(three(6), config=sort_config(self.tmp.name, require=False),
-                                       extra=(*LIST, "--tracking", *PIXEL, "--b-center-overlay", "--live-sort-part"))
+                                       extra=(*LIST, "--tracking", *PIXEL, "--b-center-overlay", "--no-b-center-process",   # 같은 프로세스 경로(#413 r3)
+                                              "--live-sort-part"))
 
         self.assertEqual(code, 0, err)
         self.assertTrue(self.pubs and self.pubs[0].published)

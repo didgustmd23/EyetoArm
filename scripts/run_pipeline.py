@@ -166,6 +166,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="--b-center-overlay와 함께(#406): 구독자가 없어도 사진마다 center를 그려 발행(예전 동작). "
                              "기본은 center 영상 토픽 구독자가 없는 동안(대시보드가 center를 고르지 않음) 그리기·영상 발행을 건너뜀"
                              "(B 계산·/b/results·목표는 그대로)")
+    center_process = parser.add_mutually_exclusive_group()
+    center_process.add_argument("--b-center-process", dest="b_center_process", action="store_true", default=None,
+                                help="--b-center-overlay와 함께(#413): center 그리기·영상 발행을 별도 프로세스에서 한다(기본 켜짐, "
+                                     "명시해도 같음). A는 요청만 넘기고, 밀리면 최신 사진만 그림. 자식이 죽으면 center 영상만 멈추고 "
+                                     "실행은 계속한다")
+    center_process.add_argument("--no-b-center-process", dest="b_center_process", action="store_false",
+                                help="--b-center-overlay와 함께(#413 r3): 별도 프로세스를 끄고 예전처럼 같은 프로세스에서 그린다")
     parser.add_argument("--b-input", dest="b_input", choices=("single", "list"), default="single",
                         help="B 입력 단계(#189): single = 단계 T(기본, 관측 하나 eyetoarm.b_input/1), list = 단계 L(같은 프레임 "
                              "후보 목록 eyetoarm.b_input/2). list는 --capture-meta 저장 입력 경로 또는 --live-observation-out 실시간 기록 전용 경로에서만 쓰며 B 목록 소비자"
@@ -331,6 +338,10 @@ def _check_source_args(args, ros_available) -> None:
     if (args.belt_region_filter is not None or args.no_belt_region_filter) and args.live_observation_out is None:
         build_parser().error("--belt-region-filter/--no-belt-region-filter require --live-observation-out "
                              "(needs capture-time TF and camera)")
+
+    # 별도 프로세스는 --b-center-overlay일 때의 기본값(#413 r3). 켜라고 명시했는데 overlay가 없을 때만 거부한다
+    if getattr(args, "b_center_process", None) is True and not args.b_center_overlay:
+        build_parser().error("--b-center-process requires --b-center-overlay")
 
     # C 목표 송신: 기록 전용 연결의 수락 결과만(단계 L은 B가 고른 1개)
     if args.live_sort_part:
@@ -649,7 +660,7 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
          live_source_factory=None, b_stage_hook=None, extension_source=None, live_tf_factory=None,
          live_run_controller=None, list_consumer_factory=None,
          live_sort_part_factory=None, live_conveyor_probe=None, live_handoff_factory=None,
-         center_publisher_factory=None, live_gripper_factory=None, infer_process_options=None,
+         center_publisher_factory=None, live_gripper_factory=None, center_process_factory=None, infer_process_options=None,
          live_track_stream_factory=None) -> int:
     """CLI 진입점. 종료 코드를 돌려준다.
 
@@ -751,7 +762,7 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
                                      live_sort_part_factory=live_sort_part_factory,
                                      live_conveyor_probe=live_conveyor_probe,
                                      live_handoff_factory=live_handoff_factory,
-                                     center_publisher_factory=center_publisher_factory,
+                                     center_publisher_factory=center_publisher_factory, center_process_factory=center_process_factory,
                                      live_gripper_factory=live_gripper_factory,
                                      live_track_stream_factory=live_track_stream_factory)
 
@@ -1408,7 +1419,7 @@ def _run_live_observation(*args, **kw) -> int:
 def _run_live_observation_body(args, settings, runner_config, detector_kw, err, *, b_stage_hook, live_source_factory,
                                live_tf_factory, controller, list_consumer_factory=None,
                                live_sort_part_factory=None, live_conveyor_probe=None, live_handoff_factory=None,
-                               center_publisher_factory=None, live_gripper_factory=None,
+                               center_publisher_factory=None, live_gripper_factory=None, center_process_factory=None,
                                live_track_stream_factory=None, signals=None) -> int:
     """실시간 A→B 기록 전용 시험. 리셋이면 실행을 멈추고 정리한다(자동 재시작 없음).
 
@@ -1527,6 +1538,19 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
     center_pub = None
     stream_sender = None
     center_stats = _CenterOverlayStats()
+    center_proc = None
+    center_proc_exit = None
+
+    def close_center_proc():
+        """center 그리기 자식 프로세스를 끝낸다(없으면 아무것도 안 함). 종료 정보를 돌려준다."""
+        if center_proc is None:
+            return None
+
+        try:
+            return center_proc.close()
+        except Exception as pexc:
+            err.write(f"run_pipeline: center draw process close failed: {type(pexc).__name__}: {pexc}\n")
+            return None
 
     def close_sort_rt():
         """세션이 만들어지지 않았을 때만: 이 함수가 만든 송신 런타임·center 발행기를 닫는다."""
@@ -1535,6 +1559,8 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
                 sort_rt.close(link_config.close_limit_s)
             except Exception as sexc:
                 err.write(f"run_pipeline: sort_part runtime close failed: {type(sexc).__name__}: {sexc}\n")
+
+        close_center_proc()
 
         if center_pub is not None:
             try:
@@ -1601,8 +1627,31 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
 
         # 보는 쪽(center 영상 토픽 구독자)이 없으면 그리지 않는다(#406 ①). 끄는 옵션 --b-center-always-draw
         center_gate = CenterDrawGate(center_pub, always=bool(getattr(args, "b_center_always_draw", False)))
-        consumer_factory = lambda stage: gated_center_consumer(stage, center_pub, center_gate,  # noqa: E731
-                                                               on_error=center_stats.on_error)
+
+        if getattr(args, "b_center_process", None) is not False:   # 기본 켜짐(#413 r3), --no-b-center-process로만 끔
+            from eyetoarm.vision.center_process import CenterDrawProcess, process_center_consumer
+
+            # 그리기·영상 발행은 자식 프로세스가 한다(#413). 띄우지 못해도 center 영상만 없고 실행은 계속한다
+            # 자식의 출력은 이 프로세스의 표준 오류로 함께 나간다(출력 폴더는 아직 만들어지기 전이라 파일을 두지 않음)
+            def center_proc_failed(reason):
+                """자식을 더 쓸 수 없게 된 때 한 번(자식 대리의 받기·보내기 스레드에서): 운영자가 화면이 원본으로 바뀐 까닭을 알게."""
+                err.write(f"run_pipeline: center draw process stopped: {reason}; "
+                          "center image off (relay sends the raw image), run continues\n")
+                err.flush()
+
+            center_proc = (center_process_factory or CenterDrawProcess)(REPO_ROOT, on_failed=center_proc_failed)
+
+            try:
+                center_proc.start()
+            except OSError as pexc:
+                err.write(f"run_pipeline: center draw process start failed ({type(pexc).__name__}: {pexc}); "
+                          "center image off, run continues\n")
+
+            consumer_factory = lambda stage: process_center_consumer(stage, center_pub, center_gate,  # noqa: E731
+                                                                     center_proc, on_error=center_stats.on_error)
+        else:
+            consumer_factory = lambda stage: gated_center_consumer(stage, center_pub, center_gate,  # noqa: E731
+                                                                   on_error=center_stats.on_error)
         consumer_kind = {"list_consumer_kind": CENTER_CONSUMER_KIND}
     else:
         consumer_factory = list_consumer_factory if listed else None
@@ -1677,7 +1726,8 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
                         "overlay=none (eyetoarm_interfaces CenterOverlay not found: rebuild robot_ws; Image only)")
         err.write(f"run_pipeline: B CENTER OVERLAY ON topic={getattr(center_pub, 'topic', None)} {overlay_text} "
                   "(published right after B compute, before accept check (3); stage L only) "
-                  + ("draw=always\n" if center_gate.always else "draw=only while a center subscriber exists (#406)\n"))
+                  + ("draw=always" if center_gate.always else "draw=only while a center subscriber exists (#406)")
+                  + (f" draw_process=on pid={center_proc.pid} (#413)\n" if center_proc is not None else " draw_process=off\n"))
 
     if sort_on:
         set_sink = getattr(sort_rt, "set_event_sink", None)
@@ -1985,7 +2035,9 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
         if getattr(link, "list_goal_unmatched", 0):   # 고른 목표를 결과 묶음에서 못 찾음(B 반환 계약 위반)
             problems.append(f"list goal unmatched: {link.list_goal_unmatched}")
 
-        # 정리 순서: 연결부 정리 뒤 center 발행기 → C 연결부. 정리 미확인이면 worker가 발행 중일 수 있어 열어 둔다
+        # 정리 순서: 연결부 정리 뒤 center 그리기 자식 → center 발행기 → C 연결부. 자식은 정리 미확인이어도 끝낸다(남기지 않음)
+        center_proc_exit = close_center_proc()
+
         if center_pub is not None:
             if link.cleanup_confirmed:
                 try:
@@ -2045,6 +2097,9 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
             if center_on:
                 tracking_extra["center_overlay"] = {**center_stats.summary(center_pub), "draw_gate": center_gate.summary()}
 
+                if center_proc is not None:
+                    tracking_extra["center_overlay"]["draw_process"] = {**center_proc.summary(), "exit": center_proc_exit}
+
             if infer_summary is not None:
                 tracking_extra["infer_process"] = infer_summary
 
@@ -2072,6 +2127,9 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
               + (f" sort_part_events={link.sort_part.summary()['events']}" if sort_on else "")
               + (f" center_published={center_stats.summary(center_pub)['published']} "
                  f"center_errors={center_stats.errors}" if center_on else "")
+              + ("" if center_proc is None else
+                 f" center_process=failed({center_proc.summary()['failed']})" if center_proc.summary().get("failed")
+                 else " center_process=ok")
               + (" (new run requires an explicit restart)" if reset else "") + "\n")
 
     return exit_code

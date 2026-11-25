@@ -87,7 +87,8 @@ def process_record(outcome: JobOutcome, *, eval_run_id: str | None = None,
         ai_instances=None if ai is None else tuple(_instance_summary(i) for i in ai.instances),
         axis_valid_count=ai.axis_valid_count if axis_on else None,
         list_candidate_count=None if listed is None else len(listed), list_indices=listed,
-        axis_duplicates_merged=_duplicates_merged(ai) if axis_on else None)
+        axis_duplicates_merged=_duplicates_merged(ai) if axis_on else None,
+        rot_infer_ms=None if ai is None else ai.rot_infer_ms)
 
 
 def _duplicates_merged(ai) -> int | None:
@@ -108,6 +109,10 @@ def _instance_summary(inst) -> dict:
                    axis_reason=inst.axis_reason, axis_max_iou=inst.axis_max_iou, axis_diag=inst.axis_diag,
                    axis_overlap_with=None if inst.axis_overlap_with is None else list(inst.axis_overlap_with),
                    axis_candidate_reason=axis_candidate_reason(inst))   # None = 유효 후보
+
+    # 90° 돌린 추론에서 온 인스턴스만 출처를 남긴다(꺼짐·그대로 쪽은 키 없음: 기존 기록과 바이트 동일)
+    if getattr(inst, "source", None) is not None:
+        out["source"] = inst.source
 
     return out
 
@@ -139,6 +144,10 @@ def _detector_block(cfg) -> dict:
     # 시선 기반 끝점 보정은 켠 설정만 남긴다
     if getattr(cfg, "axis_view_bias", None) is not None:
         block["axis_view_bias"] = cfg.axis_view_bias.to_json()
+
+    # 90° 돌린 추론은 켠 설정만 남긴다(#425)
+    if getattr(cfg, "rotate90_pass", None) is not None:
+        block["rotate90_pass"] = cfg.rotate90_pass.to_json()
 
     return block
 
