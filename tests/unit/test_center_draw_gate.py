@@ -153,7 +153,7 @@ class CliGateTest(WiringBase):
         rt = FakeRuntime()
         sc = Scenario(4, masks={i: three_bolts for i in range(4)})
         code, err, out = self.run_sort(sc, factory=self.factory(rt), out=self.out(f"live{len(self.handoffs)}"),
-                                       extra=(*LIST, "--b-center-overlay", "--live-sort-part", *extra))
+                                       extra=(*LIST, "--b-center-overlay", "--no-b-center-process", "--live-sort-part", *extra))   # #406 같은 프로세스 경로
         return code, err, out, made[0], rt
 
     def test_zero_subscribers_skip_draw_same_goals(self):
