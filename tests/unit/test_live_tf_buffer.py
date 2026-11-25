@@ -90,7 +90,8 @@ class RuntimeTest(unittest.TestCase):
         log = Log()
         rt = LiveTfRuntime(object(), modules=fake_modules(log), cache_s=10.0)
         rt.start()
-        self.assertEqual(log[:4], [("node", "eyetoarm_b_tf", [("use_sim_time", True)]), ("buffer", 10.0, True),
+        # B-15: 시뮬 시계를 구독하지 않는다(use_sim_time=False)
+        self.assertEqual(log[:4], [("node", "eyetoarm_b_tf", [("use_sim_time", False)]), ("buffer", 10.0, True),
                                    ("listener", False), ("add_node",)])
         rt.close(1.0)
         self.assertEqual([e[0] for e in log[4:]], ["shutdown", "destroy_node"])
