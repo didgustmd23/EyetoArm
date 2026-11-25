@@ -104,7 +104,7 @@ class FakePublisher:
 class NullCenterProcess:
     """center 그리기 자식 대역(#413 r3, 기본 켜짐): 프로세스를 띄우지 않고 요청을 받아 버린다."""
 
-    def __init__(self, root, *, on_failed=None):
+    def __init__(self, root, *, on_failed=None, on_notice=None):
         """띄우지 않는다."""
         self.pid = None
         self.jobs = 0

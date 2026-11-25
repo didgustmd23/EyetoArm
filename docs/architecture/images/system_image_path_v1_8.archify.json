@@ -1,0 +1,438 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "EyetoArm 카메라 사진 한 장의 길과 버려지는 곳 (계획서 1.8 · main 735d514)",
+    "locale": "ko",
+    "output": "_workspace/442_k/system_image_path_v1_8.html",
+    "quality_profile": "showcase",
+    "parentHref": "system_threads_v1_8.html",
+    "repository": {
+      "url": "https://github.com/didgustmd23/EyetoArm.git",
+      "provider": "github",
+      "revision": "735d5142e7ab1f335ab4ed2bc9a6a2c02d0a853d"
+    }
+  },
+  "stages": [
+    {
+      "label": "카메라·받기"
+    },
+    {
+      "label": "검출"
+    },
+    {
+      "label": "나눠주기·추적"
+    },
+    {
+      "label": "B 계산·전송"
+    },
+    {
+      "label": "C·화면"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "cam",
+      "type": "external",
+      "label": "링크 카메라",
+      "sublabel": "Gazebo 40 Hz",
+      "stage": 0,
+      "row": 1,
+      "href": "system_processes_v1_8.html",
+      "sources": [
+        {
+          "path": "simulation/models/ur5e_2f85/link_camera.urdf.xacro",
+          "line": 28,
+          "end_line": 31,
+          "label": "40 Hz"
+        },
+        {
+          "path": "scripts/sim_sort_cell.launch.py",
+          "line": 80,
+          "end_line": 87,
+          "label": "ROS 다리"
+        }
+      ]
+    },
+    {
+      "id": "slot",
+      "type": "messagebus",
+      "label": "영상 한 칸 슬롯",
+      "sublabel": "버림: 새 사진이 덮어씀",
+      "stage": 0,
+      "row": 3,
+      "explanation": "주 스레드가 꺼내 가기 전에 새 사진이 오면 옛 사진을 덮어쓴다(overwritten). 주 스레드는 검출이 끝날 때까지 기다리므로 그동안 온 사진은 마지막 한 장만 남는다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/inputs/live_slot.py",
+          "line": 318,
+          "end_line": 327,
+          "label": "덮어씀"
+        },
+        {
+          "path": "src/eyetoarm/inputs/ros_image.py",
+          "line": 302,
+          "end_line": 351,
+          "label": "꺼내 FramePacket"
+        },
+        {
+          "path": "src/eyetoarm/vision/pipeline_runner.py",
+          "line": 497,
+          "end_line": 517,
+          "label": "검출 기다림"
+        }
+      ]
+    },
+    {
+      "id": "det",
+      "type": "backend",
+      "label": "검출",
+      "sublabel": "추론 자식 · 한 번에 하나",
+      "emphasis": true,
+      "stage": 1,
+      "row": 2,
+      "href": "system_threads_v1_8.html",
+      "explanation": "주 스레드가 eyetoarm-detector에 맡기고, 이 스레드가 사진을 공유 메모리에 복사해 추론 자식에게 보낸다. 결과가 오면 주 스레드가 넘기기·추적·B 계산으로 나눠 준다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/pipeline_runner.py",
+          "line": 1063,
+          "end_line": 1131,
+          "label": "꺼내기·검출 반복"
+        },
+        {
+          "path": "src/eyetoarm/vision/ai_process.py",
+          "line": 431,
+          "end_line": 504,
+          "label": "자식에게 보냄"
+        },
+        {
+          "path": "src/eyetoarm/vision/pipeline_runner.py",
+          "line": 706,
+          "end_line": 737,
+          "label": "결과 나눠주기"
+        }
+      ]
+    },
+    {
+      "id": "handoff",
+      "type": "messagebus",
+      "label": "A→C 넘기기",
+      "sublabel": "64 넘치면 A 멈춤",
+      "stage": 2,
+      "row": 0,
+      "explanation": "결과는 제어 대기열(64)에, 사진은 한 칸에 들어간다. 사진 칸은 새 것이 바꾼다. 대기열이 넘치면 버리지 않고 실패(overflow)로 고정해 A를 멈춘다. c-handoff-probe가 비우며, 현재 것이 아닌 사진은 버린다(FRAME_STALE).",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/handoff.py",
+          "line": 631,
+          "end_line": 637,
+          "label": "넘치면 실패"
+        },
+        {
+          "path": "src/eyetoarm/vision/handoff.py",
+          "line": 384,
+          "end_line": 435,
+          "label": "결과·사진 넣기"
+        },
+        {
+          "path": "src/eyetoarm/vision/c_handoff_probe.py",
+          "line": 250,
+          "end_line": 274,
+          "label": "비우기·옛 사진 버림"
+        }
+      ]
+    },
+    {
+      "id": "world",
+      "type": "backend",
+      "label": "추적",
+      "sublabel": "버림: 8 차면 새 것",
+      "stage": 2,
+      "row": 2,
+      "explanation": "추적 대기열(8)이 차면 새로 온 것을 버리고(dropped_full), 밀림이 이어지면 가장 새 것만 남긴다. 결과는 B 계산이 가져가고, 추적 발행(대기열 4, 20 Hz)으로 C에 /a/track_states를 보낸다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/live_observation_link.py",
+          "line": 704,
+          "end_line": 710,
+          "label": "추적에 넣기"
+        },
+        {
+          "path": "src/eyetoarm/vision/live_world_tracking.py",
+          "line": 310,
+          "end_line": 344,
+          "label": "대기열·넘침"
+        },
+        {
+          "path": "src/eyetoarm/vision/track_stream.py",
+          "line": 257,
+          "end_line": 307,
+          "label": "추적 발행"
+        }
+      ]
+    },
+    {
+      "id": "fwd",
+      "type": "backend",
+      "label": "detect 사진 전송",
+      "sublabel": "버림: 최신 한 장만",
+      "stage": 3,
+      "row": 0,
+      "explanation": "c-display-frame-forwarder. 칸이 하나라 아직 못 보낸 사진은 새 사진으로 바뀐다. 추적 번호는 기다리지 않고 들여다본다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/c_handoff_probe.py",
+          "line": 24,
+          "end_line": 46,
+          "label": "최신 한 칸"
+        },
+        {
+          "path": "src/eyetoarm/vision/c_handoff_probe.py",
+          "line": 49,
+          "end_line": 97,
+          "label": "TCP 47093"
+        }
+      ]
+    },
+    {
+      "id": "b",
+      "type": "backend",
+      "label": "B 계산",
+      "sublabel": "버림: 밀린 것 건너뜀",
+      "emphasis": true,
+      "stage": 3,
+      "row": 2,
+      "explanation": "eyetoarm-live-observation. 들어오는 칸이 하나라 처리 중에 온 것이 또 오면 앞의 것은 superseded로 건너뛴다. 같은 사진의 추적 결과를 최대 0.1초 기다린 뒤 계산하고, 받아들인 것만 목표로 보낸다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/live_observation_dispatch.py",
+          "line": 93,
+          "end_line": 119,
+          "label": "최신 한 칸"
+        },
+        {
+          "path": "src/eyetoarm/vision/live_observation_dispatch.py",
+          "line": 252,
+          "end_line": 338,
+          "label": "계산 순서"
+        },
+        {
+          "path": "src/eyetoarm/vision/live_observation_link.py",
+          "line": 544,
+          "end_line": 569,
+          "label": "추적 결과 기다림"
+        }
+      ]
+    },
+    {
+      "id": "cproxy",
+      "type": "messagebus",
+      "label": "center 요청 칸",
+      "sublabel": "버림: 최신 요청만",
+      "stage": 3,
+      "row": 4,
+      "explanation": "B 계산 스레드가 center 그림 요청을 넣는다. 아직 보내지 않은 요청은 새 요청이 바꾸고(replaced), 자식이 쉬고 있을 때만 보낸다. center 영상을 구독하는 쪽이 없으면 그리지 않는다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/center_process.py",
+          "line": 176,
+          "end_line": 244,
+          "label": "최신 요청·보내기"
+        },
+        {
+          "path": "src/eyetoarm/vision/center_process.py",
+          "line": 417,
+          "end_line": 455,
+          "label": "B 쪽 요청"
+        },
+        {
+          "path": "scripts/run_pipeline.py",
+          "line": 1684,
+          "end_line": 1687,
+          "label": "보는 쪽 확인·기본 켜짐"
+        }
+      ]
+    },
+    {
+      "id": "detectview",
+      "type": "frontend",
+      "label": "detect 화면",
+      "sublabel": "중계기 → D (47092)",
+      "stage": 4,
+      "row": 0,
+      "href": "system_processes_v1_8.html",
+      "explanation": "중계기는 D가 detect를 골랐을 때만 A의 detect 사진을 D로 보낸다. 받은 번호는 center 대체용으로 늘 기억한다.",
+      "sources": [
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/display_relay.py",
+          "line": 36,
+          "end_line": 48,
+          "label": "A 사진 받기"
+        },
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/display_relay.py",
+          "line": 593,
+          "end_line": 615,
+          "label": "종류별 최신 송출"
+        }
+      ]
+    },
+    {
+      "id": "sorter",
+      "type": "backend",
+      "label": "C 분류 실행",
+      "sublabel": "sort_goal_receiver",
+      "stage": 4,
+      "row": 2,
+      "href": "system_processes_v1_8.html",
+      "sources": [
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/sort_manager.py",
+          "line": 115,
+          "end_line": 124,
+          "label": "/sort_part 서버"
+        },
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/gazebo_sort_executor.py",
+          "line": 137,
+          "end_line": 139,
+          "label": "트랙 구독"
+        }
+      ]
+    },
+    {
+      "id": "centerview",
+      "type": "frontend",
+      "label": "center 화면",
+      "sublabel": "0.3초 늦으면 원본 대체",
+      "stage": 4,
+      "row": 4,
+      "href": "system_processes_v1_8.html",
+      "explanation": "자식 프로세스가 그려 /b/center_overlay로 발행하고 중계기가 D로 보낸다. center를 골랐는데 B 영상이 0.3초 넘게 없으면 중계기가 링크 원본을 A 번호와 함께 center 이름표로 대신 보낸다(매 사진). 대체 원본보다 늦은 B 영상은 보내지 않는다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/center_process_child.py",
+          "line": 145,
+          "end_line": 172,
+          "label": "그리기·발행"
+        },
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/display_relay.py",
+          "line": 939,
+          "end_line": 970,
+          "label": "대체 원본"
+        },
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/display_relay.py",
+          "line": 640,
+          "end_line": 645,
+          "label": "0.3초"
+        }
+      ]
+    }
+  ],
+  "flows": [
+    {
+      "id": "f-cam",
+      "from": "cam",
+      "to": "slot",
+      "label": "ROS 토픽 (깊이 1)"
+    },
+    {
+      "id": "f-take",
+      "from": "slot",
+      "to": "det",
+      "label": "주 스레드가 꺼냄",
+      "variant": "emphasis"
+    },
+    {
+      "id": "f-handoff",
+      "from": "det",
+      "to": "handoff",
+      "label": "결과 + 사진"
+    },
+    {
+      "id": "f-world",
+      "from": "det",
+      "to": "world",
+      "label": "추적 대기열 8"
+    },
+    {
+      "id": "f-b",
+      "from": "det",
+      "to": "b",
+      "label": "최신 한 칸",
+      "variant": "emphasis"
+    },
+    {
+      "id": "f-fwd",
+      "from": "handoff",
+      "to": "fwd",
+      "label": "칸 1로 옮김"
+    },
+    {
+      "id": "f-detect",
+      "from": "fwd",
+      "to": "detectview",
+      "label": "TCP 47093 JPEG"
+    },
+    {
+      "id": "f-tracks",
+      "from": "world",
+      "to": "b",
+      "label": "트랙 (≤0.1초)"
+    },
+    {
+      "id": "f-stream",
+      "from": "world",
+      "to": "sorter",
+      "label": "/a/track_states"
+    },
+    {
+      "id": "f-goal",
+      "from": "b",
+      "to": "sorter",
+      "label": "ROS 액션 목표",
+      "variant": "emphasis"
+    },
+    {
+      "id": "f-center",
+      "from": "b",
+      "to": "cproxy",
+      "label": "center 요청"
+    },
+    {
+      "id": "f-draw",
+      "from": "cproxy",
+      "to": "centerview",
+      "label": "memfd · 소켓쌍"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "사진이 버려질 수 있는 곳",
+      "items": [
+        "받기: 검출하는 동안 온 사진은 한 칸 슬롯에서 덮어써져 마지막 한 장만 남는다",
+        "detect 화면: 전송 칸이 하나라 못 보낸 사진은 새 사진으로 바뀐다. center 화면도 아직 보내지 않은 요청은 새 요청이 바꾼다",
+        "추적: 대기열 8이 차면 새 것을 버린다. B 계산: 처리 중 두 번 오면 앞의 것을 건너뛴다"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "버리지 않고 멈추는 곳",
+      "items": [
+        "넘기기 대기열 64가 넘치면 사진을 버리지 않고 A 전체가 실패로 멈춘다. 이 대기열을 비우는 스레드가 사진마다 터미널에 print 한다"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "그리지 않은 것",
+      "items": [
+        "추적 결과를 detect 사진 주석에 쓰는 연결(기다리지 않고 들여다봄), 그리퍼 깊이 관측, 기록 파일 쓰기는 두 번째 그림에 있다",
+        "--no-b-center-process면 center 그림을 B 계산 스레드가 직접 그린다"
+      ]
+    }
+  ]
+}

@@ -171,11 +171,14 @@ class BacklogTest(ProcessBase):
 
 
 class ChildFailureTest(ProcessBase):
-    """자식이 죽거나 멈추거나 한 장을 못 그려도 B 계산·결과 숫자·목표는 그대로다."""
+    """자식이 죽거나 멈추거나 한 장을 못 그려도 B 계산·결과 숫자·목표는 그대로다.
+
+    #432부터 기본은 다시 띄우기다. 여기서는 다시 띄우지 않는 경로(`restart_delays_s=()`, 한도 0)를 본다.
+    """
 
     def test_child_death_keeps_b_running(self):
         """자식이 죽으면 실패 사유가 남고, 그 뒤에도 B 반환·결과 숫자는 그대로이며 요청은 거절로만 센다."""
-        proc = self.drawer(EYETOARM_TEST_CENTER_DIE_AT=2)
+        proc = self.drawer(EYETOARM_TEST_CENTER_DIE_AT=2, restart_delays_s=())   # #432: 다시 띄우지 않는 경로
         consume, pub, _ = self.consumer(proc)
         consume(scene(1))
         self.assertTrue(wait_for(lambda: proc.summary()["drawn"] == 1))
@@ -190,7 +193,7 @@ class ChildFailureTest(ProcessBase):
 
     def test_stalled_child_is_killed(self):
         """자식이 답하지 않으면 멈춘 것으로 보고 끝낸다. B는 계속 돈다."""
-        proc = self.drawer(EYETOARM_TEST_CENTER_HANG_AT=1, stall_s=0.5, kill_grace_s=1.0)
+        proc = self.drawer(EYETOARM_TEST_CENTER_HANG_AT=1, stall_s=0.5, kill_grace_s=1.0, restart_delays_s=())
         consume, pub, _ = self.consumer(proc)
         consume(scene(1))
         self.assertTrue(wait_for(lambda: proc.failed is not None), proc.summary())
@@ -211,7 +214,7 @@ class ChildFailureTest(ProcessBase):
 
     def test_child_that_cannot_prepare(self):
         """자식이 준비에 실패하면(ROS 없음 등) 실패 사유만 남고 요청은 거절된다."""
-        proc = self.drawer(factory="center_child_fakes:broken_backend")
+        proc = self.drawer(factory="center_child_fakes:broken_backend", restart_delays_s=())
         self.assertTrue(wait_for(lambda: proc.failed is not None))
         self.assertIn("no ros here", proc.failed)
         consume, pub, _ = self.consumer(proc)
@@ -244,7 +247,7 @@ class SlowStartTest(ProcessBase):
     def test_never_ready_fails_after_ready_limit(self):
         """준비가 준비 한도(1초) 안에 끝나지 않으면 그때 「준비 안 됨」으로 실패하고 자식을 끝낸다. 요청은 보내지 않는다."""
         proc = self.drawer("center_child_fakes:slow_backend", EYETOARM_TEST_CENTER_PREPARE_S=60, ready_timeout_s=1.0,
-                           kill_grace_s=1.0)
+                           kill_grace_s=1.0, restart_delays_s=())
         consume, pub, _ = self.consumer(proc)
         consume(scene(1))
         self.assertTrue(wait_for(lambda: proc.failed is not None, 5.0), proc.summary())
@@ -260,7 +263,7 @@ class FailureNoticeTest(ProcessBase):
     def test_death_is_announced_once(self):
         """자식이 죽으면 알림 함수가 사유와 함께 정확히 한 번 불린다(그 뒤 요청이 더 와도 다시 불리지 않음)."""
         notices = []
-        proc = self.drawer(EYETOARM_TEST_CENTER_DIE_AT=1, on_failed=notices.append)
+        proc = self.drawer(EYETOARM_TEST_CENTER_DIE_AT=1, on_failed=notices.append, restart_delays_s=())
         consume, _, _ = self.consumer(proc)
         consume(scene(1))
         self.assertTrue(wait_for(lambda: notices, 5.0), proc.summary())
@@ -273,7 +276,7 @@ class FailureNoticeTest(ProcessBase):
     def test_prepare_failure_is_announced(self):
         """자식이 준비에 실패해도 알림 함수가 불린다."""
         notices = []
-        proc = self.drawer(factory="center_child_fakes:broken_backend", on_failed=notices.append)
+        proc = self.drawer(factory="center_child_fakes:broken_backend", on_failed=notices.append, restart_delays_s=())
         self.assertTrue(wait_for(lambda: notices, 5.0))
         self.assertIn("no ros here", notices[0])
 
@@ -342,9 +345,9 @@ class ShutdownTest(ProcessBase):
 class FakeDrawer:
     """진입점 시험용 자식 대리(프로세스를 띄우지 않고 요청만 기록)."""
 
-    def __init__(self, root, *, on_failed=None, fail_at=None):
-        """요청 기록. `fail_at`번째 요청에서 자식이 죽은 것처럼 `on_failed`를 부른다(그 뒤 요청은 거절)."""
-        self.root, self.on_failed, self.fail_at = root, on_failed, fail_at
+    def __init__(self, root, *, on_failed=None, on_notice=None, fail_at=None):
+        """요청 기록. `fail_at`번째 요청에서 자식이 죽은 것처럼 `on_failed`를 부른다(그 뒤 요청은 거절). `on_notice`는 #432 안내."""
+        self.root, self.on_failed, self.on_notice, self.fail_at = root, on_failed, on_notice, fail_at
         self.started = self.closed = 0
         self.cameras, self.jobs = [], []
         self.pid = 4242

@@ -4,7 +4,7 @@
 발행만 파일로 바꾼다. 동작은 환경 변수로 정한다.
 - `EYETOARM_TEST_CENTER_OUT`: 그린 사진(`<image_seq>.npy`)과 번호표(`published.jsonl`)를 남길 폴더
 - `EYETOARM_TEST_CENTER_SLEEP_S`: 한 장마다 쉬는 시간(느린 자식)
-- `EYETOARM_TEST_CENTER_DIE_AT`: 이 image_seq에서 바로 죽음(종료 코드 9)
+- `EYETOARM_TEST_CENTER_DIE_AT`: 이 image_seq(쉼표로 여럿)에서 바로 죽음(종료 코드 9)
 - `EYETOARM_TEST_CENTER_HANG_AT`: 이 image_seq에서 멈춤(답하지 않음)
 - `EYETOARM_TEST_CENTER_FAIL_AT`: 이 image_seq에서 발행 예외
 - `EYETOARM_TEST_CENTER_PREPARE_S`: 준비(발행기 만들기)에 걸리는 시간(`slow_backend`, 부하가 큰 기계의 느린 ROS 준비 흉내)
@@ -28,6 +28,11 @@ def _at(name: str) -> int | None:
     return None if value is None else int(value)
 
 
+def _all_at(name: str) -> set[int]:
+    """환경 변수의 image_seq 여럿(쉼표로 나눔, 없으면 빈 집합)."""
+    return {int(v) for v in os.environ.get(name, "").split(",") if v.strip()}
+
+
 class FilePublisher:
     """B `CenterOverlayPublisher`의 `publish`·`close` 자리. 받은 것을 파일로 남긴다."""
 
@@ -40,7 +45,7 @@ class FilePublisher:
         """사진과 번호표를 남긴다(주입된 죽음·멈춤·실패·느림 포함)."""
         seq = int(keys["image_seq"])
 
-        if seq == _at("EYETOARM_TEST_CENTER_DIE_AT"):
+        if seq in _all_at("EYETOARM_TEST_CENTER_DIE_AT"):
             os._exit(9)
 
         if seq == _at("EYETOARM_TEST_CENTER_HANG_AT"):

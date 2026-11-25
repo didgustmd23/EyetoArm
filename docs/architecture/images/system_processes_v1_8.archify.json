@@ -1,0 +1,501 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "EyetoArm 프로세스와 통로 (c_stack 자동 분류 · 계획서 1.8 · main 735d514)",
+    "locale": "ko",
+    "output": "_workspace/442_k/system_processes_v1_8.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/didgustmd23/EyetoArm.git",
+      "provider": "github",
+      "revision": "735d5142e7ab1f335ab4ed2bc9a6a2c02d0a853d"
+    }
+  },
+  "layout": {
+    "mode": "auto"
+  },
+  "components": [
+    {
+      "id": "gazebo",
+      "type": "cloud",
+      "label": "Gazebo 시뮬레이션",
+      "sublabel": "월드·벨트·카메라 3대 + ros_gz_bridge",
+      "tag": "공통",
+      "explanation": "sim_sort_cell.launch.py가 gz sim, robot_state_publisher(TF), ros_gz_bridge, 팔·그리퍼 제어기를 띄운다. 다리(bridge)가 /clock, /link_cam/image, /gripper_cam/image·depth_image, /overview_cam/image를 ROS 토픽으로 내보낸다. 링크 카메라는 40 Hz.",
+      "sources": [
+        {
+          "path": "scripts/sim_sort_cell.launch.py",
+          "line": 66,
+          "end_line": 93,
+          "label": "Gazebo·다리·제어기"
+        },
+        {
+          "path": "simulation/models/ur5e_2f85/link_camera.urdf.xacro",
+          "line": 28,
+          "end_line": 31,
+          "label": "링크 카메라 40 Hz"
+        }
+      ],
+      "pos": [
+        440,
+        40
+      ],
+      "size": [
+        270,
+        68
+      ]
+    },
+    {
+      "id": "supervisor",
+      "type": "backend",
+      "label": "인식 감독",
+      "sublabel": "run_pipeline_supervisor.py · 종료 코드 3이면 다시 띄움",
+      "tag": "A",
+      "explanation": "c_stack이 run_pipeline.py를 감독을 거쳐 띄운다. 감독은 Popen에 stdout·stderr를 따로 주지 않으므로 자식은 감독의 터미널 출력을 그대로 물려받는다. 종료 코드 3(시뮬레이션 시각 되감기)일 때만 정해진 횟수 안에서 다시 띄운다.",
+      "sources": [
+        {
+          "path": "scripts/c_stack.launch.py",
+          "line": 127,
+          "end_line": 142,
+          "label": "감독 경유 실행 명령"
+        },
+        {
+          "path": "scripts/run_pipeline_supervisor.py",
+          "line": 150,
+          "end_line": 177,
+          "label": "Popen·재시작 조건"
+        }
+      ],
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        270,
+        68
+      ]
+    },
+    {
+      "id": "pipeline",
+      "type": "backend",
+      "label": "인식 프로세스",
+      "sublabel": "run_pipeline.py · A 검출·추적 + B 계산",
+      "tag": "A·B",
+      "emphasis": true,
+      "explanation": "A 검출·추적과 B 좌표 계산이 한 프로세스 안의 여러 스레드로 돈다. 자동 분류(auto_sort)면 --live-sort-part --tracking-space world --track-stream --gripper-handoff가 붙는다. 스레드 구성은 두 번째 그림에 있다.",
+      "sources": [
+        {
+          "path": "scripts/c_stack.launch.py",
+          "line": 135,
+          "end_line": 141,
+          "label": "B·자동 분류 옵션"
+        },
+        {
+          "path": "scripts/run_pipeline.py",
+          "line": 768,
+          "end_line": 778,
+          "label": "A+B 실행 진입"
+        },
+        {
+          "path": "src/eyetoarm/inputs/ros_image.py",
+          "line": 479,
+          "end_line": 481,
+          "label": "영상·정보·/clock 구독"
+        }
+      ],
+      "pos": [
+        440,
+        200
+      ],
+      "size": [
+        270,
+        68
+      ],
+      "drilldowns": [
+        {
+          "href": "system_threads_v1_8.html",
+          "label": "인식 프로세스 안 스레드",
+          "diagram_type": "architecture"
+        },
+        {
+          "href": "system_image_path_v1_8.html",
+          "label": "사진 한 장의 길",
+          "diagram_type": "dataflow"
+        }
+      ]
+    },
+    {
+      "id": "infer",
+      "type": "backend",
+      "label": "추론 자식 프로세스",
+      "sublabel": "ai_process_child · YOLO 분할 추론",
+      "tag": "A",
+      "explanation": "--ros-link --detector ai면 기본으로 켜진다. subprocess.Popen으로 띄우고, 사진은 /dev/shm/eyetoarm_infer_* 파일(2칸)에 복사하며, 요청·결과는 AF_UNIX 소켓쌍으로 주고받는다. 한 번에 요청 하나.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/ai_process.py",
+          "line": 358,
+          "end_line": 377,
+          "label": "Popen·소켓쌍"
+        },
+        {
+          "path": "src/eyetoarm/vision/ai_process.py",
+          "line": 39,
+          "end_line": 43,
+          "label": "공유 메모리 2칸"
+        },
+        {
+          "path": "src/eyetoarm/vision/ai_process_child.py",
+          "line": 104,
+          "end_line": 126,
+          "label": "추론·결과 회신"
+        }
+      ],
+      "pos": [
+        40,
+        400
+      ],
+      "size": [
+        270,
+        68
+      ]
+    },
+    {
+      "id": "center",
+      "type": "backend",
+      "label": "center 그리기 자식 프로세스",
+      "sublabel": "center_process_child · 그리기·영상 발행",
+      "tag": "B",
+      "explanation": "--b-center-overlay면 기본으로 켜진다(--no-b-center-process로만 끔). 사진은 이름 없는 memfd 한 장, 요청은 소켓쌍으로 받으며, 밀리면 가장 새 요청만 그린다. 자식이 죽으면 center 영상만 멈추고 실행은 계속한다.",
+      "sources": [
+        {
+          "path": "scripts/run_pipeline.py",
+          "line": 1684,
+          "end_line": 1704,
+          "label": "기본 켜짐·시작"
+        },
+        {
+          "path": "src/eyetoarm/vision/center_process.py",
+          "line": 121,
+          "end_line": 155,
+          "label": "Popen·memfd·소켓쌍"
+        },
+        {
+          "path": "src/eyetoarm/vision/center_process_child.py",
+          "line": 100,
+          "end_line": 116,
+          "label": "자식의 발행기"
+        }
+      ],
+      "pos": [
+        840,
+        400
+      ],
+      "size": [
+        270,
+        68
+      ]
+    },
+    {
+      "id": "sorter",
+      "type": "backend",
+      "label": "C 분류 실행",
+      "sublabel": "sort_goal_receiver · 벨트 공급기 포함",
+      "tag": "C",
+      "emphasis": true,
+      "explanation": "노드 c_sort_goal_receiver. 동작 서버 /sort_part로 목표를 받고, /a/track_states로 물체 위치를 따라가며 팔·그리퍼를 움직인다(pick_bolt_demo.Arm의 동작 클라이언트). --feed-parts면 같은 프로세스 안의 벨트 공급기가 gz 토픽으로 벨트 속도를 보내고 gz 서비스로 부품을 지운다. 운영자가 검출 버리기를 하면 인식 프로세스의 ROS 서비스 /eyetoarm_live_sort_part/discard_detections를 부른다.",
+      "sources": [
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/sort_manager.py",
+          "line": 108,
+          "end_line": 140,
+          "label": "동작 서버·관리 서비스"
+        },
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/gazebo_sort_executor.py",
+          "line": 100,
+          "end_line": 139,
+          "label": "팔 모듈·트랙 구독"
+        },
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/gazebo_part_feeder.py",
+          "line": 80,
+          "end_line": 100,
+          "label": "벨트 속도·부품 제거"
+        }
+      ],
+      "pos": [
+        440,
+        400
+      ],
+      "size": [
+        270,
+        68
+      ]
+    },
+    {
+      "id": "tcp",
+      "type": "backend",
+      "label": "C TCP 서버",
+      "sublabel": "tcp_server · 127.0.0.1:47090",
+      "tag": "C",
+      "explanation": "D의 명령·상태 연결을 받는 asyncio 서버. 실행 시작·정지·비상 정지·복구·상태 조회를 sort_goal_receiver의 ROS 서비스로 넘긴다.",
+      "sources": [
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/tcp_server.py",
+          "line": 417,
+          "end_line": 420,
+          "label": "47090 수신"
+        },
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/run_control_client.py",
+          "line": 22,
+          "end_line": 30,
+          "label": "C 서비스 호출"
+        }
+      ],
+      "pos": [
+        40,
+        560
+      ],
+      "size": [
+        270,
+        68
+      ]
+    },
+    {
+      "id": "relay",
+      "type": "backend",
+      "label": "C 영상 중계기",
+      "sublabel": "display_relay · A 수신 47093 · D 송출 47092",
+      "tag": "C",
+      "explanation": "카메라 원본, A의 detect 주석 사진(47093), B center 영상을 받아 D가 고른 종류만 최신 한 장씩 47092로 보낸다. center를 골랐는데 B center 영상이 0.3초 넘게 없으면 링크 원본을 A 번호와 함께 center 이름표로 대신 보낸다(대체 원본, 매 사진).",
+      "sources": [
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/display_relay.py",
+          "line": 16,
+          "end_line": 48,
+          "label": "포트·채널·A 수신"
+        },
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/display_relay.py",
+          "line": 880,
+          "end_line": 937,
+          "label": "종류별 구독 전환"
+        },
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/display_relay.py",
+          "line": 939,
+          "end_line": 970,
+          "label": "center 대체 원본"
+        }
+      ],
+      "pos": [
+        840,
+        560
+      ],
+      "size": [
+        270,
+        68
+      ]
+    },
+    {
+      "id": "dash",
+      "type": "frontend",
+      "label": "D 대시보드",
+      "sublabel": "Windows · eyetoarm.gui.window",
+      "tag": "D",
+      "explanation": "Windows 쪽 Python 앱. 명령·상태는 47090, 영상은 중계기 47092에 D가 접속한다. dashboard_stack.launch.py는 powershell.exe로 띄우고, c_stack.launch.py는 띄우지 않는다(따로 켬).",
+      "sources": [
+        {
+          "path": "dashboard-client/src/eyetoarm/gui/window.py",
+          "line": 1455,
+          "end_line": 1466,
+          "label": "접속 대상 옵션"
+        },
+        {
+          "path": "scripts/dashboard_stack.launch.py",
+          "line": 40,
+          "end_line": 47,
+          "label": "Windows 실행 명령"
+        }
+      ],
+      "pos": [
+        440,
+        720
+      ],
+      "size": [
+        270,
+        68
+      ]
+    },
+    {
+      "id": "terminal",
+      "type": "external",
+      "label": "ros2 launch 터미널",
+      "sublabel": "output=screen 화면",
+      "explanation": "인식 프로세스와 두 자식 프로세스는 출력 파일을 따로 두지 않아 감독을 거쳐 이 터미널의 표준 출력·오류를 물려받는다. 넘기기 소비자 스레드가 사진·결과마다 print(flush=True)를 하므로, 터미널 출력이 막히면 그 스레드가 멈추고 넘기기 대기열이 넘쳐 인식 프로세스가 끝난다(실행으로 재현해 확인).",
+      "sources": [
+        {
+          "path": "scripts/c_stack.launch.py",
+          "line": 142,
+          "end_line": 142,
+          "label": "output=screen"
+        },
+        {
+          "path": "src/eyetoarm/vision/ai_process.py",
+          "line": 364,
+          "end_line": 369,
+          "label": "자식 출력 상속"
+        },
+        {
+          "path": "src/eyetoarm/vision/c_handoff_probe.py",
+          "line": 255,
+          "end_line": 269,
+          "label": "사진마다 print"
+        }
+      ],
+      "pos": [
+        840,
+        40
+      ],
+      "size": [
+        270,
+        68
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "cam-to-a",
+      "from": "gazebo",
+      "to": "pipeline",
+      "label": "ROS 토픽 /link_cam/image·/clock·TF",
+      "variant": "emphasis"
+    },
+    {
+      "id": "sup-runs-a",
+      "from": "supervisor",
+      "to": "pipeline",
+      "label": "자식으로 실행·재시작",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "a-to-infer",
+      "from": "pipeline",
+      "to": "infer",
+      "label": "공유 메모리 사진 + 소켓쌍 요청"
+    },
+    {
+      "id": "infer-to-a",
+      "from": "infer",
+      "to": "pipeline",
+      "label": "소켓쌍 검출 결과"
+    },
+    {
+      "id": "a-to-center",
+      "from": "pipeline",
+      "to": "center",
+      "label": "memfd 사진 + 소켓쌍 요청(최신만)"
+    },
+    {
+      "id": "goal",
+      "from": "pipeline",
+      "to": "sorter",
+      "label": "ROS 액션 /sort_part 목표 · 토픽 /a/track_states",
+      "variant": "emphasis",
+      "labelAt": [
+        575,
+        336
+      ]
+    },
+    {
+      "id": "discard",
+      "from": "sorter",
+      "to": "pipeline",
+      "label": "ROS 서비스 discard",
+      "fromSide": "left",
+      "toSide": "left"
+    },
+    {
+      "id": "arm",
+      "from": "sorter",
+      "to": "gazebo",
+      "label": "ROS 액션 팔·그리퍼 · gz 벨트 속도"
+    },
+    {
+      "id": "detect-frames",
+      "from": "pipeline",
+      "to": "relay",
+      "label": "TCP 47093 detect 사진 · /b/results"
+    },
+    {
+      "id": "center-frames",
+      "from": "center",
+      "to": "relay",
+      "label": "ROS 토픽 /b/center_overlay"
+    },
+    {
+      "id": "raw-frames",
+      "from": "gazebo",
+      "to": "relay",
+      "label": "ROS 토픽 카메라 3대 원본"
+    },
+    {
+      "id": "relay-to-d",
+      "from": "relay",
+      "to": "dash",
+      "label": "TCP 47092 영상 (D가 접속)"
+    },
+    {
+      "id": "d-to-tcp",
+      "from": "dash",
+      "to": "tcp",
+      "label": "TCP 47090 명령·상태"
+    },
+    {
+      "id": "tcp-to-sorter",
+      "from": "tcp",
+      "to": "sorter",
+      "label": "ROS 서비스 start·stop·get_run"
+    },
+    {
+      "id": "stdout",
+      "from": "pipeline",
+      "to": "terminal",
+      "label": "표준 출력 (감독 거쳐 상속)",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "띄우는 순서 (c_stack.launch.py)",
+      "items": [
+        "Gazebo·다리 → MoveIt move_group → sort_goal_receiver(auto_sort일 때) → tcp_server → display_relay → 감독 + 인식 프로세스",
+        "D 대시보드는 c_stack이 띄우지 않는다. dashboard_stack.launch.py가 Windows powershell로 띄운다",
+        "MoveIt move_group도 뜨지만 분류 실행은 pick_bolt_demo.Arm의 동작 클라이언트로 팔을 움직인다. move_group으로 가는 통로는 이 그림에서 확인하지 않았다(미확인)"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "통로를 볼 때",
+      "items": [
+        "시계: 인식 프로세스는 링크 영상 수신기가 받은 /clock 값을 추적 발행에도 쓴다(기본 link). 발행기가 /clock을 따로 구독하지 않는다",
+        "인식 프로세스 → C 상태 조회: ROS 서비스 /c_sort_goal_receiver/get_run을 0.5초마다 부른다",
+        "TCP 47093은 인식 프로세스가 접속하는 쪽, 47092·47090은 D가 접속하는 쪽이다",
+        "conveyor_controller 노드는 패키지에 있지만 c_stack·dashboard_stack 어느 쪽도 띄우지 않는다. 벨트는 sort_goal_receiver 안의 공급기가 직접 움직인다"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "표준 출력이 막히면",
+      "items": [
+        "감독은 출력을 따로 받지 않는다(파이프·비우기 스레드 없음). 인식 프로세스·추론 자식·center 자식 모두 터미널 출력을 그대로 물려받는다",
+        "넘기기 소비자가 사진마다 flush 하는 print에서 멈추면 넘기기 대기열(64)이 차고, 넘치면 인식 프로세스가 실패(handoff_failed)로 멈춘다. 같은 날 실행으로 재현해 확인했다(표준 출력을 5~8초 멈춤 → overflow·pending 64·종료 1)"
+      ]
+    }
+  ]
+}

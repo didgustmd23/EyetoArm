@@ -1,0 +1,756 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "EyetoArm 인식 프로세스 안 스레드와 넘기는 칸 (계획서 1.8 · main 735d514)",
+    "locale": "ko",
+    "output": "_workspace/442_k/system_threads_v1_8.html",
+    "quality_profile": "showcase",
+    "parentHref": "system_processes_v1_8.html",
+    "repository": {
+      "url": "https://github.com/didgustmd23/EyetoArm.git",
+      "provider": "github",
+      "revision": "735d5142e7ab1f335ab4ed2bc9a6a2c02d0a853d"
+    }
+  },
+  "layout": {
+    "mode": "auto"
+  },
+  "components": [
+    {
+      "id": "cam",
+      "type": "external",
+      "label": "Gazebo 링크 카메라",
+      "sublabel": "/link_cam/image · /clock",
+      "href": "system_processes_v1_8.html",
+      "sources": [
+        {
+          "path": "src/eyetoarm/inputs/ros_image.py",
+          "line": 37,
+          "end_line": 44,
+          "label": "구독 토픽"
+        }
+      ],
+      "pos": [
+        350,
+        40
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "rx",
+      "type": "backend",
+      "label": "영상 수신",
+      "sublabel": "eyetoarm-ros-rx",
+      "tag": "A",
+      "explanation": "rclpy 실행기를 돌리는 스레드. 영상 콜백이 받은 메시지를 한 칸 슬롯(LiveFrameSlot)에 넣는다. 아직 꺼내 가지 않은 사진이 있으면 새 사진이 덮어쓰고 overwritten 수만 센다. DDS 쪽도 깊이 1(KEEP_LAST)이다. /clock도 이 스레드가 받아 둔다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/inputs/ros_image.py",
+          "line": 419,
+          "end_line": 419,
+          "label": "스레드 이름"
+        },
+        {
+          "path": "src/eyetoarm/inputs/ros_image.py",
+          "line": 471,
+          "end_line": 481,
+          "label": "콜백·구독"
+        },
+        {
+          "path": "src/eyetoarm/inputs/live_slot.py",
+          "line": 318,
+          "end_line": 327,
+          "label": "덮어씀"
+        }
+      ],
+      "pos": [
+        350,
+        180
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "main",
+      "type": "backend",
+      "label": "실행 반복",
+      "sublabel": "MainThread",
+      "tag": "A",
+      "emphasis": true,
+      "href": "system_image_path_v1_8.html",
+      "explanation": "주 스레드. 슬롯에서 사진을 꺼내 FramePacket으로 만들고 검출을 맡긴 뒤 기다린다. 결과가 오면 넘기기(C 화면), 추적, B 계산 쪽으로 나눠 준다. 검출을 기다리는 동안 들어온 사진은 슬롯에서 덮어써진다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/pipeline_runner.py",
+          "line": 1063,
+          "end_line": 1131,
+          "label": "실행 반복"
+        },
+        {
+          "path": "src/eyetoarm/vision/pipeline_runner.py",
+          "line": 706,
+          "end_line": 737,
+          "label": "결과 나눠주기"
+        },
+        {
+          "path": "src/eyetoarm/vision/pipeline_runner.py",
+          "line": 497,
+          "end_line": 517,
+          "label": "검출 기다림"
+        }
+      ],
+      "pos": [
+        350,
+        320
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "det",
+      "type": "backend",
+      "label": "검출",
+      "sublabel": "eyetoarm-detector",
+      "tag": "A",
+      "explanation": "들어오는 칸·나가는 칸 모두 크기 1인 queue.Queue. 일이 남아 있으면 새 요청을 받지 않고 바쁨 오류를 낸다. 검출기는 추론 자식 프로세스의 대리(ProcessAiSegDetector)를 팔·벨트 영역 거르기로 감싼 것이다. 추론 자식과 말하는 스레드는 이것 하나다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/pipeline_runner.py",
+          "line": 376,
+          "end_line": 397,
+          "label": "칸 1·바쁨 거절"
+        },
+        {
+          "path": "src/eyetoarm/vision/pipeline_runner.py",
+          "line": 465,
+          "end_line": 491,
+          "label": "검출 반복"
+        },
+        {
+          "path": "src/eyetoarm/vision/ai_process.py",
+          "line": 431,
+          "end_line": 504,
+          "label": "자식 대리 호출"
+        }
+      ],
+      "pos": [
+        660,
+        180
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "infer",
+      "type": "cloud",
+      "label": "추론 자식 프로세스",
+      "sublabel": "다른 프로세스",
+      "href": "system_processes_v1_8.html",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/ai_process.py",
+          "line": 450,
+          "end_line": 470,
+          "label": "2칸·요청 보내기"
+        }
+      ],
+      "pos": [
+        970,
+        40
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "probe",
+      "type": "backend",
+      "label": "넘기기 소비자",
+      "sublabel": "c-handoff-probe",
+      "tag": "C",
+      "explanation": "A→C 넘기기(AToCHandoff)를 비우는 스레드. 제어 대기열은 64개까지이고, 넘치면 버리지 않고 실패(overflow)로 고정해 A를 멈춘다. 사진 칸은 하나라 새 사진이 옛 사진을 바꾼다. 한 번에 64개씩 꺼내며, 꺼낼 때마다 표준 출력에 print(flush=True)를 한다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/handoff.py",
+          "line": 631,
+          "end_line": 637,
+          "label": "64 넘치면 실패"
+        },
+        {
+          "path": "src/eyetoarm/vision/c_handoff_probe.py",
+          "line": 250,
+          "end_line": 274,
+          "label": "비우기·print"
+        },
+        {
+          "path": "src/eyetoarm/vision/handoff.py",
+          "line": 33,
+          "end_line": 35,
+          "label": "용량 64"
+        }
+      ],
+      "pos": [
+        40,
+        320
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "fwd",
+      "type": "backend",
+      "label": "detect 사진 전송",
+      "sublabel": "c-display-frame-forwarder",
+      "tag": "C",
+      "explanation": "크기 1인 대기열. 차 있으면 옛 것을 꺼내 버리고 새 것을 넣으므로 가장 새 사진만 보낸다. 주석을 그릴 때 추적 결과를 기다리지 않고 들여다본다(peek). TCP 127.0.0.1:47093으로 ETV1 묶음을 보낸다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/c_handoff_probe.py",
+          "line": 24,
+          "end_line": 46,
+          "label": "최신 한 칸"
+        },
+        {
+          "path": "src/eyetoarm/vision/c_handoff_probe.py",
+          "line": 49,
+          "end_line": 97,
+          "label": "TCP 전송"
+        },
+        {
+          "path": "src/eyetoarm/vision/handoff.py",
+          "line": 187,
+          "end_line": 219,
+          "label": "주석·트랙 peek"
+        }
+      ],
+      "pos": [
+        40,
+        460
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "relay",
+      "type": "cloud",
+      "label": "C 영상 중계기",
+      "sublabel": "다른 프로세스 · 47093",
+      "href": "system_processes_v1_8.html",
+      "sources": [
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/display_relay.py",
+          "line": 36,
+          "end_line": 48,
+          "label": "A 사진 수신"
+        }
+      ],
+      "pos": [
+        40,
+        600
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "world",
+      "type": "backend",
+      "label": "추적 (작업대 좌표)",
+      "sublabel": "eyetoarm-live-world-tracking",
+      "tag": "A",
+      "explanation": "주 스레드가 넣는 추적 대기열(설정 queue_capacity 8)이 차면 새 것을 버린다(dropped_full). 밀림이 이어지면 가장 새 것만 남긴다. 결과는 사진 번호별로 64개까지 두고, B 계산이 최대 0.1초(handoff_wait_s) 기다려 가져간다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/live_world_tracking.py",
+          "line": 310,
+          "end_line": 344,
+          "label": "대기열·넘침"
+        },
+        {
+          "path": "src/eyetoarm/vision/live_world_tracking.py",
+          "line": 625,
+          "end_line": 710,
+          "label": "TF·추적·결과 보관"
+        },
+        {
+          "path": "config/vision/world_tracker_gripper_test.json",
+          "line": 151,
+          "end_line": 153,
+          "label": "용량 8·0.1초"
+        }
+      ],
+      "pos": [
+        660,
+        320
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "grip",
+      "type": "backend",
+      "label": "그리퍼 관측",
+      "sublabel": "eyetoarm-gripper-rx · -observe",
+      "tag": "A",
+      "explanation": "--gripper-handoff일 때. 그리퍼 깊이 영상을 받는 스레드와 관측을 만드는 스레드가 각각 8개까지 두고 넘치면 오래된 것을 버린다. 관측은 확정 트랙의 위치만 고친다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/inputs/ros_gripper_depth.py",
+          "line": 135,
+          "end_line": 176,
+          "label": "깊이 수신"
+        },
+        {
+          "path": "src/eyetoarm/vision/live_world_tracking.py",
+          "line": 873,
+          "end_line": 921,
+          "label": "관측 반복·8개"
+        }
+      ],
+      "pos": [
+        970,
+        180
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "tf",
+      "type": "backend",
+      "label": "TF 수신",
+      "sublabel": "eyetoarm-b-tf",
+      "tag": "B",
+      "explanation": "자기 rclpy Context에서 tf2 TransformListener를 돌린다. 시뮬레이션 시계(/clock)는 구독하지 않는다(use_sim_time=False). 같은 버퍼를 추적과 B 계산이 촬영 시각으로 조회한다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/transforms/live_tf_buffer.py",
+          "line": 32,
+          "end_line": 98,
+          "label": "TF 스레드·시계 구독 없음"
+        },
+        {
+          "path": "scripts/run_pipeline.py",
+          "line": 1905,
+          "end_line": 1932,
+          "label": "추적에 같은 TF"
+        }
+      ],
+      "pos": [
+        970,
+        320
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "stream",
+      "type": "backend",
+      "label": "추적 발행",
+      "sublabel": "eyetoarm-track-stream",
+      "tag": "A",
+      "explanation": "--track-stream일 때. 대기열이 차면 가장 오래된 사진의 메시지를 버리고, 20 Hz보다 빠르면 버린다. 발행 시각은 영상 수신 스레드가 받아 둔 /clock 값을 쓴다(기본 link, 시계 스레드 없음).",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/track_stream.py",
+          "line": 257,
+          "end_line": 307,
+          "label": "발행 스레드·버림"
+        },
+        {
+          "path": "src/eyetoarm/vision/track_stream.py",
+          "line": 416,
+          "end_line": 432,
+          "label": "link 시계"
+        },
+        {
+          "path": "config/vision/track_stream_test.json",
+          "line": 4,
+          "end_line": 7,
+          "label": "토픽·20 Hz·4"
+        }
+      ],
+      "pos": [
+        660,
+        460
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "b",
+      "type": "backend",
+      "label": "B 계산",
+      "sublabel": "eyetoarm-live-observation",
+      "tag": "B",
+      "emphasis": true,
+      "explanation": "주 스레드가 넣는 칸은 하나다. 아직 처리하지 않은 것이 있으면 새 것이 바꾸고 옛 것은 superseded로 건너뜀 기록. 처리 순서: 검사 → TF 조회 → 추적 결과 기다림 → 계산(목록 입력이면 center 요청 포함) → 받아들임 → 목표 보내기.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/live_observation_dispatch.py",
+          "line": 93,
+          "end_line": 119,
+          "label": "최신 한 칸"
+        },
+        {
+          "path": "src/eyetoarm/vision/live_observation_dispatch.py",
+          "line": 252,
+          "end_line": 338,
+          "label": "처리 순서"
+        },
+        {
+          "path": "src/eyetoarm/vision/live_observation_link.py",
+          "line": 761,
+          "end_line": 766,
+          "label": "주 스레드가 넣음"
+        }
+      ],
+      "pos": [
+        350,
+        460
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "writer",
+      "type": "database",
+      "label": "기록 쓰기",
+      "sublabel": "eyetoarm-live-observation-writer",
+      "tag": "B",
+      "explanation": "B 사건 기록을 64개씩 꺼내 파일로 쓴다. 보통 사건은 8개(write_capacity)까지, 차면 받지 않는다(writer_backpressure). 꼭 남길 사건은 64개(reserved_capacity)까지, 넘치면 실행을 실패로 멈춘다.",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/live_observation_events.py",
+          "line": 183,
+          "end_line": 232,
+          "label": "기록 반복"
+        },
+        {
+          "path": "src/eyetoarm/vision/live_observation_state.py",
+          "line": 383,
+          "end_line": 461,
+          "label": "용량·넘침"
+        },
+        {
+          "path": "config/vision/live_observation_sort_part_managed_test.json",
+          "line": 8,
+          "end_line": 12,
+          "label": "8·64·256"
+        }
+      ],
+      "pos": [
+        970,
+        600
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "spin",
+      "type": "backend",
+      "label": "목표 응답 처리",
+      "sublabel": "eyetoarm-live-sort-part-spin",
+      "tag": "B",
+      "explanation": "--live-sort-part일 때. 동작 클라이언트의 응답·결과 콜백, 0.5초마다 C 실행 상태 조회(get_run), C가 부르는 ~/discard_detections 서비스를 이 스레드가 처리한다. 목표 보내기 자체는 B 계산 스레드에서 send_goal_async로 한다.",
+      "sources": [
+        {
+          "path": "scripts/run_pipeline.py",
+          "line": 1093,
+          "end_line": 1113,
+          "label": "노드·서비스·타이머"
+        },
+        {
+          "path": "scripts/run_pipeline.py",
+          "line": 1266,
+          "end_line": 1281,
+          "label": "spin·send"
+        },
+        {
+          "path": "src/eyetoarm/transforms/sort_part_client.py",
+          "line": 91,
+          "end_line": 124,
+          "label": "send_goal_async"
+        }
+      ],
+      "pos": [
+        350,
+        740
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "sorter",
+      "type": "cloud",
+      "label": "C 분류 실행",
+      "sublabel": "다른 프로세스",
+      "href": "system_processes_v1_8.html",
+      "sources": [
+        {
+          "path": "robot_ws/src/robot_server_package/robot_server_package/sort_manager.py",
+          "line": 115,
+          "end_line": 124,
+          "label": "동작 서버"
+        }
+      ],
+      "pos": [
+        350,
+        600
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "cproxy",
+      "type": "backend",
+      "label": "center 자식 대리",
+      "sublabel": "eyetoarm-center-send · -recv",
+      "tag": "B",
+      "explanation": "B 계산 스레드가 요청을 넣는다. 아직 보내지 않은 요청이 있으면 새 요청이 바꾼다(replaced). 보내기 스레드는 자식이 쉬고 있을 때만 사진을 memfd에 복사해 보낸다. 보는 쪽이 없으면 그리지 않는다(CenterDrawGate).",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/center_process.py",
+          "line": 152,
+          "end_line": 155,
+          "label": "두 스레드"
+        },
+        {
+          "path": "src/eyetoarm/vision/center_process.py",
+          "line": 176,
+          "end_line": 265,
+          "label": "최신만·보내기"
+        },
+        {
+          "path": "src/eyetoarm/vision/center_process.py",
+          "line": 417,
+          "end_line": 455,
+          "label": "B 쪽 요청·/b/results"
+        }
+      ],
+      "pos": [
+        660,
+        600
+      ],
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "cchild",
+      "type": "cloud",
+      "label": "center 그리기 자식",
+      "sublabel": "다른 프로세스",
+      "href": "system_processes_v1_8.html",
+      "sources": [
+        {
+          "path": "src/eyetoarm/vision/center_process_child.py",
+          "line": 145,
+          "end_line": 172,
+          "label": "그리기·발행 반복"
+        }
+      ],
+      "pos": [
+        660,
+        740
+      ],
+      "size": [
+        200,
+        64
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "c-rx",
+      "from": "cam",
+      "to": "rx",
+      "label": "ROS 토픽 (깊이 1)"
+    },
+    {
+      "id": "rx-main",
+      "from": "rx",
+      "to": "main",
+      "label": "한 칸 슬롯 · 덮어씀",
+      "variant": "emphasis"
+    },
+    {
+      "id": "main-det",
+      "from": "main",
+      "to": "det",
+      "label": "칸 1 (바쁘면 거절)"
+    },
+    {
+      "id": "det-main",
+      "from": "det",
+      "to": "main",
+      "label": "결과 칸 1"
+    },
+    {
+      "id": "det-infer",
+      "from": "det",
+      "to": "infer",
+      "label": "공유 메모리 2칸 + 소켓쌍"
+    },
+    {
+      "id": "main-probe",
+      "from": "main",
+      "to": "probe",
+      "label": "대기열 64 · 칸 1",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "probe-fwd",
+      "from": "probe",
+      "to": "fwd",
+      "label": "칸 1 · 새 것으로 바꿈"
+    },
+    {
+      "id": "fwd-relay",
+      "from": "fwd",
+      "to": "relay",
+      "label": "TCP JPEG"
+    },
+    {
+      "id": "main-world",
+      "from": "main",
+      "to": "world",
+      "label": "대기열 8"
+    },
+    {
+      "id": "grip-world",
+      "from": "grip",
+      "to": "world",
+      "label": "8개 · 오래된 것 버림"
+    },
+    {
+      "id": "tf-world",
+      "from": "tf",
+      "to": "world",
+      "label": "TF 조회"
+    },
+    {
+      "id": "world-stream",
+      "from": "world",
+      "to": "stream",
+      "label": "대기열 4"
+    },
+    {
+      "id": "stream-sorter",
+      "from": "stream",
+      "to": "sorter",
+      "label": "ROS 토픽 /a/track_states"
+    },
+    {
+      "id": "main-b",
+      "from": "main",
+      "to": "b",
+      "label": "최신 한 칸 · 밀린 것 건너뜀",
+      "variant": "emphasis"
+    },
+    {
+      "id": "world-b",
+      "from": "world",
+      "to": "b",
+      "label": "결과 64개 · 0.1초 기다림"
+    },
+    {
+      "id": "tf-b",
+      "from": "tf",
+      "to": "b",
+      "label": "TF 조회"
+    },
+    {
+      "id": "b-writer",
+      "from": "b",
+      "to": "writer",
+      "label": "기록 8 / 예약 64"
+    },
+    {
+      "id": "b-sorter",
+      "from": "b",
+      "to": "sorter",
+      "label": "ROS 액션 목표",
+      "variant": "emphasis"
+    },
+    {
+      "id": "sorter-spin",
+      "from": "sorter",
+      "to": "spin",
+      "label": "동작 결과 · discard 요청"
+    },
+    {
+      "id": "b-cproxy",
+      "from": "b",
+      "to": "cproxy",
+      "label": "최신 요청만"
+    },
+    {
+      "id": "cproxy-child",
+      "from": "cproxy",
+      "to": "cchild",
+      "label": "memfd + 소켓쌍"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "넘치면 멈추는 곳 (버리지 않음)",
+      "items": [
+        "넘기기 제어 대기열 64: 넘치면 실패(overflow)로 고정하고 A가 멈춘다. 넘기기 소비자가 표준 출력 print에서 막히면 여기가 찬다",
+        "꼭 남길 B 기록 64, 건너뜀 기록 256: 넘치면 실행을 실패로 멈춘다",
+        "추론 자식에 빈 칸이 없으면 infer_process_stalled로 실패한다"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "새 것만 남기는 곳 (버림)",
+      "items": [
+        "영상 슬롯 1칸(덮어씀), detect 전송 1칸(옛 것 버림), B 계산 1칸(superseded), center 요청 1칸(replaced)",
+        "추적 대기열 8은 반대로 새 것을 버린다. 추적 발행 4는 오래된 것을 버리고 20 Hz를 넘는 것도 버린다"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "그림에서 뺀 보조 스레드",
+      "items": [
+        "eyetoarm-live-observation-skips (건너뜀 기록), eyetoarm-live-observation-open (시작 준비 확인), eyetoarm-live-sort-part-records (목표 기록)",
+        "켜는 옵션이 있을 때만: eyetoarm-track-stream-clock (시계 own), eyetoarm-stage-timing (--stage-timing)",
+        "자식 프로세스 안: infer-child-parent-watch, center-child-parent-watch (부모가 죽었는지 감시)"
+      ]
+    }
+  ]
+}
