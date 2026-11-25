@@ -2,6 +2,10 @@
 
 마스크 내부 표본 픽셀마다 「카메라 → 그 픽셀의 볼트 평면 교점」 선분이 팔 캡슐(촬영 stamp TF)을 지나면 그 픽셀에
 보이는 것은 팔이다. 그런 표본 비율이 문턱 이상이면 제외하고 관측을 다시 고른다. ROS·Qt를 import하지 않는다.
+
+사진 하나의 판정은 모든 후보의 표본을 모아 투영·캡슐 거리를 한 번씩 계산한다(#434). 부품별 numpy 호출을 줄여
+다른 스레드와 GIL을 나눠 쓰는 기다림을 줄이려는 것이다. 값은 부품별 계산(`arm_fraction`)과 같다(점마다 독립인 연산만 묶음).
+감싸개는 이 사진의 표본과 카메라 위치를 같은 스레드의 바깥 감싸개(벨트 밖 제외)가 다시 쓰도록 잠시 맡아 둔다.
 """
 from __future__ import annotations
 
@@ -177,17 +181,68 @@ def arm_fraction(polygon, K, dist, T_W_C, capsules, config: ArmRegionConfig) -> 
     return hits / len(pts), len(pts), center
 
 
-def filter_result(result: AiSegResult, *, K, dist, T_W_C, T_W_L_by_link: dict,
-                  config: ArmRegionConfig) -> tuple[AiSegResult, list[dict]]:
-    """팔 영역 인스턴스를 `ARM_REGION`으로 거부한 결과와 인스턴스별 판정 근거."""
-    capsules = world_capsules(config.occluders, T_W_L_by_link)
-    decisions, removed = [], set()
+def judge_candidates(result: AiSegResult) -> list:
+    """판정 대상 인스턴스(범위 안이고 다각형이 있는 것), 결과 순서 그대로."""
+    return [inst for inst in result.instances if inst.in_scope and inst.polygon is not None]
 
-    for inst in result.instances:
-        if not inst.in_scope or inst.polygon is None:
+
+def arm_fractions(samples: list[np.ndarray], K, dist, T_W_C, capsules,
+                  config: ArmRegionConfig) -> list[tuple[float, int, list | None]]:
+    """부품별 표본 목록 → 부품마다 `arm_fraction`과 같은 (비율, 표본 수, 중심 W [mm] | None).
+
+    모든 표본을 이어 붙여 투영(`pixels_to_w`)과 캡슐 거리(`segment_distances`)를 한 번씩 계산한 뒤 부품별로 나눈다.
+    두 계산은 점(행)마다 독립이라 묶어도 값이 같다. 부품별로 남는 것은 세기·평균뿐이다.
+    """
+    if not samples:
+        return []
+
+    sizes = [len(pts) for pts in samples]
+
+    # 투영: 모든 표본을 한 번에 볼트 평면으로(부품별 계산과 같은 식, mm로)
+    w_all = pixels_to_w(np.concatenate(samples), K, dist, T_W_C, config.plane_z_m) * 1000.0
+    ok_all = np.isfinite(w_all).all(axis=1)
+
+    # 캡슐 거리: 평면과 만난 표본만 한 번에(부품별 계산처럼 mm → m로 되돌려 같은 값)
+    hit_all = np.zeros(len(w_all), dtype=bool)
+
+    if capsules and ok_all.any():
+        A = np.array([cap[0] for cap in capsules], dtype=np.float64).reshape(-1, 3)
+        B = np.array([cap[1] for cap in capsules], dtype=np.float64).reshape(-1, 3)
+        radius = np.array([cap[2] for cap in capsules], dtype=np.float64) + config.margin_mm / 1000.0
+        finite_all = w_all[ok_all]
+        P = np.column_stack([finite_all / 1000.0, np.full(len(finite_all), config.plane_z_m)])
+        d = segment_distances(np.asarray(T_W_C, dtype=np.float64)[:3, 3], P, A, B)
+        hit_all[ok_all] = (d < radius[None, :]).any(axis=1)
+
+    # 부품별로 나눔: 평면과 만난 표본이 없으면 (0, n, None), 아니면 가린 비율과 중심
+    out, start = [], 0
+
+    for n in sizes:
+        part = slice(start, start + n)
+        start += n
+        finite = w_all[part][ok_all[part]]
+
+        if len(finite) == 0:
+            out.append((0.0, n, None))
             continue
 
-        frac, n, center = arm_fraction(inst.polygon, K, dist, T_W_C, capsules, config)
+        hits = int(np.count_nonzero(hit_all[part]))
+        center = [round(float(np.mean(finite[:, 0])), 1), round(float(np.mean(finite[:, 1])), 1)]
+        out.append((hits / n, n, center))
+
+    return out
+
+
+def judge_arm(result: AiSegResult, *, K, dist, T_W_C, T_W_L_by_link: dict,
+              config: ArmRegionConfig) -> tuple[AiSegResult, list[dict], dict]:
+    """`filter_result`와 같은 (결과, 판정 근거)에 더해 판정에 쓴 표본 {인스턴스 번호: (다각형, 표본)}."""
+    capsules = world_capsules(config.occluders, T_W_L_by_link)
+    cands = judge_candidates(result)
+    samples = [sample_points(inst.polygon, config.max_samples) for inst in cands]
+    fractions = arm_fractions(samples, K, dist, T_W_C, capsules, config)
+    decisions, removed = [], set()
+
+    for inst, (frac, n, center) in zip(cands, fractions):
         excluded = frac >= config.min_fraction
         decisions.append({"index": inst.index, "class_name": inst.class_name, "confidence": round(inst.confidence, 4),
                           "samples": n, "arm_fraction": round(frac, 4), "excluded": excluded,
@@ -196,7 +251,31 @@ def filter_result(result: AiSegResult, *, K, dist, T_W_C, T_W_L_by_link: dict,
         if excluded:
             removed.add(inst.index)
 
-    return reject_instances(result, removed, ARM_REGION), decisions
+    used = {inst.index: (inst.polygon, pts) for inst, pts in zip(cands, samples)}
+
+    return reject_instances(result, removed, ARM_REGION), decisions, used
+
+
+def filter_result(result: AiSegResult, *, K, dist, T_W_C, T_W_L_by_link: dict,
+                  config: ArmRegionConfig) -> tuple[AiSegResult, list[dict]]:
+    """팔 영역 인스턴스를 `ARM_REGION`으로 거부한 결과와 인스턴스별 판정 근거."""
+    out, decisions, _ = judge_arm(result, K=K, dist=dist, T_W_C=T_W_C, T_W_L_by_link=T_W_L_by_link, config=config)
+
+    return out, decisions
+
+
+@dataclass(frozen=True)
+class FrameShare:
+    """한 사진의 판정에 쓴 것: 바깥 감싸개(벨트 밖 제외)가 같은 사진이면 다시 쓴다(#434).
+
+    `frame`은 그 사진의 프레임 객체 자체(같은 객체인지로 맞춤), `tf_cam`은 촬영 stamp 카메라 위치 조회 결과(ok만),
+    `samples`는 {인스턴스 번호: (다각형 객체, 표본 픽셀 (N, 2))}, `max_samples`는 그 표본을 뽑은 상한.
+    """
+
+    frame: object
+    tf_cam: object
+    samples: dict
+    max_samples: int
 
 
 class ArmRegionFilter:
@@ -223,10 +302,20 @@ class ArmRegionFilter:
                        "errors": 0}
         self._ms: list[float] = []
         self._tf_ms: list[float] = []   # 그중 TF 조회(카메라 + 링크) 시간
+        self._share = threading.local()   # 이 스레드의 마지막 사진 FrameShare(#434, 바깥 감싸개가 읽음)
 
     def __getattr__(self, name):
         """감싼 검출기의 다른 속성(prepare·config 등)은 그대로 넘긴다."""
         return getattr(self._inner, name)
+
+    def region_share(self, frame) -> FrameShare | None:
+        """이 스레드에서 방금 판정한 사진이 `frame`(같은 객체)이면 그 FrameShare, 아니면 None.
+
+        팔 판정이 카메라 위치를 얻고 표본까지 뽑은 경우에만 남는다(후보 없음·카메라 없음·TF 실패·판정 오류면 None).
+        """
+        share = getattr(self._share, "value", None)
+
+        return share if share is not None and share.frame is frame else None
 
     def __call__(self, job, *args):
         """감싼 검출기를 부르고(토큰 인자 그대로) 결과를 거른다."""
@@ -258,8 +347,9 @@ class ArmRegionFilter:
     def _filter(self, job, result: AiSegResult):
         """(결과, 판정 기록 | None)."""
         frame = job.frame
+        self._share.value = None   # 앞 사진 것을 남기지 않는다
         self._count("frames")
-        cands = [i for i in result.instances if i.in_scope and i.polygon is not None]
+        cands = judge_candidates(result)
 
         if not cands:
             return result, None
@@ -290,8 +380,9 @@ class ArmRegionFilter:
             poses[link] = res.tf.T_W_C
 
         self._timed(t_tf, self._tf_ms)
-        out, decisions = filter_result(result, K=camera.K, dist=camera.dist, T_W_C=tf_cam.tf.T_W_C,
-                                       T_W_L_by_link=poses, config=self.config)
+        out, decisions, used = judge_arm(result, K=camera.K, dist=camera.dist, T_W_C=tf_cam.tf.T_W_C,
+                                         T_W_L_by_link=poses, config=self.config)
+        self._share.value = FrameShare(frame, tf_cam, used, self.config.max_samples)
         self._count("judged")
         self._count("excluded", sum(d["excluded"] for d in decisions))
 
@@ -324,5 +415,6 @@ class ArmRegionFilter:
                 "tf_ms_p95": pct(tf_ms, 0.95)}
 
 
-__all__ = ["ArmRegionConfig", "ArmRegionConfigError", "ArmRegionFilter", "arm_fraction", "filter_result",
-           "load_arm_region_config", "parse_arm_region", "reject_instances", "sample_points", "segment_distances"]
+__all__ = ["ArmRegionConfig", "ArmRegionConfigError", "ArmRegionFilter", "FrameShare", "arm_fraction", "arm_fractions",
+           "filter_result", "judge_arm", "judge_candidates", "load_arm_region_config", "parse_arm_region",
+           "reject_instances", "sample_points", "segment_distances"]
