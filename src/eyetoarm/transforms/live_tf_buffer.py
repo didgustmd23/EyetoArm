@@ -3,7 +3,7 @@
 근거: `_workspace/171_builder2_live_a_to_b_plan.md` r3 §2(K-T 권고 T2)·§3.5·§4.1, `transforms/b_stage.py`(`RosTfLookup` 시각 의미).
 B 파일 `b_stage.py`는 바꾸지 않고 새 파일로 둔다. **실시간 실행 경로에 연결하지 않는다**(D13 유지).
 
-- `LiveTfRuntime(context, modules=)`: `start()`에서만 rclpy·tf2_ros를 불러(코드 규약 §8) `use_sim_time=True` 노드 → `Buffer(node=…)` →
+- `LiveTfRuntime(context, modules=)`: `start()`에서만 rclpy·tf2_ros를 불러(코드 규약 §8) `use_sim_time=False` 노드 → `Buffer(node=…)` →
   `TransformListener(buffer, node, spin_thread=False)` → 전용 `SingleThreadedExecutor` + 스레드 1개를 만든다. 컨텍스트는 주입받고
   종료하지 않는다. `close(limit_s)`는 executor 종료 → 스레드 join → 노드 해제 순서로, 단계 실패를 모아 마지막에 RuntimeError.
   `modules`(시험 주입): `{"rclpy", "Buffer", "TransformListener", "SingleThreadedExecutor", "Time", "Duration", "Parameter"}`.
@@ -77,8 +77,11 @@ class LiveTfRuntime:
         self._m = m
 
         try:
+            # B-15: 시뮬 시계(/clock)를 구독하지 않는다. 조회는 촬영 stamp로 하고, tf2 대기는 노드 시계가 아닌 시스템 시계를 쓴다.
+            # 노드 시계는 시간 역행 시 버퍼 비우기에만 쓰이는데, 실시간 실행은 되감기면 종료 코드 3으로 끝나 감독 스크립트가
+            # 새 프로세스(빈 버퍼)로 다시 띄운다. 실측(2026-11-25): 이 노드 CPU 21~24 % → 2.0~2.4 %, 조회 성공률 98.1 % vs 98.2 %.
             self.node = m["rclpy"].create_node(self._node_name, context=self._context,
-                                               parameter_overrides=[m["Parameter"]("use_sim_time", value=True)])
+                                               parameter_overrides=[m["Parameter"]("use_sim_time", value=False)])
             self.buffer = m["Buffer"](cache_time=m["Duration"](seconds=self._cache_s), node=self.node)
             self.listener = m["TransformListener"](self.buffer, self.node, spin_thread=False)
             self._executor = m["SingleThreadedExecutor"](context=self._context)
