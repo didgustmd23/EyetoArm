@@ -36,6 +36,35 @@ ARM_REGION_DEFAULT_REL = "config/vision/arm_region_filter.json"   # 팔 영역 �
 BELT_REGION_DEFAULT_REL = "config/vision/belt_region_filter.json"   # 벨트 밖 제외 기본 설정(실시간 기록 연결 기본 켬)
 
 
+def _switch_interval_ms(text: str) -> float:
+    """파이썬 스레드 전환 간격 인자(ms, 0 초과 100 이하 유한 실수). 아니면 argparse 오류(종료 2)."""
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"전환 간격(ms)이 실수가 아님: {text!r}") from exc
+
+    if not math.isfinite(value) or value <= 0.0 or value > 100.0:
+        raise argparse.ArgumentTypeError(f"전환 간격(ms)은 0 초과 100 이하: {text!r}")
+
+    return value
+
+
+def _apply_switch_interval(args, err) -> float | None:
+    """`--switch-interval-ms`가 있으면 이 프로세스(인식)의 파이썬 스레드 전환 간격을 바꾸고 이전 값(s)을 돌려준다.
+
+    추론·그리기 자식은 따로 시작하는 프로세스라 영향을 받지 않는다(기본 간격 그대로). 옵션이 없으면 아무것도 하지 않고 None.
+    """
+    if args.switch_interval_ms is None:
+        return None
+
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(args.switch_interval_ms / 1000.0)
+    err.write(f"run_pipeline: switch_interval={args.switch_interval_ms:g}ms (was {previous * 1000.0:g}ms, "
+              "this process only; infer/center children keep the default)\n")
+
+    return previous
+
+
 def _positive_int(text: str) -> int:
     """양의 정수 인자. 아니면 argparse 오류(종료 2)."""
     try:
@@ -96,6 +125,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="추론 자식 프로세스를 쓰지 않는다(실시간 AI 기본 켬을 끔)")
     parser.add_argument("--infer-torch-threads", type=_positive_int, default=None, metavar="N",
                         help="추론 자식의 torch CPU 스레드 수(기본: 라이브러리 기본값, 추론 프로세스가 켜졌을 때만)")
+    parser.add_argument("--switch-interval-ms", dest="switch_interval_ms", type=_switch_interval_ms, default=None,
+                        metavar="MS", help="측정용(#434): 이 인식 프로세스의 파이썬 스레드 전환 간격(ms, sys.setswitchinterval). "
+                                           "기본: 바꾸지 않음(파이썬 기본 5 ms). 추론·그리기 자식에는 넘기지 않는다")
     parser.add_argument("--log", metavar="PATH", required=True, help="JSONL 기록 파일(새로 씀)")
     parser.add_argument("--source-id", type=_non_empty, default=None,
                         help="소스 ID(기본: 저장 입력 stored0, --ros-link gz_link)")
@@ -686,6 +718,7 @@ def main(argv=None, *, stderr=None, model_factory=None, import_module=None, ros_
     args._model_factory, args._import_module = model_factory, import_module
     args._infer_process_options = infer_process_options
     _resolve_infer_process(args)
+    _apply_switch_interval(args, err)   # 측정용(#434): 프로세스 수명 동안(되돌리지 않음)
     runner_config = build_runner_config(args)
 
     if args.source_id is None:

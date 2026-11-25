@@ -5,6 +5,10 @@
 「영상에 투영한 벨트 윗면 다각형 안」 판정과 같다(같은 평면 사영의 앞·뒤 방향). 판정 평면이 볼트 평면이 아니라 벨트 윗면
 높이여야 이 성질이 선다. 벨트 위 공중에 들린 볼트는 교점이 사각형 안이라 통과한다(팔 영역 필터 몫).
 ROS·Qt를 import하지 않는다.
+
+사진 하나의 판정은 모든 후보의 표본을 모아 교점 계산을 한 번 한다(#434, 값은 부품별 `inside_fraction`과 같음).
+안쪽 감싸개가 팔 영역 필터이고 같은 사진을 방금 판정했으면, 그 카메라 위치 조회 결과와 (표본 상한이 같을 때) 표본을
+다시 쓴다. 다시 쓰지 못하면 지금처럼 직접 조회·표본 추출한다.
 """
 from __future__ import annotations
 
@@ -18,7 +22,7 @@ import cv2
 import numpy as np
 
 from eyetoarm.vision.ai_result import OUTSIDE_BELT, AiSegResult
-from eyetoarm.vision.arm_region import ArmRegionFilter, reject_instances, sample_points
+from eyetoarm.vision.arm_region import ArmRegionFilter, judge_candidates, reject_instances, sample_points
 
 
 class BeltRegionConfigError(ValueError):
@@ -156,15 +160,57 @@ def inside_fraction(polygon, K, dist, T_W_C, config: BeltRegionConfig) -> tuple[
     return int(np.count_nonzero(inside)) / len(pts), len(pts), center
 
 
-def filter_result(result: AiSegResult, *, K, dist, T_W_C, config: BeltRegionConfig) -> tuple[AiSegResult, list[dict]]:
-    """벨트 밖 인스턴스를 `OUTSIDE_BELT`로 거부한 결과와 인스턴스별 판정 근거(이미 범위 밖인 것은 판정하지 않음)."""
+def inside_fractions(samples: list[np.ndarray], K, dist, T_W_C,
+                     config: BeltRegionConfig) -> list[tuple[float, int, list | None]]:
+    """부품별 표본 목록 → 부품마다 `inside_fraction`과 같은 (안 비율, 표본 수, 교점 중심 W [mm] | None).
+
+    모든 표본을 이어 붙여 교점(`rays_to_plane`)과 사각형 안 판정을 한 번씩 한 뒤 부품별로 나눈다(점마다 독립이라 값이 같다).
+    """
+    if not samples:
+        return []
+
+    sizes = [len(pts) for pts in samples]
+
+    # 교점·사각형 안: 모든 표본을 한 번에(평면과 만나지 않는 NaN 표본은 비교가 거짓이라 밖으로 센다)
+    w_all = rays_to_plane(np.concatenate(samples), K, dist, T_W_C, config.top_z_m)
+    m = config.margin_mm / 1000.0
+    x0, x1, y0, y1 = config.rect_xy_m
+
+    with np.errstate(invalid="ignore"):
+        inside_all = (w_all[:, 0] >= x0 - m) & (w_all[:, 0] <= x1 + m) & (w_all[:, 1] >= y0 - m) & (w_all[:, 1] <= y1 + m)
+
+    ok_all = np.isfinite(w_all).all(axis=1)
+
+    # 부품별로 나눔: 안 비율과 교점 중심(부품별 계산처럼 m → mm 뒤 평균)
+    out, start = [], 0
+
+    for n in sizes:
+        part = slice(start, start + n)
+        start += n
+        finite = w_all[part][ok_all[part]] * 1000.0
+        center = None if len(finite) == 0 else [round(float(np.mean(finite[:, 0])), 1),
+                                                round(float(np.mean(finite[:, 1])), 1)]
+        out.append((int(np.count_nonzero(inside_all[part])) / n, n, center))
+
+    return out
+
+
+def judge_belt(result: AiSegResult, *, K, dist, T_W_C, config: BeltRegionConfig,
+               reuse: dict | None = None) -> tuple[AiSegResult, list[dict]]:
+    """`filter_result`와 같다. `reuse`({인스턴스 번호: (다각형 객체, 표본)}, 같은 상한으로 뽑은 것)에 같은 다각형 객체가
+    있으면 그 표본을 쓰고, 없으면 새로 뽑는다."""
+    cands = judge_candidates(result)
+    samples = []
+
+    for inst in cands:
+        got = None if reuse is None else reuse.get(inst.index)
+        samples.append(got[1] if got is not None and got[0] is inst.polygon
+                       else sample_points(inst.polygon, config.max_samples))
+
+    fractions = inside_fractions(samples, K, dist, T_W_C, config)
     decisions, removed = [], set()
 
-    for inst in result.instances:
-        if not inst.in_scope or inst.polygon is None:
-            continue
-
-        frac, n, center = inside_fraction(inst.polygon, K, dist, T_W_C, config)
+    for inst, (frac, n, center) in zip(cands, fractions):
         excluded = frac < config.min_inside_fraction
         decisions.append({"index": inst.index, "class_name": inst.class_name, "confidence": round(inst.confidence, 4),
                           "samples": n, "inside_fraction": round(frac, 4), "excluded": excluded,
@@ -176,11 +222,19 @@ def filter_result(result: AiSegResult, *, K, dist, T_W_C, config: BeltRegionConf
     return reject_instances(result, removed, OUTSIDE_BELT), decisions
 
 
+def filter_result(result: AiSegResult, *, K, dist, T_W_C, config: BeltRegionConfig) -> tuple[AiSegResult, list[dict]]:
+    """벨트 밖 인스턴스를 `OUTSIDE_BELT`로 거부한 결과와 인스턴스별 판정 근거(이미 범위 밖인 것은 판정하지 않음)."""
+    return judge_belt(result, K=K, dist=dist, T_W_C=T_W_C, config=config)
+
+
 class BeltRegionFilter(ArmRegionFilter):
     """검출기 감싸개(worker 스레드에서 호출). 벨트 밖 인스턴스를 거부하고 관측을 다시 고른다.
 
     감싸기·재선택·계수·요약은 `ArmRegionFilter`와 같고, 판정만 다르다(카메라 TF 하나만 조회). TF·카메라가 없거나 판정
     중 오류가 나면 제외하지 않고 사유만 남긴다. 계수는 잠금 안.
+
+    안쪽 감싸개가 같은 스레드에서 같은 사진을 판정했으면(`region_share`) 그 카메라 위치 조회 결과를 다시 쓰고(조회 시간은
+    그만큼 짧게 기록됨), 표본 상한이 같으면 표본도 다시 쓴다(#434).
     """
 
     def _filter(self, job, result: AiSegResult):
@@ -199,16 +253,20 @@ class BeltRegionFilter(ArmRegionFilter):
             self._count("no_camera")
             return result, {**base, "status": "no_camera"}
 
+        # 안쪽 팔 영역 필터가 같은 사진에서 얻은 카메라 위치·표본(없으면 None: 직접 조회)
+        share_of = getattr(self._inner, "region_share", None)
+        share = share_of(frame) if callable(share_of) else None
         t_tf = self._clock()
-        tf_cam = self._tf(frame)
+        tf_cam = share.tf_cam if share is not None else self._tf(frame)
 
         if tf_cam.status != "ok":
             self._count("tf_unavailable")
             return result, {**base, "status": f"tf_{tf_cam.status}:camera"}
 
         self._timed(t_tf, self._tf_ms)
-        out, decisions = filter_result(result, K=camera.K, dist=camera.dist, T_W_C=tf_cam.tf.T_W_C,
-                                       config=self.config)
+        reuse = share.samples if share is not None and share.max_samples == self.config.max_samples else None
+        out, decisions = judge_belt(result, K=camera.K, dist=camera.dist, T_W_C=tf_cam.tf.T_W_C,
+                                    config=self.config, reuse=reuse)
         self._count("judged")
         self._count("excluded", sum(d["excluded"] for d in decisions))
 
@@ -216,4 +274,5 @@ class BeltRegionFilter(ArmRegionFilter):
 
 
 __all__ = ["BeltRegionConfig", "BeltRegionConfigError", "BeltRegionFilter", "belt_from_frames", "filter_result",
-           "inside_fraction", "load_belt_region_config", "parse_belt_region", "rays_to_plane"]
+           "inside_fraction", "inside_fractions", "judge_belt", "load_belt_region_config", "parse_belt_region",
+           "rays_to_plane"]

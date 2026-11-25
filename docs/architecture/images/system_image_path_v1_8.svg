@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg viewBox="0 0 1068 740" data-reader-fit="intrinsic-height" role="img" lang="ko" aria-labelledby="archify-diagram-title archify-diagram-description" data-animation="trace" data-preset="classic" data-parent-href="system_threads_v1_8.html" data-quality-profile="showcase" data-motion-choreography="stream" style="--flow-cycle: 6.058s; width: 1068px; height: 740px; min-width: 0px;" width="1068" height="740" xmlns="http://www.w3.org/2000/svg" data-theme="light"><style>
+<svg viewBox="0 0 1068 740" data-reader-fit="intrinsic-height" role="img" lang="ko" aria-labelledby="archify-diagram-title archify-diagram-description" data-animation="trace" data-preset="classic" data-parent-href="system_threads_v1_8.html" data-quality-profile="showcase" data-motion-choreography="stream" style="--flow-cycle: 6.049s; width: 1068px; height: 740px; min-width: 0px;" width="1068" height="740" xmlns="http://www.w3.org/2000/svg" data-theme="light"><style>
 /*
 JetBrains Mono variable WOFF2 subsets from Google Fonts service revision v24.
 These fixed bytes are shared by the viewer and its SVG/raster exports.
@@ -432,205 +432,205 @@ svg[data-preset="editorial"] { --flow-halo-peak: 0.07; --flow-glow-peak: 0.28; -
 }
 @keyframes archify-relay-ripple { 
   0% { r: 2px; opacity: var(--flow-peak, 0.6); }
-  12.381%, 100% { r: 20px; opacity: 0; }
+  12.398%, 100% { r: 20px; opacity: 0; }
 }
 @keyframes archify-relay-comet-0 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  1.981% { opacity: var(--flow-peak, 0.9); }
-  10.022% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
-  12.664%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
+  1.984% { opacity: var(--flow-peak, 0.9); }
+  10.037% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
+  12.682%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
 }
 @keyframes archify-relay-wake-0 { 
   0% { stroke-dashoffset: var(--flow-len, 0px); opacity: var(--flow-peak, 0.3); animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  10.022% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
-  24.879%, 100% { stroke-dashoffset: 0px; opacity: 0; }
+  10.037% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
+  24.914%, 100% { stroke-dashoffset: 0px; opacity: 0; }
 }
 @keyframes archify-relay-comet-1 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  1.981% { opacity: var(--flow-peak, 0.9); }
-  12.793% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
-  15.435%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
+  1.984% { opacity: var(--flow-peak, 0.9); }
+  12.811% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
+  15.456%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
 }
 @keyframes archify-relay-wake-1 { 
   0% { stroke-dashoffset: var(--flow-len, 0px); opacity: var(--flow-peak, 0.3); animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  12.793% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
-  27.65%, 100% { stroke-dashoffset: 0px; opacity: 0; }
+  12.811% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
+  27.689%, 100% { stroke-dashoffset: 0px; opacity: 0; }
 }
 @keyframes archify-relay-comet-2 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  1.981% { opacity: var(--flow-peak, 0.9); }
-  18.748% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
-  21.389%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
+  1.984% { opacity: var(--flow-peak, 0.9); }
+  17.977% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
+  20.622%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
 }
 @keyframes archify-relay-wake-2 { 
   0% { stroke-dashoffset: var(--flow-len, 0px); opacity: var(--flow-peak, 0.3); animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  18.748% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
-  33.605%, 100% { stroke-dashoffset: 0px; opacity: 0; }
+  17.977% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
+  32.855%, 100% { stroke-dashoffset: 0px; opacity: 0; }
 }
 @keyframes archify-relay-comet-3 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  1.387% { opacity: var(--flow-peak, 0.9); }
-  6.933% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
-  9.574%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
+  1.389% { opacity: var(--flow-peak, 0.9); }
+  6.943% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
+  9.588%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
 }
 @keyframes archify-relay-wake-3 { 
   0% { stroke-dashoffset: var(--flow-len, 0px); opacity: var(--flow-peak, 0.3); animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  6.933% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
-  21.79%, 100% { stroke-dashoffset: 0px; opacity: 0; }
+  6.943% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
+  21.821%, 100% { stroke-dashoffset: 0px; opacity: 0; }
 }
 @keyframes archify-relay-comet-4 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  1.981% { opacity: var(--flow-peak, 0.9); }
-  24.761% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
-  27.402%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
+  1.984% { opacity: var(--flow-peak, 0.9); }
+  24.796% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
+  27.441%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
 }
 @keyframes archify-relay-wake-4 { 
   0% { stroke-dashoffset: var(--flow-len, 0px); opacity: var(--flow-peak, 0.3); animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  24.761% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
-  39.618%, 100% { stroke-dashoffset: 0px; opacity: 0; }
+  24.796% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
+  39.674%, 100% { stroke-dashoffset: 0px; opacity: 0; }
 }
 @keyframes archify-relay-comet-5 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  1.387% { opacity: var(--flow-peak, 0.9); }
-  6.933% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
-  9.574%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
+  1.389% { opacity: var(--flow-peak, 0.9); }
+  6.943% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
+  9.588%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
 }
 @keyframes archify-relay-wake-5 { 
   0% { stroke-dashoffset: var(--flow-len, 0px); opacity: var(--flow-peak, 0.3); animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  6.933% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
-  21.79%, 100% { stroke-dashoffset: 0px; opacity: 0; }
+  6.943% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
+  21.821%, 100% { stroke-dashoffset: 0px; opacity: 0; }
 }
 @keyframes archify-relay-comet-6 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  1.387% { opacity: var(--flow-peak, 0.9); }
-  6.933% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
-  9.574%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
+  1.389% { opacity: var(--flow-peak, 0.9); }
+  6.943% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
+  9.588%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
 }
 @keyframes archify-relay-wake-6 { 
   0% { stroke-dashoffset: var(--flow-len, 0px); opacity: var(--flow-peak, 0.3); animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  6.933% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
-  21.79%, 100% { stroke-dashoffset: 0px; opacity: 0; }
+  6.943% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
+  21.821%, 100% { stroke-dashoffset: 0px; opacity: 0; }
 }
 @keyframes archify-relay-comet-7 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  1.387% { opacity: var(--flow-peak, 0.9); }
-  6.933% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
-  9.574%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
+  1.389% { opacity: var(--flow-peak, 0.9); }
+  6.943% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
+  9.588%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
 }
 @keyframes archify-relay-wake-7 { 
   0% { stroke-dashoffset: var(--flow-len, 0px); opacity: var(--flow-peak, 0.3); animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  6.933% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
-  21.79%, 100% { stroke-dashoffset: 0px; opacity: 0; }
+  6.943% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
+  21.821%, 100% { stroke-dashoffset: 0px; opacity: 0; }
 }
 @keyframes archify-relay-comet-8 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  1.981% { opacity: var(--flow-peak, 0.9); }
-  24.761% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
-  27.402%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
+  1.984% { opacity: var(--flow-peak, 0.9); }
+  24.796% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
+  27.441%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
 }
 @keyframes archify-relay-wake-8 { 
   0% { stroke-dashoffset: var(--flow-len, 0px); opacity: var(--flow-peak, 0.3); animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  24.761% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
-  39.618%, 100% { stroke-dashoffset: 0px; opacity: 0; }
+  24.796% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
+  39.674%, 100% { stroke-dashoffset: 0px; opacity: 0; }
 }
 @keyframes archify-relay-comet-9 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  1.387% { opacity: var(--flow-peak, 0.9); }
-  6.933% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
-  9.574%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
+  1.389% { opacity: var(--flow-peak, 0.9); }
+  6.943% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
+  9.588%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
 }
 @keyframes archify-relay-wake-9 { 
   0% { stroke-dashoffset: var(--flow-len, 0px); opacity: var(--flow-peak, 0.3); animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  6.933% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
-  21.79%, 100% { stroke-dashoffset: 0px; opacity: 0; }
+  6.943% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
+  21.821%, 100% { stroke-dashoffset: 0px; opacity: 0; }
 }
 @keyframes archify-relay-comet-10 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  1.981% { opacity: var(--flow-peak, 0.9); }
-  10.022% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
-  12.664%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
+  1.984% { opacity: var(--flow-peak, 0.9); }
+  10.037% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
+  12.682%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
 }
 @keyframes archify-relay-wake-10 { 
   0% { stroke-dashoffset: var(--flow-len, 0px); opacity: var(--flow-peak, 0.3); animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  10.022% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
-  24.879%, 100% { stroke-dashoffset: 0px; opacity: 0; }
+  10.037% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
+  24.914%, 100% { stroke-dashoffset: 0px; opacity: 0; }
 }
 @keyframes archify-relay-comet-11 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  1.387% { opacity: var(--flow-peak, 0.9); }
-  6.933% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
-  9.574%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
+  1.389% { opacity: var(--flow-peak, 0.9); }
+  6.943% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
+  9.588%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
 }
 @keyframes archify-relay-wake-11 { 
   0% { stroke-dashoffset: var(--flow-len, 0px); opacity: var(--flow-peak, 0.3); animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  6.933% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
-  21.79%, 100% { stroke-dashoffset: 0px; opacity: 0; }
+  6.943% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
+  21.821%, 100% { stroke-dashoffset: 0px; opacity: 0; }
 }
 @keyframes archify-relay-node-0 { 
   0%, 100% { filter: var(--ambient-node-base-filter, none); }
   0% { filter: var(--ambient-node-base-filter, none); }
-  1.981%, 6.933% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
-  19.809% { filter: var(--ambient-node-base-filter, none); }
+  1.984%, 6.943% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
+  19.837% { filter: var(--ambient-node-base-filter, none); }
 }
 @keyframes archify-relay-node-1 { 
   0%, 100% { filter: var(--ambient-node-base-filter, none); }
-  10.022% { filter: var(--ambient-node-base-filter, none); }
-  12.003%, 16.956% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
-  29.831% { filter: var(--ambient-node-base-filter, none); }
+  10.037% { filter: var(--ambient-node-base-filter, none); }
+  12.02%, 16.98% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
+  29.874% { filter: var(--ambient-node-base-filter, none); }
 }
 @keyframes archify-relay-node-2 { 
   0%, 100% { filter: var(--ambient-node-base-filter, none); }
-  24.466% { filter: var(--ambient-node-base-filter, none); }
-  26.447%, 31.4% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
-  44.275% { filter: var(--ambient-node-base-filter, none); }
+  24.501% { filter: var(--ambient-node-base-filter, none); }
+  26.485%, 31.444% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
+  44.338% { filter: var(--ambient-node-base-filter, none); }
 }
 @keyframes archify-relay-node-3 { 
   0%, 100% { filter: var(--ambient-node-base-filter, none); }
-  44.865% { filter: var(--ambient-node-base-filter, none); }
-  46.846%, 51.798% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
-  64.674% { filter: var(--ambient-node-base-filter, none); }
+  44.132% { filter: var(--ambient-node-base-filter, none); }
+  46.115%, 51.075% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
+  63.969% { filter: var(--ambient-node-base-filter, none); }
 }
 @keyframes archify-relay-node-4 { 
   0%, 100% { filter: var(--ambient-node-base-filter, none); }
-  33.05% { filter: var(--ambient-node-base-filter, none); }
-  35.031%, 39.983% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
-  52.859% { filter: var(--ambient-node-base-filter, none); }
+  33.097% { filter: var(--ambient-node-base-filter, none); }
+  35.081%, 40.04% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
+  52.934% { filter: var(--ambient-node-base-filter, none); }
 }
 @keyframes archify-relay-node-5 { 
   0%, 100% { filter: var(--ambient-node-base-filter, none); }
-  41.634% { filter: var(--ambient-node-base-filter, none); }
-  43.615%, 48.567% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
-  61.443% { filter: var(--ambient-node-base-filter, none); }
+  41.693% { filter: var(--ambient-node-base-filter, none); }
+  43.677%, 48.636% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
+  61.53% { filter: var(--ambient-node-base-filter, none); }
 }
 @keyframes archify-relay-node-6 { 
   0%, 100% { filter: var(--ambient-node-base-filter, none); }
-  50.218% { filter: var(--ambient-node-base-filter, none); }
-  52.199%, 57.151% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
-  70.027% { filter: var(--ambient-node-base-filter, none); }
+  50.289% { filter: var(--ambient-node-base-filter, none); }
+  52.273%, 57.232% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
+  70.126% { filter: var(--ambient-node-base-filter, none); }
 }
 @keyframes archify-relay-node-7 { 
   0%, 100% { filter: var(--ambient-node-base-filter, none); }
-  53.307% { filter: var(--ambient-node-base-filter, none); }
-  55.288%, 60.241% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
-  73.116% { filter: var(--ambient-node-base-filter, none); }
+  53.383% { filter: var(--ambient-node-base-filter, none); }
+  55.367%, 60.326% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
+  73.22% { filter: var(--ambient-node-base-filter, none); }
 }
 @keyframes archify-relay-node-8 { 
   0%, 100% { filter: var(--ambient-node-base-filter, none); }
-  53.449% { filter: var(--ambient-node-base-filter, none); }
-  55.43%, 60.382% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
-  73.258% { filter: var(--ambient-node-base-filter, none); }
+  52.728% { filter: var(--ambient-node-base-filter, none); }
+  54.711%, 59.671% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
+  72.565% { filter: var(--ambient-node-base-filter, none); }
 }
 @keyframes archify-relay-node-9 { 
   0%, 100% { filter: var(--ambient-node-base-filter, none); }
-  61.891% { filter: var(--ambient-node-base-filter, none); }
-  63.872%, 68.824% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
-  81.7% { filter: var(--ambient-node-base-filter, none); }
+  61.324% { filter: var(--ambient-node-base-filter, none); }
+  63.307%, 68.267% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
+  81.161% { filter: var(--ambient-node-base-filter, none); }
 }
 @keyframes archify-relay-node-10 { 
   0%, 100% { filter: var(--ambient-node-base-filter, none); }
-  62.033% { filter: var(--ambient-node-base-filter, none); }
-  64.014%, 68.966% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
-  81.842% { filter: var(--ambient-node-base-filter, none); }
+  61.979% { filter: var(--ambient-node-base-filter, none); }
+  63.963%, 68.922% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
+  81.816% { filter: var(--ambient-node-base-filter, none); }
 }
 :root, svg { --bg: #f4f5f7; --grid: #e9edf2; --canvas-dot: #e2e7ec; --text: #111827; --text-muted: #5b6474; --text-dim: #9aa3b2; --text-faint: #6b7280; --panel: #ffffff; --panel-border: #e5e7eb; --lane-fill: rgba(248, 250, 252, 0.65); --lane-stroke: #cbd5e1; --arrow: #64748b; --arrow-emphasis: #059669; --edge-label: #5b6474; --mask: #ffffff; --frontend-fill: rgba(34, 211, 238, 0.15); --frontend-stroke: #0891b2; --backend-fill: rgba(52, 211, 153, 0.18); --backend-stroke: #059669; --database-fill: rgba(167, 139, 250, 0.2); --database-stroke: #7c3aed; --cloud-fill: rgba(251, 191, 36, 0.18); --cloud-stroke: #d97706; --security-fill: rgba(251, 113, 133, 0.15); --security-stroke: #e11d48; --messagebus-fill: rgba(251, 146, 60, 0.15); --messagebus-stroke: #ea580c; --external-fill: rgba(148, 163, 184, 0.18); --external-stroke: #64748b; --toolbar-bg: rgba(255, 255, 255, 0.92); --toolbar-border: #cbd5e1; --toolbar-text: #334155; --toolbar-hover: #ffffff; --toolbar-menu-bg: #ffffff; --reader-accent: #077f9c; --flow-cycle: ; --flow-halo-peak: ; --flow-glow-peak: ; --flow-tail-peak: ; --flow-head-peak: ; --flow-wake-peak: ; --flow-ripple-peak: ; --flow-peak: ; }
 </style><rect x="0" y="0" width="1068" height="740" fill="#f4f5f7"/><metadata id="archify-software-notices">NOTICE
@@ -1042,10 +1042,10 @@ opened. The complete license is preserved in
         <!-- Flow paths -->
         <path data-edge-from="cam" data-edge-to="slot" data-edge-label="ROS 토픽 (깊이 1)" data-edge-key="0" data-edge-id="f-cam" data-composition-points="100,300;100,470" d="M 100 300 L 100 470" class="a-default" data-animate="edge" style="--step: 0;" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="slot" data-edge-to="det" data-edge-label="주 스레드가 꺼냄" data-edge-key="1" data-edge-id="f-take" data-composition-points="156,499;207.5,499;207.5,385;259,385" d="M 156 499 L 207.5 499 L 207.5 385 L 259 385" class="a-emphasis" data-animate="edge" style="--step: 1;" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="det" data-edge-to="handoff" data-edge-label="결과 + 사진" data-edge-key="2" data-edge-id="f-handoff" data-composition-points="371,372;422.5,372;422.5,157;474,157" d="M 371 372 L 422.5 372 L 422.5 157 L 474 157" class="a-default" data-animate="edge" style="--step: 2;" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="det" data-edge-to="handoff" data-edge-label="결과 + 사진" data-edge-key="2" data-edge-id="f-handoff" data-composition-points="371,372;415.75,372;415.75,157;460.5,157" d="M 371 372 L 415.75 372 L 415.75 157 L 460.5 157" class="a-default" data-animate="edge" style="--step: 2;" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="det" data-edge-to="world" data-edge-label="추적 대기열 8" data-edge-key="3" data-edge-id="f-world" data-composition-points="371,385;474,385" d="M 371 385 L 474 385" class="a-default" data-animate="edge" style="--step: 3;" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="det" data-edge-to="b" data-edge-label="최신 한 칸" data-edge-key="4" data-edge-id="f-b" data-composition-points="371,398;459,398;459,455;665,455;665,376;689,376" d="M 371 398 L 459 398 L 459 455 L 665 455 L 665 376 L 689 376" class="a-emphasis" data-animate="edge" style="--step: 4;" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="handoff" data-edge-to="fwd" data-edge-label="칸 1로 옮김" data-edge-key="5" data-edge-id="f-fwd" data-composition-points="586,157;689,157" d="M 586 157 L 689 157" class="a-default" data-animate="edge" style="--step: 5;" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="det" data-edge-to="b" data-edge-label="최신 한 칸" data-edge-key="4" data-edge-id="f-b" data-composition-points="371,398;445.5,398;445.5,455;665,455;665,376;689,376" d="M 371 398 L 445.5 398 L 445.5 455 L 665 455 L 665 376 L 689 376" class="a-emphasis" data-animate="edge" style="--step: 4;" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="handoff" data-edge-to="fwd" data-edge-label="칸 1로 옮김" data-edge-key="5" data-edge-id="f-fwd" data-composition-points="599.5,157;689,157" d="M 599.5 157 L 689 157" class="a-default" data-animate="edge" style="--step: 5;" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="fwd" data-edge-to="detectview" data-edge-label="TCP 47093 JPEG" data-edge-key="6" data-edge-id="f-detect" data-composition-points="801,157;904,157" d="M 801 157 L 904 157" class="a-default" data-animate="edge" style="--step: 6;" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="world" data-edge-to="b" data-edge-label="트랙 (≤0.1초)" data-edge-key="7" data-edge-id="f-tracks" data-composition-points="586,394;689,394" d="M 586 394 L 689 394" class="a-default" data-animate="edge" style="--step: 7;" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="world" data-edge-to="sorter" data-edge-label="/a/track_states" data-edge-key="8" data-edge-id="f-stream" data-composition-points="586,376;657,376;657,333;880,333;880,394;904,394" d="M 586 376 L 657 376 L 657 333 L 880 333 L 880 394 L 904 394" class="a-default" data-animate="edge" style="--step: 8;" stroke-width="1.4" marker-end="url(#arrowhead)"/>
@@ -1103,18 +1103,18 @@ opened. The complete license is preserved in
         </g>
         </a>
 
-        <g id="node-handoff" data-node-id="handoff" data-node-label="A→C 넘기기" tabindex="0" role="button" aria-label="A→C 넘기기 포커스, 64 넘치면 A 멈춤, 03 / 나눠주기·추적" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="64 넘치면 A 멈춤" data-node-context="03 / 나눠주기·추적">
-          <title>A→C 넘기기 · 64 넘치면 A 멈춤 · 03 / 나눠주기·추적</title>
-          <rect x="474" y="128" width="112" height="58" rx="6" class="c-mask"/>
-          <rect x="474" y="128" width="112" height="58" rx="6" class="c-messagebus" data-animate="node" style="--step: 3; --flow-node-name: archify-relay-node-3;" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(480 134) scale(0.6875)">
+        <g id="node-handoff" data-node-id="handoff" data-node-label="A→C 넘기기" tabindex="0" role="button" aria-label="A→C 넘기기 포커스, 64 넘치면 인식 실행 실패로 끝남, 03 / 나눠주기·추적" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="64 넘치면 인식 실행 실패로 끝남" data-node-context="03 / 나눠주기·추적">
+          <title>A→C 넘기기 · 64 넘치면 인식 실행 실패로 끝남 · 03 / 나눠주기·추적</title>
+          <rect x="460.5" y="128" width="139" height="58" rx="6" class="c-mask"/>
+          <rect x="460.5" y="128" width="139" height="58" rx="6" class="c-messagebus" data-animate="node" style="--step: 3; --flow-node-name: archify-relay-node-3;" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(466.5 134) scale(0.6875)">
             <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/>
             <circle cx="5" cy="4.5" r="1" class="sigil-fill"/>
             <circle cx="10.5" cy="8" r="1" class="sigil-fill"/>
             <circle cx="7" cy="11.5" r="1" class="sigil-fill"/>
           </g>
-          <text data-node-label="" x="530" y="161" class="t-primary" font-size="10" font-weight="600" text-anchor="middle">A→C 넘기기</text>
-          <text x="530" y="174.4" class="t-muted" font-size="7" text-anchor="middle">64 넘치면 A 멈춤</text>
+          <text data-node-label="" x="527.5" y="149" class="t-primary" font-size="10" font-weight="600" text-anchor="middle">A→C 넘기기</text>
+          <text x="530" y="165" class="t-muted" font-size="7" text-anchor="middle">64 넘치면 인식 실행 실패로 끝남</text>
         </g>
 
         <g id="node-world" data-node-id="world" data-node-label="추적" tabindex="0" role="button" aria-label="추적 포커스, 버림: 8 차면 새 것, 03 / 나눠주기·추적" aria-pressed="false" data-node-kind="backend" data-node-sublabel="버림: 8 차면 새 것" data-node-context="03 / 나눠주기·추적">
@@ -1168,7 +1168,7 @@ opened. The complete license is preserved in
                 <g id="node-detectview" data-node-id="detectview" data-node-label="detect 화면" tabindex="0" role="button" aria-label="detect 화면 포커스, 중계기 → D (47092), 05 / C·화면" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="중계기 → D (47092)" data-node-context="05 / C·화면" data-node-drilldowns="[{&quot;href&quot;:&quot;system_processes_v1_8.html&quot;,&quot;label&quot;:&quot;detect 화면&quot;}]">
           <title>detect 화면 · 중계기 → D (47092) · 05 / C·화면</title>
           <rect x="904" y="128" width="112" height="58" rx="6" class="c-mask"/>
-          <rect x="904" y="128" width="112" height="58" rx="6" class="c-frontend" data-animate="node" style="--step: 7; --flow-node-name: archify-relay-node-10;" stroke-width="1.5"/>
+          <rect x="904" y="128" width="112" height="58" rx="6" class="c-frontend" data-animate="node" style="--step: 7; --flow-node-name: archify-relay-node-9;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(910 134) scale(0.6875)">
             <rect x="2" y="3" width="12" height="10" rx="2"/>
             <path d="M2 6.5h12"/>
@@ -1205,7 +1205,7 @@ opened. The complete license is preserved in
                 <g id="node-centerview" data-node-id="centerview" data-node-label="center 화면" tabindex="0" role="button" aria-label="center 화면 포커스, 0.3초 늦으면 원본 대체, 05 / C·화면" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="0.3초 늦으면 원본 대체" data-node-context="05 / C·화면" data-node-drilldowns="[{&quot;href&quot;:&quot;system_processes_v1_8.html&quot;,&quot;label&quot;:&quot;center 화면&quot;}]">
           <title>center 화면 · 0.3초 늦으면 원본 대체 · 05 / C·화면</title>
           <rect x="904" y="584" width="112" height="58" rx="6" class="c-mask"/>
-          <rect x="904" y="584" width="112" height="58" rx="6" class="c-frontend" data-animate="node" style="--step: 12; --flow-node-name: archify-relay-node-9;" stroke-width="1.5"/>
+          <rect x="904" y="584" width="112" height="58" rx="6" class="c-frontend" data-animate="node" style="--step: 12; --flow-node-name: archify-relay-node-10;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(910 590) scale(0.6875)">
             <rect x="2" y="3" width="12" height="10" rx="2"/>
             <path d="M2 6.5h12"/>
@@ -1231,20 +1231,20 @@ opened. The complete license is preserved in
           <text x="207.5" y="432" class="t-edge-emphasis" font-size="8" text-anchor="middle">주 스레드가 꺼냄</text>
         </g>
         <g data-edge-from="det" data-edge-to="handoff" data-edge-label="결과 + 사진" data-edge-key="2" data-edge-id="f-handoff">
-          <rect x="389.55" y="243.5" width="65.9" height="16" rx="4" class="c-mask"/>
-          <text x="422.5" y="254.5" class="t-edge-default" font-size="8" text-anchor="middle">결과 + 사진</text>
+          <rect x="382.8" y="243.5" width="65.9" height="16" rx="4" class="c-mask"/>
+          <text x="415.75" y="254.5" class="t-edge-default" font-size="8" text-anchor="middle">결과 + 사진</text>
         </g>
         <g data-edge-from="det" data-edge-to="world" data-edge-label="추적 대기열 8" data-edge-key="3" data-edge-id="f-world">
           <rect x="334.79999999999995" y="336" width="75.7" height="16" rx="4" class="c-mask"/>
           <text x="372.65" y="347" class="t-edge-default" font-size="8" text-anchor="middle">추적 대기열 8</text>
         </g>
         <g data-edge-from="det" data-edge-to="b" data-edge-label="최신 한 칸" data-edge-key="4" data-edge-id="f-b">
-          <rect x="384.5" y="408" width="61" height="16" rx="4" class="c-mask"/>
-          <text x="415" y="419" class="t-edge-emphasis" font-size="8" text-anchor="middle">최신 한 칸</text>
+          <rect x="415" y="405.5" width="61" height="16" rx="4" class="c-mask"/>
+          <text x="445.5" y="416.5" class="t-edge-emphasis" font-size="8" text-anchor="middle">최신 한 칸</text>
         </g>
         <g data-edge-from="handoff" data-edge-to="fwd" data-edge-label="칸 1로 옮김" data-edge-key="5" data-edge-id="f-fwd">
-          <rect x="604.55" y="136" width="65.9" height="16" rx="4" class="c-mask"/>
-          <text x="637.5" y="147" class="t-edge-default" font-size="8" text-anchor="middle">칸 1로 옮김</text>
+          <rect x="611.3" y="136" width="65.9" height="16" rx="4" class="c-mask"/>
+          <text x="644.25" y="147" class="t-edge-default" font-size="8" text-anchor="middle">칸 1로 옮김</text>
         </g>
         <g data-edge-from="fwd" data-edge-to="detectview" data-edge-label="TCP 47093 JPEG" data-edge-key="6" data-edge-id="f-detect">
           <rect x="812.2" y="136" width="80.6" height="16" rx="4" class="c-mask"/>
