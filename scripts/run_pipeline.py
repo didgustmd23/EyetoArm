@@ -162,6 +162,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--b-center-overlay", dest="b_center_overlay", action="store_true",
                         help="--live-observation-out --b-input list 전용(#233): 목록 소비자 자리에 B center_overlay_consumer를 붙여 "
                              "/b/center_overlay/image(인터페이스가 있으면 /b/center_overlay도)로 B center 주석 영상을 발행")
+    parser.add_argument("--b-center-always-draw", dest="b_center_always_draw", action="store_true",
+                        help="--b-center-overlay와 함께(#406): 구독자가 없어도 사진마다 center를 그려 발행(예전 동작). "
+                             "기본은 center 영상 토픽 구독자가 없는 동안(대시보드가 center를 고르지 않음) 그리기·영상 발행을 건너뜀"
+                             "(B 계산·/b/results·목표는 그대로)")
     parser.add_argument("--b-input", dest="b_input", choices=("single", "list"), default="single",
                         help="B 입력 단계(#189): single = 단계 T(기본, 관측 하나 eyetoarm.b_input/1), list = 단계 L(같은 프레임 "
                              "후보 목록 eyetoarm.b_input/2). list는 --capture-meta 저장 입력 경로 또는 --live-observation-out 실시간 기록 전용 경로에서만 쓰며 B 목록 소비자"
@@ -1593,9 +1597,12 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
         world_stream = TrackStream(stream_cfg[0], stream_sender.send, stream_sender.now_ns)
 
     if center_on:
-        from eyetoarm.transforms.center_overlay_pub import center_overlay_consumer
+        from eyetoarm.vision.center_draw_gate import CenterDrawGate, gated_center_consumer
 
-        consumer_factory = lambda stage: center_overlay_consumer(stage, center_pub, on_error=center_stats.on_error)  # noqa: E731
+        # 보는 쪽(center 영상 토픽 구독자)이 없으면 그리지 않는다(#406 ①). 끄는 옵션 --b-center-always-draw
+        center_gate = CenterDrawGate(center_pub, always=bool(getattr(args, "b_center_always_draw", False)))
+        consumer_factory = lambda stage: gated_center_consumer(stage, center_pub, center_gate,  # noqa: E731
+                                                               on_error=center_stats.on_error)
         consumer_kind = {"list_consumer_kind": CENTER_CONSUMER_KIND}
     else:
         consumer_factory = list_consumer_factory if listed else None
@@ -1669,7 +1676,8 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
         overlay_text = (f"overlay={overlay}" if overlay else
                         "overlay=none (eyetoarm_interfaces CenterOverlay not found: rebuild robot_ws; Image only)")
         err.write(f"run_pipeline: B CENTER OVERLAY ON topic={getattr(center_pub, 'topic', None)} {overlay_text} "
-                  "(published right after B compute, before accept check (3); stage L only)\n")
+                  "(published right after B compute, before accept check (3); stage L only) "
+                  + ("draw=always\n" if center_gate.always else "draw=only while a center subscriber exists (#406)\n"))
 
     if sort_on:
         set_sink = getattr(sort_rt, "set_event_sink", None)
@@ -2035,7 +2043,7 @@ def _run_live_observation_body(args, settings, runner_config, detector_kw, err, 
             tracking_extra["handoff"] = None if result is None else result.handoff
 
             if center_on:
-                tracking_extra["center_overlay"] = center_stats.summary(center_pub)
+                tracking_extra["center_overlay"] = {**center_stats.summary(center_pub), "draw_gate": center_gate.summary()}
 
             if infer_summary is not None:
                 tracking_extra["infer_process"] = infer_summary
