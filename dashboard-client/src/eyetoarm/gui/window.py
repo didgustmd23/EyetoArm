@@ -860,8 +860,10 @@ class MainWindow(QMainWindow):
             self.detail_button.setChecked(False)
         # 메인 디스플레이는 하나뿐이다. 영상 칸이 있는 화면으로 옮긴다(수신은 끊기지 않는다)
         slot = {0: self.setup_display_slot, 1: self.operate_display_slot}.get(index)
-        if slot is not None and slot.indexOf(self.stage) < 0:
-            slot.addWidget(self.stage)
+        if slot is not None:
+            if slot.indexOf(self.stage) < 0:
+                slot.addWidget(self.stage)
+            self.stage.set_operating_layout(index == 1)
         self.pages.setCurrentIndex(index)
         if snapshot is not None:
             self.page_zoom.play(snapshot, forward=index > previous)
