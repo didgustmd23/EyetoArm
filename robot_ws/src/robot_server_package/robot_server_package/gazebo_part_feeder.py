@@ -26,9 +26,9 @@ FEED_SEQUENCE = (
 # World-space bin centers and interior half-extents. Bolt bins are rotated 90°
 # in sort_cell.sdf, so their X/Y half-extents are swapped from the model frame.
 BIN_REGIONS = (
-    ((0.55, 0.70), (0.075, 0.055), 5.0),   # orange bin_nut
-    ((0.72, -0.05), (0.055, 0.075), 10.0), # blue bin_bolt_a
-    ((0.72, 0.17), (0.055, 0.075), 10.0),  # green bin_bolt_b
+    ((0.55, 0.70), (0.075, 0.055), 1.0),   # orange bin_nut
+    ((0.72, -0.05), (0.055, 0.075), 2.0), # blue bin_bolt_a
+    ((0.72, 0.17), (0.055, 0.075), 2.0),  # green bin_bolt_b
 )
 BIN_FLOOR_Z = 0.003
 BIN_TOP_Z = 0.075
