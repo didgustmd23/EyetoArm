@@ -31,6 +31,7 @@ NO_HOME_AFTER = ("STOP_UNCONFIRMED",)   # stop not confirmed: recovery first, no
 # Fixed home = the simulation model's initial_positions (simulation/models/ur5e_2f85/ur5e_2f85.urdf.xacro).
 # It used to be the joints seen first, so a restart in a carry pose made that pose "home" (A #374, #394).
 HOME_JOINTS = (0.0, -1.57, 1.57, -1.57, -1.57, 0.0)
+ARM_SPEED_MULTIPLIER = 2.0             # Gazebo arm trajectory speed relative to nominal timing
 GRIP_SHORT_RAD = .003                  # #394: closed short of the command by more than this = something is held
 EMPTY_NEAR_M = .030                    # #380 (a): no simulation part this close to the fingertips = empty hand
 EMPTY_CLOSED_RAD = .1                  # gripper joint above this counts as closed (not DETACHED)
@@ -220,7 +221,7 @@ class GazeboSortExecutor:
         self.cancel_requested = lambda: False
         self._confirm_stopped()
         self.node.get_logger().info("SortPart HOME start; gripper and conveyor unchanged")
-        error = self.arm.follow([self.home], 3.)
+        error = self.arm.follow([self.home], 3. / ARM_SPEED_MULTIPLIER)
         if error > .015:
             raise SortFailure(f"HOME_TRACKING_ERROR: {error:.6f} rad")
         self._confirm_stopped()
@@ -378,7 +379,7 @@ class GazeboSortExecutor:
 
     def _follow(self, path, seconds):
         self._arm_moved = True
-        error = self.arm.follow(path, seconds)
+        error = self.arm.follow(path, seconds / ARM_SPEED_MULTIPLIER)
         if error > .015:
             target = np.asarray(path[-1], dtype=float)
             actual = self.arm.joints()
@@ -575,7 +576,7 @@ class GazeboSortExecutor:
             try:
                 rotation = self._rotation(candidate.orientation_xyzw)
                 pick_xy = pick[:2] + correction[:2]
-                lead = velocity[:2] * 2. if self.moving else 0
+                lead = velocity[:2] * (2. / ARM_SPEED_MULTIPLIER) if self.moving else 0
                 approach, descent, lift, carry, lowering, at_pick, raised = self._paths(
                     pick_xy, pick[2] + grasp_height_offset + offset, lead, rotation, heights, offset,
                     place, place_rotation, current)
@@ -946,7 +947,9 @@ class GazeboSortExecutor:
             c, s = np.cos(angle), np.sin(angle)
             yaw = np.array([[c, -s], [s, c]])
             target = at_pick.copy()
-            target[:2] = sample[0][:2] + yaw @ (at_pick[:2] - initial[:2]) + np.clip(velocity, -.05, .05) * .36
+            lead_seconds = .36 / ARM_SPEED_MULTIPLIER
+            target[:2] = (sample[0][:2] + yaw @ (at_pick[:2] - initial[:2])
+                          + np.clip(velocity, -.05, .05) * lead_seconds)
             target[2] += clearance + self.grasp_height_offset[part]
             if not clearance:
                 self._event(goal, "final_grasp_target", target_tool_position_m=target.tolist(),
