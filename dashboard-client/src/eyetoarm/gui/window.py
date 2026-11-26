@@ -81,6 +81,8 @@ VARIANT_NAMES = {"raw": "Raw", "detect": "Detect", "center": "Center"}   # 링�
 # 버튼 누름 효과 색(theme 이름). 미전송은 IDLE. 결과 효과는 C 응답(ACCEPTED·CONFIRMED=OK, REJECTED=FAIL, 그 밖=WARN)
 PRESS_COLOR = {"START": "ACCENT", "STOP": "FAIL", "RECOVER": "DIM", "E_STOP": "FAIL"}
 RESULT_COLOR = {"ACCEPTED": "OK", "CONFIRMED": "OK", "REJECTED": "FAIL"}
+# 「다음에 누를 버튼」 안내 네온 색(theme 이름). START(재가동)는 초록, 그 밖의 다음 조작은 노랑
+GUIDE_COLOR = {"START": "OK", "STOP": "WARN", "RECOVER": "WARN"}
 REQUEST_IDLE_11 = "분류·E-STOP 버튼: 누를 수 있으나 미전송 · C TCP 1.2 필요"
 REQUEST_IDLE_12 = "분류·E-STOP 버튼: 누름 = 요청 시도 · 준비·정지 확인 아님"
 # 분류 START·STOP 정지(STOP)·E-STOP 은 로봇과 컨베이어 벨트를 함께 다룬다(사용자 지정 2026-11-24). 실제 동작은 C 가 정한다
@@ -169,6 +171,12 @@ class MainWindow(QMainWindow):
         right.addLayout(self._build_header())
         right.addWidget(self.request_note)
         self.request_note.setVisible(not demo)
+        # 다음 조작 안내: C 스냅샷의 allowed 로 지금 눌러야 할 버튼을 적고, 그 버튼 테두리에 네온을 돌린다(TCP 1.2)
+        self.next_note = label("", "Caption", wrap=True)
+        self.next_note.setAccessibleName("다음 조작 안내")
+        self.next_note.setMinimumWidth(0)
+        right.addWidget(self.next_note)
+        self.next_note.setVisible(self.live_run)
         right.addLayout(self._build_status_strip())
 
         self.traffic_full = TrafficTable()      # 평가·기록 화면의 전체 기록
@@ -852,8 +860,10 @@ class MainWindow(QMainWindow):
             self.detail_button.setChecked(False)
         # 메인 디스플레이는 하나뿐이다. 영상 칸이 있는 화면으로 옮긴다(수신은 끊기지 않는다)
         slot = {0: self.setup_display_slot, 1: self.operate_display_slot}.get(index)
-        if slot is not None and slot.indexOf(self.stage) < 0:
-            slot.addWidget(self.stage)
+        if slot is not None:
+            if slot.indexOf(self.stage) < 0:
+                slot.addWidget(self.stage)
+            self.stage.set_operating_layout(index == 1)
         self.pages.setCurrentIndex(index)
         if snapshot is not None:
             self.page_zoom.play(snapshot, forward=index > previous)
@@ -1177,9 +1187,51 @@ class MainWindow(QMainWindow):
                 self._result_fx(record.action, record.request_id, record.outcome)
         for action, on in waiting.items():
             self._sort_button(action).set_waiting(on)
+        self._guide_next(snapshot, any(waiting.values()))
         self.estop_button.set_waiting(e_stop is not None and not e_stop.final)
         if e_stop is not None and e_stop.final:
             self._result_fx("E_STOP", e_stop.request_id, e_stop.state)
+
+    def _guide_next(self, snapshot, pending: bool) -> None:
+        """멈춘 뒤 다음에 누를 버튼을 안내한다. C 스냅샷 allowed 와 link.sort_allowed 만 근거로 쓴다(추정하지 않음).
+
+        START 를 지금 보낼 수 있으면 START 테두리에 초록 네온, 복구·정지가 먼저 필요하면 그 버튼에 노랑 네온.
+        분류 중·정지/복구 진행 중·응답 대기 중에는 네온을 끄고 기다리라고만 적는다.
+        """
+        guides, text = {}, ""
+        if self.link.state != "connected" or not self.link.run_verified or snapshot is None:
+            text = "다음 조작: C 실행 상태 확인 후 안내"
+        elif pending:
+            text = "다음 조작: 앞선 요청의 C 응답을 기다리는 중"
+        else:
+            state = snapshot["run_state"]
+            can = [a for a in ("START", "RECOVER", "STOP") if not self._sort_block(a) or
+                   (a == "RECOVER" and self.link.sort_allowed(a)[0])]
+            if state == "RUNNING":
+                text = "다음 조작: 분류 실행 중 · 멈추려면 STOP 또는 E-STOP"
+            elif state in ("STOP_REQUESTED", "RECOVERING"):
+                text = "다음 조작: " + ("정지" if state == "STOP_REQUESTED" else "복구") + " 진행 중 · C 완료 보고를 기다리세요"
+            elif "START" in can:
+                guides["START"] = GUIDE_COLOR["START"]
+                text = "다음 조작: START 로 재가동할 수 있습니다"
+                if "RECOVER" in can:
+                    guides["RECOVER"] = GUIDE_COLOR["RECOVER"]
+                    text += " · 보유 상태를 정리하려면 RECOVER"
+            elif "RECOVER" in can:
+                guides["RECOVER"] = GUIDE_COLOR["RECOVER"]
+                text = ("다음 조작: RECOVER 로 복구" if self.sort_confirm.isChecked()
+                        else "다음 조작: 「복구 조건 확인」 선택 → RECOVER") + " · 복구가 끝나면 START"
+            elif "STOP" in can:
+                guides["STOP"] = GUIDE_COLOR["STOP"]
+                text = "다음 조작: STOP · C 가 지금 허용한 조작은 STOP 뿐입니다"
+            else:
+                text = f"다음 조작: 없음 · C allowed {snapshot['allowed']}"
+        for action in ("START", "STOP", "RECOVER"):
+            color = guides.get(action)
+            self._sort_button(action).set_guide(getattr(theme, color) if color else None)
+        if self.next_note.text() != text:
+            self.next_note.setText(text)
+            self.next_note.setToolTip(text)
 
     def _sort_block(self, action) -> str:
         """1.2 후보에서 지금 누르면 보내지 않는 사유. 빈 문자열 = 보낸다. link 검사를 그대로 쓴다."""

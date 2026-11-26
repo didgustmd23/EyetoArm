@@ -122,6 +122,47 @@ class DisplayGuiTest(unittest.TestCase):
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
+    def test_operating_stage_frame_geometry_survives_swap_and_setup_reset(self):
+        from PySide6.QtCore import QRect, QSize
+        from eyetoarm.gui import motion
+        from eyetoarm.gui.widgets import DisplayStage
+
+        reduced = motion.is_reduced()
+        motion.set_reduced(True)
+        stage = DisplayStage()
+        try:
+            stage.resize(1400, 502)
+            stage._place(animate=False)
+            image_size = QSize(974, 553)
+            setup_main = stage.main._frame_rect(image_size)
+            setup_aux = stage.gripper._frame_rect(QSize(640, 480))
+            stage.set_operating_layout(True)
+
+            def check_operating():
+                main, upper, lower = stage.slots
+                self.assertEqual(main._frame_rect(image_size), QRect(153, 52, 729, 414))
+                self.assertEqual(upper.geometry(), QRect(1016, 52, 336, 189))
+                self.assertEqual(lower.geometry(), QRect(1016, 251, 336, 189))
+                for aux in (upper, lower):
+                    self.assertEqual(aux._frame_rect(QSize(640, 480)), QRect(0, -31, 336, 252))
+
+            check_operating()  # 출처 문자열이 없어도 제목·출처 공간을 유지한다.
+            stage.main.set_footer("camera · 974×553")
+            check_operating()
+            stage.main.set_footer("")
+            stage.swap_to_main(stage.gripper)
+            check_operating()
+            stage.swap_to_main(stage.main)
+            stage.set_operating_layout(False)
+            self.assertEqual(stage.main._frame_rect(image_size), setup_main)
+            self.assertEqual(stage.gripper._frame_rect(QSize(640, 480)), setup_aux)
+            self.assertTrue(stage.gripper.rect().contains(setup_aux))
+        finally:
+            motion.set_reduced(reduced)
+            stage.close()
+            stage.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
     def test_stage_swaps_aux_with_main_by_click_and_keyboard(self):
         from PySide6.QtCore import QPoint, QPropertyAnimation, Qt
         from PySide6.QtTest import QTest

@@ -52,13 +52,15 @@ class FeedbackPill(QPushButton):
     """알약 버튼 + 누름·응답 대기·결과 표시. 화면 장식일 뿐 송신 여부·C 상태 판단과 무관하다(motion 규칙 1~4).
 
     누르는 동안: 버튼이 살짝 눌려 작아졌다가, 떼면 튀어 오르며 돌아온다.
-    pulse(color): 누른 곳(키보드면 가운데)에서 색이 퍼지고, 같은 색의 굵은 선이 테두리를 한 바퀴 돈다. 반복하지 않는다.
+    pulse(color): 누른 곳(키보드면 가운데)에서 색이 퍼지고, 같은 색의 선이 테두리를 한 바퀴 돈다. 반복하지 않는다.
     result(color): C 결과 색이 바탕에 퍼지고 테두리 전체가 그 색으로 한 번 밝아졌다 옅어진다.
-    set_waiting(on): 응답을 기다리는 동안 테두리를 따라 굵은 주황 선이 돈다. 모션 줄이기면 테두리만 주황으로 고정.
+    set_waiting(on): 응답을 기다리는 동안 테두리를 따라 주황 선이 돈다. 모션 줄이기면 테두리만 주황으로 고정.
+    set_guide(color): 「다음에 누를 버튼」 안내. 테두리가 옅게 빛나고 네온 선 두 줄이 둘레를 돈다(응답 대기가 우선).
+                      None 이면 끈다. 모션 줄이기면 돌지 않고 테두리만 그 색으로 빛난다.
     """
 
     PRESS_SCALE = 0.94   # 눌렸을 때 크기
-    LINE = 3.0           # 테두리 선 두께(px)
+    LINE = 1.5           # 효과 테두리 선 두께(Qt 논리 px)
 
     def __init__(self, text: str) -> None:
         super().__init__(text)
@@ -72,6 +74,7 @@ class FeedbackPill(QPushButton):
         self._ring = 0.0           # 결과 테두리 밝기(1→0)
         self._ring_color = QColor()
         self._waiting = False
+        self._guide: QColor | None = None
         self._spin = 0.0
         self._spin_timer = QTimer(self)
         self._spin_timer.setInterval(30)
@@ -111,14 +114,28 @@ class FeedbackPill(QPushButton):
         if on == self._waiting:
             return
         self._waiting = on
-        if on and not motion.is_reduced():
+        self._sync_spin()
+
+    def is_waiting(self) -> bool:
+        return self._waiting
+
+    def set_guide(self, color: str | None) -> None:
+        guide = QColor(color) if color else None
+        if guide == self._guide:
+            return
+        self._guide = guide
+        self._sync_spin()
+
+    def guide(self) -> QColor | None:
+        return self._guide
+
+    def _sync_spin(self) -> None:
+        """대기 선·안내 네온이 있을 때만 돈다. 모션 줄이기면 멈춘 채 테두리만 칠한다."""
+        if (self._waiting or self._guide is not None) and not motion.is_reduced():
             self._spin_timer.start()
         else:
             self._spin_timer.stop()
         self.update()
-
-    def is_waiting(self) -> bool:
-        return self._waiting
 
     def _set_wash(self, value: float) -> None:
         self._wash = float(value)
@@ -137,7 +154,10 @@ class FeedbackPill(QPushButton):
         self.update()
 
     def _turn(self) -> None:
-        self._spin = (self._spin + 0.018) % 1.0
+        if motion.is_reduced():   # 돌던 중 모션 줄이기를 켜면 바로 멈추고 고정 테두리로 그린다
+            self._spin_timer.stop()
+        else:
+            self._spin = (self._spin + 0.018) % 1.0
         self.update()
 
     def _line(self, painter: QPainter, shape: QPainterPath, color: QColor, start: float | None) -> None:
@@ -151,6 +171,31 @@ class FeedbackPill(QPushButton):
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(shape)
+
+    def _neon(self, painter: QPainter, shape: QPainterPath, rect: QRectF) -> None:
+        """안내 네온: 옅게 빛나는 테두리 + 마주 보는 두 줄기 빛이 둘레를 돈다(번짐 → 심지 순서로 겹쳐 그린다)."""
+        color = QColor(self._guide)
+        halo = QColor(color)
+        halo.setAlphaF(0.30)
+        painter.setPen(QPen(halo, self.LINE * 0.7))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(shape)                             # 멈춰 있어도 보이는 은은한 테두리
+        if not self._spin_timer.isActive():                 # 모션 줄이기: 테두리만 선명하게
+            self._line(painter, shape, color, None)
+            return
+        length = shape.length()
+        for offset in (0.0, 0.5):                           # 마주 보는 두 줄기
+            start = (self._spin + offset) % 1.0
+            for width, alpha in ((self.LINE * 3.2, 0.22), (self.LINE * 1.9, 0.45), (self.LINE, 1.0)):
+                glow = QColor(color)
+                glow.setAlphaF(alpha)
+                pen = QPen(glow, width)
+                units = length / width
+                pen.setDashPattern([units * 0.18, units * 0.82])
+                pen.setDashOffset(-units * start)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                painter.setPen(pen)
+                painter.drawPath(shape)
 
     def _draw_button(self, painter: QPainter) -> None:
         """QSS 바탕·테두리는 2배 해상도로 그려 줄인다(둥근 1px 테두리 계단 방지). 글자는 1배로 선명하게."""
@@ -171,7 +216,8 @@ class FeedbackPill(QPushButton):
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if self._press <= 0.0 and self._wash <= 0.0 and self._trace < 0.0 and self._ring <= 0.0 and not self._waiting:
+        if (self._press <= 0.0 and self._wash <= 0.0 and self._trace < 0.0 and self._ring <= 0.0 and not self._waiting
+                and self._guide is None):
             self._draw_button(painter)
             return
         if self._press > 0.0:   # 가운데를 기준으로 살짝 작게 그린다(배치 크기는 그대로)
@@ -204,7 +250,9 @@ class FeedbackPill(QPushButton):
             self._line(painter, shape, ring, None)
         if self._waiting:
             self._line(painter, shape, QColor(theme.ACCENT), self._spin if self._spin_timer.isActive() else None)
-        elif self._trace >= 0.0:   # 한 바퀴 돌고 마지막 1/5 구간에서 옅어진다
+        elif self._guide is not None:
+            self._neon(painter, shape, rect)
+        if not self._waiting and self._trace >= 0.0:   # 한 바퀴 돌고 마지막 1/5 구간에서 옅어진다
             trace = QColor(self._trace_color)
             trace.setAlphaF(min(1.0, (1.0 - self._trace) * 5.0))
             self._line(painter, shape, trace, self._trace)
@@ -709,6 +757,9 @@ class StatusChip(QWidget):
 
 # ── 영상 표시면 ───────────────────────────────────────────────────────────
 
+_VIDEO_HEADER_HEIGHT = 52
+
+
 class DisplayView(QWidget):
     """영상 한 칸. 받은 프레임을 비율 그대로 표시한다. 보간·합성·주석 추가를 하지 않는다.
 
@@ -728,6 +779,8 @@ class DisplayView(QWidget):
         super().__init__()
         self._title = title
         self._compact = compact
+        self._operating_layout = False
+        self._main_frame_width: int | None = None
         self._mode = "empty"
         self._reason = ""
         self._footer = ""
@@ -780,6 +833,11 @@ class DisplayView(QWidget):
             self._compact = compact
             self.update()
 
+    def set_video_layout(self, operating: bool, main_width: int | None) -> None:
+        if (operating, main_width) != (self._operating_layout, self._main_frame_width):
+            self._operating_layout, self._main_frame_width = operating, main_width
+            self.update()
+
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if self._clickable and event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
             self.clicked.emit()
@@ -824,27 +882,51 @@ class DisplayView(QWidget):
 
     # ── 그리기 ──────────────────────────────────────────────────────────
 
+    def _content_area(self) -> QRect:
+        if self._main_frame_width is not None:
+            # 운영 화면의 제목·FPS 줄과 출처 줄은 영상 수신 전후에 같은 높이를 유지한다.
+            column = QRect(0, 0, min(self.width(), self._main_frame_width), self.height())
+            return column.adjusted(36, _VIDEO_HEADER_HEIGHT, 0, -36)
+        return self.rect()
+
+    def _frame_rect(self, image_size: QSize) -> QRect:
+        area = self._content_area()
+        if not self._operating_layout and self._footer and not self._compact:
+            area.adjust(0, 0, 0, -36)
+        mode = (Qt.AspectRatioMode.KeepAspectRatioByExpanding if self._operating_layout and self._compact
+                else Qt.AspectRatioMode.KeepAspectRatio)
+        target = QRect(area.topLeft(), image_size.scaled(area.size(), mode))
+        target.moveCenter(area.center())
+        if self._main_frame_width is not None:
+            target.moveTop(area.top())
+        return target
+
     def paintEvent(self, _event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        radius = theme.RADIUS_SMALL if self._compact else theme.RADIUS
+        radius = theme.RADIUS
+        if self._compact:
+            radius = 16 if self._operating_layout else theme.RADIUS_SMALL
         clip = QPainterPath()
         clip.addRoundedRect(rect, radius, radius)
         painter.setClipPath(clip)
         painter.fillPath(clip, QColor(theme.DISPLAY_BG))
 
         if self._image is not None:
-            # 아래 출처 줄(36px)은 영상 밖에 둔다. Gazebo 창 아래쪽 재생 버튼 등을 가리지 않게
-            area = self.rect().adjusted(0, 0, 0, -36 if self._footer and not self._compact else 0)
-            scaled = QSize(self._image.size()).scaled(area.size(), Qt.AspectRatioMode.KeepAspectRatio)
-            target = QRect(0, 0, scaled.width(), scaled.height())
-            target.moveCenter(area.center())
+            target = self._frame_rect(self._image.size())
+            painter.save()
+            if self._operating_layout and not self._compact:
+                frame_clip = QPainterPath()
+                frame_clip.addRoundedRect(QRectF(target), 16, 16)
+                painter.setClipPath(frame_clip, Qt.ClipOperation.IntersectClip)
             painter.drawImage(target, self._image)
+            painter.restore()
             if self._mode == "stale":
-                painter.fillRect(self.rect(), QColor(6, 6, 7, 190))
-                self._draw_center(painter, "수신 중단", f"마지막 프레임 {self._stale_ms / 1000:.1f}초 전 · 현재 모습 아님")
+                painter.fillRect(self._content_area(), QColor(6, 6, 7, 190))
+                self._draw_center(painter, "수신 중단", f"마지막 프레임 {self._stale_ms / 1000:.1f}초 전 · 현재 모습 아님",
+                                  target if self._main_frame_width is not None else None)
         else:
             if self._mode == "waiting" and not motion.is_reduced():
                 self._draw_sweep(painter)
@@ -866,10 +948,12 @@ class DisplayView(QWidget):
         gradient.setColorAt(0.0, QColor(0, 0, 0, 0))
         gradient.setColorAt(0.5, glow)
         gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
-        painter.fillRect(self.rect(), gradient)
+        painter.fillRect(self._content_area(), gradient)
 
-    def _draw_center(self, painter: QPainter, head: str, detail: str) -> None:
-        box = QRectF(self.rect()).adjusted(16, 0, -16, 0)
+    def _draw_center(self, painter: QPainter, head: str, detail: str, bounds: QRect | None = None) -> None:
+        if bounds is None:
+            bounds = self._content_area()
+        box = QRectF(bounds).adjusted(16, 0, -16, 0)
         painter.setPen(QColor(theme.DISPLAY_TEXT))
         painter.setFont(_font(13 if self._compact else 20, 800))
         painter.drawText(box.adjusted(0, 0, 0, -22), Qt.AlignmentFlag.AlignCenter, head)
@@ -973,6 +1057,7 @@ class DisplayStage(QWidget):
 
     배치(골격 문서 2026-11-13 사용자 화면 방향):
       탑뷰가 큰 바탕이고, 보조 2칸은 그 안쪽 오른쪽에 세로로 고정, 팝업은 가운데~왼쪽.
+      운영 탭에서는 큰 프레임을 왼쪽에 놓고 오른쪽 보조 2칸이 차지할 공간을 확보한다.
     교체(사용자 지정 2026-11-16): 보조 칸을 누르면 그 영상이 큰 칸 자리로 가고, 큰 칸에 있던 영상이 누른 보조 칸
       자리로 간다. 큰 칸을 가리는 겹친 확대는 없다. 위젯 자체를 자리만 바꾸므로 영상 수신·연결과
       main·gripper·link(영상 출처별 위젯)는 그대로다.
@@ -982,6 +1067,7 @@ class DisplayStage(QWidget):
 
     def __init__(self, demo: bool = False) -> None:
         super().__init__()
+        self._operating_layout = False
         self.main = DisplayView("탑뷰")
         self.main.setParent(self)
         self.gripper = DisplayView("그리퍼", compact=True)
@@ -1019,16 +1105,29 @@ class DisplayStage(QWidget):
         super().resizeEvent(event)
         self._place(animate=False)
 
+    def set_operating_layout(self, enabled: bool) -> None:
+        if enabled != self._operating_layout:
+            self._operating_layout = enabled
+            self._place(animate=False)
+
     def _place(self, animate: bool) -> None:
         width, height = self.width(), self.height()
-        aux_width = max(170, min(300, int(width * 0.21)))
-        aux_height = min(int(aux_width * 9 / 16), (height - 86) // 2)
-        left = width - aux_width - 16
-        targets = [QRect(0, 0, width, height), QRect(left, 52, aux_width, aux_height),
-                   QRect(left, 52 + aux_height + 10, aux_width, aux_height)]
+        if self._operating_layout:
+            # 위쪽 52px, 두 칸 사이 10px, 출처 줄 36px, 아래 여유 8px.
+            max_aux_height = (height - _VIDEO_HEADER_HEIGHT - 10 - 36 - 8) // 2
+            aux_width = max(170, min(336, width * 24 // 100, max_aux_height * 16 // 9))
+            aux_height = max(100, aux_width * 9 // 16)
+        else:
+            aux_width = max(170, min(300, int(width * 0.21)))
+            aux_height = min(int(aux_width * 9 / 16), (height - 86) // 2)
+        left = width - aux_width - (48 if self._operating_layout else 16)
+        targets = [QRect(0, 0, width, height), QRect(left, _VIDEO_HEADER_HEIGHT, aux_width, aux_height),
+                   QRect(left, _VIDEO_HEADER_HEIGHT + aux_height + 10, aux_width, aux_height)]
         self.slots[0].lower()   # 큰 칸은 맨 아래, 보조 칸과 팝업은 그 위
         for index, (view, target) in enumerate(zip(self.slots, targets)):
             view.set_compact(index > 0)
+            main_width = max(1, left - 16) if self._operating_layout and index == 0 else None
+            view.set_video_layout(self._operating_layout, main_width)
             if animate:
                 motion.move_geometry(view, target, theme.MS_POPUP)
             else:
