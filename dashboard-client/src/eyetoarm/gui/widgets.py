@@ -757,6 +757,9 @@ class StatusChip(QWidget):
 
 # ── 영상 표시면 ───────────────────────────────────────────────────────────
 
+_VIDEO_HEADER_HEIGHT = 52
+
+
 class DisplayView(QWidget):
     """영상 한 칸. 받은 프레임을 비율 그대로 표시한다. 보간·합성·주석 추가를 하지 않는다.
 
@@ -776,7 +779,7 @@ class DisplayView(QWidget):
         super().__init__()
         self._title = title
         self._compact = compact
-        self._video_radius = 0
+        self._operating_layout = False
         self._main_frame_width: int | None = None
         self._mode = "empty"
         self._reason = ""
@@ -830,9 +833,9 @@ class DisplayView(QWidget):
             self._compact = compact
             self.update()
 
-    def set_video_layout(self, radius: int, main_width: int | None) -> None:
-        if (radius, main_width) != (self._video_radius, self._main_frame_width):
-            self._video_radius, self._main_frame_width = radius, main_width
+    def set_video_layout(self, operating: bool, main_width: int | None) -> None:
+        if (operating, main_width) != (self._operating_layout, self._main_frame_width):
+            self._operating_layout, self._main_frame_width = operating, main_width
             self.update()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
@@ -879,18 +882,23 @@ class DisplayView(QWidget):
 
     # ── 그리기 ──────────────────────────────────────────────────────────
 
-    def _frame_rect(self, image_size: QSize) -> QRect:
-        # 출처 줄은 영상 밖에 둔다. Gazebo 창 아래쪽 재생 버튼 등을 가리지 않게.
-        area = self.rect().adjusted(0, 0, 0, -36 if self._footer and not self._compact else 0)
-        available = area.size()
+    def _content_area(self) -> QRect:
         if self._main_frame_width is not None:
-            available.setWidth(min(available.width(), self._main_frame_width))
-        fitted = image_size.scaled(available, Qt.AspectRatioMode.KeepAspectRatio)
-        target = QRect(0, 0, fitted.width(), fitted.height())
+            # 운영 화면의 제목·FPS 줄과 출처 줄은 영상 수신 전후에 같은 높이를 유지한다.
+            column = QRect(0, 0, min(self.width(), self._main_frame_width), self.height())
+            return column.adjusted(36, _VIDEO_HEADER_HEIGHT, 0, -36)
+        return self.rect()
+
+    def _frame_rect(self, image_size: QSize) -> QRect:
+        area = self._content_area()
+        if not self._operating_layout and self._footer and not self._compact:
+            area.adjust(0, 0, 0, -36)
+        mode = (Qt.AspectRatioMode.KeepAspectRatioByExpanding if self._operating_layout and self._compact
+                else Qt.AspectRatioMode.KeepAspectRatio)
+        target = QRect(area.topLeft(), image_size.scaled(area.size(), mode))
         target.moveCenter(area.center())
         if self._main_frame_width is not None:
-            rightmost_left = area.left() + available.width() - target.width()
-            target.moveLeft(max(area.left(), min(target.left() - 150, rightmost_left)))
+            target.moveTop(area.top())
         return target
 
     def paintEvent(self, _event) -> None:  # noqa: N802
@@ -898,7 +906,9 @@ class DisplayView(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        radius = (self._video_radius or theme.RADIUS_SMALL) if self._compact else theme.RADIUS
+        radius = theme.RADIUS
+        if self._compact:
+            radius = 16 if self._operating_layout else theme.RADIUS_SMALL
         clip = QPainterPath()
         clip.addRoundedRect(rect, radius, radius)
         painter.setClipPath(clip)
@@ -907,14 +917,14 @@ class DisplayView(QWidget):
         if self._image is not None:
             target = self._frame_rect(self._image.size())
             painter.save()
-            if self._video_radius:
+            if self._operating_layout and not self._compact:
                 frame_clip = QPainterPath()
-                frame_clip.addRoundedRect(QRectF(target), self._video_radius, self._video_radius)
+                frame_clip.addRoundedRect(QRectF(target), 16, 16)
                 painter.setClipPath(frame_clip, Qt.ClipOperation.IntersectClip)
             painter.drawImage(target, self._image)
             painter.restore()
             if self._mode == "stale":
-                painter.fillRect(self.rect(), QColor(6, 6, 7, 190))
+                painter.fillRect(self._content_area(), QColor(6, 6, 7, 190))
                 self._draw_center(painter, "수신 중단", f"마지막 프레임 {self._stale_ms / 1000:.1f}초 전 · 현재 모습 아님",
                                   target if self._main_frame_width is not None else None)
         else:
@@ -938,13 +948,11 @@ class DisplayView(QWidget):
         gradient.setColorAt(0.0, QColor(0, 0, 0, 0))
         gradient.setColorAt(0.5, glow)
         gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
-        painter.fillRect(self.rect(), gradient)
+        painter.fillRect(self._content_area(), gradient)
 
     def _draw_center(self, painter: QPainter, head: str, detail: str, bounds: QRect | None = None) -> None:
         if bounds is None:
-            bounds = self.rect()
-            if self._main_frame_width is not None:
-                bounds.setWidth(min(bounds.width(), self._main_frame_width))
+            bounds = self._content_area()
         box = QRectF(bounds).adjusted(16, 0, -16, 0)
         painter.setPen(QColor(theme.DISPLAY_TEXT))
         painter.setFont(_font(13 if self._compact else 20, 800))
@@ -1106,20 +1114,20 @@ class DisplayStage(QWidget):
         width, height = self.width(), self.height()
         if self._operating_layout:
             # 위쪽 52px, 두 칸 사이 10px, 출처 줄 36px, 아래 여유 8px.
-            max_aux_height = (height - 106) // 2
+            max_aux_height = (height - _VIDEO_HEADER_HEIGHT - 10 - 36 - 8) // 2
             aux_width = max(170, min(336, width * 24 // 100, max_aux_height * 16 // 9))
             aux_height = max(100, aux_width * 9 // 16)
         else:
             aux_width = max(170, min(300, int(width * 0.21)))
             aux_height = min(int(aux_width * 9 / 16), (height - 86) // 2)
-        left = width - aux_width - 16
-        targets = [QRect(0, 0, width, height), QRect(left, 52, aux_width, aux_height),
-                   QRect(left, 52 + aux_height + 10, aux_width, aux_height)]
+        left = width - aux_width - (48 if self._operating_layout else 16)
+        targets = [QRect(0, 0, width, height), QRect(left, _VIDEO_HEADER_HEIGHT, aux_width, aux_height),
+                   QRect(left, _VIDEO_HEADER_HEIGHT + aux_height + 10, aux_width, aux_height)]
         self.slots[0].lower()   # 큰 칸은 맨 아래, 보조 칸과 팝업은 그 위
         for index, (view, target) in enumerate(zip(self.slots, targets)):
             view.set_compact(index > 0)
             main_width = max(1, left - 16) if self._operating_layout and index == 0 else None
-            view.set_video_layout(16 if self._operating_layout else 0, main_width)
+            view.set_video_layout(self._operating_layout, main_width)
             if animate:
                 motion.move_geometry(view, target, theme.MS_POPUP)
             else:
