@@ -85,6 +85,59 @@ class ButtonFeedback(V12Case):
         self.assertFalse(button._spin_timer.isActive())     # 테두리만 고정, 돌지 않는다
 
 
+class NextStepGuide(ButtonFeedback):
+    """멈춘 뒤 다음에 누를 버튼: 안내 문구와 버튼 테두리 네온(START 초록, 그 밖 노랑). C 스냅샷 allowed 로만 정한다."""
+
+    def push(self, snapshot):
+        self.peer.snapshot = snapshot
+        self.peer.push(run_status(snapshot=snapshot))
+
+    def guides(self):
+        w = self.window
+        return {name: button.guide() for name, button in
+                (("START", w.start_button), ("STOP", w.stop_button), ("RECOVER", w.recover_button))}
+
+    def test_start_glows_green_when_restart_is_allowed(self):
+        w = self.window
+        self.push(snap("STOPPED", 20, ("START",)))
+        self.assertTrue(until(lambda: self.guides()["START"] == QColor(theme.OK)))
+        self.assertIsNone(self.guides()["STOP"])
+        self.assertIn("START 로 재가동", w.next_note.text())
+        self.assertTrue(w.start_button._spin_timer.isActive())          # 네온이 둘레를 돈다
+        w.start_button.grab()                                             # 그리기 경로 오류 없음
+
+    def test_running_and_stopping_show_no_guide(self):
+        w = self.window
+        self.push(snap("RUNNING", 21, ("STOP",)))
+        self.assertTrue(until(lambda: "분류 실행 중" in w.next_note.text()))
+        self.assertEqual(set(self.guides().values()), {None})
+        self.push(snap("STOP_REQUESTED", 22, ("STOP",)))
+        self.assertTrue(until(lambda: "정지 진행 중" in w.next_note.text()))
+        self.assertEqual(set(self.guides().values()), {None})
+
+    def test_recovery_points_to_confirm_then_recover(self):
+        w = self.window
+        self.push(snap("RECOVERY_REQUIRED", 23, ("STOP", "RECOVER"), hold="HOLD_UNKNOWN",
+                       slot_owner={"kind": "LOCKED", "id": None}, stop_cause="FAULT"))
+        self.assertTrue(until(lambda: self.guides()["RECOVER"] == QColor(theme.WARN)))
+        self.assertIsNone(self.guides()["START"])
+        self.assertIn("복구 조건 확인", w.next_note.text())
+        w.sort_confirm.setChecked(True)
+        self.assertTrue(until(lambda: "RECOVER 로 복구" in w.next_note.text()))
+
+    def test_estop_pause_offers_start_and_recover(self):
+        self.push(snap("RECOVERY_REQUIRED", 24, ("START", "STOP", "RECOVER"), hold="HOLD_UNKNOWN",
+                       slot_owner={"kind": "LOCKED", "id": None}, stop_cause="E_STOP"))
+        self.assertTrue(until(lambda: self.guides()["START"] == QColor(theme.OK)))
+        self.assertEqual(self.guides()["RECOVER"], QColor(theme.WARN))
+
+    def test_reduced_motion_guide_does_not_spin(self):
+        motion.set_reduced(True)
+        self.push(snap("STOPPED", 25, ("START",)))
+        self.assertTrue(until(lambda: self.guides()["START"] is not None))
+        self.assertTrue(until(lambda: not self.window.start_button._spin_timer.isActive()))   # 돌던 네온도 멈춘다
+
+
 class V12SetupTheme(ButtonFeedback.__mro__[1]):
     """TCP 1.2 모드 조작·설정 탭: 비활성 수동 이동 입력칸도 테마 색을 따른다. 번짐 지도는 화면 픽셀 크기다."""
 

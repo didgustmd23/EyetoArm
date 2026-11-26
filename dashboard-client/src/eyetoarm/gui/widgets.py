@@ -55,6 +55,8 @@ class FeedbackPill(QPushButton):
     pulse(color): 누른 곳(키보드면 가운데)에서 색이 퍼지고, 같은 색의 굵은 선이 테두리를 한 바퀴 돈다. 반복하지 않는다.
     result(color): C 결과 색이 바탕에 퍼지고 테두리 전체가 그 색으로 한 번 밝아졌다 옅어진다.
     set_waiting(on): 응답을 기다리는 동안 테두리를 따라 굵은 주황 선이 돈다. 모션 줄이기면 테두리만 주황으로 고정.
+    set_guide(color): 「다음에 누를 버튼」 안내. 테두리가 옅게 빛나고 네온 선 두 줄이 둘레를 돈다(응답 대기가 우선).
+                      None 이면 끈다. 모션 줄이기면 돌지 않고 테두리만 그 색으로 빛난다.
     """
 
     PRESS_SCALE = 0.94   # 눌렸을 때 크기
@@ -72,6 +74,7 @@ class FeedbackPill(QPushButton):
         self._ring = 0.0           # 결과 테두리 밝기(1→0)
         self._ring_color = QColor()
         self._waiting = False
+        self._guide: QColor | None = None
         self._spin = 0.0
         self._spin_timer = QTimer(self)
         self._spin_timer.setInterval(30)
@@ -111,14 +114,28 @@ class FeedbackPill(QPushButton):
         if on == self._waiting:
             return
         self._waiting = on
-        if on and not motion.is_reduced():
+        self._sync_spin()
+
+    def is_waiting(self) -> bool:
+        return self._waiting
+
+    def set_guide(self, color: str | None) -> None:
+        guide = QColor(color) if color else None
+        if guide == self._guide:
+            return
+        self._guide = guide
+        self._sync_spin()
+
+    def guide(self) -> QColor | None:
+        return self._guide
+
+    def _sync_spin(self) -> None:
+        """대기 선·안내 네온이 있을 때만 돈다. 모션 줄이기면 멈춘 채 테두리만 칠한다."""
+        if (self._waiting or self._guide is not None) and not motion.is_reduced():
             self._spin_timer.start()
         else:
             self._spin_timer.stop()
         self.update()
-
-    def is_waiting(self) -> bool:
-        return self._waiting
 
     def _set_wash(self, value: float) -> None:
         self._wash = float(value)
@@ -137,7 +154,10 @@ class FeedbackPill(QPushButton):
         self.update()
 
     def _turn(self) -> None:
-        self._spin = (self._spin + 0.018) % 1.0
+        if motion.is_reduced():   # 돌던 중 모션 줄이기를 켜면 바로 멈추고 고정 테두리로 그린다
+            self._spin_timer.stop()
+        else:
+            self._spin = (self._spin + 0.018) % 1.0
         self.update()
 
     def _line(self, painter: QPainter, shape: QPainterPath, color: QColor, start: float | None) -> None:
@@ -151,6 +171,31 @@ class FeedbackPill(QPushButton):
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(shape)
+
+    def _neon(self, painter: QPainter, shape: QPainterPath, rect: QRectF) -> None:
+        """안내 네온: 옅게 빛나는 테두리 + 마주 보는 두 줄기 빛이 둘레를 돈다(번짐 → 심지 순서로 겹쳐 그린다)."""
+        color = QColor(self._guide)
+        halo = QColor(color)
+        halo.setAlphaF(0.30)
+        painter.setPen(QPen(halo, self.LINE * 0.7))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(shape)                             # 멈춰 있어도 보이는 은은한 테두리
+        if not self._spin_timer.isActive():                 # 모션 줄이기: 테두리만 선명하게
+            self._line(painter, shape, color, None)
+            return
+        length = shape.length()
+        for offset in (0.0, 0.5):                           # 마주 보는 두 줄기
+            start = (self._spin + offset) % 1.0
+            for width, alpha in ((self.LINE * 3.2, 0.22), (self.LINE * 1.9, 0.45), (self.LINE, 1.0)):
+                glow = QColor(color)
+                glow.setAlphaF(alpha)
+                pen = QPen(glow, width)
+                units = length / width
+                pen.setDashPattern([units * 0.18, units * 0.82])
+                pen.setDashOffset(-units * start)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                painter.setPen(pen)
+                painter.drawPath(shape)
 
     def _draw_button(self, painter: QPainter) -> None:
         """QSS 바탕·테두리는 2배 해상도로 그려 줄인다(둥근 1px 테두리 계단 방지). 글자는 1배로 선명하게."""
@@ -171,7 +216,8 @@ class FeedbackPill(QPushButton):
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if self._press <= 0.0 and self._wash <= 0.0 and self._trace < 0.0 and self._ring <= 0.0 and not self._waiting:
+        if (self._press <= 0.0 and self._wash <= 0.0 and self._trace < 0.0 and self._ring <= 0.0 and not self._waiting
+                and self._guide is None):
             self._draw_button(painter)
             return
         if self._press > 0.0:   # 가운데를 기준으로 살짝 작게 그린다(배치 크기는 그대로)
@@ -204,7 +250,9 @@ class FeedbackPill(QPushButton):
             self._line(painter, shape, ring, None)
         if self._waiting:
             self._line(painter, shape, QColor(theme.ACCENT), self._spin if self._spin_timer.isActive() else None)
-        elif self._trace >= 0.0:   # 한 바퀴 돌고 마지막 1/5 구간에서 옅어진다
+        elif self._guide is not None:
+            self._neon(painter, shape, rect)
+        if not self._waiting and self._trace >= 0.0:   # 한 바퀴 돌고 마지막 1/5 구간에서 옅어진다
             trace = QColor(self._trace_color)
             trace.setAlphaF(min(1.0, (1.0 - self._trace) * 5.0))
             self._line(painter, shape, trace, self._trace)
